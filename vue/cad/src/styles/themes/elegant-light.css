@@ -1,0 +1,33 @@
+html[data-skin='elegant'][data-theme='light'] {
+  --bg: #f2eee6;
+  --bg-soft: #ede8de;
+  --panel: #fdfcf8;
+  --panel-2: #f6f2ea;
+  --panel-top: #f9f6f0;
+  --line: #e3dccb;
+  --line-strong: #cfc5ae;
+  --hover: rgb(120 95 50 / 6%);
+  --active: rgb(140 110 60 / 10%);
+  --text-1: #292419;
+  --text-2: #6e6552;
+  --text-3: #a79c85;
+  --accent: #9c7a44;
+  --accent-2: #c6a265;
+  --accent-ink: #fffbf2;
+  --accent-soft: rgb(160 124 66 / 12%);
+  --ok: #4e7a57;
+  --warn: #a8762a;
+  --danger: #a5463e;
+  --info: #4a6fa5;
+  --shadow: 0 14px 34px rgb(80 64 35 / 10%), 0 2px 6px rgb(80 64 35 / 5%);
+  --font-display: 'Noto Serif SC', serif;
+  --radius: 15px;
+  --grid: rgb(120 95 50 / 5%);
+  --cad-bg: #fdfcf7;
+  --cad-line: #332f24;
+  --cad-center: #b08d57;
+  --cad-dim: #8b8371;
+  --cad-text: #3a3527;
+  --cad-hatch: #cdc3aa;
+  --cad-frame: #4a4436;
+}

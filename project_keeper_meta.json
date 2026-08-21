@@ -1,0 +1,15 @@
+{
+  "id": "5a359c3d-ff32-4c29-8a73-2c5f99aacada",
+  "name": "cadguanliq",
+  "chineseTitle": "cad图纸管理器",
+  "type": "web",
+  "customType": "",
+  "description": "",
+  "tags": [],
+  "startupCommand": "",
+  "path": "D:\\zt\\project\\web\\cadguanliq",
+  "createdAt": "2026-08-21T09:43:19.358716",
+  "lastOpenedAt": "2026-08-21T09:43:19.358716",
+  "hasGit": false,
+  "hasReadme": true
+}

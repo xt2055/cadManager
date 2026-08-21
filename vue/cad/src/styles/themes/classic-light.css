@@ -1,0 +1,34 @@
+html[data-skin='classic'][data-theme='light'] {
+  --bg: #f3f4f6;
+  --bg-soft: #e5e7eb;
+  --panel: #ffffff;
+  --panel-2: #f8fafc;
+  --panel-top: #ffffff;
+  --line: #d9dee5;
+  --line-strong: #b8c1cc;
+  --hover: rgb(37 99 235 / 6%);
+  --active: rgb(37 99 235 / 10%);
+  --text-1: #1f2937;
+  --text-2: #4b5563;
+  --text-3: #7b8794;
+  --accent: #2563eb;
+  --accent-2: #4f46e5;
+  --accent-ink: #ffffff;
+  --accent-soft: rgb(37 99 235 / 10%);
+  --ok: #15803d;
+  --warn: #b45309;
+  --danger: #b42318;
+  --info: #2563eb;
+  --glow: rgb(37 99 235 / 18%);
+  --shadow: 0 10px 28px rgb(15 23 42 / 8%);
+  --font-display: 'Noto Sans SC', sans-serif;
+  --radius: 8px;
+  --grid: transparent;
+  --cad-bg: #ffffff;
+  --cad-line: #1f2937;
+  --cad-center: #2563eb;
+  --cad-dim: #64748b;
+  --cad-text: #1f2937;
+  --cad-hatch: #cbd5e1;
+  --cad-frame: #475569;
+}

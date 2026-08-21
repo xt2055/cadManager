@@ -1,0 +1,14 @@
+:root {
+  --font-family:
+    'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system,
+    sans-serif;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+}

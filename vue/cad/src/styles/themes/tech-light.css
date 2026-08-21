@@ -1,0 +1,34 @@
+html[data-skin='tech'][data-theme='light'] {
+  --bg: #eaf1f7;
+  --bg-soft: #e2ebf3;
+  --panel: #ffffff;
+  --panel-2: #f2f7fb;
+  --panel-top: #f8fbfe;
+  --line: #d8e3ec;
+  --line-strong: #b9ccda;
+  --hover: rgb(10 110 145 / 6%);
+  --active: rgb(10 110 145 / 11%);
+  --text-1: #0e1b27;
+  --text-2: #4e6478;
+  --text-3: #8aa1b3;
+  --accent: #0a7e9e;
+  --accent-2: #0ea5c9;
+  --accent-ink: #f2fdff;
+  --accent-soft: rgb(10 126 158 / 10%);
+  --ok: #15803d;
+  --warn: #b45309;
+  --danger: #be3b36;
+  --info: #2563eb;
+  --glow: rgb(14 165 201 / 35%);
+  --shadow: 0 12px 30px rgb(15 60 90 / 10%);
+  --font-display: 'Noto Sans SC', sans-serif;
+  --radius: 13px;
+  --grid: rgb(10 110 145 / 7%);
+  --cad-bg: #f7fbfe;
+  --cad-line: #123247;
+  --cad-center: #0a7e9e;
+  --cad-dim: #5b7285;
+  --cad-text: #123247;
+  --cad-hatch: #afc9d8;
+  --cad-frame: #33566e;
+}
