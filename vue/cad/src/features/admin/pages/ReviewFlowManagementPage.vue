@@ -8,6 +8,15 @@ defineOptions({ name: 'ReviewFlowManagementPage' })
 
 const demoStore = useDemoStore()
 const uiStore = useUiStore()
+
+async function toggleFlow(index: number) {
+  try {
+    await demoStore.toggleFlow(index)
+  } catch (error) {
+    console.error('保存审核流程状态失败', error)
+    uiStore.toast('审核流程状态保存失败，请稍后重试', 'warn')
+  }
+}
 </script>
 
 <template>
@@ -15,7 +24,7 @@ const uiStore = useUiStore()
     <div class="section-head"><h3>后台管理</h3><span class="lib-count">管理员账号同时继承普通用户全部功能</span><button class="btn primary admin-action" type="button" @click="uiStore.toast('请先配置流程节点与审核人员', 'info')"><DemoIcon name="plus" :size="14" />新增流程</button></div>
     <AdminTabs active="flows" />
     <div v-for="(flow, index) in demoStore.flows" :key="flow.name" class="card flow-card">
-      <div class="flow-head"><DemoIcon name="workflow" :size="16" /><b>{{ flow.name }}</b><span class="tag" :class="flow.on ? 'ok' : 'mute'">{{ flow.on ? '启用中' : '已停用' }}</span><span class="tag info">无序并行</span><div class="flow-actions"><button class="btn sm" type="button" @click="uiStore.openModal('edit-flow', '编辑审核流程')"><DemoIcon name="pencil" :size="14" />编辑节点</button><button class="btn sm" type="button" @click="demoStore.toggleFlow(index)">{{ flow.on ? '停用' : '启用' }}</button><button class="btn sm danger" type="button" @click="uiStore.toast('该流程已有审核记录 · 已转为「停用归档」，不做物理删除', 'warn')"><DemoIcon name="trash-2" :size="14" />删除</button></div></div>
+      <div class="flow-head"><DemoIcon name="workflow" :size="16" /><b>{{ flow.name }}</b><span class="tag" :class="flow.on ? 'ok' : 'mute'">{{ flow.on ? '启用中' : '已停用' }}</span><span class="tag info">无序并行</span><div class="flow-actions"><button class="btn sm" type="button" @click="uiStore.openModal('edit-flow', '编辑审核流程')"><DemoIcon name="pencil" :size="14" />编辑节点</button><button class="btn sm" type="button" @click="toggleFlow(index)">{{ flow.on ? '停用' : '启用' }}</button><button class="btn sm danger" type="button" @click="uiStore.toast('该流程已有审核记录 · 已转为「停用归档」，不做物理删除', 'warn')"><DemoIcon name="trash-2" :size="14" />删除</button></div></div>
       <div class="flow-nodes"><span class="tag plain">{{ flow.nodes }} 个审核节点</span></div><div class="flow-desc">{{ flow.desc }}</div>
     </div>
     <div v-if="!demoStore.flows.length" class="card empty"><DemoIcon name="workflow" :size="34" /><div class="t">暂无审核流程</div></div>

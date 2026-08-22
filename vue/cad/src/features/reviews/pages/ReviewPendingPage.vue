@@ -16,9 +16,14 @@ function openDrawing(no: string) {
   router.push({ name: 'drawing-preview', params: { drawingId: no } })
 }
 
-function decide(index: number, approved: boolean) {
-  demoStore.approveReview(index)
-  uiStore.toast(approved ? '审核已通过 · 已通知发起人' : '已驳回 · 发起人将收到通知与驳回意见', approved ? 'ok' : 'warn')
+async function decide(index: number, approved: boolean) {
+  try {
+    await demoStore.approveReview(index)
+    uiStore.toast(approved ? '审核已通过 · 已通知发起人' : '已驳回 · 发起人将收到通知与驳回意见', approved ? 'ok' : 'warn')
+  } catch (error) {
+    console.error('保存审核结果失败', error)
+    uiStore.toast('审核结果保存失败，请稍后重试', 'warn')
+  }
 }
 </script>
 

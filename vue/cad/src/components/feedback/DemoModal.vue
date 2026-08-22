@@ -25,9 +25,7 @@ function submit() {
   const current = modal.value
   if (!current) return
 
-  if (current.type === 'create-drawing') {
-    uiStore.toast(`图纸「${formNo.value || '未填写图号'}」已创建（草稿）· 可先搭结构、后补传文件`)
-  } else if (current.type === 'upload-version') {
+  if (current.type === 'upload-version') {
     uiStore.toast('新版本已生成 · 历史版本原样保留 · 已进入转换队列')
   } else if (current.type === 'borrow-drawing') {
     uiStore.toast('借用关系已建立 · 默认不同步原图 · 已记录借用人/时间/版本')
@@ -57,20 +55,7 @@ function submit() {
       </header>
 
       <div class="modal-body">
-        <template v-if="modal.type === 'create-drawing'">
-          <div class="note"><DemoIcon name="info" :size="14" /><div>可先创建图纸记录并搭建结构，<b>不要求立即上传图纸文件</b>，稍后在详情页任意子页补传。</div></div>
-          <div class="modal-form-grid">
-            <div class="field"><label for="form-no">图纸图号 *</label><input id="form-no" v-model="formNo" class="inp" placeholder="请输入图纸图号" /></div>
-            <div class="field"><label for="form-name">图纸名称 *</label><input id="form-name" v-model="formName" class="inp" placeholder="如 二级圆柱齿轮减速器" /></div>
-            <div class="field"><label>类型</label><select class="inp"><option>总图</option><option>零件图</option></select></div>
-            <div class="field"><label>所属总图</label><select class="inp"><option>无（作为总图）</option></select></div>
-            <div class="field"><label>厂商</label><input class="inp" placeholder="如 华辰重工" /></div>
-            <div class="field"><label>零件材料</label><input class="inp" placeholder="如 HT200 / 45钢" /></div>
-          </div>
-          <div class="field field-last"><label>签署人员</label><div class="signature-grid"><select v-for="role in ['设计', '标准', '校对', '工艺', '批准']" :key="role" class="inp"><option>{{ role }}·待定</option><option>选择人员</option></select></div></div>
-        </template>
-
-        <template v-else-if="modal.type === 'upload-version'">
+        <template v-if="modal.type === 'upload-version'">
           <button class="dropzone" type="button" @click="uiStore.toast('文件选择功能待接入', 'info')"><DemoIcon name="file-up" :size="26" /><b>点击选择或拖入 CAD 文件</b><span>支持 .exb / .dwg / .dxf / .pdf · 单文件 ≤ 100 MB · 上传后自动转换矢量预览</span></button>
           <div class="field modal-top-field"><label for="version-reason">版本说明 *</label><textarea id="version-reason" v-model="formReason" class="inp" placeholder="如：按审核意见调整壁厚 8 → 10，同步更新明细栏"></textarea></div>
           <div class="field field-last"><label>借用同步策略（该图为借用件时生效）</label><label class="radio-row" :class="{ on: selectedSync === 'copy' }"><input v-model="selectedSync" type="radio" value="copy" /><span class="rt"><b>仅更新当前项目副本（默认）</b><span>不影响原借用零件图与其他引用项目，保留借用来源可追溯。</span></span></label><label class="radio-row" :class="{ on: selectedSync === 'origin' }"><input v-model="selectedSync" type="radio" value="origin" /><span class="rt"><b>修改并同步至原借用零件图</b><span>原图生成新版本，所有引用项目受影响，需重新走审核流程。</span></span></label></div>
@@ -111,7 +96,7 @@ function submit() {
 
       <footer class="modal-foot">
         <button class="btn" type="button" @click="close">取消</button>
-        <button class="btn primary" type="button" @click="submit"><DemoIcon name="check" :size="14" />{{ modal.type === 'exit' ? '退出' : modal.type === 'create-drawing' ? '创建图纸' : modal.type === 'upload-version' ? '生成新版本' : modal.type === 'borrow-drawing' ? '建立借用' : modal.type === 'revert' ? '执行回退' : modal.type === 'sync-original' ? '确认同步' : modal.type === 'add-user' ? '创建账号' : '保存流程' }}</button>
+        <button class="btn primary" type="button" @click="submit"><DemoIcon name="check" :size="14" />{{ modal.type === 'exit' ? '退出' : modal.type === 'upload-version' ? '生成新版本' : modal.type === 'borrow-drawing' ? '建立借用' : modal.type === 'revert' ? '执行回退' : modal.type === 'sync-original' ? '确认同步' : modal.type === 'add-user' ? '创建账号' : '保存流程' }}</button>
       </footer>
     </section>
   </div>

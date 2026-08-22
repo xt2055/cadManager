@@ -1,5 +1,5 @@
 import { isTauri } from '@tauri-apps/api/core'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import type { Window as TauriWindow } from '@tauri-apps/api/window'
 
 function getAppWindow(): TauriWindow | null {
@@ -54,5 +54,29 @@ export const windowService = {
 
   async startDragging(): Promise<void> {
     await requireAppWindow().startDragging()
+  },
+
+  async setSize(width: number, height: number): Promise<void> {
+    const appWindow = getAppWindow()
+    if (!appWindow) return
+    await appWindow.setSize(new LogicalSize(width, height))
+  },
+
+  async setSizeConstraints(minWidth: number, minHeight: number): Promise<void> {
+    const appWindow = getAppWindow()
+    if (!appWindow) return
+    await appWindow.setSizeConstraints({ minWidth, minHeight })
+  },
+
+  async setResizable(value: boolean): Promise<void> {
+    const appWindow = getAppWindow()
+    if (!appWindow) return
+    await appWindow.setResizable(value)
+  },
+
+  async center(): Promise<void> {
+    const appWindow = getAppWindow()
+    if (!appWindow) return
+    await appWindow.center()
   },
 }

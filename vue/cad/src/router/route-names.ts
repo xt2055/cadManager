@@ -22,6 +22,8 @@ export const RouteName = {
 
   OperationLogs: 'operation-logs',
 
+  Settings: 'settings',
+
   Admin: 'admin',
   AdminAccounts: 'admin-accounts',
   AdminReviewFlows: 'admin-review-flows',

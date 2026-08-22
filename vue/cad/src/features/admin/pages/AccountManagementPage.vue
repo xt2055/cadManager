@@ -8,6 +8,15 @@ defineOptions({ name: 'AccountManagementPage' })
 
 const demoStore = useDemoStore()
 const uiStore = useUiStore()
+
+async function toggleUser(index: number) {
+  try {
+    await demoStore.toggleUser(index)
+  } catch (error) {
+    console.error('保存账号状态失败', error)
+    uiStore.toast('账号状态保存失败，请稍后重试', 'warn')
+  }
+}
 </script>
 
 <template>
@@ -26,7 +35,7 @@ const uiStore = useUiStore()
             <td class="num">{{ user.acc }}</td><td class="user-name"><span class="mini-avatar">{{ user.name[0] }}</span>{{ user.name }}</td>
             <td><span v-for="role in user.role.split(' · ')" :key="role" class="tag plain role-tag">{{ role }}</span></td>
             <td><span class="tag" :class="user.status === '正常' ? 'ok' : 'danger'">{{ user.status }}</span></td><td class="num updated">{{ user.last }}</td>
-            <td class="admin-row-actions"><button class="btn sm" :class="{ danger: user.status === '正常' }" type="button" @click="demoStore.toggleUser(index)">{{ user.status === '正常' ? '禁用' : '启用' }}</button><button class="btn sm" type="button" @click="uiStore.toast('密码已重置并通知用户')">重置密码</button></td>
+            <td class="admin-row-actions"><button class="btn sm" :class="{ danger: user.status === '正常' }" type="button" @click="toggleUser(index)">{{ user.status === '正常' ? '禁用' : '启用' }}</button><button class="btn sm" type="button" @click="uiStore.toast('密码已重置并通知用户')">重置密码</button></td>
           </tr>
           <tr v-if="!demoStore.users.length"><td colspan="6"><div class="empty"><DemoIcon name="user-plus" :size="34" /><div class="t">暂无账号数据</div></div></td></tr>
         </tbody>

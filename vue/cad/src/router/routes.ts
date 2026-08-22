@@ -126,6 +126,11 @@ export const routes: RouteRecordRaw[] = [
           import('@/features/operation-logs/pages/OperationLogPage.vue'),
       },
       {
+        path: 'settings',
+        name: RouteName.Settings,
+        component: () => import('@/features/settings/pages/SettingsPage.vue'),
+      },
+      {
         path: 'admin',
         component: () => import('@/features/admin/layouts/AdminLayout.vue'),
         children: [

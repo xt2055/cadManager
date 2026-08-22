@@ -5,18 +5,18 @@ defineOptions({
 </script>
 
 <template>
-  <section class="auth-layout">
+  <div class="auth-window-root">
     <RouterView />
-  </section>
+  </div>
 </template>
 
 <style scoped>
-.auth-layout {
+.auth-window-root {
   width: 100%;
   height: 100%;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: var(--color-bg-base);
 }
 </style>

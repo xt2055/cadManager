@@ -5,7 +5,7 @@ import { router } from './router'
 import { getTimeBasedMode } from './stores/theme.store'
 import './styles/index.css'
 
-document.documentElement.dataset.skin = 'tech'
+document.documentElement.dataset.skin = 'classic'
 document.documentElement.dataset.theme = getTimeBasedMode()
 
 if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {

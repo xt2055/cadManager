@@ -12,14 +12,24 @@ const uiStore = useUiStore()
 const done = computed(() => demoStore.reviewNodes.filter((node) => node.status === 'pass').length)
 const percent = computed(() => demoStore.reviewNodes.length ? Math.round((done.value / demoStore.reviewNodes.length) * 100) : 0)
 
-function passNode(name: string) {
-  demoStore.setReviewNodeStatus(name, 'pass', '同意。')
-  uiStore.toast(done.value === demoStore.reviewNodes.length ? '全部节点通过 · 版本已自动转为「已发布」' : `「${name}」已同意`)
+async function passNode(name: string) {
+  try {
+    await demoStore.setReviewNodeStatus(name, 'pass', '同意。')
+    uiStore.toast(done.value === demoStore.reviewNodes.length ? '全部节点通过 · 版本已自动转为「已发布」' : `「${name}」已同意`)
+  } catch (error) {
+    console.error('保存审核节点失败', error)
+    uiStore.toast('审核节点保存失败，请稍后重试', 'warn')
+  }
 }
 
-function rejectNode(name: string) {
-  demoStore.setReviewNodeStatus(name, 'pending', '请补充技术要求后重新提交。')
-  uiStore.toast(`「${name}」已驳回 · 原版本与审核记录全部保留`, 'warn')
+async function rejectNode(name: string) {
+  try {
+    await demoStore.setReviewNodeStatus(name, 'pending', '请补充技术要求后重新提交。')
+    uiStore.toast(`「${name}」已驳回 · 原版本与审核记录全部保留`, 'warn')
+  } catch (error) {
+    console.error('保存审核节点失败', error)
+    uiStore.toast('审核节点保存失败，请稍后重试', 'warn')
+  }
 }
 </script>
 

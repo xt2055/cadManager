@@ -6,7 +6,6 @@ import { useThemeStore } from '@/stores/theme.store'
 import { useWindowStore } from '@/stores/window.store'
 import { windowService } from '@/services/tauri/window.service'
 import { useUiStore } from '@/stores/ui.store'
-import type { ThemeSkin } from '@/types/theme.types'
 
 defineOptions({
   name: 'DesktopTitleBar',
@@ -16,12 +15,6 @@ const themeStore = useThemeStore()
 const windowStore = useWindowStore()
 const uiStore = useUiStore()
 const notificationsOpen = ref(false)
-
-const skins: Array<{ key: ThemeSkin; label: string; icon: string }> = [
-  { key: 'elegant', label: '轻奢', icon: 'sparkles' },
-  { key: 'tech', label: '科技', icon: 'zap' },
-  { key: 'classic', label: '经典', icon: 'square' },
-]
 
 async function runWindowAction(action: () => Promise<void>, message: string) {
   try {
@@ -74,33 +67,15 @@ onMounted(async () => {
       图枢 <span class="sub">CAD·PDM</span>
     </div>
 
-    <button class="tb-search" type="button" @click="$router.push({ name: 'drawing-library' })">
-      <DemoIcon name="search" :size="14" />
-      <span>搜索图号 / 名称 / 厂商 / 材料…</span>
-    </button>
-
     <div class="tb-right">
-      <div class="skin-switch">
-        <button
-          v-for="skin in skins"
-          :key="skin.key"
-          type="button"
-          :class="{ active: themeStore.skin === skin.key }"
-          @click="themeStore.setSkin(skin.key)"
-        >
-          <DemoIcon :name="skin.icon" :size="13" />
-          {{ skin.label }}
-        </button>
-      </div>
-
       <button
         id="themeBtn"
         class="icon-btn"
         type="button"
-        title="切换 明 / 暗"
+        :title="themeStore.mode === 'dark' ? '切换为浅色模式' : '切换为深色模式'"
         @click="themeStore.toggleMode()"
       >
-        <DemoIcon :name="themeStore.mode === 'dark' ? 'sun' : 'moon'" />
+        <DemoIcon :name="themeStore.mode === 'dark' ? 'sun' : 'moon'" :size="16" />
       </button>
 
       <div class="notification-wrap">

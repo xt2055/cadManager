@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useDemoStore } from '@/stores/demo.store'
+import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({
   name: 'DashboardPage',
@@ -11,6 +12,7 @@ defineOptions({
 
 const router = useRouter()
 const demoStore = useDemoStore()
+const uiStore = useUiStore()
 const currentHour = new Date().getHours()
 const greeting = currentHour < 6 ? '晚上好' : currentHour < 12 ? '早上好' : currentHour < 18 ? '下午好' : '晚上好'
 const todayText = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
@@ -33,9 +35,12 @@ const stats = computed(() => {
     { label: '图纸总数', value: String(total), icon: 'layers', delta: total ? '当前库内记录' : '暂无图纸数据' },
     { label: '总图 / 零件图', value: `${assemblies} / ${parts}`, icon: 'box', delta: `总图 ${assemblies} · 零件 ${parts}` },
     { label: '待我审核', value: String(demoStore.reviewCount), icon: 'clipboard-check', delta: demoStore.reviewCount ? '请及时处理待办' : '暂无待审核记录' },
-    { label: '借用关系', value: String(demoStore.borrows.length), icon: 'share-2', delta: demoStore.borrows.length ? '当前借用记录' : '暂无借用记录' },
   ]
 })
+
+function openCreateDrawing() {
+  router.push({ name: 'drawing-create' })
+}
 
 function openLibrary() {
   router.push({ name: 'drawing-library' })
@@ -45,8 +50,13 @@ function openReviews() {
   router.push({ name: 'review-pending' })
 }
 
-function approve(index: number) {
-  demoStore.approveReview(index)
+async function approve(index: number) {
+  try {
+    await demoStore.approveReview(index)
+  } catch (error) {
+    console.error('保存审核结果失败', error)
+    uiStore.toast('审核结果保存失败，请稍后重试', 'warn')
+  }
 }
 </script>
 
@@ -58,7 +68,7 @@ function approve(index: number) {
         <p>{{ todayText }} · 有 {{ demoStore.reviewCount }} 份图纸等待审核</p>
       </div>
       <div class="acts">
-        <button class="btn primary" type="button" @click="openLibrary">
+        <button class="btn primary" type="button" @click="openCreateDrawing">
           <DemoIcon name="plus" :size="14" />创建图纸
         </button>
         <button class="btn" type="button" @click="openLibrary">
@@ -128,12 +138,15 @@ function approve(index: number) {
     </div>
 
     <div class="dash-foot">
+      <!-- 转换服务模块：暂不确定是否保留，先作隐藏留痕处理 -->
+      <!--
       <div class="card card-pad">
         <div class="card-title compact-title"><DemoIcon name="server" :size="16" />转换服务</div>
         <div class="mini-row"><span>EXB → PDF 队列</span><b>暂无数据</b></div>
         <div class="mini-row"><span>DWG → PDF 队列</span><b>暂无数据</b></div>
         <div class="mini-row"><span>今日转换</span><b>暂无数据</b></div>
       </div>
+      -->
 
       <div class="card card-pad">
         <div class="card-title compact-title"><DemoIcon name="hard-drive" :size="16" />文件存储</div>
@@ -186,7 +199,7 @@ function approve(index: number) {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 14px;
   margin-bottom: 16px;
 }
@@ -348,7 +361,7 @@ html[data-skin='tech'] .val {
 
 .dash-foot {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.2fr;
+  grid-template-columns: repeat(2, 1fr);
   gap: 14px;
 }
 

@@ -35,7 +35,7 @@ function openDetail(no: string) {
 }
 
 function createDrawing() {
-  uiStore.openModal('create-drawing', '创建图纸')
+  router.push({ name: 'drawing-create' })
 }
 
 function toggleMenu(no: string) {

@@ -8,7 +8,7 @@ export function getTimeBasedMode(): ThemeMode {
 }
 
 export const useThemeStore = defineStore('theme', () => {
-  const skin = ref<ThemeSkin>('tech')
+  const skin = ref<ThemeSkin>('classic')
   const mode = ref<ThemeMode>(getTimeBasedMode())
 
   function setSkin(value: ThemeSkin) {

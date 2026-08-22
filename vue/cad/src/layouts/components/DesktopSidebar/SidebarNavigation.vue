@@ -27,8 +27,11 @@ const groups = [
     items: [{ id: 'history', routeName: 'operation-logs', icon: 'history', label: '操作记录' }],
   },
   {
-    title: '管理',
-    items: [{ id: 'admin', routeName: 'admin-accounts', icon: 'shield', label: '后台管理' }],
+    title: '系统',
+    items: [
+      { id: 'settings', routeName: 'settings', icon: 'settings', label: '系统设置' },
+      { id: 'admin', routeName: 'admin-accounts', icon: 'shield', label: '后台管理' },
+    ],
   },
 ]
 
@@ -37,6 +40,7 @@ const activeId = computed(() => {
   if (route.name === 'review-pending' || route.name === 'review-completed' || route.name === 'review-center') return 'review'
   if (route.name === 'admin-accounts' || route.name === 'admin-review-flows' || route.name === 'admin-drawing-control' || route.name === 'admin-logs') return 'admin'
   if (route.name === 'operation-logs') return 'history'
+  if (route.name === 'settings') return 'settings'
   return 'dashboard'
 })
 

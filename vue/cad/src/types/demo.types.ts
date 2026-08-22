@@ -2,6 +2,13 @@ export type DrawingStatus = 'published' | 'reviewing' | 'draft' | 'hidden' | 'di
 
 export type ActivityType = 'view' | 'edit' | 'branch' | 'borrow' | 'check' | 'back'
 
+export interface DrawingFile {
+  name: string
+  size: string
+  role: 'assembly' | 'part'
+  partNo?: string
+}
+
 export interface Drawing {
   no: string
   name: string
@@ -16,6 +23,9 @@ export interface Drawing {
   borrow: number
   hasFile: boolean
   borrowFrom?: string
+  signers?: Record<string, string>
+  remark?: string
+  files?: DrawingFile[]
 }
 
 export interface ActivityLog {

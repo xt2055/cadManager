@@ -16,13 +16,22 @@ const router = useRouter()
 const demoStore = useDemoStore()
 const isPreview = computed(() => route.name === 'drawing-preview')
 
-function syncDrawing() {
+async function syncDrawing() {
+  await demoStore.initialize()
   const drawingId = String(route.params.drawingId ?? '')
-  demoStore.currentDrawing = drawingId ? demoStore.drawings.find((drawing) => drawing.no === drawingId) ?? null : null
+  if (drawingId) {
+    demoStore.openDrawing(drawingId)
+  } else {
+    demoStore.clearCurrentDrawing()
+  }
 }
 
-onMounted(syncDrawing)
-watch(() => route.params.drawingId, syncDrawing)
+onMounted(() => {
+  void syncDrawing()
+})
+watch(() => route.params.drawingId, () => {
+  void syncDrawing()
+})
 </script>
 
 <template>
