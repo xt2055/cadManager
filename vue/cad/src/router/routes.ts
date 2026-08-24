@@ -1,5 +1,6 @@
 import type { RouteRecordRaw } from 'vue-router'
 import { RouteName } from './route-names'
+import type { UserRole } from '@/types/domain.types'
 
 export const routes: RouteRecordRaw[] = [
   {
@@ -10,12 +11,14 @@ export const routes: RouteRecordRaw[] = [
         path: '',
         name: RouteName.Login,
         component: () => import('@/features/auth/pages/LoginPage.vue'),
+        meta: { requiresAuth: false },
       },
     ],
   },
   {
     path: '/',
     component: () => import('@/layouts/DesktopLayout.vue'),
+    meta: { requiresAuth: true },
     children: [
       {
         path: '',
@@ -130,39 +133,36 @@ export const routes: RouteRecordRaw[] = [
         name: RouteName.Settings,
         component: () => import('@/features/settings/pages/SettingsPage.vue'),
       },
+    ],
+  },
+  {
+    path: '/admin',
+    component: () => import('@/features/admin/layouts/AdminLayout.vue'),
+    meta: { requiresAuth: true, roles: ['admin'] satisfies UserRole[], permission: 'admin.access' },
+    children: [
       {
-        path: 'admin',
-        component: () => import('@/features/admin/layouts/AdminLayout.vue'),
-        children: [
-          {
-            path: '',
-            redirect: '/admin/accounts',
-          },
-          {
-            path: 'accounts',
-            name: RouteName.AdminAccounts,
-            component: () =>
-              import('@/features/admin/pages/AccountManagementPage.vue'),
-          },
-          {
-            path: 'review-flows',
-            name: RouteName.AdminReviewFlows,
-            component: () =>
-              import('@/features/admin/pages/ReviewFlowManagementPage.vue'),
-          },
-          {
-            path: 'drawing-control',
-            name: RouteName.AdminDrawingControl,
-            component: () =>
-              import('@/features/admin/pages/DrawingControlPage.vue'),
-          },
-          {
-            path: 'logs',
-            name: RouteName.AdminLogs,
-            component: () =>
-              import('@/features/admin/pages/AdminOperationLogPage.vue'),
-          },
-        ],
+        path: '',
+        redirect: '/admin/accounts',
+      },
+      {
+        path: 'accounts',
+        name: RouteName.AdminAccounts,
+        component: () => import('@/features/admin/pages/AccountManagementPage.vue'),
+      },
+      {
+        path: 'review-flows',
+        name: RouteName.AdminReviewFlows,
+        component: () => import('@/features/admin/pages/ReviewFlowManagementPage.vue'),
+      },
+      {
+        path: 'drawing-control',
+        name: RouteName.AdminDrawingControl,
+        component: () => import('@/features/admin/pages/DrawingControlPage.vue'),
+      },
+      {
+        path: 'logs',
+        name: RouteName.AdminLogs,
+        component: () => import('@/features/admin/pages/AdminOperationLogPage.vue'),
       },
     ],
   },

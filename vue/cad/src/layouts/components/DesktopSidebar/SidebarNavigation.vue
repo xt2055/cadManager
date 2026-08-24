@@ -3,7 +3,8 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
+import { useAuthStore } from '@/stores/auth.store'
 
 defineOptions({
   name: 'SidebarNavigation',
@@ -11,7 +12,8 @@ defineOptions({
 
 const route = useRoute()
 const router = useRouter()
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
+const authStore = useAuthStore()
 
 const groups = [
   {
@@ -35,6 +37,11 @@ const groups = [
   },
 ]
 
+const visibleGroups = computed(() => groups.map((group) => ({
+  ...group,
+  items: group.items.filter((item) => item.id !== 'admin' || authStore.hasRole('admin')),
+})).filter((group) => group.items.length > 0))
+
 const activeId = computed(() => {
   if (route.name === 'drawing-library' || route.name === 'drawing-create' || route.name === 'drawing-detail') return 'library'
   if (route.name === 'review-pending' || route.name === 'review-completed' || route.name === 'review-center') return 'review'
@@ -51,7 +58,7 @@ function go(routeName: string) {
 
 <template>
   <nav id="navBox">
-    <template v-for="group in groups" :key="group.title">
+    <template v-for="group in visibleGroups" :key="group.title">
       <div class="nav-group">{{ group.title }}</div>
       <button
         v-for="item in group.items"
@@ -64,11 +71,11 @@ function go(routeName: string) {
         <DemoIcon :name="item.icon" :size="17" />
         <span class="nav-text">{{ item.label }}</span>
         <span
-          v-if="item.badge === 'review'"
+          v-if="item.badge === 'review' && domainStore.reviewCount > 0"
           class="badge"
           data-badge="review"
-        >{{ demoStore.reviewCount }}</span>
-        <span v-else-if="item.badge === 'library' && demoStore.drawings.length" class="badge muted-badge">{{ demoStore.drawings.length }}</span>
+        >{{ domainStore.reviewCount }}</span>
+        <span v-else-if="item.badge === 'library' && domainStore.drawings.length" class="badge muted-badge">{{ domainStore.drawings.length }}</span>
       </button>
     </template>
   </nav>

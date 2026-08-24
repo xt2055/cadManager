@@ -1,77 +1,414 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
+import type { ReviewNode } from '@/types/domain.types'
 
 defineOptions({ name: 'DrawingReviewTab' })
 
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const uiStore = useUiStore()
-const done = computed(() => demoStore.reviewNodes.filter((node) => node.status === 'pass').length)
-const percent = computed(() => demoStore.reviewNodes.length ? Math.round((done.value / demoStore.reviewNodes.length) * 100) : 0)
 
-async function passNode(name: string) {
+const currentItem = computed(() => domainStore.currentDrawing)
+
+const done = computed(() => domainStore.currentReviewNodes.filter((node) => node.status === 'pass').length)
+const total = computed(() => domainStore.currentReviewNodes.length)
+const percent = computed(() => (total.value ? Math.round((done.value / total.value) * 100) : 0))
+const isReviewing = computed(() => currentItem.value?.status === 'reviewing')
+const isPublished = computed(() => currentItem.value?.status === 'published')
+
+// 当前激活正在书写意见的节点
+const activeNodeName = ref<string | null>(null)
+const opinionText = ref('')
+
+function openOpinionForm(node: ReviewNode) {
+  activeNodeName.value = node.name
+  opinionText.value = node.opinion || ''
+}
+
+function cancelOpinion() {
+  activeNodeName.value = null
+  opinionText.value = ''
+}
+
+async function handleStartReview() {
+  if (!currentItem.value) return
   try {
-    await demoStore.setReviewNodeStatus(name, 'pass', '同意。')
-    uiStore.toast(done.value === demoStore.reviewNodes.length ? '全部节点通过 · 版本已自动转为「已发布」' : `「${name}」已同意`)
+    await domainStore.startReview(currentItem.value.no)
+    uiStore.toast(`图纸「${currentItem.value.no}」已成功发起无序并行审核流程`, 'ok')
   } catch (error) {
-    console.error('保存审核节点失败', error)
-    uiStore.toast('审核节点保存失败，请稍后重试', 'warn')
+    console.error('发起审核失败', error)
+    uiStore.toast(error instanceof Error ? error.message : '发起审核失败', 'warn')
   }
 }
 
-async function rejectNode(name: string) {
+async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
+  if (!currentItem.value) return
+  if (!opinionText.value.trim() && action === 'rejected') {
+    uiStore.toast('驳回审核必须填写审核意见与整改要求', 'warn')
+    return
+  }
+
   try {
-    await demoStore.setReviewNodeStatus(name, 'pending', '请补充技术要求后重新提交。')
-    uiStore.toast(`「${name}」已驳回 · 原版本与审核记录全部保留`, 'warn')
+    await domainStore.submitNodeReview(
+      currentItem.value.no,
+      nodeName,
+      action,
+      opinionText.value.trim(),
+      '当前审核人',
+      domainStore.currentReviewCase?.id,
+    )
+    uiStore.toast(
+      action === 'pass'
+        ? `节点「${nodeName}」已审核通过`
+        : `节点「${nodeName}」已驳回，发起人将收到整改通知`,
+      action === 'pass' ? 'ok' : 'warn',
+    )
+    activeNodeName.value = null
+    opinionText.value = ''
   } catch (error) {
-    console.error('保存审核节点失败', error)
-    uiStore.toast('审核节点保存失败，请稍后重试', 'warn')
+    console.error('提交审核意见失败', error)
+    uiStore.toast(error instanceof Error ? error.message : '提交审核意见失败', 'warn')
   }
 }
 </script>
 
 <template>
-  <div v-if="demoStore.reviewNodes.length" class="review-progress card">
-    <DemoIcon name="stamp" :size="17" /><b>审核流程</b><div class="rp-track"><div class="rp-fill" :style="{ width: `${percent}%` }"></div></div><span class="rp-txt">{{ done }} / {{ demoStore.reviewNodes.length }} · {{ percent }}%</span><span class="tag info">无序 · 可并行</span>
-  </div>
-  <div v-if="demoStore.reviewNodes.length" class="review-nodes">
-    <div v-for="node in demoStore.reviewNodes" :key="node.name" class="card rn-card" :class="node.status === 'pass' ? 'pass' : 'pending'">
-      <div class="rn-top"><div class="rn-ring"><DemoIcon :name="node.status === 'pass' ? 'check' : 'clock'" :size="15" /></div><div><div class="rn-name">{{ node.name }}</div><div class="rn-user">审核人 · {{ node.user }}</div></div><span class="tag" :class="node.status === 'pass' ? 'ok' : 'warn'">{{ node.status === 'pass' ? '已同意' : '待审核' }}</span></div>
-      <div class="rn-opinion">{{ node.opinion || '等待审核意见…' }}</div><div class="rn-time">{{ node.time }}</div>
-      <div v-if="node.status !== 'pass'" class="rn-acts"><button class="btn sm primary" type="button" @click="passNode(node.name)"><DemoIcon name="check" :size="14" />同意</button><button class="btn sm danger" type="button" @click="rejectNode(node.name)"><DemoIcon name="x" :size="14" />驳回</button></div>
+  <div class="review-tab-view">
+    <!-- 顶部审核总体状态卡片 -->
+    <div class="card card-pad review-summary-card">
+      <div class="summary-left">
+        <div class="summary-badge-wrap">
+          <DemoIcon name="stamp" :size="24" />
+        </div>
+        <div class="summary-texts">
+          <div class="summary-title-row">
+            <h3>图纸工程审核流转中心</h3>
+            <span v-if="isReviewing" class="tag info">审核中 · 无序并行</span>
+            <span v-else-if="isPublished" class="tag ok">已全部通过 · 已发布</span>
+            <span v-else class="tag mute">草稿状态 · 待发起审核</span>
+          </div>
+          <p>所有必需节点并行处理；各专业人员可在图纸浏览后直接在线签署意见。</p>
+        </div>
+      </div>
+
+      <div class="summary-actions">
+        <button
+          v-if="!isReviewing && !isPublished"
+          class="btn primary lg"
+          type="button"
+          @click="handleStartReview"
+        >
+          <DemoIcon name="play-circle" :size="16" />开始发起审核流程
+        </button>
+        <button
+          v-else-if="isReviewing"
+          class="btn lg"
+          type="button"
+          @click="uiStore.toast('审核正在流转中，请等待各专业节点签署完成', 'info')"
+        >
+          <DemoIcon name="clock" :size="16" />审核流转中 ({{ done }}/{{ total }})
+        </button>
+        <button
+          v-else
+          class="btn lg"
+          type="button"
+          @click="handleStartReview"
+        >
+          <DemoIcon name="refresh-cw" :size="16" />重新发起新版审核
+        </button>
+      </div>
+    </div>
+
+    <!-- 进度条 -->
+    <div v-if="domainStore.currentReviewNodes.length" class="review-progress card">
+      <DemoIcon name="workflow" :size="17" />
+      <b>流转进度看板</b>
+      <div class="rp-track">
+        <div class="rp-fill" :style="{ width: `${percent}%` }"></div>
+      </div>
+      <span class="rp-txt">{{ done }} / {{ domainStore.currentReviewNodes.length }} 已完成 · {{ percent }}%</span>
+    </div>
+
+    <!-- 可视化流程拓扑图与节点列表 -->
+    <div v-if="domainStore.currentReviewNodes.length" class="review-diagram-area">
+      <div class="section-subhead">
+        <DemoIcon name="git-commit" :size="15" />
+        <h4>审核节点网络（无序并行处理）</h4>
+      </div>
+
+      <div class="review-nodes-grid">
+        <div
+          v-for="node in domainStore.currentReviewNodes"
+          :key="node.name"
+          class="card rn-card"
+          :class="[node.status]"
+        >
+          <div class="rn-top">
+            <div class="rn-ring">
+              <DemoIcon :name="node.status === 'pass' ? 'check' : node.status === 'rejected' ? 'x' : 'clock'" :size="16" />
+            </div>
+            <div class="rn-info">
+              <div class="rn-name">{{ node.name }}</div>
+              <div class="rn-user">责任人 · {{ node.user }}</div>
+            </div>
+            <span class="tag" :class="node.status === 'pass' ? 'ok' : node.status === 'rejected' ? 'danger' : 'warn'">
+              {{ node.status === 'pass' ? '已同意' : node.status === 'rejected' ? '已驳回' : '待处理' }}
+            </span>
+          </div>
+
+          <!-- 历史或已签署意见 -->
+          <div class="rn-opinion-box">
+            <span class="op-lbl">审核意见：</span>
+            <div class="op-txt">{{ node.opinion || '暂无签署意见…' }}</div>
+          </div>
+
+          <div class="rn-time">{{ node.time }}</div>
+
+          <!-- 审核意见填写抽屉/展开框 -->
+          <div v-if="activeNodeName === node.name" class="opinion-editor-box">
+            <label>请填写针对本图纸的评审意见：</label>
+            <textarea
+              v-model="opinionText"
+              class="inp opinion-input"
+              placeholder="如：尺寸公差标注完整，加工工艺合理，同意投产。"
+              rows="3"
+            ></textarea>
+            <div class="editor-actions">
+              <button class="btn sm" type="button" @click="cancelOpinion">取消</button>
+              <button class="btn sm danger" type="button" @click="handleDecision(node.name, 'rejected')">
+                <DemoIcon name="x" :size="13" />驳回
+              </button>
+              <button class="btn sm primary" type="button" @click="handleDecision(node.name, 'pass')">
+                <DemoIcon name="check" :size="13" />同意通过
+              </button>
+            </div>
+          </div>
+
+          <!-- 操作按钮栏 -->
+          <div v-else-if="node.status !== 'pass'" class="rn-acts">
+            <button class="btn sm primary" type="button" @click="openOpinionForm(node)">
+              <DemoIcon name="pencil" :size="13" />填写意见并审核
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-else class="card empty">
+      <DemoIcon name="stamp" :size="38" />
+      <div class="t">尚未初始化审核流程</div>
+      <p>点击上方「开始发起审核流程」自动装配企业标准化无序审核节点网络</p>
     </div>
   </div>
-  <div v-else class="card empty">
-    <DemoIcon name="stamp" :size="34" />
-    <div class="t">暂无审核流程数据</div>
-  </div>
-  <div class="note"><DemoIcon name="info" :size="14" /><div><b>无序审核：</b>各节点可同时进行、不分先后；全部必需节点通过后版本自动转为「已发布」。驳回不删除任何记录——原版本与审核意见全部保留，修改生成新版本后可重新发起审核。</div></div>
 </template>
 
 <style scoped>
-.review-progress { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; padding: 15px 20px; }
-.review-progress > svg { color: var(--accent); }
-.rp-track { flex: 1; height: 8px; overflow: hidden; border-radius: 99px; background: var(--panel-2); }
-.rp-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 0.6s cubic-bezier(0.2, 0.8, 0.3, 1); }
-html[data-skin='tech'] .rp-fill { box-shadow: 0 0 12px var(--glow); }
-.rp-txt { color: var(--text-2); font-family: 'JetBrains Mono', monospace; font-size: 12px; white-space: nowrap; }
-.review-nodes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; margin-bottom: 16px; }
-.rn-card { display: flex; flex-direction: column; gap: 9px; padding: 16px; }
-.rn-top { display: flex; align-items: center; gap: 10px; }
-.rn-ring { display: grid; width: 34px; height: 34px; flex: none; place-items: center; border: 2px solid var(--line-strong); border-radius: 50%; color: var(--text-3); }
-.rn-card.pass .rn-ring { border-color: var(--ok); background: rgb(52 211 153 / 10%); color: var(--ok); }
-.rn-card.pending .rn-ring { border-color: var(--warn); color: var(--warn); }
-html[data-skin='tech'] .rn-card.pending .rn-ring { animation: ring-pulse 1.6s infinite; }
-@keyframes ring-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgb(251 191 36 / 40%); } 50% { box-shadow: 0 0 0 6px transparent; } }
-.rn-name { font-size: 13.5px; font-weight: 700; }
-.rn-user { color: var(--text-3); font-size: 11px; }
-.rn-top > .tag { margin-left: auto; }
-.rn-opinion { min-height: 38px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); color: var(--text-2); font-size: 11.5px; line-height: 1.6; }
-.rn-time { color: var(--text-3); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; }
-.rn-acts { display: flex; gap: 7px; margin-top: auto; }
-@media (max-width: 1180px) { .review-nodes { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 760px) { .review-progress { align-items: flex-start; flex-wrap: wrap; } .rp-track { width: 100%; flex-basis: 100%; } .review-nodes { grid-template-columns: 1fr; } }
+.review-tab-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.review-summary-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.summary-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.summary-badge-wrap {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  flex: none;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.summary-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.summary-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.summary-title-row h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+.summary-texts p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.summary-actions {
+  display: flex;
+  gap: 10px;
+}
+.btn.lg {
+  padding: 9px 18px;
+  font-size: 13px;
+}
+.review-progress {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 20px;
+}
+.review-progress > svg {
+  color: var(--accent);
+}
+.rp-track {
+  flex: 1;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--panel-2);
+}
+.rp-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.6s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.rp-txt {
+  color: var(--text-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.section-subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--text-2);
+}
+.section-subhead h4 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.review-nodes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+.rn-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+}
+.rn-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rn-ring {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--text-3);
+}
+.rn-card.pass .rn-ring {
+  border-color: var(--ok);
+  background: rgb(52 211 153 / 12%);
+  color: var(--ok);
+}
+.rn-card.rejected .rn-ring {
+  border-color: var(--danger);
+  background: rgb(248 113 113 / 12%);
+  color: var(--danger);
+}
+.rn-card.pending .rn-ring {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.rn-info {
+  flex: 1;
+  min-width: 0;
+}
+.rn-name {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.rn-user {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.rn-opinion-box {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 11.5px;
+}
+.op-lbl {
+  color: var(--text-3);
+}
+.op-txt {
+  margin-top: 2px;
+  color: var(--text-1);
+  line-height: 1.5;
+}
+.rn-time {
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+}
+.opinion-editor-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--panel);
+}
+.opinion-editor-box label {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.opinion-input {
+  font-size: 12px;
+}
+.editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+.rn-acts {
+  display: flex;
+  margin-top: auto;
+}
+.rn-acts button {
+  width: 100%;
+  justify-content: center;
+}
+@media (max-width: 760px) {
+  .review-summary-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .review-nodes-grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

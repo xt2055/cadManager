@@ -1,8 +1,13 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+
+import { appConfig } from '@/app/app.config'
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { checkForUpdates, type UpdateCheckResult } from '@/services/update.service'
 import { useThemeStore } from '@/stores/theme.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { ThemeMode, ThemeSkin } from '@/types/theme.types'
+import { useUserPreferenceStore, type LoginAnimation } from '@/stores/user-preference.store'
 
 defineOptions({
   name: 'SettingsPage',
@@ -10,6 +15,10 @@ defineOptions({
 
 const themeStore = useThemeStore()
 const uiStore = useUiStore()
+const preferenceStore = useUserPreferenceStore()
+const checkingUpdate = ref(false)
+const updateResult = ref<UpdateCheckResult | null>(null)
+const updateError = ref('')
 
 const skins: Array<{ key: ThemeSkin; title: string; desc: string; icon: string }> = [
   {
@@ -47,6 +56,21 @@ const modes: Array<{ key: ThemeMode; title: string; desc: string; icon: string }
   },
 ]
 
+const loginAnimations: Array<{ key: LoginAnimation; title: string; desc: string; icon: string }> = [
+  {
+    key: 'laser',
+    title: '左下角激光勾勒',
+    desc: '粒子从登录按钮喷射，汇聚后从左下角描绘工作台轮廓并点亮边框。',
+    icon: 'scan-line',
+  },
+  {
+    key: 'burst',
+    title: '粒子光环扩散',
+    desc: '认证成功后显示青蓝光环与核心提示，快速进入工作台。',
+    icon: 'sparkles',
+  },
+]
+
 function selectSkin(skin: ThemeSkin) {
   themeStore.setSkin(skin)
   uiStore.toast(`已切换为「${skins.find((s) => s.key === skin)?.title}」`, 'ok')
@@ -57,10 +81,36 @@ function selectMode(mode: ThemeMode) {
   uiStore.toast(`已切换为「${mode === 'dark' ? '深色模式' : '浅色模式'}」`, 'ok')
 }
 
+function selectLoginAnimation(animation: LoginAnimation) {
+  preferenceStore.setLoginAnimation(animation)
+  const title = loginAnimations.find((item) => item.key === animation)?.title ?? '登录动画'
+  uiStore.toast(`下次登录将使用「${title}」`, 'ok')
+}
+
 function resetToDefault() {
   themeStore.setSkin('classic')
   themeStore.setMode('dark')
-  uiStore.toast('已恢复默认设置（经典主题 + 深色模式）', 'ok')
+  preferenceStore.setLoginAnimation('laser')
+  uiStore.toast('已恢复默认设置（经典主题 + 深色模式 + 激光登录动画）', 'ok')
+}
+
+async function handleCheckForUpdates() {
+  if (checkingUpdate.value) return
+  checkingUpdate.value = true
+  updateError.value = ''
+  try {
+    updateResult.value = await checkForUpdates()
+    uiStore.toast(
+      updateResult.value.updateAvailable ? `发现新版本 v${updateResult.value.latestVersion}` : '当前已是最新版本',
+      updateResult.value.updateAvailable ? 'info' : 'ok',
+    )
+  } catch (error) {
+    updateResult.value = null
+    updateError.value = error instanceof Error ? error.message : '检查更新失败，请稍后重试'
+    uiStore.toast(updateError.value, 'warn')
+  } finally {
+    checkingUpdate.value = false
+  }
 }
 </script>
 
@@ -142,6 +192,72 @@ function resetToDefault() {
               <span class="radio-indicator"></span>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- 登录动画设置 -->
+      <section class="card settings-section">
+        <div class="section-title">
+          <DemoIcon name="log-in" :size="17" />
+          <h2>登录切换动画</h2>
+          <span class="sub-hint">选择后下次登录生效</span>
+        </div>
+
+        <div class="login-animation-grid">
+          <button
+            v-for="item in loginAnimations"
+            :key="item.key"
+            class="login-animation-card"
+            :class="{ active: preferenceStore.loginAnimation === item.key }"
+            type="button"
+            @click="selectLoginAnimation(item.key)"
+          >
+            <span class="login-animation-icon">
+              <DemoIcon :name="item.icon" :size="22" />
+            </span>
+            <span class="login-animation-copy">
+              <strong>{{ item.title }}</strong>
+              <small>{{ item.desc }}</small>
+            </span>
+            <span class="theme-radio"><span class="radio-indicator"></span></span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 客户端更新 -->
+      <section class="card settings-section update-section">
+        <div class="section-title">
+          <DemoIcon name="download" :size="17" />
+          <h2>客户端更新</h2>
+          <span class="sub-hint">从 Go 更新服务获取最新版本信息</span>
+        </div>
+        <div class="update-panel">
+          <div class="update-version">
+            <span class="update-version__label">当前版本</span>
+            <strong>v{{ appConfig.version }}</strong>
+          </div>
+          <div class="update-result" :class="{ 'update-result--error': updateError }">
+            <template v-if="updateError">
+              <DemoIcon name="alert-circle" :size="16" />
+              <span>{{ updateError }}</span>
+            </template>
+            <template v-else-if="updateResult?.updateAvailable">
+              <DemoIcon name="sparkles" :size="16" />
+              <span>发现新版本 v{{ updateResult.latestVersion }}<small>{{ updateResult.notes }}</small></span>
+            </template>
+            <template v-else-if="updateResult">
+              <DemoIcon name="check-circle-2" :size="16" />
+              <span>当前已是最新版本<small>最近检查版本 v{{ updateResult.latestVersion }}</small></span>
+            </template>
+            <template v-else>
+              <DemoIcon name="info" :size="16" />
+              <span>尚未检查更新<small>点击右侧按钮获取服务器上的最新版本信息</small></span>
+            </template>
+          </div>
+          <button class="btn primary update-button" type="button" :disabled="checkingUpdate" @click="handleCheckForUpdates">
+            <DemoIcon :name="checkingUpdate ? 'loader' : 'refresh-cw'" :size="14" />
+            {{ checkingUpdate ? '检查中…' : '检查更新' }}
+          </button>
         </div>
       </section>
 
@@ -372,6 +488,140 @@ function resetToDefault() {
   box-shadow: 0 0 0 1px var(--accent);
 }
 
+.login-animation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+.login-animation-card {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: 100%;
+  padding: 15px;
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.25s ease, background-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.login-animation-card:hover,
+.login-animation-card.active {
+  border-color: var(--accent);
+  background: var(--panel);
+}
+
+.login-animation-card.active {
+  box-shadow: 0 0 0 1px var(--accent), 0 8px 24px var(--glow);
+}
+
+.update-panel {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.25fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-2);
+}
+
+.update-version {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.update-version__label {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.update-version strong {
+  color: var(--accent);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+}
+
+.update-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.update-result svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.update-result span {
+  min-width: 0;
+}
+
+.update-result small {
+  display: block;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.update-result--error,
+.update-result--error svg {
+  color: var(--danger);
+}
+
+.update-button {
+  min-width: 112px;
+  justify-content: center;
+}
+
+.update-button:disabled svg {
+  animation: update-spin 1s linear infinite;
+}
+
+@keyframes update-spin {
+  to { transform: rotate(360deg); }
+}
+
+.login-animation-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.login-animation-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.login-animation-copy strong {
+  font-size: 13px;
+}
+
+.login-animation-copy small {
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .mode-icon {
   display: grid;
   place-items: center;
@@ -437,6 +687,19 @@ function resetToDefault() {
   }
   .mode-card-grid {
     grid-template-columns: 1fr;
+  }
+
+  .login-animation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .update-panel {
+    grid-template-columns: 1fr auto;
+  }
+
+  .update-result {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 }
 </style>

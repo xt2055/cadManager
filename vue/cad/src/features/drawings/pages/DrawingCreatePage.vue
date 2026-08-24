@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import type { Drawing, DrawingFile, StructurePart } from '@/types/demo.types'
+import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
+import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
+import { parseDrawingFileName, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 
 defineOptions({
   name: 'DrawingCreatePage',
 })
 
 const router = useRouter()
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const uiStore = useUiStore()
 
 const formProject = ref('')
@@ -20,16 +22,34 @@ const formProjectNo = ref('')
 const formVendor = ref('')
 const formRemark = ref('')
 
+const createMode = ref<'blank' | 'fork'>('blank')
+const selectedForkSourceNo = ref('')
+
+const existingDrawings = computed(() => domainStore.drawings)
+
+function onForkSourceChange() {
+  const source = domainStore.drawings.find((item) => item.no === selectedForkSourceNo.value)
+  if (!source) return
+  if (!formProject.value) formProject.value = `${source.name} (改进版)`
+  if (!formVendor.value) formVendor.value = source.vendor
+  if (!formRemark.value) formRemark.value = `分叉自 ${source.no} · 继承图纸结构与零件标签`
+}
+
 const signers = ref<Array<{ role: string; user: string; required: boolean }>>([
-  { role: '设计', user: '张工', required: true },
-  { role: '校对', user: '王工', required: true },
-  { role: '审核', user: '李工', required: true },
-  { role: '工艺', user: '刘工', required: true },
-  { role: '标准化', user: '孙工', required: false },
-  { role: '批准', user: '赵总', required: true },
+  { role: '设计', user: '待定', required: true },
+  { role: '校对', user: '待定', required: true },
+  { role: '审核', user: '待定', required: true },
+  { role: '工艺', user: '待定', required: true },
+  { role: '标准化', user: '待定', required: false },
+  { role: '批准', user: '待定', required: true },
 ])
 
-const optionalCandidateUsers = ['张工', '王工', '李工', '刘工', '孙工', '赵总', '周工', '钱工']
+const candidateReviewers = ref<string[]>([])
+
+onMounted(async () => {
+  const users = await fetchReviewerCandidates('reviewer')
+  candidateReviewers.value = Array.from(new Set(users.map((item) => item.name).filter(Boolean)))
+})
 
 interface UploadedAssembly {
   name: string
@@ -62,13 +82,19 @@ function formatFileSize(bytes: number): string {
 }
 
 function handleAssemblySelected(file: File) {
+  const parsed = parseStandaloneDrawingFileName(file.name)
   assemblyFile.value = {
     name: file.name,
     size: formatFileSize(file.size),
     file,
   }
   if (!formProject.value) {
-    formProject.value = file.name.replace(/\.[^/.]+$/, '')
+    formProject.value = parsed.isStandard && parsed.name !== parsed.no
+      ? parsed.name
+      : file.name.replace(/\.[^/.]+$/, '')
+  }
+  if (!formProjectNo.value && parsed.isStandard) {
+    formProjectNo.value = parsed.no
   }
   uiStore.toast(`总图 ${file.name} 已选择，现可继续添加零件图`, 'ok')
 }
@@ -163,6 +189,34 @@ async function handleSubmit() {
 
   const generatedNo = formProjectNo.value.trim() || `PRJ-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`
 
+  if (createMode.value === 'fork') {
+    if (!selectedForkSourceNo.value) {
+      uiStore.toast('请选择要分叉的源图纸', 'warn')
+      return
+    }
+    if (selectedForkSourceNo.value === generatedNo) {
+      uiStore.toast('分叉新图号不能与源图号相同', 'warn')
+      return
+    }
+    try {
+      await domainStore.forkDrawing(
+        selectedForkSourceNo.value,
+        generatedNo,
+        projectName,
+        formVendor.value.trim(),
+        formRemark.value.trim(),
+      )
+      domainStore.openDrawing(generatedNo)
+      uiStore.toast(`已基于「${selectedForkSourceNo.value}」成功分叉新项目「${generatedNo}」`, 'ok')
+      router.push({ name: 'drawing-preview', params: { drawingId: generatedNo } })
+      return
+    } catch (error) {
+      console.error('分叉图纸失败', error)
+      uiStore.toast(error instanceof Error ? error.message : '分叉图纸失败，请重试', 'warn')
+      return
+    }
+  }
+
   const signerMap: Record<string, string> = {}
   signers.value.forEach((item) => {
     signerMap[item.role] = item.user
@@ -178,52 +232,133 @@ async function handleSubmit() {
     status: 'draft',
     ver: 'v1.0',
     updated: '刚刚',
-    by: signers.value[0]?.user ?? '当前用户',
+     by: '当前用户',
     borrow: 0,
     hasFile: Boolean(assemblyFile.value),
     signers: signerMap,
   }
 
-  const partsForStructure: StructurePart[] = partFiles.value.map((part, index) => {
-    const cleanName = part.name.replace(/\.[^/.]+$/, '')
+  const parsedPartFiles = partFiles.value.map((part) => {
+    const projectParsed = parseDrawingFileName(part.name, generatedNo)
+    const standaloneParsed = parseStandaloneDrawingFileName(part.name)
+    const parsed = projectParsed.isStandard ? projectParsed : standaloneParsed
     return {
-      no: `${generatedNo}-${String(index + 1).padStart(2, '0')}`,
-      name: cleanName,
+      part,
+      parsed,
+      isBorrowed: standaloneParsed.isStandard && standaloneParsed.rootNo !== generatedNo,
+    }
+  })
+  const structuredPartFiles = parsedPartFiles.filter(({ parsed, isBorrowed }) => (
+    isBorrowed || (parsed.isStandard && parsed.level > 0 && parsed.rootNo === generatedNo)
+  ))
+  const validPartEntries = structuredPartFiles.map(({ part, parsed, isBorrowed }, index) => ({
+    part,
+    parsed,
+    isBorrowed,
+    file: {
+      id: `${Date.now()}-part-${index}`,
+      name: part.name,
+      size: part.size,
+      role: 'part' as const,
+      drawingNo: generatedNo,
+      partNo: parsed.no,
+      version: 'v1.0',
+      uploadedBy: '当前用户',
+      uploadedAt: '刚刚',
+      previewable: true,
+    } satisfies DrawingFile,
+  }))
+
+  const groupedPartEntries = [...validPartEntries.reduce((groups, entry) => {
+    const group = groups.get(entry.parsed.no) ?? []
+    group.push(entry)
+    groups.set(entry.parsed.no, group)
+    return groups
+  }, new Map<string, typeof validPartEntries>()).values()]
+  const duplicatePartFileCount = validPartEntries.length - groupedPartEntries.length
+
+  const partsForStructure: StructurePart[] = groupedPartEntries.map((entries) => {
+    const firstEntry = entries[0]
+    if (!firstEntry) throw new Error('零件文件分组为空')
+    const cleanName = firstEntry.part.name.replace(/\.[^/.]+$/, '')
+    const partNo = firstEntry.parsed.no
+    return {
+      no: partNo,
+      name: firstEntry.parsed.name || cleanName,
+      parentNo: firstEntry.isBorrowed ? generatedNo : firstEntry.parsed.parentNo ?? generatedNo,
+      project: projectName,
       material: 'HT200',
+      spec: '',
+      weight: 0,
+      surfaceTreatment: '',
+      partType: '自制件',
       qty: 1,
       status: 'draft',
       ver: 'v1.0',
       hasFile: true,
+      signers: { ...signerMap },
+      files: entries.map((entry) => entry.file),
+      ...(firstEntry.isBorrowed
+        ? { borrowFrom: firstEntry.parsed.rootNo ?? firstEntry.parsed.no }
+        : {}),
     }
   })
-
-  const files: DrawingFile[] = [
-    ...(assemblyFile.value
-      ? [{ name: assemblyFile.value.name, size: assemblyFile.value.size, role: 'assembly' as const }]
-      : []),
-    ...partFiles.value.map((part, index) => ({
+  const otherDrawingFiles: DrawingFile[] = parsedPartFiles
+    .filter(({ parsed, isBorrowed }) => !isBorrowed && (!parsed.isStandard || parsed.level <= 0 || parsed.rootNo !== generatedNo))
+    .map(({ part }, index) => ({
+      id: `${Date.now()}-other-${index}`,
       name: part.name,
       size: part.size,
-      role: 'part' as const,
-      partNo: partsForStructure[index]?.no,
-    })),
+      role: 'other' as const,
+      drawingNo: generatedNo,
+      version: 'v1.0',
+       uploadedBy: '当前用户',
+      uploadedAt: '刚刚',
+      previewable: true,
+    }))
+
+  const assemblyDrawingFile: DrawingFile | undefined = assemblyFile.value
+    ? {
+        id: `${Date.now()}-assembly`,
+        name: assemblyFile.value.name,
+        size: assemblyFile.value.size,
+        role: 'assembly' as const,
+        drawingNo: generatedNo,
+        version: 'v1.0',
+         uploadedBy: '当前用户',
+        uploadedAt: '刚刚',
+        previewable: true,
+      }
+    : undefined
+
+  newProjectDrawing.files = assemblyDrawingFile ? [assemblyDrawingFile] : []
+  newProjectDrawing.otherFiles = otherDrawingFiles
+
+  const attachments = [
+    ...(assemblyFile.value
+      ? [{ id: assemblyDrawingFile?.id ?? '', content: assemblyFile.value.file }]
+      : []),
+    ...validPartEntries.map((entry) => ({ id: entry.file.id, content: entry.part.file })),
+    ...parsedPartFiles
+      .filter(({ parsed, isBorrowed }) => !isBorrowed && (!parsed.isStandard || parsed.level <= 0 || parsed.rootNo !== generatedNo))
+      .map(({ part }, index) => ({ id: otherDrawingFiles[index]?.id ?? '', content: part.file })),
   ]
 
   newProjectDrawing.remark = formRemark.value.trim()
-  newProjectDrawing.files = files
 
   try {
-    await demoStore.addDrawing(newProjectDrawing, partsForStructure)
+    await domainStore.addDrawing(newProjectDrawing, partsForStructure, attachments.filter((item): item is { id: string; content: File } => Boolean(item.id && item.content)))
   } catch (error) {
     console.error('保存新建图纸失败', error)
     uiStore.toast('项目创建失败，数据未能保存', 'warn')
     return
   }
 
-  demoStore.openDrawing(newProjectDrawing.no)
+  domainStore.openDrawing(newProjectDrawing.no)
 
-  uiStore.toast(`项目「${projectName}」已成功创建并保存`, 'ok')
-  router.push({ name: 'drawing-library' })
+  const borrowedPartCount = groupedPartEntries.filter((entries) => entries[0]?.isBorrowed).length
+  uiStore.toast(`项目「${projectName}」已成功创建并保存${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}`, 'ok')
+  router.push({ name: 'drawing-preview', params: { drawingId: newProjectDrawing.no } })
 }
 </script>
 
@@ -252,8 +387,30 @@ async function handleSubmit() {
         <section class="card form-section">
           <div class="section-head">
             <DemoIcon name="folder-plus" :size="16" />
-            <h2>项目基本信息</h2>
-            <span class="section-tip">项目级属性定义（零件材料等专属属性在零件详情页维护）</span>
+            <h2>项目基本信息与创建模式</h2>
+            <span class="section-tip">支持空白立项，或基于已有图纸完整分叉继承所有结构与元标签</span>
+          </div>
+
+          <div class="create-mode-selector">
+            <label class="mode-option" :class="{ active: createMode === 'blank' }">
+              <input v-model="createMode" type="radio" value="blank" />
+              <span>新建空白图纸</span>
+            </label>
+            <label class="mode-option" :class="{ active: createMode === 'fork' }">
+              <input v-model="createMode" type="radio" value="fork" />
+              <span>从已有图纸分叉 (继承结构/零件/文件)</span>
+            </label>
+          </div>
+
+          <div v-if="createMode === 'fork'" class="fork-source-row">
+            <label for="fork-source-select">选择要分叉的源图纸 *</label>
+            <select id="fork-source-select" v-model="selectedForkSourceNo" class="inp" @change="onForkSourceChange">
+              <option value="">请选择已有图纸作为模板…</option>
+              <option v-for="item in existingDrawings" :key="item.no" :value="item.no">
+                {{ item.no }} · {{ item.name }} ({{ item.vendor || '内部项目部' }})
+              </option>
+            </select>
+            <p class="fork-tip">分叉将完整继承源图纸的所有零件结构、签署人员配置与文件元数据，生成全新项目图号。</p>
           </div>
 
           <div class="form-grid">
@@ -320,10 +477,10 @@ async function handleSubmit() {
               </div>
               <div class="signer-select-wrap">
                 <select v-model="item.user" class="inp signer-select">
-                  <option v-for="user in optionalCandidateUsers" :key="user" :value="user">
+                  <option value="待定">待定（稍后指定）</option>
+                  <option v-for="user in candidateReviewers" :key="user" :value="user">
                     {{ user }}
                   </option>
-                  <option value="待定">待定（稍后指定）</option>
                 </select>
               </div>
             </div>
@@ -643,6 +800,57 @@ async function handleSubmit() {
   width: 100%;
   height: 32px;
   font-size: 12px;
+}
+
+.create-mode-selector {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-2);
+  transition: all 0.2s ease;
+}
+
+.mode-option.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.fork-source-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--panel-2));
+}
+
+.fork-source-row label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.fork-tip {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.5;
 }
 
 .hidden-input {

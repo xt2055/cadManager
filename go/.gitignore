@@ -1,0 +1,5 @@
+.env
+*.local
+cadguanliq.exe
+cadguanliq.exe~
+storage/attachments/

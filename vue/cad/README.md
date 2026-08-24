@@ -50,14 +50,20 @@ bun run build
 - 浏览器执行 `bun dev` 时使用 `localStorage` 保存 JSON 字符串作为降级方案。
 - 生产阶段默认使用 API Provider，可通过 `VITE_DATA_PROVIDER` 和 `VITE_API_BASE_URL` 覆盖。
 
-复制 `.env.example` 为本地环境文件后，可配置：
+复制 `.env.example` 为本地环境文件后，可配置。连接本机 Go 后端时：
 
 ```env
-VITE_DATA_PROVIDER=json
-VITE_API_BASE_URL=/api
+VITE_DATA_PROVIDER=api
+VITE_API_BASE_URL=http://127.0.0.1:8080/api
 ```
+
+如果使用 Tauri 桌面客户端，Go 后端必须先启动在 `127.0.0.1:8080`；如果使用 Vite 开发服务器，也会通过该地址请求 API。
 
 当前统一文档接口为：
 
 - `GET /data/document`：加载业务数据文档。
 - `PUT /data/document`：保存完整业务数据文档。
+
+客户端更新检查接口为：
+
+- `GET /updates/latest?current_version=0.1.0&platform=windows-x86_64`：获取最新版本和更新说明。

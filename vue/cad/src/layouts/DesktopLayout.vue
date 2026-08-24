@@ -6,27 +6,24 @@ import DesktopStatusBar from './components/DesktopStatusBar/DesktopStatusBar.vue
 import DemoModal from '@/components/feedback/DemoModal.vue'
 import DemoToast from '@/components/feedback/DemoToast.vue'
 import { windowService } from '@/services/tauri/window.service'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({
   name: 'DesktopLayout',
 })
 
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const uiStore = useUiStore()
 
 onMounted(async () => {
-  const initializePromise = demoStore.initialize().catch((error: unknown) => {
+  const initializePromise = domainStore.initialize().catch((error: unknown) => {
     console.error('初始化业务数据失败', error)
     uiStore.toast('业务数据加载失败，请检查数据服务配置', 'warn')
   })
 
   try {
-    await windowService.setSizeConstraints(1100, 700)
-    await windowService.setResizable(true)
-    await windowService.setSize(1440, 900)
-    await windowService.center()
+    await windowService.setWorkspaceWindowSize()
   } catch (error) {
     console.error('初始化工作台窗口失败', error)
   }

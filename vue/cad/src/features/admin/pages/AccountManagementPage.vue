@@ -1,21 +1,31 @@
 <script setup lang="ts">
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import AdminTabs from '../components/AdminTabs.vue'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'AccountManagementPage' })
 
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const uiStore = useUiStore()
 
 async function toggleUser(index: number) {
   try {
-    await demoStore.toggleUser(index)
+    const user = domainStore.users[index]
+    if (!user) return
+    await domainStore.toggleUser(user.id)
   } catch (error) {
     console.error('保存账号状态失败', error)
-    uiStore.toast('账号状态保存失败，请稍后重试', 'warn')
+    uiStore.toast(error instanceof Error ? error.message : '账号状态保存失败，请稍后重试', 'warn')
   }
+}
+
+function roleLabel(role: 'admin' | 'designer' | 'reviewer'): string {
+  return role === 'admin' ? '管理员' : role === 'reviewer' ? '审核人员' : '设计人员'
+}
+
+function openResetPassword(user: { id: string; account: string }) {
+  uiStore.openModal('reset-user', '重置密码', { userId: user.id, account: user.account })
 }
 </script>
 
@@ -31,13 +41,13 @@ async function toggleUser(index: number) {
       <table class="tbl">
         <thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>状态</th><th>最近活跃</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="(user, index) in demoStore.users" :key="user.acc">
-            <td class="num">{{ user.acc }}</td><td class="user-name"><span class="mini-avatar">{{ user.name[0] }}</span>{{ user.name }}</td>
-            <td><span v-for="role in user.role.split(' · ')" :key="role" class="tag plain role-tag">{{ role }}</span></td>
-            <td><span class="tag" :class="user.status === '正常' ? 'ok' : 'danger'">{{ user.status }}</span></td><td class="num updated">{{ user.last }}</td>
-            <td class="admin-row-actions"><button class="btn sm" :class="{ danger: user.status === '正常' }" type="button" @click="toggleUser(index)">{{ user.status === '正常' ? '禁用' : '启用' }}</button><button class="btn sm" type="button" @click="uiStore.toast('密码已重置并通知用户')">重置密码</button></td>
+              <tr v-for="(user, index) in domainStore.users" :key="user.id">
+            <td class="num">{{ user.account }}</td><td class="user-name"><span class="mini-avatar">{{ user.displayName[0] }}</span>{{ user.displayName }}</td>
+            <td><span v-for="role in user.roles" :key="role" class="tag plain role-tag">{{ roleLabel(role) }}</span></td>
+            <td><span class="tag" :class="user.status === 'active' ? 'ok' : 'danger'">{{ user.status === 'active' ? '正常' : '已禁用' }}</span></td><td class="num updated">{{ user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : '从未登录' }}</td>
+            <td class="admin-row-actions"><button class="btn sm" :class="{ danger: user.status === 'active' }" type="button" @click="toggleUser(index)">{{ user.status === 'active' ? '禁用' : '启用' }}</button><button class="btn sm" type="button" @click="openResetPassword(user)">重置密码</button></td>
           </tr>
-          <tr v-if="!demoStore.users.length"><td colspan="6"><div class="empty"><DemoIcon name="user-plus" :size="34" /><div class="t">暂无账号数据</div></div></td></tr>
+              <tr v-if="!domainStore.users.length"><td colspan="6"><div class="empty"><DemoIcon name="user-plus" :size="34" /><div class="t">暂无账号数据</div></div></td></tr>
         </tbody>
       </table>
     </div>

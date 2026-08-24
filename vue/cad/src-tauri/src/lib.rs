@@ -14,6 +14,41 @@ fn data_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
   Ok(data_dir.join("data-document.json"))
 }
 
+fn config_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  use tauri::Manager;
+
+  let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+  fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+  Ok(data_dir.join("config.toml"))
+}
+
+fn default_config() -> &'static str {
+  "# 图枢运行配置\n# debug_mode = true 时使用本地 JSON 数据；false 时请求正式 API。\ndebug_mode = false\n"
+}
+
+fn ensure_config_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  let path = config_file_path(app)?;
+  if !path.exists() {
+    fs::write(&path, default_config()).map_err(|error| error.to_string())?;
+  }
+  Ok(path)
+}
+
+fn attachments_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  use tauri::Manager;
+
+  let directory = app.path().app_data_dir().map_err(|error| error.to_string())?.join("attachments");
+  fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+  Ok(directory)
+}
+
+fn attachment_path(app: &tauri::AppHandle, storage_key: &str) -> Result<PathBuf, String> {
+  if storage_key.is_empty() || storage_key.contains('/') || storage_key.contains('\\') || storage_key.contains("..") {
+    return Err("附件存储键无效".to_string());
+  }
+  Ok(attachments_dir(app)?.join(storage_key))
+}
+
 fn backup_file_path(path: &Path) -> PathBuf {
   path.with_extension("json.bak")
 }
@@ -82,10 +117,64 @@ fn write_data_document(app: tauri::AppHandle, document: Value) -> Result<(), Str
   Ok(())
 }
 
+#[tauri::command]
+fn write_attachment(app: tauri::AppHandle, storage_key: String, bytes: Vec<u8>) -> Result<(), String> {
+  let path = attachment_path(&app, &storage_key)?;
+  let temporary_path = path.with_extension("tmp");
+  let mut temporary_file = fs::File::create(&temporary_path).map_err(|error| error.to_string())?;
+  temporary_file.write_all(&bytes).map_err(|error| error.to_string())?;
+  temporary_file.sync_all().map_err(|error| error.to_string())?;
+  drop(temporary_file);
+  fs::rename(&temporary_path, &path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn read_attachment(app: tauri::AppHandle, storage_key: String) -> Result<Vec<u8>, String> {
+  let path = attachment_path(&app, &storage_key)?;
+  fs::read(path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn delete_attachment(app: tauri::AppHandle, storage_key: String) -> Result<(), String> {
+  let path = attachment_path(&app, &storage_key)?;
+  if path.exists() {
+    fs::remove_file(path).map_err(|error| error.to_string())?;
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn read_debug_mode(app: tauri::AppHandle) -> Result<bool, String> {
+  let path = ensure_config_file(&app)?;
+  let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+  Ok(content.lines().any(|line| {
+    let line = line.trim();
+    line == "debug_mode = true" || line == "debug_mode=true"
+  }))
+}
+
+#[tauri::command]
+fn write_debug_mode(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+  let path = ensure_config_file(&app)?;
+  let content = format!(
+    "# 图枢运行配置\n# debug_mode = true 时使用本地 JSON 数据；false 时请求正式 API。\ndebug_mode = {}\n",
+    enabled
+  );
+  fs::write(path, content).map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![read_data_document, write_data_document])
+    .invoke_handler(tauri::generate_handler![
+      read_data_document,
+      write_data_document,
+      write_attachment,
+      read_attachment,
+      delete_attachment,
+      read_debug_mode,
+      write_debug_mode
+    ])
     .setup(|app| {
       use tauri::{
         menu::{Menu, MenuItem},
@@ -124,6 +213,7 @@ pub fn run() {
             .build(),
         )?;
       }
+      ensure_config_file(app.handle())?;
       Ok(())
     })
     .run(tauri::generate_context!())

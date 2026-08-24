@@ -11,6 +11,7 @@ export type ModalType =
   | 'sync-original'
   | 'exit'
   | 'add-user'
+  | 'reset-user'
   | 'edit-flow'
 
 export interface ToastMessage {
@@ -22,6 +23,7 @@ export interface ToastMessage {
 export interface ModalState {
   type: ModalType
   title: string
+  payload?: Record<string, string>
 }
 
 let toastId = 0
@@ -38,8 +40,8 @@ export const useUiStore = defineStore('ui', () => {
     }, 2800)
   }
 
-  function openModal(type: ModalType, title: string) {
-    modal.value = { type, title }
+  function openModal(type: ModalType, title: string, payload?: Record<string, string>) {
+    modal.value = { type, title, payload }
   }
 
   function closeModal() {

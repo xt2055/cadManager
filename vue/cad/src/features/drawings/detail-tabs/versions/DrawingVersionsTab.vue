@@ -1,37 +1,45 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'DrawingVersionsTab' })
 
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const uiStore = useUiStore()
+
+const currentNo = computed(() => domainStore.currentDrawing?.no || '')
+const currentBranches = computed(() => {
+  const no = currentNo.value
+  if (!no) return domainStore.branches
+  return domainStore.branches.filter((item) => item.from === no || item.name.includes(no))
+})
 </script>
 
 <template>
   <div class="ver-grid">
     <div class="card">
       <div class="card-title"><DemoIcon name="history" :size="16" />版本时间线<span class="hint">所有版本永久保留 · 回退不删除任何版本</span></div>
-      <div v-if="demoStore.versions.length" class="timeline">
-        <div v-for="version in demoStore.versions" :key="version.v" class="tl-item" :class="{ cur: version.cur }">
-          <div class="tl-dot"></div><div class="tl-head"><span class="v">{{ version.v }}</span><span v-if="version.cur" class="tag ok">当前版本</span></div><div class="tl-body">{{ version.note }}</div><div class="tl-meta">{{ version.by }} · {{ version.date }}</div>
+      <div v-if="domainStore.versions.length" class="timeline">
+        <div v-for="version in domainStore.versions" :key="version.v" class="tl-item" :class="{ cur: version.cur }">
+          <div class="tl-dot"></div><div class="tl-head"><span class="v">{{ version.v }}</span><span v-if="version.cur" class="tag ok">当前版本</span></div><div class="tl-body">{{ version.note }}</div><div class="tl-meta">创建/维护：{{ version.by }} · {{ version.date }}</div>
         </div>
       </div>
       <div v-else class="empty"><DemoIcon name="history" :size="34" /><div class="t">暂无版本记录</div></div>
       </div>
     <div>
       <div class="card branch-panel">
-        <div class="card-title"><DemoIcon name="git-branch" :size="16" />分支<span class="hint">禁用 ≠ 删除 · 可恢复</span></div>
-        <div v-if="demoStore.branches.length" class="branch-list">
-          <div v-for="branch in demoStore.branches" :key="branch.name" class="card branch-card" :class="{ disabled: branch.status === '已禁用' }">
+        <div class="card-title"><DemoIcon name="git-branch" :size="16" />分叉 / 分支<span class="hint">源图与衍生图独立维护 · 可追溯分叉人</span></div>
+        <div v-if="currentBranches.length" class="branch-list">
+          <div v-for="branch in currentBranches" :key="branch.name" class="card branch-card" :class="{ disabled: branch.status === '已禁用' }">
             <div class="bh"><DemoIcon name="git-branch" :size="15" /><b>{{ branch.name }}</b><span class="tag" :class="branch.status === '使用中' ? 'ok' : 'mute'">{{ branch.status }}</span><button class="btn sm" type="button" @click="uiStore.toast(`「${branch.status === '已禁用' ? '恢复分支' : '禁用分支'}」已执行 · 分支历史完整保留，可随时恢复`, branch.status === '已禁用' ? 'ok' : 'warn')">{{ branch.status === '已禁用' ? '恢复分支' : '禁用' }}</button></div>
-            <div class="bd">源自 <span class="mono">{{ branch.from }}</span> · {{ branch.by }} 创建于 {{ branch.date }} — {{ branch.desc }}</div>
+            <div class="bd">分叉自 <span class="mono">{{ branch.from }}</span> · 分叉者 <b>{{ branch.by }}</b> 创建于 {{ branch.date }} — {{ branch.desc }}</div>
           </div>
         </div>
-        <div v-else class="empty"><DemoIcon name="git-branch" :size="34" /><div class="t">暂无分支</div></div>
+        <div v-else class="empty"><DemoIcon name="git-branch" :size="34" /><div class="t">当前图纸暂无衍生分叉分支</div></div>
       </div>
-      <div class="note version-note"><DemoIcon name="shield-check" :size="14" /><div>版本回退会生成新版本，历史版本不会被删除，所有操作均可追溯。</div></div>
+      <div class="note version-note"><DemoIcon name="shield-check" :size="14" /><div>分叉操作会自动完整复制图纸元标签、层级结构和关联附件文件，生成独立草稿图号。</div></div>
     </div>
   </div>
 </template>

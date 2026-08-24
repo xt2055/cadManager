@@ -3,13 +3,13 @@ import { computed, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import AdminTabs from '../components/AdminTabs.vue'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
 
 defineOptions({ name: 'AdminOperationLogPage' })
 
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const filter = ref('')
-const rows = computed(() => demoStore.adminLogs.filter((item) => !filter.value || item.act === filter.value))
+const rows = computed(() => domainStore.adminLogs.filter((item) => !filter.value || item.act === filter.value))
 </script>
 
 <template>

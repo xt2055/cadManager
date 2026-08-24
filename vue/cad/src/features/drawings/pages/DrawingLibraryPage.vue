@@ -3,34 +3,51 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { STATUS, useDemoStore } from '@/stores/demo.store'
+import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import type { DrawingStatus } from '@/types/demo.types'
+import type { DrawingStatus } from '@/types/domain.types'
 
 defineOptions({
   name: 'DrawingLibraryPage',
 })
 
 const router = useRouter()
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const uiStore = useUiStore()
 const query = ref('')
-const kind = ref('')
 const status = ref<DrawingStatus | ''>('')
 const menuFor = ref<string | null>(null)
+const expandedProjects = ref<Set<string>>(new Set())
 
 const rows = computed(() => {
   const q = query.value.trim().toLowerCase()
-  return demoStore.drawings.filter((drawing) => {
-    const matchesQuery = !q || [drawing.no, drawing.name, drawing.vendor, drawing.material, drawing.project].join(' ').toLowerCase().includes(q)
-    const matchesKind = !kind.value || drawing.kind === kind.value
+  return domainStore.drawings.filter((drawing) => {
+    const parts = partsForDrawing(drawing.no)
+    const matchesQuery = !q || [drawing.no, drawing.name, drawing.vendor, drawing.project, ...parts.flatMap((part) => [part.no, part.name])].join(' ').toLowerCase().includes(q)
     const matchesStatus = !status.value || drawing.status === status.value
-    return matchesQuery && matchesKind && matchesStatus
+    return matchesQuery && matchesStatus
   })
 })
 
+function partsForDrawing(drawingNo: string) {
+  return domainStore.structure
+    .filter((part) => part.no.startsWith(`${drawingNo}-`) || part.parentNo === drawingNo)
+    .sort((left, right) => left.no.localeCompare(right.no, undefined, { numeric: true }))
+}
+
+function isExpanded(no: string) {
+  return expandedProjects.value.has(no)
+}
+
+function toggleExpanded(no: string) {
+  const next = new Set(expandedProjects.value)
+  if (next.has(no)) next.delete(no)
+  else next.add(no)
+  expandedProjects.value = next
+}
+
 function openDetail(no: string) {
-  demoStore.openDrawing(no)
+  domainStore.openDrawing(no)
   router.push({ name: 'drawing-preview', params: { drawingId: no } })
 }
 
@@ -45,7 +62,6 @@ function toggleMenu(no: string) {
 function menuAction(action: string, no: string) {
   menuFor.value = null
   if (action === 'detail') openDetail(no)
-  if (action === 'upload') uiStore.openModal('upload-version', '上传新版本')
   if (action === 'borrow') uiStore.openModal('borrow-drawing', '借用图纸')
   if (action === 'hide') uiStore.toast('图纸已隐藏：用户不可见，管理员可随时恢复，历史完整保留', 'warn')
 }
@@ -55,18 +71,12 @@ function menuAction(action: string, no: string) {
   <div class="page library-page">
     <div class="lib-head">
       <span class="lib-title">图纸库</span>
-      <span class="lib-count">{{ rows.length }} / {{ demoStore.drawings.length }} 项</span>
+      <span class="lib-count">已列出 {{ rows.length }} 个总图 · 零件 {{ domainStore.drawingStats?.parts ?? 0 }} 项 · 总计 {{ domainStore.drawingStats?.total ?? 0 }}</span>
 
-      <label class="search-box">
-        <DemoIcon name="search" :size="15" />
-        <input v-model="query" placeholder="搜索图号 / 名称 / 厂商 / 材料…" />
-      </label>
-
-      <select v-model="kind" class="inp filter-select">
-        <option value="">全部类型</option>
-        <option value="总图">总图</option>
-        <option value="零件图">零件图</option>
-      </select>
+       <label class="search-box">
+         <DemoIcon name="search" :size="15" />
+         <input v-model="query" placeholder="搜索项目 / 图号 / 零件名称 / 厂商…" />
+       </label>
 
       <select v-model="status" class="inp filter-select">
         <option value="">全部状态</option>
@@ -82,11 +92,9 @@ function menuAction(action: string, no: string) {
       <table class="tbl">
         <thead>
           <tr>
-            <th>图号</th>
-            <th>名称</th>
-            <th>类型</th>
-            <th>材料</th>
-            <th>厂商</th>
+             <th>项目图号</th>
+             <th>名称</th>
+             <th>厂商</th>
             <th>状态</th>
             <th>版本</th>
             <th>更新</th>
@@ -94,15 +102,19 @@ function menuAction(action: string, no: string) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="drawing in rows" :key="drawing.no">
-            <td class="link num" @click="openDetail(drawing.no)">{{ drawing.no }}</td>
-            <td class="drawing-name">
-              {{ drawing.name }}
-              <span v-if="drawing.borrowFrom" class="tag plain borrow-tag">借用·{{ drawing.borrowFrom }}</span>
-            </td>
-            <td><span class="tag" :class="drawing.kind === '总图' ? 'plain' : 'mute'">{{ drawing.kind }}</span></td>
-            <td class="num">{{ drawing.material }}</td>
-            <td>{{ drawing.vendor }}</td>
+           <template v-for="drawing in rows" :key="drawing.no">
+           <tr>
+             <td class="num project-no-cell">
+               <button v-if="partsForDrawing(drawing.no).length" class="expand-button" type="button" :title="isExpanded(drawing.no) ? '收起零件图' : '展开零件图'" @click="toggleExpanded(drawing.no)">
+                 <DemoIcon name="chevron-down" :size="14" :class="{ collapsed: !isExpanded(drawing.no) }" />
+               </button>
+               <button class="link project-no-link" type="button" @click="openDetail(drawing.no)">{{ drawing.no }}</button>
+             </td>
+             <td class="drawing-name">
+               {{ drawing.name }}
+               <span v-if="drawing.borrowFrom" class="tag plain borrow-tag">借用·{{ drawing.borrowFrom }}</span>
+             </td>
+             <td>{{ drawing.vendor }}</td>
             <td><span class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span></td>
             <td class="num">{{ drawing.ver }}</td>
             <td class="num updated">{{ drawing.updated }}</td>
@@ -111,18 +123,31 @@ function menuAction(action: string, no: string) {
               <div class="row-menu-wrap">
                 <button class="icon-btn row-menu-button" type="button" @click.stop="toggleMenu(drawing.no)"><DemoIcon name="ellipsis" :size="16" /></button>
                 <div v-if="menuFor === drawing.no" class="dropdown row-dropdown">
-                  <button class="dd-item" type="button" @click="menuAction('detail', drawing.no)"><DemoIcon name="eye" :size="14" />查看详情</button>
-                  <button class="dd-item" type="button" @click="menuAction('upload', drawing.no)"><DemoIcon name="download" :size="14" />下载原始文件</button>
+                  <button class="dd-item" type="button" @click="menuAction('detail', drawing.no)"><DemoIcon name="eye" :size="14" />查看详情与文件</button>
                   <button class="dd-item" type="button" @click="menuAction('borrow', drawing.no)"><DemoIcon name="share-2" :size="14" />借用此图</button>
                   <div class="dd-sep"></div>
                   <button class="dd-item" type="button" @click="menuAction('hide', drawing.no)"><DemoIcon name="eye-off" :size="14" />隐藏图纸（管理员）</button>
                 </div>
               </div>
-            </td>
-          </tr>
-          <tr v-if="!rows.length">
-            <td colspan="9">
-              <div class="empty"><DemoIcon name="search-x" :size="34" /><div class="t">{{ demoStore.drawings.length ? '没有匹配的图纸，试试更换关键词' : '暂无图纸，请先创建或导入图纸' }}</div></div>
+             </td>
+           </tr>
+           <tr v-if="isExpanded(drawing.no)" class="parts-row">
+             <td colspan="7">
+               <div class="parts-panel">
+                 <button v-for="part in partsForDrawing(drawing.no)" :key="part.no" class="part-link" type="button" @click="openDetail(part.no)">
+                   <DemoIcon name="file" :size="13" />
+                   <span class="part-link__name">{{ part.name }}</span>
+                   <span class="part-link__no mono">{{ part.no }}</span>
+                   <span v-if="part.borrowFrom" class="tag plain borrow-tag">借用·{{ part.borrowFrom }}</span>
+                   <DemoIcon name="arrow-up-right" :size="13" />
+                 </button>
+               </div>
+             </td>
+           </tr>
+           </template>
+           <tr v-if="!rows.length">
+             <td colspan="7">
+              <div class="empty"><DemoIcon name="search-x" :size="34" /><div class="t">{{ domainStore.drawings.length ? '没有匹配的图纸，试试更换关键词' : '暂无图纸，请先创建或导入图纸' }}</div></div>
             </td>
           </tr>
         </tbody>
@@ -200,6 +225,93 @@ function menuAction(action: string, no: string) {
   white-space: nowrap;
 }
 
+.project-no-cell {
+  white-space: nowrap;
+}
+
+.expand-button {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-3);
+  vertical-align: middle;
+}
+
+.expand-button:hover {
+  background: var(--hover);
+  color: var(--accent);
+}
+
+.expand-button svg {
+  transition: transform 0.18s;
+}
+
+.expand-button svg.collapsed {
+  transform: rotate(-90deg);
+}
+
+.project-no-link {
+  padding: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.parts-row td {
+  padding: 0 12px 12px;
+  background: var(--panel-2);
+}
+
+.parts-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px 4px 42px;
+  border-left: 2px solid var(--accent-soft);
+}
+
+.part-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 7px;
+  color: var(--text-2);
+  text-align: left;
+}
+
+.part-link:hover {
+  background: var(--hover);
+  color: var(--accent);
+}
+
+.part-link > svg:first-child {
+  flex: none;
+  color: var(--accent);
+}
+
+.part-link__name {
+  min-width: 100px;
+  font-weight: 600;
+}
+
+.part-link__no {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.part-link > svg:last-child {
+  flex: none;
+  margin-left: auto;
+}
+
 .borrow-tag {
   margin-left: 4px;
   padding: 1px 7px;
@@ -261,7 +373,7 @@ function menuAction(action: string, no: string) {
   }
 
   .tbl {
-    min-width: 920px;
+    min-width: 760px;
   }
 }
 </style>

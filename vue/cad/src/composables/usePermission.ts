@@ -1,6 +1,10 @@
+import { useAuthStore } from '@/stores/auth.store'
+
 export function usePermission() {
-  function hasPermission(_permission: string): boolean {
-    return true
+  const authStore = useAuthStore()
+
+  function hasPermission(permission: string): boolean {
+    return authStore.hasPermission(permission)
   }
 
   return { hasPermission }

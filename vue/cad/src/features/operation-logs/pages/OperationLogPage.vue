@@ -2,14 +2,14 @@
 import { computed, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
 
 defineOptions({ name: 'OperationLogPage' })
 
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const filter = ref('')
 const options = ['', '查看图纸', '上传版本', '发起审核', '借用图纸', '版本回退', '禁用分支']
-const rows = computed(() => demoStore.adminLogs.filter((item) => !filter.value || item.act === filter.value))
+const rows = computed(() => domainStore.adminLogs.filter((item) => !filter.value || item.act === filter.value))
 const colors: Record<string, string> = { 查看图纸: 'info', 上传版本: 'warn', 发起审核: 'info', 借用图纸: 'plain', 版本回退: 'danger', 禁用分支: 'danger' }
 </script>
 

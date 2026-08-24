@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "drawings": [],
+  "structure": [],
+  "versions": [],
+  "branches": [],
+  "borrows": [],
+  "bom": [],
+  "crafts": [],
+  "logs": [],
+  "reviewCases": [],
+  "myReviews": [],
+  "completedReviews": [],
+  "users": [
+    {
+      "id": "seed-admin",
+      "account": "admin",
+      "displayName": "系统管理员",
+      "password": "admin",
+      "roles": ["admin"],
+      "status": "active",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastLoginAt": null
+    }
+  ],
+  "flows": [],
+  "hiddenList": [],
+  "adminLogs": []
+}

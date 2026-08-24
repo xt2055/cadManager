@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDemoStore } from '@/stores/demo.store'
-import { useUiStore } from '@/stores/ui.store'
+import { useDomainStore } from '@/stores/domain.store'
+import { useSystemStatusStore } from '@/stores/system-status.store'
 
 defineOptions({
   name: 'DashboardPage',
 })
 
+const domainStore = useDomainStore()
+const systemStore = useSystemStatusStore()
 const router = useRouter()
-const demoStore = useDemoStore()
-const uiStore = useUiStore()
+
+onMounted(() => {
+  systemStore.fetchStatus()
+})
 const currentHour = new Date().getHours()
 const greeting = currentHour < 6 ? '晚上好' : currentHour < 12 ? '早上好' : currentHour < 18 ? '下午好' : '晚上好'
 const todayText = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
@@ -27,14 +31,12 @@ const feedIcons: Record<string, string> = {
 }
 
 const stats = computed(() => {
-  const total = demoStore.drawings.length
-  const assemblies = demoStore.drawings.filter((drawing) => drawing.kind === '总图').length
-  const parts = demoStore.drawings.filter((drawing) => drawing.kind === '零件图').length
+  const { total, assemblies, parts } = domainStore.drawingStats ?? { total: 0, assemblies: 0, parts: 0 }
 
   return [
-    { label: '图纸总数', value: String(total), icon: 'layers', delta: total ? '当前库内记录' : '暂无图纸数据' },
+    { label: '图纸总数', value: String(total), icon: 'layers', delta: total ? '当前库内总计' : '暂无图纸数据' },
     { label: '总图 / 零件图', value: `${assemblies} / ${parts}`, icon: 'box', delta: `总图 ${assemblies} · 零件 ${parts}` },
-    { label: '待我审核', value: String(demoStore.reviewCount), icon: 'clipboard-check', delta: demoStore.reviewCount ? '请及时处理待办' : '暂无待审核记录' },
+    { label: '待我审核', value: String(domainStore.reviewCount), icon: 'clipboard-check', delta: domainStore.reviewCount ? '请及时处理待办' : '暂无待审核记录' },
   ]
 })
 
@@ -46,17 +48,9 @@ function openLibrary() {
   router.push({ name: 'drawing-library' })
 }
 
-function openReviews() {
-  router.push({ name: 'review-pending' })
-}
-
-async function approve(index: number) {
-  try {
-    await demoStore.approveReview(index)
-  } catch (error) {
-    console.error('保存审核结果失败', error)
-    uiStore.toast('审核结果保存失败，请稍后重试', 'warn')
-  }
+function openReview(no: string) {
+  domainStore.openDrawing(no)
+  router.push({ name: 'drawing-preview', params: { drawingId: no } })
 }
 </script>
 
@@ -65,17 +59,11 @@ async function approve(index: number) {
     <div class="dash-hero">
       <div>
         <h1>{{ greeting }}</h1>
-        <p>{{ todayText }} · 有 {{ demoStore.reviewCount }} 份图纸等待审核</p>
+        <p>{{ todayText }} · 有 {{ domainStore.reviewCount }} 份审核任务等待处理</p>
       </div>
       <div class="acts">
         <button class="btn primary" type="button" @click="openCreateDrawing">
           <DemoIcon name="plus" :size="14" />创建图纸
-        </button>
-        <button class="btn" type="button" @click="openLibrary">
-          <DemoIcon name="upload" :size="14" />上传新版本
-        </button>
-        <button class="btn" type="button" @click="openReviews">
-          <DemoIcon name="stamp" :size="14" />发起审核
         </button>
       </div>
     </div>
@@ -97,12 +85,12 @@ async function approve(index: number) {
           <span class="hint">谁查看 · 谁修改 · 谁分叉 · 谁借用</span>
         </div>
         <div class="feed">
-          <div v-for="item in demoStore.logs" :key="`${item.user}-${item.time}-${item.txt}`" class="feed-item">
+          <div v-for="item in domainStore.logs" :key="`${item.user}-${item.time}-${item.txt}`" class="feed-item">
             <div class="feed-ic" :class="item.act"><DemoIcon :name="feedIcons[item.act] ?? 'activity'" :size="14" /></div>
             <div class="feed-txt"><b>{{ item.user }}</b> <span v-html="item.txt"></span></div>
             <div class="feed-time">{{ item.time }}</div>
           </div>
-          <div v-if="!demoStore.logs.length" class="empty">
+          <div v-if="!domainStore.logs.length" class="empty">
             <DemoIcon name="activity" :size="34" />
             <div class="t">暂无动态记录</div>
           </div>
@@ -112,20 +100,17 @@ async function approve(index: number) {
       <div class="card">
         <div class="card-title">
           <DemoIcon name="stamp" :size="16" />待我审核
-          <span class="hint">{{ demoStore.reviewCount }} 项</span>
+          <span class="hint">{{ domainStore.reviewCount }} 项</span>
         </div>
-        <div v-if="demoStore.myReviews.length" class="todo-list">
-          <div v-for="(item, index) in demoStore.myReviews" :key="item.no" class="todo-item">
+        <div v-if="domainStore.myReviews.length" class="todo-list">
+          <div v-for="item in domainStore.myReviews" :key="`${item.reviewCaseId}-${item.node}`" class="todo-item">
             <div class="todo-info">
               <b>{{ item.name }} · {{ item.node }}</b>
               <span>{{ item.no }} · {{ item.by }} 发起于 {{ item.time }}</span>
             </div>
             <div class="todo-acts">
-              <button class="btn sm primary" type="button" @click="approve(index)">
-                <DemoIcon name="check" :size="14" />通过
-              </button>
-              <button class="btn sm danger" type="button" @click="approve(index)">
-                <DemoIcon name="x" :size="14" />驳回
+              <button class="btn sm primary" type="button" @click="openReview(item.no)">
+                <DemoIcon name="eye" :size="14" />查看并审核
               </button>
             </div>
           </div>
@@ -150,9 +135,9 @@ async function approve(index: number) {
 
       <div class="card card-pad">
         <div class="card-title compact-title"><DemoIcon name="hard-drive" :size="16" />文件存储</div>
-        <div class="mini-row"><span>图纸文件</span><b>暂无数据</b></div>
-        <div class="hbar"><i style="width: 0%"></i></div>
-        <div class="mini-row storage-row"><span>冗余备份</span><b>暂无数据</b></div>
+        <div class="mini-row"><span>图纸文件</span><b>{{ systemStore.storageSummary.fileCount }} 个 ({{ systemStore.storageSummary.formattedUsed }})</b></div>
+        <div class="hbar"><i :style="{ width: systemStore.storageSummary.fileCount ? '18%' : '0%' }"></i></div>
+        <div class="mini-row storage-row"><span>冗余备份</span><b>{{ systemStore.storageSummary.backupStatus }}</b></div>
       </div>
 
       <div class="card card-pad">

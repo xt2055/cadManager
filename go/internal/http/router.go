@@ -1,0 +1,52 @@
+package httpapi
+
+import (
+	"net/http"
+
+	"cadguanliq/internal/attachment"
+	"cadguanliq/internal/auth"
+	"cadguanliq/internal/config"
+	"cadguanliq/internal/data"
+	"cadguanliq/internal/drawing"
+	"cadguanliq/internal/http/handlers"
+	"cadguanliq/internal/http/middleware"
+	"cadguanliq/internal/review"
+	"cadguanliq/internal/storage"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/api/health", handlers.Health(pool, cfg.Database))
+	mux.HandleFunc("/api/auth/login", handlers.Login(authService))
+	mux.HandleFunc("/api/auth/me", handlers.Me(authService))
+	mux.HandleFunc("/api/auth/logout", handlers.Logout(authService))
+	protectedUsers := middleware.RequireAuth(authService)
+	mux.Handle("/api/users/reviewers", protectedUsers(handlers.Reviewers(authService)))
+	mux.Handle("/api/system/status", protectedUsers(handlers.SystemStatus(pool, cfg, authService)))
+	mux.Handle("/api/auth/heartbeat", protectedUsers(handlers.Heartbeat(authService)))
+	reviewRepository := review.NewPGRepository(pool)
+	mux.Handle("/api/review-flows", protectedUsers(handlers.ReviewFlows(reviewRepository)))
+	mux.Handle("/api/review-flows/", protectedUsers(handlers.ReviewFlowResource(reviewRepository)))
+	dataHandler := middleware.RequireAuth(authService)(handlers.DataDocument(data.NewDocumentRepository(pool)))
+	mux.Handle("/api/data/document", dataHandler)
+	drawingRepository := drawing.NewPGRepository(pool)
+	drawingHandler := middleware.RequireAuth(authService)
+	mux.Handle("/api/drawings", drawingHandler(handlers.Drawings(drawingRepository)))
+	mux.Handle("/api/drawings/", drawingHandler(handlers.DrawingResource(drawingRepository)))
+	mux.Handle("/api/parts/", drawingHandler(handlers.PartResource(drawingRepository)))
+	attachmentRepository := attachment.NewPGRepository(pool)
+	attachmentStorage, storageErr := storage.NewLocalStorage(cfg.StorageRoot)
+	if storageErr != nil {
+		panic(storageErr)
+	}
+	mux.Handle("/api/attachments", drawingHandler(handlers.UploadAttachment(attachmentRepository, attachmentStorage, cfg.MaxUploadBytes)))
+	mux.Handle("/api/attachments/", drawingHandler(handlers.AttachmentResource(attachmentRepository, attachmentStorage)))
+	mux.HandleFunc("/api/updates/latest", handlers.UpdateLatest(cfg))
+
+	var handler http.Handler = mux
+	handler = middleware.Recovery(handler)
+	handler = middleware.Logging(handler)
+	handler = middleware.CORS(cfg.AllowedOrigins)(handler)
+	return handler
+}

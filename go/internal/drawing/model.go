@@ -1,0 +1,147 @@
+package drawing
+
+import "context"
+
+type Status string
+
+const (
+	StatusPublished Status = "published"
+	StatusReviewing Status = "reviewing"
+	StatusDraft     Status = "draft"
+	StatusHidden    Status = "hidden"
+	StatusDisabled  Status = "disabled"
+)
+
+type Drawing struct {
+	ID         string  `json:"id"`
+	No         string  `json:"no"`
+	Name       string  `json:"name"`
+	Kind       string  `json:"kind"`
+	Project    string  `json:"project"`
+	Material   string  `json:"material"`
+	Vendor     string  `json:"vendor"`
+	Status     Status  `json:"status"`
+	Version    string  `json:"ver"`
+	BorrowFrom *string `json:"borrowFrom,omitempty"`
+	Remark     *string `json:"remark,omitempty"`
+	By         string  `json:"by,omitempty"`
+	Updated    string  `json:"updated,omitempty"`
+	CreatedBy  string  `json:"createdBy,omitempty"`
+	CreatedAt  string  `json:"createdAt,omitempty"`
+	UpdatedBy  string  `json:"updatedBy,omitempty"`
+	UpdatedAt  string  `json:"updatedAt,omitempty"`
+	Signers    Signers `json:"signers"`
+}
+
+type Signers map[string]string
+
+type Part struct {
+	ID                string  `json:"id"`
+	DrawingID         string  `json:"drawingId"`
+	No                string  `json:"no"`
+	Name              string  `json:"name"`
+	ParentNo          string  `json:"parentNo"`
+	Project           string  `json:"project,omitempty"`
+	Material          string  `json:"material"`
+	Spec              string  `json:"spec"`
+	Weight            float64 `json:"weight"`
+	SurfaceTreatment  string  `json:"surfaceTreatment"`
+	ManufacturingType string  `json:"partType"`
+	Quantity          float64 `json:"qty"`
+	Status            Status  `json:"status"`
+	Version           string  `json:"ver"`
+	Vendor            *string `json:"vendor,omitempty"`
+	BorrowFrom        *string `json:"borrowFrom,omitempty"`
+	Remark            *string `json:"remark,omitempty"`
+	CreatedBy         string  `json:"createdBy,omitempty"`
+	CreatedAt         string  `json:"createdAt,omitempty"`
+	UpdatedBy         string  `json:"updatedBy,omitempty"`
+	UpdatedAt         string  `json:"updatedAt,omitempty"`
+	Signers           Signers `json:"signers"`
+}
+
+type ListFilter struct {
+	Page     int
+	PageSize int
+	Keyword  string
+	Status   Status
+	Vendor   string
+}
+
+type Page[T any] struct {
+	List     []T `json:"list"`
+	Total    int `json:"total"`
+	Page     int `json:"page"`
+	PageSize int `json:"pageSize"`
+}
+
+type CreateDrawingInput struct {
+	No         string  `json:"no"`
+	Name       string  `json:"name"`
+	Project    string  `json:"project"`
+	Kind       string  `json:"kind"`
+	Material   string  `json:"material"`
+	Vendor     string  `json:"vendor"`
+	Status     Status  `json:"status"`
+	Version    string  `json:"ver"`
+	BorrowFrom *string `json:"borrowFrom"`
+	Remark     *string `json:"remark"`
+	Signers    Signers `json:"signers"`
+}
+
+type UpdateDrawingInput struct {
+	Name       *string `json:"name"`
+	Project    *string `json:"project"`
+	Material   *string `json:"material"`
+	Vendor     *string `json:"vendor"`
+	Status     *Status `json:"status"`
+	Version    *string `json:"ver"`
+	BorrowFrom *string `json:"borrowFrom"`
+	Remark     *string `json:"remark"`
+}
+
+type CreatePartInput struct {
+	No                string  `json:"no"`
+	Name              string  `json:"name"`
+	ParentNo          string  `json:"parentNo"`
+	Material          string  `json:"material"`
+	Spec              string  `json:"spec"`
+	Weight            float64 `json:"weight"`
+	SurfaceTreatment  string  `json:"surfaceTreatment"`
+	ManufacturingType string  `json:"partType"`
+	Quantity          float64 `json:"qty"`
+	Status            Status  `json:"status"`
+	Version           string  `json:"ver"`
+	Project           string  `json:"project"`
+	Vendor            *string `json:"vendor"`
+	BorrowFrom        *string `json:"borrowFrom"`
+	Remark            *string `json:"remark"`
+	Signers           Signers `json:"signers"`
+}
+
+type UpdatePartInput struct {
+	Name              *string  `json:"name"`
+	Material          *string  `json:"material"`
+	Spec              *string  `json:"spec"`
+	Weight            *float64 `json:"weight"`
+	SurfaceTreatment  *string  `json:"surfaceTreatment"`
+	ManufacturingType *string  `json:"partType"`
+	Quantity          *float64 `json:"qty"`
+	Status            *Status  `json:"status"`
+	Version           *string  `json:"ver"`
+	Vendor            *string  `json:"vendor"`
+	BorrowFrom        *string  `json:"borrowFrom"`
+	Remark            *string  `json:"remark"`
+}
+
+type Repository interface {
+	List(ctx context.Context, filter ListFilter) (Page[Drawing], error)
+	Find(ctx context.Context, id string) (Drawing, error)
+	FindByNo(ctx context.Context, no string) (Drawing, error)
+	Create(ctx context.Context, input CreateDrawingInput, userID string) (Drawing, error)
+	Update(ctx context.Context, id string, input UpdateDrawingInput, userID string) (Drawing, error)
+	ListParts(ctx context.Context, drawingID string) ([]Part, error)
+	FindPart(ctx context.Context, id string) (Part, error)
+	CreatePart(ctx context.Context, drawingID string, input CreatePartInput, userID string) (Part, error)
+	UpdatePart(ctx context.Context, id string, input UpdatePartInput, userID string) (Part, error)
+}

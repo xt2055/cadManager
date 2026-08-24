@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingDetailHeader from '../components/detail/DrawingDetailHeader.vue'
 import DrawingDetailSubnav from '../components/detail/DrawingDetailSubnav.vue'
-import { useDemoStore } from '@/stores/demo.store'
+import { useDomainStore } from '@/stores/domain.store'
 
 defineOptions({
   name: 'DrawingDetailLayout',
@@ -13,16 +13,16 @@ defineOptions({
 
 const route = useRoute()
 const router = useRouter()
-const demoStore = useDemoStore()
+const domainStore = useDomainStore()
 const isPreview = computed(() => route.name === 'drawing-preview')
 
 async function syncDrawing() {
-  await demoStore.initialize()
+  await domainStore.initialize()
   const drawingId = String(route.params.drawingId ?? '')
   if (drawingId) {
-    demoStore.openDrawing(drawingId)
+    domainStore.openDrawing(drawingId)
   } else {
-    demoStore.clearCurrentDrawing()
+    domainStore.clearCurrentDrawing()
   }
 }
 
@@ -36,7 +36,7 @@ watch(() => route.params.drawingId, () => {
 
 <template>
   <div class="page detail-page">
-    <template v-if="demoStore.currentDrawing">
+    <template v-if="domainStore.currentDrawing">
       <DrawingDetailHeader />
       <DrawingDetailSubnav />
       <div class="tab-body" :class="{ 'no-scroll': isPreview }">

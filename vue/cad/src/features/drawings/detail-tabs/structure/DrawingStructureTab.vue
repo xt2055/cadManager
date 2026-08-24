@@ -3,34 +3,98 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { STATUS, useDemoStore } from '@/stores/demo.store'
-import { useUiStore } from '@/stores/ui.store'
+import DrawingStructureNode from '@/features/drawings/components/detail/DrawingStructureNode.vue'
+import { STATUS, useDomainStore } from '@/stores/domain.store'
+import type { StructurePart } from '@/types/domain.types'
+import type { StructureTreeNode } from '@/types/structure.types'
 
 defineOptions({ name: 'DrawingStructureTab' })
 
 const router = useRouter()
-const demoStore = useDemoStore()
-const uiStore = useUiStore()
-const drawing = computed(() => demoStore.currentDrawing)
-const selected = computed(() => demoStore.structure[demoStore.selectedStructureIndex])
+const domainStore = useDomainStore()
+const drawing = computed(() => domainStore.currentDrawing)
+const allParts = computed(() => domainStore.structure)
+const treeNodes = computed<StructureTreeNode[]>(() => {
+  if (!drawing.value) return []
+  const childrenByParent = new Map<string, StructurePart[]>()
+  for (const part of allParts.value) {
+    const children = childrenByParent.get(part.parentNo) ?? []
+    children.push(part)
+    childrenByParent.set(part.parentNo, children)
+  }
+
+  const build = (parentNo: string, visited: Set<string>): StructureTreeNode[] => {
+    return (childrenByParent.get(parentNo) ?? [])
+      .slice()
+      .sort((left, right) => left.no.localeCompare(right.no, undefined, { numeric: true }))
+      .filter((part) => !visited.has(part.no))
+      .map((part) => {
+        const nextVisited = new Set(visited)
+        nextVisited.add(part.no)
+        return { part, children: build(part.no, nextVisited) }
+      })
+  }
+
+  return build(drawing.value.no, new Set([drawing.value.no]))
+})
+const parts = computed(() => {
+  const flatten = (nodes: StructureTreeNode[]): StructurePart[] => nodes.flatMap((node) => [node.part, ...flatten(node.children)])
+  return flatten(treeNodes.value)
+})
+const selected = computed(() => parts.value[domainStore.selectedStructureIndex])
+const otherFiles = computed(() => {
+  return drawing.value?.otherFiles ?? []
+})
+
+function openPartDetail(partNo: string) {
+  domainStore.openDrawing(partNo)
+  router.push({ name: 'drawing-preview', params: { drawingId: partNo } })
+}
+
+function openPartProperties(partNo: string) {
+  domainStore.openDrawing(partNo)
+  router.push({ name: 'drawing-properties', params: { drawingId: partNo } })
+}
+
+function selectPart(partNo: string) {
+  const index = parts.value.findIndex((part) => part.no === partNo)
+  if (index >= 0) domainStore.selectedStructureIndex = index
+}
 </script>
 
 <template>
   <div class="struct-grid">
     <div class="card struct-tree-card">
-      <div class="card-title"><DemoIcon name="folder-tree" :size="16" />结构树<span class="hint">总图 → 零件图</span></div>
-      <div class="tree">
-        <div class="tree-node" :class="{ closed: !demoStore.treeOpen }">
-          <button class="row root-row" type="button" @click="demoStore.treeOpen = !demoStore.treeOpen">
+      <div class="card-title">
+        <DemoIcon name="folder-tree" :size="16" />
+        工程装配结构树
+        <span class="hint">总图 → 零件图</span>
+      </div>
+       <div class="tree">
+         <div class="tree-node" :class="{ closed: !domainStore.treeOpen }">
+          <button class="row root-row" type="button" @click="domainStore.treeOpen = !domainStore.treeOpen">
             <DemoIcon class="caret" name="chevron-down" :size="15" />
             <DemoIcon class="tico" name="box" :size="15" />
-            <span class="tname"><b>{{ drawing?.name }}</b></span><span class="tno">{{ drawing?.no }}</span>
+            <span class="tname"><b>{{ drawing?.name }}</b></span>
+            <span class="tno">{{ drawing?.no }}</span>
           </button>
-          <div class="children">
-            <button v-for="(part, index) in demoStore.structure" :key="part.no" class="row" :class="{ sel: demoStore.selectedStructureIndex === index }" type="button" @click="demoStore.selectedStructureIndex = index">
-              <span class="caret-placeholder"></span><DemoIcon class="tico" name="file" :size="15" /><span class="tname">{{ part.name }}</span><span v-if="part.borrowFrom" class="tag plain tree-borrow">借用</span><span class="tno">{{ part.no }}</span>
-            </button>
-          </div>
+           <div class="children">
+             <DrawingStructureNode
+               v-for="node in treeNodes"
+               :key="node.part.no"
+               :node="node"
+               :selected-no="selected?.no ?? ''"
+               @select="selectPart"
+             />
+             <div v-if="!treeNodes.length" class="tree-empty">暂无按图号识别的下级零件</div>
+           </div>
+           <div v-if="otherFiles.length" class="other-files-group">
+             <div class="other-files-title"><DemoIcon name="file-text" :size="14" />其他文件 <span>{{ otherFiles.length }}</span></div>
+             <div v-for="file in otherFiles" :key="file.id" class="other-file-row">
+               <DemoIcon name="file" :size="13" />
+               <span>{{ file.name }}</span>
+             </div>
+           </div>
         </div>
       </div>
     </div>
@@ -38,21 +102,47 @@ const selected = computed(() => demoStore.structure[demoStore.selectedStructureI
     <div class="card">
       <div class="sel-panel">
         <template v-if="selected">
-          <div class="card-title selected-title"><DemoIcon name="file" :size="16" />{{ selected.name }} <span class="tno mono">{{ selected.no }}</span></div>
-          <div class="kv-grid">
-            <div class="kv"><div class="k">图号</div><div class="v mono">{{ selected.no }}</div></div>
-            <div class="kv"><div class="k">材料</div><div class="v">{{ selected.material }}</div></div>
-            <div class="kv"><div class="k">数量 / 台</div><div class="v mono">× {{ selected.qty }}</div></div>
-            <div class="kv"><div class="k">当前版本</div><div class="v mono">{{ selected.ver }}</div></div>
-            <div class="kv"><div class="k">状态</div><div class="v"><span class="tag" :class="STATUS[selected.status].c">{{ STATUS[selected.status].t }}</span></div></div>
-            <div class="kv"><div class="k">借用来源</div><div class="v">{{ selected.borrowFrom ? selected.borrowFrom : '— 本图原创' }}</div></div>
+          <div class="card-title selected-title">
+            <DemoIcon name="file" :size="16" />
+            {{ selected.name }}
+            <span class="tno mono">{{ selected.no }}</span>
           </div>
-          <div v-if="selected.hasFile" class="selection-actions"><button class="btn primary sm" type="button" @click="router.push({ name: 'drawing-preview', params: { drawingId: selected.no } })"><DemoIcon name="eye" :size="14" />查看图纸</button><button class="btn sm" type="button" @click="uiStore.openModal('upload-version', '上传新版本')"><DemoIcon name="upload" :size="14" />上传新版本</button></div>
-          <div v-else class="empty compact-empty"><DemoIcon name="file-plus" :size="34" /><div class="t">尚未上传图纸文件</div><div>结构已搭好，可先流转，稍后补传图纸</div><button class="btn sm primary" type="button" @click="uiStore.openModal('upload-version', '上传新版本')"><DemoIcon name="upload" :size="14" />补传图纸文件</button></div>
-          <div class="struct-map">结构关系：<b>{{ drawing?.name }}</b>（总图）→ {{ demoStore.structure.length }} 个零件，变更时可选择是否同步原图。</div>
+
+          <div class="kv-grid">
+            <div class="kv"><div class="k">零件图号</div><div class="v mono">{{ selected.no }}</div></div>
+            <div class="kv"><div class="k">零件材料</div><div class="v">{{ selected.material }}</div></div>
+             <div class="kv"><div class="k">规格 / 尺寸</div><div class="v">{{ selected.spec || '—' }}</div></div>
+             <div class="kv"><div class="k">理论重量</div><div class="v mono">{{ selected.weight.toFixed(2) }} kg</div></div>
+             <div class="kv"><div class="k">表面 / 热处理</div><div class="v">{{ selected.surfaceTreatment || '—' }}</div></div>
+             <div class="kv"><div class="k">制造类别</div><div class="v"><span class="tag info">{{ selected.partType }}</span></div></div>
+             <div class="kv"><div class="k">单机装配数量</div><div class="v mono">× {{ selected.qty }}</div></div>
+            <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ selected.ver }}</div></div>
+            <div class="kv"><div class="k">生命周期状态</div><div class="v"><span class="tag" :class="STATUS[selected.status].c">{{ STATUS[selected.status].t }}</span></div></div>
+            <div class="kv"><div class="k">借用来源</div><div class="v">{{ selected.borrowFrom ? selected.borrowFrom : '— 本项目原创' }}</div></div>
+          </div>
+
+          <div class="selection-actions">
+            <button class="btn primary sm" type="button" @click="openPartDetail(selected.no)">
+               <DemoIcon name="eye" :size="14" />进入零件图详情
+             </button>
+             <button class="btn sm" type="button" @click="openPartProperties(selected.no)">
+               <DemoIcon name="pencil" :size="14" />编辑零件属性
+             </button>
+          </div>
+
+              <div class="struct-map">
+                结构关系提示：<b>{{ drawing?.name }}</b>（总图装配）→ 共关联 {{ parts.length }} 个零件图；系统按照“去掉最后一级图号后缀”的规则生成多级父子关系，不符合命名规则的文件归入“其他文件”。
+          </div>
         </template>
+
         <template v-else>
-          <div class="empty"><DemoIcon name="file" :size="34" /><div class="t">该图纸为零件图，没有下级结构</div><button class="btn sm" type="button" @click="router.push({ name: 'drawing-preview', params: { drawingId: drawing?.no } })"><DemoIcon name="corner-up-left" :size="14" />查看所属总图</button></div>
+          <div class="empty">
+            <DemoIcon name="file" :size="34" />
+            <div class="t">当前对象为独立零件图，没有下级装配结构</div>
+            <button class="btn sm" type="button" @click="router.push({ name: 'drawing-library' })">
+              <DemoIcon name="corner-up-left" :size="14" />返回图纸库
+            </button>
+          </div>
         </template>
       </div>
     </div>
@@ -60,33 +150,162 @@ const selected = computed(() => demoStore.structure[demoStore.selectedStructureI
 </template>
 
 <style scoped>
-.struct-grid { display: grid; grid-template-columns: 340px 1fr; gap: 14px; height: 100%; min-height: 0; }
-.struct-grid .card { display: flex; flex-direction: column; min-height: 0; }
-.struct-tree-card { overflow: hidden; }
-.tree { flex: 1; padding: 10px 12px; overflow-y: auto; }
-.tree-node .row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px; border-radius: 9px; color: var(--text-1); font-size: 12.5px; text-align: left; transition: all 0.18s; }
-.tree-node .row:hover { background: var(--hover); }
-.tree-node .row.sel { background: var(--active); }
-.tree-node .row.sel .tname { color: var(--accent); font-weight: 700; }
-.tree-node .caret { flex: none; color: var(--text-3); transition: transform 0.25s; }
-.tree-node.closed .caret { transform: rotate(-90deg); }
-.tree-node.closed > .children { display: none; }
-.caret-placeholder { width: 15px; height: 15px; flex: none; }
-.tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tico { flex: none; color: var(--accent); }
-.children { margin-left: 19px; padding-left: 4px; border-left: 1px dashed var(--line-strong); }
-.tno { color: var(--text-3); font-family: 'JetBrains Mono', monospace; font-size: 10px; white-space: nowrap; }
-.tree-borrow { padding: 1px 7px; font-size: 9.5px; }
-.sel-panel { padding: 20px; overflow-y: auto; }
-.selected-title { padding: 0 0 13px; }
-.selected-title .tno { margin-left: 4px; }
-.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px 22px; }
-.kv .k { margin-bottom: 4px; color: var(--text-3); font-size: 11px; }
-.kv .v { font-size: 13px; font-weight: 500; }
-.selection-actions { display: flex; gap: 9px; margin-top: 18px; }
-.compact-empty { padding: 26px 14px; }
-.compact-empty > div:not(.t) { color: var(--text-3); font-size: 11px; }
-.struct-map { margin-top: 18px; padding: 14px 16px; border: 1px dashed var(--line-strong); border-radius: 12px; color: var(--text-2); font-size: 11.5px; line-height: 1.9; }
-.struct-map b { color: var(--accent); }
-@media (max-width: 1180px) { .struct-grid { grid-template-columns: 1fr; } }
+.struct-grid {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+}
+.struct-grid .card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.struct-tree-card {
+  overflow: hidden;
+}
+.tree {
+  flex: 1;
+  padding: 10px 12px;
+  overflow-y: auto;
+}
+.tree-empty {
+  padding: 16px 10px;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.other-files-group {
+  margin: 12px 10px 4px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line-strong);
+}
+.other-files-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.other-files-title svg { color: var(--text-3); }
+.other-files-title span { color: var(--text-3); font-family: 'JetBrains Mono', monospace; }
+.other-file-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 3px;
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+.other-file-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-node .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: var(--text-1);
+  font-size: 12.5px;
+  text-align: left;
+  transition: all 0.18s;
+}
+.tree-node .row:hover {
+  background: var(--hover);
+}
+.tree-node .row.sel {
+  background: var(--active);
+}
+.tree-node .row.sel .tname {
+  color: var(--accent);
+  font-weight: 700;
+}
+.tree-node .caret {
+  flex: none;
+  color: var(--text-3);
+  transition: transform 0.25s;
+}
+.tree-node.closed .caret {
+  transform: rotate(-90deg);
+}
+.tree-node.closed > .children {
+  display: none;
+}
+.caret-placeholder {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.tname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tico {
+  flex: none;
+  color: var(--accent);
+}
+.children {
+  margin-left: 19px;
+  padding-left: 4px;
+  border-left: 1px dashed var(--line-strong);
+}
+.tno {
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.tree-borrow {
+  padding: 1px 7px;
+  font-size: 9.5px;
+}
+.sel-panel {
+  padding: 20px;
+  overflow-y: auto;
+}
+.selected-title {
+  padding: 0 0 13px;
+}
+.selected-title .tno {
+  margin-left: 4px;
+}
+.kv-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 13px 22px;
+}
+.kv .k {
+  margin-bottom: 4px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.kv .v {
+  font-size: 13px;
+  font-weight: 500;
+}
+.selection-actions {
+  display: flex;
+  gap: 9px;
+  margin-top: 18px;
+}
+.struct-map {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 1.9;
+}
+.struct-map b {
+  color: var(--accent);
+}
+@media (max-width: 1180px) {
+  .struct-grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>
