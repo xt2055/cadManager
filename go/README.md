@@ -149,6 +149,34 @@ CAD_STORAGE_ROOT=./storage/attachments
 CAD_MAX_UPLOAD_MB=100
 ```
 
+## EXB 标题栏解析接口
+
+解析已上传附件中的 CAXA EXB 标题栏键值，不使用文件名推断，也不执行 OCR：
+
+```text
+POST /api/exb/parse
+```
+
+请求体：
+
+```json
+{
+  "storageKey": "2000W.02.03d(2000W斜撑油缸)/2000W.02.03d-01(缸体).exb"
+}
+```
+
+成功响应中的 `data.titleBlock` 只包含 EXB 标题栏中实际读到的键值，例如：
+
+```json
+{
+  "单位名称": "泸州市巨力液压有限公司",
+  "图纸名称": "缸体",
+  "材料名称": "27SiMn组焊件",
+  "图纸编号": "2000W.02.03C-01",
+  "图纸比例": "1:3"
+}
+```
+
 后续切换对象存储时，只需要新增 `ObjectStorage` 实现并替换服务组装，不需要修改上传 Handler 和附件数据库接口。
 
 ## 业务数据兼容接口

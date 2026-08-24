@@ -42,6 +42,7 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	}
 	mux.Handle("/api/attachments", drawingHandler(handlers.UploadAttachment(attachmentRepository, attachmentStorage, cfg.MaxUploadBytes)))
 	mux.Handle("/api/attachments/", drawingHandler(handlers.AttachmentResource(attachmentRepository, attachmentStorage)))
+	mux.Handle("/api/exb/parse", drawingHandler(handlers.ParseEXB(attachmentRepository, attachmentStorage)))
 	mux.HandleFunc("/api/updates/latest", handlers.UpdateLatest(cfg))
 
 	var handler http.Handler = mux

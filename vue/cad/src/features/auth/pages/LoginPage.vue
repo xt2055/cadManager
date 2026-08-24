@@ -20,6 +20,8 @@ const themeStore = useThemeStore()
 const preferenceStore = useUserPreferenceStore()
 const authStore = useAuthStore()
 
+const REMEMBERED_CREDENTIALS_KEY = 'cad:remembered-credentials:v1'
+
 const account = ref('')
 const password = ref('')
 const rememberMe = ref(true)
@@ -34,6 +36,38 @@ const submitButton = ref<HTMLButtonElement | null>(null)
 const debugMenuOpen = ref(false)
 const debugMode = ref(false)
 const debugModeLoading = ref(true)
+
+interface RememberedCredentials {
+  account: string
+  password: string
+}
+
+function restoreRememberedCredentials() {
+  try {
+    const raw = window.localStorage.getItem(REMEMBERED_CREDENTIALS_KEY)
+    if (!raw) return
+    const value = JSON.parse(raw) as Partial<RememberedCredentials>
+    if (typeof value.account !== 'string' || typeof value.password !== 'string') return
+    account.value = value.account
+    password.value = value.password
+    rememberMe.value = true
+  } catch {
+    window.localStorage.removeItem(REMEMBERED_CREDENTIALS_KEY)
+  }
+}
+
+function persistRememberedCredentials(nextAccount: string, nextPassword: string) {
+  if (!rememberMe.value) {
+    window.localStorage.removeItem(REMEMBERED_CREDENTIALS_KEY)
+    return
+  }
+
+  const credentials: RememberedCredentials = {
+    account: nextAccount,
+    password: nextPassword,
+  }
+  window.localStorage.setItem(REMEMBERED_CREDENTIALS_KEY, JSON.stringify(credentials))
+}
 
 type LaserState = 'idle' | 'burst-warp' | 'converge' | 'tracing' | 'blooming'
 
@@ -526,6 +560,7 @@ async function handleLogin() {
   try {
     await wait(350)
     await authStore.login({ account: acc, password: pwd, rememberMe: rememberMe.value })
+    persistRememberedCredentials(acc, pwd)
     loading.value = false
     const selectedAnimation = preferenceStore.loginAnimation
     isSuccessAnimating.value = selectedAnimation === 'burst'
@@ -554,6 +589,7 @@ async function handleLogin() {
 
 onMounted(async () => {
   themeStore.applyTheme()
+  restoreRememberedCredentials()
   try {
     debugMode.value = await readDebugMode()
   } catch (error) {
@@ -692,7 +728,7 @@ onBeforeUnmount(() => {
           <div class="login-options-row">
             <label class="remember-label">
               <input v-model="rememberMe" type="checkbox" />
-              <span>记住凭证</span>
+              <span>记住账号和密码</span>
             </label>
           </div>
 

@@ -92,7 +92,7 @@ function menuAction(action: string, no: string) {
       <table class="tbl">
         <thead>
           <tr>
-             <th>项目图号</th>
+             <th class="project-no-header">项目图号</th>
              <th>名称</th>
              <th>厂商</th>
             <th>状态</th>
@@ -105,9 +105,11 @@ function menuAction(action: string, no: string) {
            <template v-for="drawing in rows" :key="drawing.no">
            <tr>
              <td class="num project-no-cell">
-               <button v-if="partsForDrawing(drawing.no).length" class="expand-button" type="button" :title="isExpanded(drawing.no) ? '收起零件图' : '展开零件图'" @click="toggleExpanded(drawing.no)">
-                 <DemoIcon name="chevron-down" :size="14" :class="{ collapsed: !isExpanded(drawing.no) }" />
-               </button>
+               <span class="expand-slot">
+                 <button v-if="partsForDrawing(drawing.no).length" class="expand-button" type="button" :title="isExpanded(drawing.no) ? '收起零件图' : '展开零件图'" @click="toggleExpanded(drawing.no)">
+                   <DemoIcon name="chevron-down" :size="14" :class="{ collapsed: !isExpanded(drawing.no) }" />
+                 </button>
+               </span>
                <button class="link project-no-link" type="button" @click="openDetail(drawing.no)">{{ drawing.no }}</button>
              </td>
              <td class="drawing-name">
@@ -229,11 +231,23 @@ function menuAction(action: string, no: string) {
   white-space: nowrap;
 }
 
+.project-no-header {
+  padding-left: 44px !important;
+}
+
+.expand-slot {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  place-items: center;
+  vertical-align: middle;
+}
+
 .expand-button {
   display: inline-grid;
   width: 24px;
   height: 24px;
-  margin-right: 4px;
   place-items: center;
   border-radius: 6px;
   color: var(--text-3);
