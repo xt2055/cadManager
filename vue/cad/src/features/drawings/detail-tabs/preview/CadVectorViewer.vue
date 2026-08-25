@@ -281,14 +281,14 @@ function redraw() {
           }
           ctx.stroke()
         }
-      } else if (e.type === 'TEXT' || e.type === 'MTEXT' || e.type === 'ATTDEF' || e.type === 'ATTRIB') {
-        const raw = e.text || e.string || (e.type === 'ATTDEF' ? e.prompt || e.tag : '') || e.value || ''
+      } else if (e.type === 'TEXT' || e.type === 'MTEXT' || e.type === 'ATTRIB') {
+        const raw = e.text || e.string || e.value || ''
         const lines = parseCadTextLines(raw)
         
-        // AutoCAD 对齐点决策：对于 TEXT/ATTRIB/ATTDEF，如果有对齐方式(halign/valign)，DXF 规范以 endPoint (组码 11) 为基准点，否则以 startPoint (组码 10)
+        // AutoCAD 对齐点决策：对于 TEXT/ATTRIB，如果有对齐方式(halign/valign)，DXF 规范以 endPoint (组码 11) 为基准点，否则以 startPoint (组码 10)
         let posRaw = e.position || e.startPoint
-        const halign = e.halign !== undefined ? e.halign : (e.horizontalJustification !== undefined ? e.horizontalJustification : 0)
-        const valign = e.valign !== undefined ? e.valign : (e.verticalJustification !== undefined ? e.verticalJustification : 0)
+        const halign = e.halign !== undefined ? e.halign : 0
+        const valign = e.valign !== undefined ? e.valign : 0
         if (e.endPoint && (halign > 0 || valign > 0)) {
           posRaw = e.endPoint
         }
@@ -311,7 +311,7 @@ function redraw() {
               ctx.textAlign = [1, 4, 7].includes(ap) ? 'left' : [2, 5, 8].includes(ap) ? 'center' : 'right'
               ctx.textBaseline = [1, 2, 3].includes(ap) ? 'top' : [4, 5, 6].includes(ap) ? 'middle' : 'bottom'
             } else {
-              // TEXT / ATTRIB / ATTDEF 规范
+              // TEXT / ATTRIB 规范
               // halign: 0=Left, 1=Center, 2=Right, 3=Aligned, 4=Middle, 5=Fit
               // valign: 0=Baseline, 1=Bottom, 2=Middle, 3=Top
               ctx.textAlign = (halign === 1 || halign === 4) ? 'center' : (halign === 2 ? 'right' : 'left')
