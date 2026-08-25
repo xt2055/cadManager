@@ -161,21 +161,36 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number; isTole
   let str = raw
   let isTol = false
 
-  // 1. 提取局部字号缩放比例 \H...x;
+  // 1. 解码 AutoCAD Unicode 转义字符 \U+XXXX (如 \U+6280 -> 技, \U+00B0 -> °, \U+00B1 -> ±, \U+2205 -> Φ)
+  str = str.replace(/\\U\+([0-9A-Fa-f]{4})/gi, (_, hex) => {
+    try {
+      return String.fromCharCode(parseInt(hex, 16))
+    } catch {
+      return ''
+    }
+  })
+
+  // 2. 解码 AutoCAD 多字节/MIF 转义 \M+1XXXX 或 \M+5XXXX 等
+  str = str.replace(/\\M\+[0-9A-Fa-f]{5}/gi, '')
+
+  // 3. 提取局部字号缩放比例 \H...x; 或 \H...;
   let fontScale = 1
-  const hMatch = str.match(/\\H([0-9.]+)x;/i)
+  const hMatch = str.match(/\\H([0-9.]+)x;/i) || str.match(/\\H([0-9.]+);/i)
   if (hMatch && hMatch[1]) {
-    fontScale = parseFloat(hMatch[1]) || 1
-    if (fontScale < 0.95) {
-      isTol = true
+    const val = parseFloat(hMatch[1])
+    if (!isNaN(val) && val > 0) {
+      fontScale = val
+      if (fontScale < 0.95) {
+        isTol = true
+      }
     }
   }
 
-  // 2. 优先处理 CAXA 自定义上下标公差格式如 {\D\H0.7x;+0.1^+0.2|a;} -> (+0.1 / +0.2)
+  // 4. 优先处理 CAXA 自定义上下标公差格式如 {\D\H0.7x;+0.1^+0.2|a;} -> (+0.1 / +0.2)
   str = str.replace(/\{\\D\\H[0-9.]+x;([^|}]+)\^([^|}]+)\|a;\}/gi, '  ($1 / $2)')
 
-  // 3. 处理 AutoCAD 标注堆叠公差如 \S+0.035^ 0; 或 \S-0.043^-0.083; 或 \S+0.1^;
-  // 在主尺寸与公差之间保留 2 个空格的充分距离，防止数字遮挡正负号
+  // 5. 处理 AutoCAD 标注堆叠公差如 \S+0.035^ 0; 或 \S-0.043^-0.083; 或 \S+0.1^;
+  // 在主尺寸与公差之间保留充分安全距离，防止数字遮挡正负号
   str = str.replace(/\\S([^;^/#]+)\^([^;]*);?/gi, (match, top, btm) => {
     top = top ? top.trim() : ''
     btm = btm ? btm.trim() : ''
@@ -188,17 +203,31 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number; isTole
   str = str.replace(/\\S([^;]+)\^;?/gi, (match, top) => `  (${top.trim()})`)
   str = str.replace(/\\S([^;/#]+)[/#]([^;]+);?/gi, (match, top, btm) => `  (${top.trim()} / ${btm.trim()})`)
 
-  // 4. 标准工程符号替换
+  // 6. 标准工程特殊符号替换
   str = str
     .replace(/\\P/gi, '\n')
+    .replace(/\\X/gi, '\n')
+    .replace(/\\~/g, ' ')
+    .replace(/\\{/g, '{')
+    .replace(/\\}/g, '}')
+    .replace(/\\\\/g, '\\')
     .replace(/%%C/gi, 'Φ').replace(/%C/gi, 'Φ')
     .replace(/%%D/gi, '°').replace(/%D/gi, '°')
     .replace(/%%P/gi, '  ±').replace(/%P/gi, '  ±')
     .replace(/%%U/gi, '')
     .replace(/%%O/gi, '')
+    .replace(/%%%/gi, '%')
 
-  // 5. 清理所有其它 AutoCAD/CAXA 格式控制代码如 \A1;, \T1.1;, \W0.63;, \C1; 等
-  str = str.replace(/\\[A-Za-z0-9.]+(;|\s)?/g, '')
+  // 7. 清理 AutoCAD MTEXT 各种格式控制指令（彻底清除带管道符 |b0|i0|c134|p2 的字体参数，防止残留乱码）
+  // 匹配 \fFontName|b0|i0|c134|p2; 或 \Ffont.shx,gbcbig.shx;
+  str = str.replace(/\\[fF][^;]*;/g, '')
+  // 清理字高、宽度、倾斜、字距、颜色、对齐、段落控制等带分号指令
+  str = str.replace(/\\[hHwWqQtTcCkKaApP][^;]*;/g, '')
+  // 清理其它所有带分号的控制指令 \AnyCode;
+  str = str.replace(/\\[A-Za-z0-9.]+;/g, '')
+  // 清理下划线、上划线、删除线开关指令（\L, \l, \O, \o, \K, \k）
+  str = str.replace(/\\[LlOoKk]/g, '')
+  // 清理大括号分组 {}
   str = str.replace(/[{}]/g, '')
 
   const lines = str.split('\n').map(l => l.trim()).filter(l => l.length > 0)
@@ -508,17 +537,25 @@ async function loadDxf(url: string) {
     }
 
     loadingProgress.value = 40
-    loadingStage.value = '正在以 GB18030 中文编码解码图纸...'
+    loadingStage.value = '正在智能探测并解码 CAD 图纸编码...'
     const buffer = await res.arrayBuffer()
     if (!buffer || buffer.byteLength === 0) {
       throw new Error('获取到的 CAD 图纸数据为空')
     }
 
     let dxfText = ''
-    try {
+    // 智能编码探测：
+    // 1. 检查 DXF 文件头部的 $DWGCODEPAGE（前 8KB 区域）
+    const headerSample = new TextDecoder('ascii').decode(buffer.slice(0, Math.min(buffer.byteLength, 8192)))
+    if (/ANSI_936|GB2312|GBK|CP936|GB18030/i.test(headerSample)) {
       dxfText = new TextDecoder('gb18030').decode(buffer)
-    } catch {
-      dxfText = new TextDecoder('utf-8').decode(buffer)
+    } else {
+      // 2. 尝试严格 UTF-8 解码，如果出现非 UTF-8 字节（如 GBK 双字节）则 fatal 抛错降级到 GB18030
+      try {
+        dxfText = new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+      } catch {
+        dxfText = new TextDecoder('gb18030').decode(buffer)
+      }
     }
 
     if (!dxfText || dxfText.trim().length === 0) {
