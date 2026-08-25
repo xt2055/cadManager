@@ -109,6 +109,52 @@ class Transform2D {
   }
 }
 
+// 注册自定义 ATTRIB 实体解析器（修复 DXF-Parser 遗漏块属性导致图号、材料、签名丢失的问题）
+class AttribEntityHandler {
+  ForEntityName = 'ATTRIB'
+  parseEntity(scanner: any, curr: any) {
+    const entity: any = { type: curr.value }
+    curr = scanner.next()
+    while (!scanner.isEOF()) {
+      if (curr.code === 0) break
+      switch (curr.code) {
+        case 1: entity.text = curr.value; break
+        case 2: entity.tag = curr.value; break
+        case 3: entity.prompt = curr.value; break
+        case 10:
+          entity.startPoint = { x: curr.value, y: 0, z: 0 }
+          break
+        case 20:
+          if (entity.startPoint) entity.startPoint.y = curr.value
+          break
+        case 30:
+          if (entity.startPoint) entity.startPoint.z = curr.value
+          break
+        case 11:
+          entity.endPoint = { x: curr.value, y: 0, z: 0 }
+          break
+        case 21:
+          if (entity.endPoint) entity.endPoint.y = curr.value
+          break
+        case 31:
+          if (entity.endPoint) entity.endPoint.z = curr.value
+          break
+        case 40: entity.textHeight = curr.value; break
+        case 41: entity.scale = curr.value; break
+        case 50: entity.rotation = curr.value; break
+        case 70: entity.flags = curr.value; break
+        case 71: entity.generationFlags = curr.value; break
+        case 72: entity.halign = curr.value; break
+        case 74: entity.valign = curr.value; break
+        case 8: entity.layer = curr.value; break
+        case 62: entity.colorIndex = curr.value; break
+      }
+      curr = scanner.next()
+    }
+    return entity
+  }
+}
+
 // 文字格式清洗并按换行拆分
 function parseCadTextLines(raw: string): string[] {
   if (!raw) return []
@@ -117,10 +163,12 @@ function parseCadTextLines(raw: string): string[] {
     .replace(/%%C/gi, 'Φ').replace(/%C/gi, 'Φ')
     .replace(/%%D/gi, '°').replace(/%D/gi, '°')
     .replace(/%%P/gi, '±').replace(/%P/gi, '±')
+    .replace(/%%U/gi, '')
+    .replace(/%%O/gi, '')
     // 提取公差上下标格式如 {\D\H0.7x;+0.1^+0.2|a;} -> (+0.1 / +0.2)
     .replace(/\{\\D\\H[0-9.]+x;([^|}]+)\^([^|}]+)\|a;\}/gi, '($1/$2)')
-    .replace(/\\A[0-9];/gi, '')
-    .replace(/\\[A-Za-z][^;]*;/g, '')
+    // 移除 AutoCAD 格式代码如 \A1;, \T1.1;, \W0.63307;, \H0.7x;, \C1; 等
+    .replace(/\\[A-Za-z0-9.]+(;|\s)?/g, '')
     .replace(/[{}]/g, '')
 
   return formatted.split('\n').map(l => l.trim()).filter(l => l.length > 0)
@@ -234,9 +282,16 @@ function redraw() {
           ctx.stroke()
         }
       } else if (e.type === 'TEXT' || e.type === 'MTEXT' || e.type === 'ATTDEF' || e.type === 'ATTRIB') {
-        const raw = e.text || e.string || e.tag || e.value || ''
+        const raw = e.text || e.string || (e.type === 'ATTDEF' ? e.prompt || e.tag : '') || e.value || ''
         const lines = parseCadTextLines(raw)
-        const posRaw = e.position || e.startPoint || e.endPoint || e.alignmentPoint
+        
+        // AutoCAD 对齐点决策：对于 TEXT/ATTRIB/ATTDEF，如果有对齐方式(halign/valign)，DXF 规范以 endPoint (组码 11) 为基准点，否则以 startPoint (组码 10)
+        let posRaw = e.position || e.startPoint
+        const halign = e.halign !== undefined ? e.halign : (e.horizontalJustification !== undefined ? e.horizontalJustification : 0)
+        const valign = e.valign !== undefined ? e.valign : (e.verticalJustification !== undefined ? e.verticalJustification : 0)
+        if (e.endPoint && (halign > 0 || valign > 0)) {
+          posRaw = e.endPoint
+        }
         
         if (lines.length > 0 && posRaw) {
           const pos = toScreen(transform.apply(posRaw))
@@ -246,8 +301,22 @@ function redraw() {
           if (fontSize >= 4) {
             ctx.save()
             ctx.font = `${fontSize}px "Noto Sans SC", "Microsoft YaHei", "SimSun", sans-serif`
-            ctx.textBaseline = 'middle'
-            ctx.textAlign = (e.halign === 2 || e.horizontalJustification === 2) ? 'right' : (e.halign === 1 || e.horizontalJustification === 1) ? 'center' : 'left'
+            
+            // 垂直对齐映射
+            if (e.type === 'MTEXT') {
+              const ap = e.attachmentPoint || 1
+              // 1: TopLeft, 2: TopCenter, 3: TopRight
+              // 4: MiddleLeft, 5: MiddleCenter, 6: MiddleRight
+              // 7: BottomLeft, 8: BottomCenter, 9: BottomRight
+              ctx.textAlign = [1, 4, 7].includes(ap) ? 'left' : [2, 5, 8].includes(ap) ? 'center' : 'right'
+              ctx.textBaseline = [1, 2, 3].includes(ap) ? 'top' : [4, 5, 6].includes(ap) ? 'middle' : 'bottom'
+            } else {
+              // TEXT / ATTRIB / ATTDEF 规范
+              // halign: 0=Left, 1=Center, 2=Right, 3=Aligned, 4=Middle, 5=Fit
+              // valign: 0=Baseline, 1=Bottom, 2=Middle, 3=Top
+              ctx.textAlign = (halign === 1 || halign === 4) ? 'center' : (halign === 2 ? 'right' : 'left')
+              ctx.textBaseline = valign === 3 ? 'top' : (valign === 2 || halign === 4) ? 'middle' : (valign === 1 ? 'bottom' : 'alphabetic')
+            }
 
             const rotDeg = e.rotation || 0
             if (rotDeg !== 0) {
@@ -397,6 +466,7 @@ async function loadDxf(url: string) {
     loadingProgress.value = 70
     loadingStage.value = '正在解析图元拓扑与块表格...'
     const parser = new DxfParser()
+    parser.registerEntityHandler(AttribEntityHandler as any)
     parsedDxf = parser.parseSync(dxfText)
     if (!parsedDxf || !parsedDxf.entities) {
       throw new Error('未解析到有效的 DXF 实体')
