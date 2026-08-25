@@ -45,6 +45,10 @@ function emptyEditForm(): StructurePartEditable {
 const editForm = ref<StructurePartEditable>(emptyEditForm())
 const signerCandidates = ref<string[]>([])
 const signerForm = ref<SignerAssignments>({})
+const activityLogs = computed(() => {
+  const drawingNo = currentItem.value?.no
+  return drawingNo ? domainStore.logs.filter((item) => item.drawingNo === drawingNo) : []
+})
 
 onMounted(async () => {
   const users = await fetchReviewerCandidates('reviewer')
@@ -324,11 +328,11 @@ const signerData = computed(() => {
       <div class="card-title no-padding">
         <DemoIcon name="activity" :size="16" />
         全生命周期审计与操作追踪
-        <span class="hint">浏览 · 修改 · 签署 · 审核 · 借用</span>
+         <span class="hint">浏览 · 修改 · 分支 · 文件 · 审核</span>
       </div>
 
       <div class="feed">
-        <div v-for="item in domainStore.logs" :key="`${item.user}-${item.time}-${item.txt}`" class="feed-item">
+         <div v-for="item in activityLogs" :key="item.id" class="feed-item">
           <div class="feed-ic" :class="item.act">
             <DemoIcon :name="feedIcons[item.act] ?? 'activity'" :size="14" />
           </div>
@@ -337,7 +341,7 @@ const signerData = computed(() => {
           </div>
           <div class="feed-time">{{ item.time }}</div>
         </div>
-        <div v-if="!domainStore.logs.length" class="empty compact-empty">
+         <div v-if="!activityLogs.length" class="empty compact-empty">
           <DemoIcon name="activity" :size="30" />
           <div class="t">暂无审计操作记录</div>
         </div>

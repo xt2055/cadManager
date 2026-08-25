@@ -3,9 +3,13 @@ import { computed, ref } from 'vue'
 
 import { dataManager } from '@/services/data-manager'
 import { useAuthStore } from '@/stores/auth.store'
+import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
 import type { DataDocument } from '@/services/data-manager'
 import type {
   ActivityLog,
+  ActivityResult,
+  ActivityTargetType,
+  ActivityType,
   AdminLog,
   BomItem,
   Branch,
@@ -54,6 +58,10 @@ function createId(prefix: string): string {
 
 function nowLabel(): string {
   return '刚刚'
+}
+
+function activityTime(): string {
+  return new Date().toISOString()
 }
 
 function formatNumber(value: string | undefined): number {
@@ -164,6 +172,54 @@ export const useDomainStore = defineStore('domain', () => {
   let initializationPromise: Promise<void> | null = null
   let saveQueue: Promise<void> = Promise.resolve()
 
+  function recordActivity(input: {
+    drawingNo: string
+    drawingName?: string
+    targetType: ActivityTargetType
+    act: ActivityType
+    text: string
+    result?: ActivityResult
+    detail?: Record<string, unknown>
+  }): ActivityLog {
+    const operator = authStore.currentUser
+    const occurredAt = activityTime()
+    const target = findDrawingOrPart(input.drawingNo)
+    const activity: ActivityLog = {
+      id: createId('drawing-log'),
+      drawingNo: input.drawingNo,
+      drawingName: input.drawingName || target?.name || input.drawingNo,
+      targetType: input.targetType,
+      ...(operator?.id ? { userId: operator.id } : {}),
+      user: operator?.displayName || '当前用户',
+      act: input.act,
+      txt: input.text,
+      time: occurredAt,
+      occurredAt,
+      result: input.result ?? 'success',
+      ...(input.detail ? { detail: input.detail } : {}),
+    }
+    logs.value.unshift(activity)
+    void createDrawingOperationLog({
+      drawingNo: activity.drawingNo,
+      drawingName: activity.drawingName,
+      targetType: activity.targetType,
+      act: activity.act,
+      txt: activity.txt,
+      result: activity.result,
+      detail: activity.detail,
+    }).catch(() => undefined)
+    return activity
+  }
+
+  async function loadRemoteActivityLogs(): Promise<void> {
+    try {
+      const page = await listDrawingOperationLogs({ page: 1, pageSize: 100 })
+      logs.value = page.list
+    } catch {
+      // 调试模式使用本地 JSON 数据时没有后端日志接口，保留本地记录。
+    }
+  }
+
   function toDocument(): DataDocument {
     return {
       version: 2,
@@ -198,6 +254,11 @@ export const useDomainStore = defineStore('domain', () => {
     })
   }
 
+  async function recordActivityAndPersist(input: Parameters<typeof recordActivity>[0]): Promise<void> {
+    recordActivity(input)
+    await persist()
+  }
+
   function initialize(): Promise<void> {
     if (initialized.value) return Promise.resolve()
     if (initializationPromise) return initializationPromise
@@ -223,6 +284,7 @@ export const useDomainStore = defineStore('domain', () => {
         hiddenList.value = document.hiddenList
         adminLogs.value = document.adminLogs
         await persist()
+        await loadRemoteActivityLogs()
         initialized.value = true
       } catch (loadError: unknown) {
         initialized.value = false
@@ -300,8 +362,19 @@ export const useDomainStore = defineStore('domain', () => {
   }
 
   function openDrawing(no: string) {
+    if (currentDrawing.value?.no === no) return
     currentDrawing.value = findDrawingOrPart(no)
     selectedStructureIndex.value = 0
+    if (currentDrawing.value) {
+      recordActivity({
+        drawingNo: currentDrawing.value.no,
+        drawingName: currentDrawing.value.name,
+        targetType: 'drawing',
+        act: 'view',
+        text: `查看图纸 ${currentDrawing.value.no}`,
+      })
+      void persist()
+    }
   }
 
   function clearCurrentDrawing() {
@@ -330,6 +403,7 @@ export const useDomainStore = defineStore('domain', () => {
 
     const originalDrawings = [...drawings.value]
     const originalStructure = [...structure.value]
+    let activityLog: ActivityLog | null = null
     try {
       drawing.files = drawing.files ?? []
       drawing.hasFile = drawing.files.length > 0
@@ -355,9 +429,20 @@ export const useDomainStore = defineStore('domain', () => {
         if (storageKey) uploadedKeys.push(storageKey)
       }
       await persist()
+      activityLog = recordActivity({
+        drawingNo: drawing.no,
+        drawingName: drawing.name,
+        targetType: 'drawing',
+        act: 'create',
+        text: `新建图纸 ${drawing.no}`,
+        detail: { partCount: structureParts.length, fileCount: allFiles.length },
+      })
+      await persist()
     } catch (saveError) {
       drawings.value = originalDrawings
       structure.value = originalStructure
+      const failedActivityId = activityLog?.id
+      if (failedActivityId) logs.value = logs.value.filter((item) => item.id !== failedActivityId)
       await persist().catch(() => undefined)
       await Promise.all(uploadedKeys.map((storageKey) => dataManager.deleteAttachment(storageKey).catch(() => undefined)))
       throw saveError
@@ -464,17 +549,18 @@ export const useDomainStore = defineStore('domain', () => {
       desc: `从 ${sourceNo} 分叉生成全新项目工程`,
     }
 
-    const activityLog: ActivityLog = {
-      user: operator,
+    const activityLog = recordActivity({
+      drawingNo: newDrawingNo,
+      drawingName: forkedDrawing.name,
+      targetType: 'branch',
       act: 'branch',
-      txt: `从图纸 <b>${sourceNo}</b> 分叉创建了新项目 <b>${newDrawingNo}</b>`,
-      time: nowLabel(),
-    }
+      text: `从图纸 <b>${sourceNo}</b> 分叉创建了新项目 <b>${newDrawingNo}</b>`,
+      detail: { sourceDrawingNo: sourceNo, newDrawingNo, partCount: forkedParts.length },
+    })
 
     drawings.value.unshift(forkedDrawing)
     structure.value.push(...forkedParts)
     branches.value.unshift(branchRecord)
-    logs.value.unshift(activityLog)
 
     try {
       const fileCopies = [
@@ -507,7 +593,8 @@ export const useDomainStore = defineStore('domain', () => {
       const partNos = new Set(forkedParts.map((p) => p.no))
       structure.value = structure.value.filter((p) => !partNos.has(p.no))
       branches.value = branches.value.filter((b) => b !== branchRecord)
-      logs.value = logs.value.filter((l) => l !== activityLog)
+      logs.value = logs.value.filter((item) => item.id !== activityLog.id)
+      await persist().catch(() => undefined)
       await Promise.all(uploadedKeys.map((key) => dataManager.deleteAttachment(key).catch(() => undefined)))
       throw saveError
     }
@@ -532,6 +619,15 @@ export const useDomainStore = defineStore('domain', () => {
       part.files = [file]
       part.hasFile = true
       structure.value.push(part)
+      await persist()
+      recordActivity({
+        drawingNo: part.no,
+        drawingName: part.name,
+        targetType: 'part',
+        act: 'create',
+        text: `创建零件图 ${part.no}`,
+        detail: { parentNo: parentNo, fileName: file.name },
+      })
       await persist()
     } catch (saveError) {
       const insertedIndex = structure.value.findIndex((item) => item.no === part.no)
@@ -561,6 +657,15 @@ export const useDomainStore = defineStore('domain', () => {
       target.hasFile = true
       if ('updated' in target) target.updated = nowLabel()
       await persist()
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'upload',
+        text: `上传图纸文件 <b>${file.name}</b> 到 <b>${target.no}</b>`,
+        detail: { fileId: file.id, fileName: file.name, version: file.version, role: file.role },
+      })
+      await persist()
     } catch (saveError) {
       target.files = originalFiles
       target.hasFile = originalHasFile
@@ -587,6 +692,15 @@ export const useDomainStore = defineStore('domain', () => {
       storageKey = await saveAttachmentContent(file, content)
       target.otherFiles = [...otherFiles, file]
       await persist()
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'upload',
+        text: `上传其他文件 <b>${file.name}</b> 到 <b>${target.no}</b>`,
+        detail: { fileId: file.id, fileName: file.name, version: file.version, role: 'other' },
+      })
+      await persist()
     } catch (saveError) {
       target.otherFiles = originalFiles
       if (storageKey) await dataManager.deleteAttachment(storageKey).catch(() => undefined)
@@ -605,6 +719,15 @@ export const useDomainStore = defineStore('domain', () => {
     try {
       await persist()
       if (file.storageKey) await dataManager.deleteAttachment(file.storageKey)
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'delete',
+        text: `删除其他文件 <b>${file.name}</b>`,
+        detail: { fileId: file.id, fileName: file.name, role: 'other' },
+      })
+      await persist()
     } catch (deleteError) {
       target.otherFiles = otherFiles
       await persist().catch(() => undefined)
@@ -626,6 +749,15 @@ export const useDomainStore = defineStore('domain', () => {
     try {
       await persist()
       if (file.storageKey) await dataManager.deleteAttachment(file.storageKey)
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'delete',
+        text: `删除图纸文件 <b>${file.name}</b>`,
+        detail: { fileId: file.id, fileName: file.name, role: file.role },
+      })
+      await persist()
     } catch (deleteError) {
       target.files = originalFiles
       target.hasFile = originalHasFile
@@ -664,6 +796,15 @@ export const useDomainStore = defineStore('domain', () => {
       }
 
       await persist()
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'upload',
+        text: `上传备料表 <b>${file.name}</b>`,
+        detail: { fileId: file.id, fileName: file.name, version: file.version, importedCount },
+      })
+      await persist()
       return { importedCount }
     } catch (saveError) {
       target.materialFiles = originalMaterialFiles
@@ -687,6 +828,15 @@ export const useDomainStore = defineStore('domain', () => {
     try {
       await persist()
       if (file.storageKey) await dataManager.deleteAttachment(file.storageKey)
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'delete',
+        text: `删除备料表 <b>${file.name}</b>`,
+        detail: { fileId: file.id, fileName: file.name },
+      })
+      await persist()
     } catch (deleteError) {
       target.materialFiles = originalMaterialFiles
       bomItems.value = originalBom
@@ -708,6 +858,15 @@ export const useDomainStore = defineStore('domain', () => {
       storageKey = await saveAttachmentContent(file, content)
       attachments.craftFiles.unshift(file)
       craftFiles.value = [file, ...craftFiles.value.filter((item) => item.id !== file.id)]
+      await persist()
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'upload',
+        text: `上传工艺文件 <b>${file.name}</b>`,
+        detail: { fileId: file.id, fileName: file.name, version: file.ver, operation: file.op },
+      })
       await persist()
     } catch (saveError) {
       target.craftFiles = originalCraftFiles
@@ -732,6 +891,15 @@ export const useDomainStore = defineStore('domain', () => {
     try {
       await persist()
       if (file.storageKey) await dataManager.deleteAttachment(file.storageKey)
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'delete',
+        text: `删除工艺文件 <b>${file.name}</b>`,
+        detail: { fileId: file.id, fileName: file.name },
+      })
+      await persist()
     } catch (deleteError) {
       target.craftFiles = originalCraftFiles
       craftFiles.value = originalGlobalCraftFiles
@@ -749,6 +917,14 @@ export const useDomainStore = defineStore('domain', () => {
     anchor.download = file.name
     anchor.click()
     URL.revokeObjectURL(url)
+    recordActivity({
+      drawingNo: ('partNo' in file && file.partNo) ? file.partNo : file.drawingNo,
+      targetType: 'file',
+      act: 'download',
+      text: `下载文件 <b>${file.name}</b>`,
+      detail: { fileId: file.id, fileName: file.name },
+    })
+    await persist()
   }
 
   async function startReview(drawingNo: string, initiator?: string): Promise<void> {
@@ -797,11 +973,13 @@ export const useDomainStore = defineStore('domain', () => {
         time: nowLabel(),
       })
     })
-    logs.value.unshift({
-      user: designUser,
+    recordActivity({
+      drawingNo,
+      drawingName: target.name,
+      targetType: 'review',
       act: 'check',
-      txt: `为图纸 <b>${drawingNo}</b> 发起了图纸审核流程`,
-      time: nowLabel(),
+      text: `为图纸 <b>${drawingNo}</b> 发起了图纸审核流程`,
+      detail: { reviewCaseId },
     })
     await persist()
   }
@@ -856,11 +1034,13 @@ export const useDomainStore = defineStore('domain', () => {
       }
     }
 
-    logs.value.unshift({
-      user: reviewer,
+    recordActivity({
+      drawingNo,
+      drawingName: target.name,
+      targetType: 'review',
       act: 'check',
-      txt: `审核图纸 <b>${drawingNo}</b>（节点：${nodeName}）：${action === 'pass' ? '通过' : '驳回'}`,
-      time: nowLabel(),
+      text: `审核图纸 <b>${drawingNo}</b>（节点：${nodeName}）：${action === 'pass' ? '通过' : '驳回'}`,
+      detail: { reviewCaseId: reviewCase.id, nodeName, result: action, opinion: node.opinion },
     })
     await persist()
   }
@@ -908,18 +1088,20 @@ export const useDomainStore = defineStore('domain', () => {
       ...(remark ? { remark } : { remark: undefined }),
     })
 
-    logs.value.unshift({
-      user: '当前用户',
+    const activityLog = recordActivity({
+      drawingNo: partNo,
+      drawingName: part.name,
+      targetType: 'part',
       act: 'edit',
-      txt: `更新零件图 <b>${partNo}</b> 属性：材料 ${material} · 规格 ${spec || '未填写'} · 数量 ×${payload.qty}`,
-      time: nowLabel(),
+      text: `更新零件图 <b>${partNo}</b> 属性：材料 ${material} · 规格 ${spec || '未填写'} · 数量 ×${payload.qty}`,
+      detail: { changedFields: payload },
     })
 
     try {
       await persist()
     } catch (saveError) {
       Object.assign(part, original)
-      logs.value.shift()
+      logs.value = logs.value.filter((item) => item.id !== activityLog.id)
       throw saveError
     }
   }
@@ -935,6 +1117,15 @@ export const useDomainStore = defineStore('domain', () => {
     ) as SignerAssignments
     target.signers = signers
     try {
+      await persist()
+      recordActivity({
+        drawingNo,
+        drawingName: target.name,
+        targetType: 'drawing',
+        act: 'edit',
+        text: `修改图纸 <b>${drawingNo}</b> 的签署人员`,
+        detail: { before: originalSigners ?? {}, after: signers },
+      })
       await persist()
     } catch (saveError) {
       target.signers = originalSigners
@@ -1057,6 +1248,8 @@ export const useDomainStore = defineStore('domain', () => {
     reviewCount,
     drawingStats,
     initialize,
+    recordActivity,
+    recordActivityAndPersist,
     openDrawing,
     clearCurrentDrawing,
     getReviewCase,

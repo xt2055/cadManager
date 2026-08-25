@@ -23,11 +23,14 @@ const todayText = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'lo
 
 const feedIcons: Record<string, string> = {
   view: 'eye',
+  create: 'plus',
   edit: 'pencil',
   branch: 'git-branch',
-  borrow: 'share-2',
+  upload: 'upload',
+  download: 'download',
+  delete: 'trash-2',
   check: 'check-circle-2',
-  back: 'undo-2',
+  parse: 'file-search',
 }
 
 const stats = computed(() => {
@@ -82,7 +85,7 @@ function openReview(no: string) {
       <div class="card">
         <div class="card-title">
           <DemoIcon name="activity" :size="16" />最近动态
-          <span class="hint">谁查看 · 谁修改 · 谁分叉 · 谁借用</span>
+          <span class="hint">谁查看 · 谁修改 · 谁分叉 · 谁上传</span>
         </div>
         <div class="feed">
           <div v-for="item in domainStore.logs" :key="`${item.user}-${item.time}-${item.txt}`" class="feed-item">

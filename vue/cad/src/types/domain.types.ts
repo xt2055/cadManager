@@ -1,6 +1,22 @@
 export type DrawingStatus = 'published' | 'reviewing' | 'draft' | 'hidden' | 'disabled'
 
-export type ActivityType = 'view' | 'edit' | 'branch' | 'borrow' | 'check' | 'back'
+export type ActivityType = 'view' | 'create' | 'edit' | 'branch' | 'upload' | 'download' | 'delete' | 'check' | 'parse'
+
+export type ActivityTargetType = 'drawing' | 'part' | 'file' | 'review' | 'branch'
+
+export type ActivityResult = 'success' | 'failed'
+
+export const ACTIVITY_LABELS: Record<ActivityType, string> = {
+  view: '查看图纸',
+  create: '新建图纸',
+  edit: '修改图纸',
+  branch: '创建分支',
+  upload: '上传文件',
+  download: '下载文件',
+  delete: '删除文件',
+  check: '审核操作',
+  parse: '解析 EXB',
+}
 
 export interface DrawingSigners {
   设计: string
@@ -80,10 +96,18 @@ export interface Drawing {
 }
 
 export interface ActivityLog {
+  id: string
+  drawingNo: string
+  drawingName: string
+  targetType: ActivityTargetType
+  userId?: string
   user: string
   act: ActivityType
   txt: string
   time: string
+  occurredAt: string
+  result: ActivityResult
+  detail?: Record<string, unknown>
 }
 
 export interface StructurePart {

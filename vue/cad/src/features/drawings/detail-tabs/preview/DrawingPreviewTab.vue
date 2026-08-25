@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import CadVectorViewer from './CadVectorViewer.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
@@ -78,6 +79,12 @@ const hasAssemblyFile = computed(() => {
 
 // 当前正在全屏/画布预览的文件
 const activePreviewFile = ref<DrawingFile | null>(null)
+const cadDxfUrl = ref<string | null>(null)
+const cadViewerRef = ref<InstanceType<typeof CadVectorViewer> | null>(null)
+const viewerWrapperRef = ref<HTMLElement | null>(null)
+
+// 动态图层状态
+const dynamicLayers = ref<Array<{ name: string; color: string; visible: boolean }>>([])
 
 // CAD 画布控制状态
 const canvasRef = ref<HTMLElement | null>(null)
@@ -118,9 +125,41 @@ function formatFileSize(bytes: number): string {
 function openBrowse(file: DrawingFile) {
   activePreviewFile.value = file
   resetView()
+  dynamicLayers.value = []
+
+  const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
+  if (isCad) {
+    const storageKey = file.storageKey
+    const params = new URLSearchParams()
+    if (storageKey) {
+      params.set('storageKey', storageKey)
+    } else {
+      params.set('drawingNo', file.drawingNo)
+      if (file.partNo) params.set('partNo', file.partNo)
+      params.set('fileName', file.name)
+    }
+    const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+    cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
+  } else {
+    cadDxfUrl.value = null
+  }
+
+  // 浏览器区域位于文件列表上方，打开后主动滚动到用户可见位置。
+  void nextTick(() => {
+    viewerWrapperRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+
+  void domainStore.recordActivityAndPersist({
+    drawingNo: file.partNo || file.drawingNo,
+    targetType: 'file',
+    act: 'view',
+    text: `浏览文件 <b>${file.name}</b>`,
+    detail: { fileId: file.id, fileName: file.name },
+  })
 }
 
 function closeBrowse() {
+  cadDxfUrl.value = null
   activePreviewFile.value = null
 }
 
@@ -131,6 +170,19 @@ function resetView() {
   measuring.value = false
   measureStart.value = null
   measureEnd.value = null
+  cadViewerRef.value?.resetView()
+}
+
+function handleLayersLoaded(layers: Array<{ name: string; color: string; visible: boolean }>) {
+  dynamicLayers.value = layers
+}
+
+function toggleDynamicLayer(layer: { name: string; color: string; visible: boolean }) {
+  cadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
+}
+
+function handleZoomChange(val: number) {
+  zoom.value = val
 }
 
 async function handleDeleteFile(file: DrawingFile) {
@@ -186,7 +238,7 @@ async function onAssemblyFileChange(event: Event) {
   try {
     await domainStore.uploadDrawingFile(currentItem.value.no, newFile, file)
     uiStore.toast(`总图文件「${file.name}」上传成功`, 'ok')
-    activePreviewFile.value = newFile
+    openBrowse(newFile)
   } catch (error) {
     console.error('上传总图失败', error)
     uiStore.toast('上传总图失败', 'warn')
@@ -416,7 +468,7 @@ function toggleFullscreen() {
     </div>
 
     <!-- 主展示区：若处于“浏览模式”，优先展示 CAD 画布，并附带侧边/顶部收起条 -->
-    <div v-if="activePreviewFile" class="viewer-wrapper card">
+    <div v-if="activePreviewFile" ref="viewerWrapperRef" class="viewer-wrapper card">
       <div class="viewer-top-bar">
         <div class="current-browsing-meta">
           <span class="tag" :class="activePreviewFile.role === 'assembly' ? 'plain' : activePreviewFile.role === 'other' ? 'mute' : 'info'">
@@ -475,36 +527,54 @@ function toggleFullscreen() {
 
       <div class="v-main">
         <aside class="layer-panel" :class="{ hidden: !layerPanel }">
-          <div class="lp-title">LAYERS · 图层</div>
-          <label
-            v-for="item in [
-              ['ly-outline', '轮廓线', 'var(--cad-line)'],
-              ['ly-center', '中心线', 'var(--cad-center)'],
-              ['ly-dim', '标注', 'var(--cad-dim)'],
-              ['ly-hatch', '剖面线', 'var(--cad-hatch)'],
-              ['ly-frame', '图框', 'var(--cad-frame)'],
-            ]"
-            :key="item[0]"
-            class="layer-item"
-          >
-            <input v-model="visibleLayers[item[0]]" type="checkbox" />
-            <span>{{ item[1] }}</span>
-            <span class="ly-swatch" :style="{ background: item[2] }"></span>
-          </label>
+          <div class="lp-title">LAYERS · 图层 ({{ dynamicLayers.length || 5 }})</div>
+          <template v-if="dynamicLayers.length">
+            <label
+              v-for="layer in dynamicLayers"
+              :key="layer.name"
+              class="layer-item"
+            >
+              <input v-model="layer.visible" type="checkbox" @change="toggleDynamicLayer(layer)" />
+              <span>{{ layer.name }}</span>
+              <span class="ly-swatch" :style="{ background: layer.color }"></span>
+            </label>
+          </template>
+          <template v-else>
+            <label
+              v-for="item in [
+                ['ly-outline', '轮廓线', 'var(--cad-line)'],
+                ['ly-center', '中心线', 'var(--cad-center)'],
+                ['ly-dim', '标注', 'var(--cad-dim)'],
+                ['ly-hatch', '剖面线', 'var(--cad-hatch)'],
+                ['ly-frame', '图框', 'var(--cad-frame)'],
+              ]"
+              :key="item[0]"
+              class="layer-item"
+            >
+              <input v-model="visibleLayers[item[0]]" type="checkbox" />
+              <span>{{ item[1] }}</span>
+              <span class="ly-swatch" :style="{ background: item[2] }"></span>
+            </label>
+          </template>
         </aside>
 
         <div
           ref="canvasRef"
           class="v-canvas"
           :class="{ dragging, measuring }"
-          @wheel.prevent="zoomAt"
-          @pointerdown="handlePointerDown"
-          @pointermove="handlePointerMove"
-          @pointerup="handlePointerUp"
-          @pointercancel="handlePointerUp"
-          @click="handleCanvasClick"
         >
-          <div class="cad-stage" :style="{ transform }">
+          <!-- 真实矢量 CAD 渲染引擎 -->
+          <CadVectorViewer
+            v-if="cadDxfUrl"
+            ref="cadViewerRef"
+            :dxf-url="cadDxfUrl"
+            :file-name="activePreviewFile.name"
+            @layers-loaded="handleLayersLoaded"
+            @zoom-change="handleZoomChange"
+          />
+
+          <!-- 默认矢量图框预览（回退演示） -->
+          <div v-else class="cad-stage" :style="{ transform }">
             <svg id="cadSvg" width="1000" height="660" viewBox="0 0 1000 660">
               <defs>
                 <marker
@@ -591,25 +661,11 @@ function toggleFullscreen() {
                 <line class="dim" x1="550" y1="118" x2="830" y2="118" marker-start="url(#arr)" marker-end="url(#arr)" />
                 <text class="txt" x="690" y="111" text-anchor="middle">280</text>
               </g>
-
-              <g v-if="measureStart" class="measure-layer">
-                <circle :cx="measureStart.x" :cy="measureStart.y" r="5" fill="var(--accent)" stroke="var(--cad-bg)" stroke-width="2" />
-                <g v-if="measureEnd">
-                  <line
-                    :x1="measureStart.x"
-                    :y1="measureStart.y"
-                    :x2="measureEnd.x"
-                    :y2="measureEnd.y"
-                    stroke="var(--accent)"
-                    stroke-width="1.6"
-                    stroke-dasharray="7 4"
-                  />
-                  <circle :cx="measureEnd.x" :cy="measureEnd.y" r="5" fill="var(--accent)" stroke="var(--cad-bg)" stroke-width="2" />
-                </g>
-              </g>
             </svg>
           </div>
-          <div class="v-hud">{{ activePreviewFile.name }} · 比例 1:2 · 矢量图框</div>
+          <div class="v-hud">
+            {{ activePreviewFile.name }} · {{ cadDxfUrl ? 'WebGL 矢量渲染' : '标准图框' }} · 缩放 {{ zoomText }}
+          </div>
         </div>
       </div>
     </div>
@@ -904,6 +960,67 @@ function toggleFullscreen() {
   width: 1000px;
   height: 660px;
   transform-origin: 0 0;
+}
+
+.cad-stage.image-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.exb-preview-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  border-radius: 4px;
+}
+
+.preview-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--cad-dim);
+  font-size: 13px;
+}
+
+.preview-error-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(520px, calc(100% - 24px));
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d97706) 45%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 92%, #d97706 8%);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.preview-error-overlay p,
+.preview-error-overlay small {
+  margin: 0;
+}
+
+.preview-error-overlay small {
+  color: var(--text-3);
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .v-hud {

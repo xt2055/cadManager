@@ -18,9 +18,10 @@ export class ApiDataProvider implements DataProvider {
   }
 
   async save(document: DataDocument): Promise<void> {
+    const payload = { ...document, logs: [] }
     await this.request('/data/document', {
       method: 'PUT',
-      body: JSON.stringify(document),
+      body: JSON.stringify(payload),
     })
   }
 

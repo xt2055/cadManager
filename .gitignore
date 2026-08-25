@@ -1,0 +1,34 @@
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Go / Binary
+go/bin/
+*.exe
+*.obj
+*.lib
+*.exp
+*.pch
+*.done
+
+# Storage / Temp
+go/storage/attachments/
+tools/exb2dxf/sample-output*
+tools/exb2dxf/test*
+tools/exb2dxf/plugin/*.obj
+tools/exb2dxf/plugin/*.lib
+tools/exb2dxf/plugin/*.exp
+tools/exb2dxf/plugin/*.pch
+
+# Env
+.env
+.env.*.local

@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 
 	"cadguanliq/internal/attachment"
+	"cadguanliq/internal/audit"
 	"cadguanliq/internal/auth"
 	"cadguanliq/internal/config"
+	"cadguanliq/internal/converter"
 	"cadguanliq/internal/data"
 	"cadguanliq/internal/drawing"
 	"cadguanliq/internal/http/handlers"
@@ -40,9 +43,15 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	if storageErr != nil {
 		panic(storageErr)
 	}
-	mux.Handle("/api/attachments", drawingHandler(handlers.UploadAttachment(attachmentRepository, attachmentStorage, cfg.MaxUploadBytes)))
+	convService := converter.NewService(attachmentRepository, attachmentStorage, cfg.Dwg2DxfBin, cfg.CaxaBin)
+	convService.Start(context.Background())
+
+	mux.Handle("/api/attachments", drawingHandler(handlers.UploadAttachment(attachmentRepository, attachmentStorage, convService, cfg.MaxUploadBytes)))
 	mux.Handle("/api/attachments/", drawingHandler(handlers.AttachmentResource(attachmentRepository, attachmentStorage)))
 	mux.Handle("/api/exb/parse", drawingHandler(handlers.ParseEXB(attachmentRepository, attachmentStorage)))
+	mux.Handle("/api/exb/preview", drawingHandler(handlers.PreviewEXB(attachmentRepository, attachmentStorage, convService)))
+	auditRepository := audit.NewPGRepository(pool)
+	mux.Handle("/api/drawing-operation-logs", drawingHandler(handlers.DrawingOperationLogs(auditRepository)))
 	mux.HandleFunc("/api/updates/latest", handlers.UpdateLatest(cfg))
 
 	var handler http.Handler = mux

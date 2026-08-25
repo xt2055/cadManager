@@ -18,6 +18,8 @@ type Config struct {
 	UpdateMandatory bool
 	StorageRoot     string
 	MaxUploadBytes  int64
+	Dwg2DxfBin      string
+	CaxaBin         string
 	Database        DatabaseConfig
 }
 
@@ -46,6 +48,8 @@ func Load() Config {
 		UpdateMandatory: getenvBool("UPDATE_MANDATORY", false),
 		StorageRoot:     getenv("CAD_STORAGE_ROOT", "./storage/attachments"),
 		MaxUploadBytes:  int64(getenvInt("CAD_MAX_UPLOAD_MB", 100)) * 1024 * 1024,
+		Dwg2DxfBin:      getenv("CAD_DWG2DXF_BIN", "./tools/exb2dxf/ok/dwg2dxf.exe"),
+		CaxaBin:         os.Getenv("CAD_CAXA_BIN"),
 		Database: DatabaseConfig{
 			Host:            getenv("CAD_DB_HOST", "127.0.0.1"),
 			Port:            uint16(getenvInt("CAD_DB_PORT", 5432)),

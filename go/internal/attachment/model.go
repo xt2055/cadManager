@@ -40,6 +40,9 @@ type CreateInput struct {
 type Repository interface {
 	Create(ctx context.Context, input CreateInput, object StorageObject, userID string) (Attachment, error)
 	Find(ctx context.Context, storageKey string) (Attachment, error)
+	FindByOwnerAndName(ctx context.Context, drawingNo, partNo, name string) (Attachment, error)
+	ListAllExb(ctx context.Context) ([]Attachment, error)
+	ListAllCad(ctx context.Context) ([]Attachment, error)
 	Delete(ctx context.Context, storageKey string, userID string) error
 	FolderForDrawing(ctx context.Context, drawingNo string) (string, error)
 }

@@ -272,6 +272,17 @@ def probe(path: Path, include_texts: bool = False) -> dict[str, Any]:
         "title_block": extract_title_block_fields(all_texts),
     }
     preview = next((item for item in streams if item["name"] == "*PreviewStream"), None)
+    has_preview_image = False
+    with olefile.OleFileIO(path) as document:
+        if preview and document.exists(["*PreviewStream"]):
+            try:
+                p_stream = document.openstream(["*PreviewStream"]).read()
+                bmp_idx = p_stream.find(b"BM")
+                if bmp_idx != -1:
+                    has_preview_image = True
+            except Exception:
+                pass
+
     result = {
         "file": str(path),
         "format": "OLE2/CFB",
@@ -280,22 +291,51 @@ def probe(path: Path, include_texts: bool = False) -> dict[str, Any]:
         "streams": streams,
         "fields": fields,
         "preview_stream": preview,
+        "has_preview_image": has_preview_image,
     }
     if include_texts:
         result["texts"] = all_texts
     return result
 
 
+def extract_preview_image(path: Path) -> bytes:
+    """提取 EXB 内部内嵌的预览位图 (BMP)。"""
+    ole = olefile.OleFileIO(path)
+    if not ole.exists(["*PreviewStream"]):
+        raise ValueError("EXB 文件中没有 *PreviewStream")
+    stream = ole.openstream(["*PreviewStream"]).read()
+    idx = stream.find(b"BM")
+    if idx == -1:
+        raise ValueError("预览流中未找到有效 BMP 图像")
+    bmp = stream[idx:]
+    if len(bmp) >= 6:
+        import struct
+        file_size, = struct.unpack("<I", bmp[2:6])
+        if 54 <= file_size <= len(bmp):
+            return bmp[:file_size]
+    return bmp
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="读取 CAXA EXB 内部可识别文本")
+    parser = argparse.ArgumentParser(description="读取 CAXA EXB 内部可识别文本与预览图")
     parser.add_argument("file", type=Path, help="EXB 文件路径")
     parser.add_argument("-o", "--output", type=Path, help="JSON 输出路径，默认输出到标准输出")
+    parser.add_argument("--extract-preview", type=Path, help="提取预览图并保存为 BMP/PNG 文件")
     parser.add_argument("--include-texts", action="store_true", help="额外输出全部调试文本对象")
     args = parser.parse_args()
 
     if not args.file.is_file():
         print(f"文件不存在：{args.file}", file=sys.stderr)
         return 2
+
+    if args.extract_preview:
+        try:
+            bmp_bytes = extract_preview_image(args.file)
+            args.extract_preview.write_bytes(bmp_bytes)
+            return 0
+        except Exception as error:
+            print(f"提取预览图失败：{error}", file=sys.stderr)
+            return 1
 
     try:
         result = probe(args.file, include_texts=args.include_texts)

@@ -1,0 +1,68 @@
+import type { ActivityLog, ActivityResult, ActivityTargetType, ActivityType } from '@/types/domain.types'
+
+interface OperationLogInput {
+  drawingNo: string
+  drawingName?: string
+  targetType: ActivityTargetType
+  act: ActivityType
+  txt: string
+  result?: ActivityResult
+  detail?: Record<string, unknown>
+}
+
+interface OperationLogPage {
+  list: ActivityLog[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function unwrap<T>(body: unknown): T {
+  if (isRecord(body) && typeof body.code === 'number' && 'data' in body) {
+    if (body.code !== 0 && body.code !== 200) throw new Error(typeof body.message === 'string' ? body.message : '图纸操作日志接口返回失败')
+    return body.data as T
+  }
+  return body as T
+}
+
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  const token = typeof window !== 'undefined'
+    ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
+    : null
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
+}
+
+const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+
+export async function createDrawingOperationLog(input: OperationLogInput): Promise<ActivityLog> {
+  const response = await fetch(`${baseUrl}/drawing-operation-logs`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(input),
+  })
+  if (!response.ok) throw new Error(`图纸操作日志保存失败：HTTP ${response.status}`)
+  return unwrap<ActivityLog>(await response.json())
+}
+
+export async function listDrawingOperationLogs(options: { page?: number; pageSize?: number; action?: ActivityType; drawingNo?: string } = {}): Promise<OperationLogPage> {
+  const query = new URLSearchParams({
+    page: String(options.page ?? 1),
+    page_size: String(options.pageSize ?? 100),
+  })
+  if (options.action) query.set('action', options.action)
+  if (options.drawingNo) query.set('drawing_no', options.drawingNo)
+  const response = await fetch(`${baseUrl}/drawing-operation-logs?${query}`, {
+    method: 'GET',
+    headers: authHeaders(),
+    credentials: 'include',
+  })
+  if (!response.ok) throw new Error(`图纸操作日志读取失败：HTTP ${response.status}`)
+  return unwrap<OperationLogPage>(await response.json())
+}

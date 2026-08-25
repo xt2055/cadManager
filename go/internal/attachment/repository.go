@@ -105,6 +105,78 @@ func (repository *PGRepository) Find(ctx context.Context, storageKey string) (At
 	return item, nil
 }
 
+func (repository *PGRepository) FindByOwnerAndName(ctx context.Context, drawingNo, partNo, name string) (Attachment, error) {
+	var storageKey string
+	err := repository.pool.QueryRow(ctx, `
+		SELECT a.storage_key
+		FROM attachments a
+		LEFT JOIN drawings d ON d.id = a.drawing_id
+		LEFT JOIN structure_parts p ON p.id = a.part_id
+		LEFT JOIN drawings parent ON parent.id = p.drawing_id
+		WHERE a.original_name = $3
+		  AND a.deleted_at IS NULL
+		  AND COALESCE(d.drawing_no, parent.drawing_no, '') = $1
+		  AND ($2 = '' OR p.part_no = $2)
+		ORDER BY a.created_at DESC
+		LIMIT 1`, drawingNo, partNo, name).Scan(&storageKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Attachment{}, ErrNotFound
+	}
+	if err != nil {
+		return Attachment{}, fmt.Errorf("按图号和文件名查询附件失败: %w", err)
+	}
+	return repository.Find(ctx, storageKey)
+}
+
+func (repository *PGRepository) ListAllCad(ctx context.Context) ([]Attachment, error) {
+	if repository == nil || repository.pool == nil {
+		return nil, nil
+	}
+	rows, err := repository.pool.Query(ctx, `
+		SELECT a.id::text, a.storage_key, a.original_name, COALESCE(d.drawing_no, parent.drawing_no, ''),
+		       p.part_no, a.file_role, a.size_bytes, a.mime_type, COALESCE(a.sha256, ''), a.version,
+		       a.previewable, COALESCE(a.uploaded_by::text, '')
+		FROM attachments a
+		LEFT JOIN drawings d ON d.id = a.drawing_id
+		LEFT JOIN structure_parts p ON p.id = a.part_id
+		LEFT JOIN drawings parent ON parent.id = p.drawing_id
+		WHERE (a.storage_key ILIKE '%.exb' OR a.original_name ILIKE '%.exb'
+		    OR a.storage_key ILIKE '%.dwg' OR a.original_name ILIKE '%.dwg')
+		  AND a.deleted_at IS NULL
+		ORDER BY a.created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("查询所有 CAD 附件失败: %w", err)
+	}
+	defer rows.Close()
+
+	var list []Attachment
+	for rows.Next() {
+		var item Attachment
+		var role string
+		var drawingNo string
+		var partNo *string
+		var uploadedBy *string
+		if err := rows.Scan(
+			&item.ID, &item.StorageKey, &item.Name, &drawingNo, &partNo, &role, &item.Size, &item.MimeType,
+			&item.SHA256, &item.Version, &item.Previewable, &uploadedBy,
+		); err != nil {
+			return nil, err
+		}
+		item.DrawingNo = drawingNo
+		item.PartNo = partNo
+		item.Role = Role(role)
+		if uploadedBy != nil {
+			item.UploadedBy = *uploadedBy
+		}
+		list = append(list, item)
+	}
+	return list, nil
+}
+
+func (repository *PGRepository) ListAllExb(ctx context.Context) ([]Attachment, error) {
+	return repository.ListAllCad(ctx)
+}
+
 func (repository *PGRepository) Delete(ctx context.Context, storageKey string, userID string) error {
 	result, err := repository.pool.Exec(ctx, `
 		UPDATE attachments

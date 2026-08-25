@@ -1,4 +1,5 @@
 import type {
+  ActivityType,
   ActivityLog,
   AdminLog,
   BomItem,
@@ -131,6 +132,36 @@ function stableId(prefix: string, value: string): string {
     hash = Math.imul(hash, 16777619)
   }
   return `${prefix}-${(hash >>> 0).toString(36)}`
+}
+
+function normalizeActivityLogs(value: unknown): ActivityLog[] {
+  return readArray<unknown>(value).map((item, index) => {
+    const source = isRecord(item) ? item : {}
+    const occurredAt = asString(source.occurredAt, asString(source.time, '历史记录'))
+    const act: ActivityType = source.act === 'view' || source.act === 'create' || source.act === 'edit'
+      || source.act === 'branch' || source.act === 'upload' || source.act === 'download'
+      || source.act === 'delete' || source.act === 'check' || source.act === 'parse'
+      ? source.act
+      : 'edit'
+    const text = asString(source.txt, '记录了一次图纸操作')
+    const drawingNo = asString(source.drawingNo, text.match(/<b>([^<]+)<\/b>/)?.[1] ?? '')
+    return {
+      id: asString(source.id, stableId('drawing-log', `${drawingNo}|${occurredAt}|${index}`)),
+      drawingNo,
+      drawingName: asString(source.drawingName, drawingNo || '未指定图纸'),
+      targetType: source.targetType === 'part' || source.targetType === 'file' || source.targetType === 'review' || source.targetType === 'branch'
+        ? source.targetType
+        : 'drawing',
+      ...(asString(source.userId) ? { userId: asString(source.userId) } : {}),
+      user: asString(source.user, '未知用户'),
+      act,
+      txt: text,
+      time: occurredAt,
+      occurredAt,
+      result: source.result === 'failed' ? 'failed' : 'success',
+      ...(isRecord(source.detail) ? { detail: source.detail } : {}),
+    }
+  })
 }
 
 function normalizeDrawingFile(
@@ -536,7 +567,7 @@ export function normalizeDataDocument(value: unknown): DataDocument {
     borrows: readArray<BorrowRecord>(source.borrows),
     bom: normalizeBom(source.bom, fallbackDrawingNo),
     crafts: craftFiles,
-    logs: readArray<ActivityLog>(source.logs),
+    logs: normalizeActivityLogs(source.logs),
     reviewCases,
     myReviews,
     completedReviews,

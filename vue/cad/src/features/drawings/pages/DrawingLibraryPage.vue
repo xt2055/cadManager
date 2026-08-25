@@ -62,7 +62,6 @@ function toggleMenu(no: string) {
 function menuAction(action: string, no: string) {
   menuFor.value = null
   if (action === 'detail') openDetail(no)
-  if (action === 'borrow') uiStore.openModal('borrow-drawing', '借用图纸')
   if (action === 'hide') uiStore.toast('图纸已隐藏：用户不可见，管理员可随时恢复，历史完整保留', 'warn')
 }
 </script>

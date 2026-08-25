@@ -10,12 +10,13 @@ import (
 	"strings"
 
 	"cadguanliq/internal/attachment"
+	"cadguanliq/internal/converter"
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
 	"cadguanliq/internal/storage"
 )
 
-func UploadAttachment(repository attachment.Repository, objectStorage storage.ObjectStorage, maxBytes int64) http.HandlerFunc {
+func UploadAttachment(repository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service, maxBytes int64) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := middleware.UserFromContext(request.Context())
 		if !ok {
@@ -109,6 +110,12 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 			writeAttachmentError(writer, err)
 			return
 		}
+
+		// 如果上传的是 EXB/DWG 文件，立即加入普通优先级转换队列
+		if convService != nil && (strings.EqualFold(filepathExt(name), ".exb") || strings.EqualFold(filepathExt(key), ".exb") || strings.EqualFold(filepathExt(name), ".dwg") || strings.EqualFold(filepathExt(key), ".dwg")) {
+			convService.PushJob(item, converter.PriorityNormal)
+		}
+
 		response.WriteData(writer, http.StatusCreated, item)
 	}
 }
