@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, defineAsyncComponent, onMounted } from 'vue'
 import DesktopTitleBar from './components/DesktopTitleBar/DesktopTitleBar.vue'
 import DesktopSidebar from './components/DesktopSidebar/DesktopSidebar.vue'
 import DesktopStatusBar from './components/DesktopStatusBar/DesktopStatusBar.vue'
@@ -7,6 +7,7 @@ import DemoModal from '@/components/feedback/DemoModal.vue'
 import DemoToast from '@/components/feedback/DemoToast.vue'
 import { windowService } from '@/services/tauri/window.service'
 import { useDomainStore } from '@/stores/domain.store'
+import { useThemeStore } from '@/stores/theme.store'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({
@@ -15,6 +16,9 @@ defineOptions({
 
 const domainStore = useDomainStore()
 const uiStore = useUiStore()
+const themeStore = useThemeStore()
+const isStarrySkin = computed(() => themeStore.skin === 'starry')
+const StarryGalaxy = defineAsyncComponent(() => import('@/components/common/StarryGalaxy.vue'))
 
 onMounted(async () => {
   const initializePromise = domainStore.initialize().catch((error: unknown) => {
@@ -34,7 +38,7 @@ onMounted(async () => {
 
 <template>
   <div class="bg-fx">
-    <div class="starfield"></div>
+    <StarryGalaxy v-if="isStarrySkin" />
     <div class="bg-grid"></div>
     <div class="orb o1"></div>
     <div class="orb o2"></div>

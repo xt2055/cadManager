@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, defineAsyncComponent, onMounted } from 'vue'
 
 import DemoModal from '@/components/feedback/DemoModal.vue'
 import DemoToast from '@/components/feedback/DemoToast.vue'
@@ -7,6 +7,7 @@ import DesktopStatusBar from '@/layouts/components/DesktopStatusBar/DesktopStatu
 import DesktopTitleBar from '@/layouts/components/DesktopTitleBar/DesktopTitleBar.vue'
 import { windowService } from '@/services/tauri/window.service'
 import { useDomainStore } from '@/stores/domain.store'
+import { useThemeStore } from '@/stores/theme.store'
 import { useUiStore } from '@/stores/ui.store'
 import AdminSidebar from '../components/AdminSidebar.vue'
 
@@ -14,6 +15,9 @@ defineOptions({ name: 'AdminLayout' })
 
 const domainStore = useDomainStore()
 const uiStore = useUiStore()
+const themeStore = useThemeStore()
+const isStarrySkin = computed(() => themeStore.skin === 'starry')
+const StarryGalaxy = defineAsyncComponent(() => import('@/components/common/StarryGalaxy.vue'))
 
 onMounted(async () => {
   const initializePromise = domainStore.initialize().catch((error: unknown) => {
@@ -30,7 +34,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="bg-fx"><div class="starfield"></div><div class="bg-grid"></div><div class="orb o1"></div><div class="orb o2"></div></div>
+  <div class="bg-fx"><StarryGalaxy v-if="isStarrySkin" /><div class="bg-grid"></div><div class="orb o1"></div><div class="orb o2"></div></div>
   <section class="admin-workspace app-shell layout-expand-in">
     <DesktopTitleBar />
     <div id="layout">
