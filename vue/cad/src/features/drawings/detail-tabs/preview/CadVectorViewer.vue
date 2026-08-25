@@ -346,7 +346,16 @@ function redraw() {
               ctx.textBaseline = valign === 3 ? 'top' : (valign === 2 || halign === 4) ? 'middle' : (valign === 1 ? 'bottom' : 'alphabetic')
             }
 
-            const rotDeg = e.rotation || 0
+            // 计算文字旋转角度（MTEXT 优先采用 directionVector 方向向量，TEXT 采用 rotation）
+            let rotDeg = e.rotation || 0
+            if (e.type === 'MTEXT' && e.directionVector) {
+              const dx = e.directionVector.x || 0
+              const dy = e.directionVector.y || 0
+              if (dx !== 0 || dy !== 0) {
+                rotDeg = (Math.atan2(dy, dx) * 180) / Math.PI
+              }
+            }
+
             if (rotDeg !== 0) {
               ctx.translate(pos.x, pos.y)
               ctx.rotate((-rotDeg * Math.PI) / 180)
