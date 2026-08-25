@@ -155,7 +155,7 @@ class AttribEntityHandler {
   }
 }
 
-// 预处理 DXF 字节流：缝合因 DXF 单行 250 字节限制被拆分在组码 3 与组码 1 之间的多字节中文字符（防止汉字字节被换行切成两半产生雪崩乱码）
+// 预处理 DXF 字节流：仅精准缝合 MTEXT 超长文本连续组码（组码 3 紧跟组码 1 或 3）的跨行中文字节断裂，绝不误伤其它组码与图层颜色定义
 function mergeDxfMTextSplitBytes(buffer: ArrayBuffer): ArrayBuffer {
   const bytes = new Uint8Array(buffer)
   let binary = ''
@@ -164,13 +164,13 @@ function mergeDxfMTextSplitBytes(buffer: ArrayBuffer): ArrayBuffer {
     binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)))
   }
 
+  // 仅匹配组码 3 文本行后紧接着出现组码 1 或 3 的接续情况，移除中间的分割标记使字节流连续
   const pattern = /(\r?\n[ \t]*3\r?\n[^\r\n]*)\r?\n[ \t]*[13]\r?\n/g
   let prev = ''
   while (prev !== binary) {
     prev = binary
     binary = binary.replace(pattern, (match, p1) => p1)
   }
-  binary = binary.replace(/(\r?\n[ \t]*)3(\r?\n)/g, (match, p1, p2) => p1 + '1' + p2)
 
   const outBytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) {
