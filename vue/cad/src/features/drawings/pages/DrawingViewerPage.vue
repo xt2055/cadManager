@@ -77,11 +77,13 @@ function selectFile(file: DrawingFile) {
     const params = new URLSearchParams()
     if (storageKey) {
       params.set('storageKey', storageKey)
-    } else {
-      params.set('drawingNo', file.drawingNo)
-      if (file.partNo) params.set('partNo', file.partNo)
-      params.set('fileName', file.name)
     }
+    // 无论是否有 storageKey，都附带 drawingNo/partNo/fileName 作为双重保险，避免因分叉或局部引用丢失 storageKey 导致后端查找失败
+    if (file.drawingNo) params.set('drawingNo', file.drawingNo)
+    if (file.partNo) params.set('partNo', file.partNo)
+    params.set('fileName', file.name)
+    // 增加时间戳防缓存
+    params.set('_t', String(Date.now()))
     const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
     cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
   } else {

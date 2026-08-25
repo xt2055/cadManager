@@ -91,16 +91,18 @@ func PreviewEXB(repository attachment.Repository, objectStorage storage.ObjectSt
 		var err error
 		if storageKey != "" {
 			item, err = repository.Find(request.Context(), storageKey)
-		} else {
+		}
+		if err != nil || storageKey == "" {
 			fileName := strings.TrimSpace(request.URL.Query().Get("fileName"))
 			drawingNo := strings.TrimSpace(request.URL.Query().Get("drawingNo"))
 			partNo := strings.TrimSpace(request.URL.Query().Get("partNo"))
-			if fileName == "" || drawingNo == "" {
-				response.WriteError(writer, http.StatusBadRequest, "storageKey 或 drawingNo、fileName 必填")
-				return
+			if fileName != "" && drawingNo != "" {
+				if byOwnerItem, byOwnerErr := repository.FindByOwnerAndName(request.Context(), drawingNo, partNo, fileName); byOwnerErr == nil {
+					item = byOwnerItem
+					storageKey = item.StorageKey
+					err = nil
+				}
 			}
-			item, err = repository.FindByOwnerAndName(request.Context(), drawingNo, partNo, fileName)
-			storageKey = item.StorageKey
 		}
 		if err != nil {
 			if errors.Is(err, attachment.ErrNotFound) {
