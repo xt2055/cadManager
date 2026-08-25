@@ -155,23 +155,51 @@ class AttribEntityHandler {
   }
 }
 
-// 文字格式清洗并按换行拆分
-function parseCadTextLines(raw: string): string[] {
-  if (!raw) return []
-  const formatted = raw
+// 解析 CAD 文字并提取字号缩放及清洗后的文本
+function parseCadText(raw: string): { lines: string[]; fontScale: number } {
+  if (!raw) return { lines: [], fontScale: 1 }
+  let str = raw
+
+  // 1. 提取局部字号缩放比例 \H...x;
+  let fontScale = 1
+  const hMatch = str.match(/\\H([0-9.]+)x;/i)
+  if (hMatch && hMatch[1]) {
+    fontScale = parseFloat(hMatch[1]) || 1
+  }
+
+  // 2. 优先处理 CAXA 自定义上下标公差格式如 {\D\H0.7x;+0.1^+0.2|a;} -> (+0.1 / +0.2)
+  str = str.replace(/\{\\D\\H[0-9.]+x;([^|}]+)\^([^|}]+)\|a;\}/gi, '($1 / $2)')
+
+  // 3. 处理 AutoCAD 标注堆叠公差如 \S+0.035^ 0; 或 \S-0.043^-0.083; 或 \S+0.1^;
+  str = str.replace(/\\S([^;^/#]+)\^([^;]*);?/gi, (match, top, btm) => {
+    top = top ? top.trim() : ''
+    btm = btm ? btm.trim() : ''
+    if (top && btm) return `(${top} / ${btm})`
+    if (top) return top
+    if (btm) return btm
+    return ''
+  })
+  str = str.replace(/\\S\^([^;]+);?/gi, (match, btm) => btm.trim())
+  str = str.replace(/\\S([^;]+)\^;?/gi, (match, top) => top.trim())
+  str = str.replace(/\\S([^;/#]+)[/#]([^;]+);?/gi, (match, top, btm) => `(${top.trim()} / ${btm.trim()})`)
+
+  // 4. 标准工程符号替换
+  str = str
     .replace(/\\P/gi, '\n')
     .replace(/%%C/gi, 'Φ').replace(/%C/gi, 'Φ')
     .replace(/%%D/gi, '°').replace(/%D/gi, '°')
     .replace(/%%P/gi, '±').replace(/%P/gi, '±')
     .replace(/%%U/gi, '')
     .replace(/%%O/gi, '')
-    // 提取公差上下标格式如 {\D\H0.7x;+0.1^+0.2|a;} -> (+0.1 / +0.2)
-    .replace(/\{\\D\\H[0-9.]+x;([^|}]+)\^([^|}]+)\|a;\}/gi, '($1/$2)')
-    // 移除 AutoCAD 格式代码如 \A1;, \T1.1;, \W0.63307;, \H0.7x;, \C1; 等
-    .replace(/\\[A-Za-z0-9.]+(;|\s)?/g, '')
-    .replace(/[{}]/g, '')
 
-  return formatted.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+  // 5. 清理所有其它 AutoCAD/CAXA 格式控制代码如 \A1;, \T1.1;, \W0.63;, \C1; 等
+  str = str.replace(/\\[A-Za-z0-9.]+(;|\s)?/g, '')
+  str = str.replace(/[{}]/g, '')
+
+  return {
+    lines: str.split('\n').map(l => l.trim()).filter(l => l.length > 0),
+    fontScale,
+  }
 }
 
 // 绘制主渲染逻辑
@@ -283,7 +311,7 @@ function redraw() {
         }
       } else if (e.type === 'TEXT' || e.type === 'MTEXT' || e.type === 'ATTRIB') {
         const raw = e.text || e.string || e.value || ''
-        const lines = parseCadTextLines(raw)
+        const { lines, fontScale } = parseCadText(raw)
         
         // AutoCAD 对齐点决策：对于 TEXT/ATTRIB，如果有对齐方式(halign/valign)，DXF 规范以 endPoint (组码 11) 为基准点，否则以 startPoint (组码 10)
         let posRaw = e.position || e.startPoint
@@ -295,14 +323,14 @@ function redraw() {
         
         if (lines.length > 0 && posRaw) {
           const pos = toScreen(transform.apply(posRaw))
-          const textHeight = e.height || e.textHeight || 3.5
-          const fontSize = Math.max(8, textHeight * viewScale.value * Math.abs(transform.d))
+          const textHeight = (e.height || e.textHeight || 3.5) * fontScale
+          const fontSize = Math.max(6, textHeight * viewScale.value * Math.abs(transform.d))
           
-          if (fontSize >= 4) {
+          if (fontSize >= 3) {
             ctx.save()
             ctx.font = `${fontSize}px "Noto Sans SC", "Microsoft YaHei", "SimSun", sans-serif`
             
-            // 垂直对齐映射
+            // 垂直与水平对齐映射
             if (e.type === 'MTEXT') {
               const ap = e.attachmentPoint || 1
               // 1: TopLeft, 2: TopCenter, 3: TopRight
@@ -323,11 +351,11 @@ function redraw() {
               ctx.translate(pos.x, pos.y)
               ctx.rotate((-rotDeg * Math.PI) / 180)
               lines.forEach((line, idx) => {
-                ctx.fillText(line, 0, idx * (fontSize * 1.3))
+                ctx.fillText(line, 0, idx * (fontSize * 1.25))
               })
             } else {
               lines.forEach((line, idx) => {
-                ctx.fillText(line, pos.x, pos.y + idx * (fontSize * 1.3))
+                ctx.fillText(line, pos.x, pos.y + idx * (fontSize * 1.25))
               })
             }
             ctx.restore()
