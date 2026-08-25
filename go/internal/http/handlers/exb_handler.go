@@ -121,14 +121,19 @@ func PreviewEXB(repository attachment.Repository, objectStorage storage.ObjectSt
 			dxfKey = storageKey
 		}
 
-		// 检查是否已有 DXF，如果没有且是 EXB/DWG，触发高优先级插队转换
+		// 检查是否已有 DXF（确保大于 0 字节且有效），如果没有或为 0 字节，触发高优先级转换
+		needConvert := false
 		if reader, info, err := objectStorage.Open(request.Context(), dxfKey); err == nil {
 			reader.Close()
 			if info.Size == 0 {
 				_ = objectStorage.Delete(request.Context(), dxfKey)
+				needConvert = true
 			}
+		} else {
+			needConvert = true
 		}
-		if _, _, err := objectStorage.Open(request.Context(), dxfKey); err != nil {
+
+		if needConvert {
 			if convService != nil && (strings.EqualFold(ext, ".exb") || strings.EqualFold(ext, ".dwg")) {
 				doneChan := convService.PushJob(item, converter.PriorityHigh)
 				select {
@@ -146,8 +151,11 @@ func PreviewEXB(repository attachment.Repository, objectStorage storage.ObjectSt
 
 		// 读取 DXF
 		reader, obj, err := objectStorage.Open(request.Context(), dxfKey)
-		if err != nil {
-			response.WriteError(writer, http.StatusNotFound, "高清矢量 DXF 文件未就绪")
+		if err != nil || obj.Size == 0 {
+			if reader != nil {
+				reader.Close()
+			}
+			response.WriteError(writer, http.StatusNotFound, "高清矢量 DXF 文件未就绪或为空")
 			return
 		}
 		defer reader.Close()

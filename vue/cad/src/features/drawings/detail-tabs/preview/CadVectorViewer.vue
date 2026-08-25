@@ -456,11 +456,19 @@ async function loadDxf(url: string) {
     loadingProgress.value = 40
     loadingStage.value = '正在以 GB18030 中文编码解码图纸...'
     const buffer = await res.arrayBuffer()
+    if (!buffer || buffer.byteLength === 0) {
+      throw new Error('获取到的 CAD 图纸数据为空')
+    }
+
     let dxfText = ''
     try {
       dxfText = new TextDecoder('gb18030').decode(buffer)
     } catch {
       dxfText = new TextDecoder('utf-8').decode(buffer)
+    }
+
+    if (!dxfText || dxfText.trim().length === 0) {
+      throw new Error('CAD 图纸文本内容为空')
     }
 
     loadingProgress.value = 70
