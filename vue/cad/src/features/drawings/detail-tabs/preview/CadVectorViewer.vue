@@ -229,7 +229,7 @@ const GDT_CHAR_MAP: Record<string, string> = {
   'e': '⌒',   // 线轮廓度 (Profile of a line)
   'f': '⌓',   // 面轮廓度 (Profile of a surface)
   'g': '∥',   // 平行度 (Parallelism)
-  'h': '⟂',   // 垂直度 (Perpendicularity)
+  'h': '⊥',   // 垂直度 (Perpendicularity)
   'i': '∠',   // 倾斜度 (Angularity)
   'j': '◎',   // 同轴度/同心度 (Concentricity)
   'k': '⌯',   // 对称度 (Symmetry)
@@ -282,7 +282,7 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number; isTole
   // 4. 处理 CAXA/AutoCAD 特殊形位公差转义符
   str = str
     .replace(/%%v/gi, 'Φ')
-    .replace(/%%h/gi, '⟂')
+    .replace(/%%h/gi, '⊥')
     .replace(/%%g/gi, '∥')
     .replace(/%%b/gi, '⏢')
     .replace(/%%a/gi, '—')
@@ -474,7 +474,13 @@ function redraw() {
           ctx.stroke()
         }
       } else if (e.type === 'TEXT' || e.type === 'MTEXT' || e.type === 'ATTRIB') {
-        const raw = e.text || e.string || e.value || ''
+        let raw = e.text || e.string || e.value || ''
+        
+        // 如果文本为单个字符（如 'h', 'g', 'j', 'b' 等），且图层属于标注/公差图层，映射为对应形位公差符号
+        if (/^[a-np-w]$/i.test(raw.trim()) && (layerName.includes('尺寸') || layerName.includes('DIM') || layerName.includes('TOL') || layerName.includes('公差') || e.style === 'GDT' || e.textStyle === 'GDT')) {
+          raw = GDT_CHAR_MAP[raw.trim().toLowerCase()] || raw
+        }
+
         const { lines, fontScale, isTolerance } = parseCadText(raw)
         
         // AutoCAD 对齐点决策：对于 TEXT/ATTRIB，如果有对齐方式(halign/valign)，DXF 规范以 endPoint (组码 11) 为基准点，否则以 startPoint (组码 10)
