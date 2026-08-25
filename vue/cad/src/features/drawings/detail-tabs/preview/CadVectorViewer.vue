@@ -158,40 +158,148 @@ class AttribEntityHandler {
 // 注册自定义 HATCH 实体解析器（解析 CAD 标注箭头、剖面填充与实心多边形）
 class HatchEntityHandler {
   ForEntityName = 'HATCH'
+
   parseEntity(scanner: any, curr: any) {
     const entity: any = { type: 'HATCH', polygons: [] }
-    curr = scanner.next()
-    let currentPoly: Array<{ x: number; y: number }> | null = null
-    let pendingPoint: { x: number; y: number } | null = null
+    const groups: any[] = []
 
-    while (!scanner.isEOF()) {
-      if (curr.code === 0) break
-      switch (curr.code) {
-        case 2: entity.patternName = curr.value; break
-        case 70: entity.solidFill = curr.value === 1; break
-        case 8: entity.layer = curr.value; break
-        case 62: entity.colorIndex = curr.value; break
-        case 92:
-          currentPoly = []
-          entity.polygons.push(currentPoly)
-          break
-        case 10:
-          pendingPoint = { x: curr.value, y: 0 }
-          if (currentPoly) currentPoly.push(pendingPoint)
-          break
-        case 20:
-          if (pendingPoint) pendingPoint.y = curr.value
-          break
-        case 11:
-          pendingPoint = { x: curr.value, y: 0 }
-          if (currentPoly) currentPoly.push(pendingPoint)
-          break
-        case 21:
-          if (pendingPoint) pendingPoint.y = curr.value
-          break
-      }
+    curr = scanner.next()
+    while (!scanner.isEOF() && curr.code !== 0) {
+      groups.push(curr)
       curr = scanner.next()
     }
+
+    let index = 0
+    let boundaryPathCount = 0
+
+    const readPoint = (startIndex: number, xCode: number, yCode: number) => {
+      const xGroup = groups[startIndex]
+      const yGroup = groups[startIndex + 1]
+      if (!xGroup || !yGroup || xGroup.code !== xCode || yGroup.code !== yCode) {
+        return { point: null as { x: number; y: number } | null, nextIndex: startIndex }
+      }
+      return {
+        point: { x: xGroup.value, y: yGroup.value },
+        nextIndex: startIndex + 2,
+      }
+    }
+
+    const appendPoint = (polygon: Array<{ x: number; y: number }>, point: { x: number; y: number }) => {
+      const previous = polygon[polygon.length - 1]
+      if (!previous || previous.x !== point.x || previous.y !== point.y) {
+        polygon.push(point)
+      }
+    }
+
+    while (index < groups.length) {
+      const group = groups[index]
+      switch (group.code) {
+        case 2:
+          entity.patternName = group.value
+          index += 1
+          break
+        case 8:
+          entity.layer = group.value
+          index += 1
+          break
+        case 62:
+          entity.colorIndex = group.value
+          index += 1
+          break
+        case 70:
+          entity.solidFill = group.value === 1
+          index += 1
+          break
+        case 91: {
+          boundaryPathCount = group.value
+          index += 1
+
+          for (let pathIndex = 0; pathIndex < boundaryPathCount && index < groups.length; pathIndex++) {
+            const pathFlags = groups[index]?.code === 92 ? groups[index].value : 0
+            index += groups[index]?.code === 92 ? 1 : 0
+            const polygon: Array<{ x: number; y: number }> = []
+
+            if ((pathFlags & 2) !== 0) {
+              // 多段线边界：93 后只读取指定数量的 10/20 顶点，不能把后续填充数据当成顶点。
+              index += groups[index]?.code === 72 ? 1 : 0
+              const isClosed = groups[index]?.code === 73 ? groups[index].value !== 0 : true
+              index += groups[index]?.code === 73 ? 1 : 0
+              const vertexCount = groups[index]?.code === 93 ? groups[index].value : 0
+              index += groups[index]?.code === 93 ? 1 : 0
+
+              for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++) {
+                const result = readPoint(index, 10, 20)
+                if (!result.point) break
+                appendPoint(polygon, result.point)
+                index = result.nextIndex
+                if (groups[index]?.code === 42) index += 1
+              }
+
+              if (!isClosed && polygon.length > 1) {
+                polygon.push(polygon[0] as { x: number; y: number })
+              }
+            } else {
+              // 独立边界：93 后读取指定数量的边；当前重点支持直线边组成的箭头。
+              const edgeCount = groups[index]?.code === 93 ? groups[index].value : 0
+              index += groups[index]?.code === 93 ? 1 : 0
+
+              for (let edgeIndex = 0; edgeIndex < edgeCount && index < groups.length; edgeIndex++) {
+                const edgeType = groups[index]?.code === 72 ? groups[index].value : 0
+                index += groups[index]?.code === 72 ? 1 : 0
+
+                if (edgeType === 1) {
+                  const start = readPoint(index, 10, 20)
+                  index = start.nextIndex
+                  const end = readPoint(index, 11, 21)
+                  index = end.nextIndex
+                  if (start.point) appendPoint(polygon, start.point)
+                  if (edgeIndex === edgeCount - 1 && end.point) appendPoint(polygon, end.point)
+                } else if (edgeType === 2) {
+                  // 圆弧边界：离散采样，保证实心箭头和圆弧填充不会丢失。
+                  const center = readPoint(index, 10, 20)
+                  index = center.nextIndex
+                  const radius = groups[index]?.code === 40 ? groups[index].value : 0
+                  index += groups[index]?.code === 40 ? 1 : 0
+                  const startAngle = groups[index]?.code === 50 ? groups[index].value : 0
+                  index += groups[index]?.code === 50 ? 1 : 0
+                  const endAngle = groups[index]?.code === 51 ? groups[index].value : startAngle
+                  index += groups[index]?.code === 51 ? 1 : 0
+                  const counterClockwise = groups[index]?.code === 73 ? groups[index].value !== 0 : false
+                  index += groups[index]?.code === 73 ? 1 : 0
+
+                  if (center.point && radius > 0) {
+                    let span = endAngle - startAngle
+                    if (counterClockwise && span < 0) span += Math.PI * 2
+                    if (!counterClockwise && span > 0) span -= Math.PI * 2
+                    const sampleCount = Math.max(8, Math.ceil(Math.abs(span) * radius * 2))
+                    for (let sampleIndex = 0; sampleIndex <= sampleCount; sampleIndex++) {
+                      const angle = startAngle + (span * sampleIndex) / sampleCount
+                      appendPoint(polygon, {
+                        x: center.point.x + Math.cos(angle) * radius,
+                        y: center.point.y + Math.sin(angle) * radius,
+                      })
+                    }
+                  }
+                } else {
+                  // 未支持的边类型无法安全猜测长度，跳过当前路径，避免污染后续实体。
+                  break
+                }
+              }
+            }
+
+            if (polygon.length >= 3) {
+              entity.polygons.push(polygon)
+            }
+          }
+          break
+        }
+        default:
+          // 跳过 HATCH 标高、图案比例等非边界数据。
+          index += 1
+          break
+      }
+    }
+
     return entity
   }
 }
