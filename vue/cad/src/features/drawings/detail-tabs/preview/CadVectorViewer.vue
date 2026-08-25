@@ -557,6 +557,8 @@ function redraw() {
   }
 
   // 递归渲染实体
+  let hatchEntityCount = 0
+  let hatchPolygonCount = 0
   function drawEntities(entities: any[], transform: Transform2D, inheritedLayer?: string, inheritedColor?: string) {
     if (!ctx) return
     for (const e of entities) {
@@ -696,6 +698,7 @@ function redraw() {
         }
       } else if (e.type === 'HATCH') {
         // 渲染 CAD 标注箭头、剖面填充与实心多边形
+        hatchEntityCount++
         if (e.polygons && e.polygons.length > 0) {
           ctx.save()
           ctx.globalCompositeOperation = 'source-over'
@@ -705,6 +708,7 @@ function redraw() {
           ctx.lineCap = 'round'
           for (const poly of e.polygons) {
             if (poly.length < 3 || polygonArea(poly) <= 1e-10) continue
+            hatchPolygonCount++
             ctx.beginPath()
             const p0 = toScreen(transform.apply(poly[0]))
             ctx.moveTo(p0.x, p0.y)
@@ -764,6 +768,9 @@ function redraw() {
 
   // 从顶层实体开始绘制
   drawEntities(parsedDxf.entities || [], new Transform2D())
+
+  // 诊断日志：确认浏览器运行的代码版本与 HATCH 箭头实际绘制数量（打开 F12 控制台可见）
+  console.log(`[CAD] 箭头诊断 v3: HATCH实体=${hatchEntityCount}, 已绘制多边形=${hatchPolygonCount}, 缩放=${viewScale.value.toFixed(4)}`)
 }
 
 // 计算所有几何体包围盒自适应居中
@@ -794,6 +801,20 @@ function fitView() {
         minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x)
         minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y)
         count++
+      }
+
+      // HATCH 实心箭头/填充顶点也必须纳入包围盒，避免视口计算偏差
+      if (e.polygons) {
+        for (const poly of e.polygons) {
+          for (const v of poly) {
+            const pt = transform.apply(v)
+            if (Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
+              minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x)
+              minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y)
+              count++
+            }
+          }
+        }
       }
 
       if (e.type === 'INSERT') {
