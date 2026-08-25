@@ -545,6 +545,17 @@ function redraw() {
     }
   }
 
+  const polygonArea = (polygon: Array<{ x: number; y: number }>) => {
+    let area = 0
+    for (let i = 0; i < polygon.length; i++) {
+      const current = polygon[i]
+      const next = polygon[(i + 1) % polygon.length]
+      if (!current || !next) continue
+      area += current.x * next.y - next.x * current.y
+    }
+    return Math.abs(area) / 2
+  }
+
   // 递归渲染实体
   function drawEntities(entities: any[], transform: Transform2D, inheritedLayer?: string, inheritedColor?: string) {
     if (!ctx) return
@@ -687,8 +698,13 @@ function redraw() {
         // 渲染 CAD 标注箭头、剖面填充与实心多边形
         if (e.polygons && e.polygons.length > 0) {
           ctx.save()
+          ctx.globalCompositeOperation = 'source-over'
+          ctx.fillStyle = color
+          ctx.strokeStyle = color
+          ctx.lineJoin = 'round'
+          ctx.lineCap = 'round'
           for (const poly of e.polygons) {
-            if (poly.length < 2) continue
+            if (poly.length < 3 || polygonArea(poly) <= 1e-10) continue
             ctx.beginPath()
             const p0 = toScreen(transform.apply(poly[0]))
             ctx.moveTo(p0.x, p0.y)
@@ -699,6 +715,8 @@ function redraw() {
             ctx.closePath()
             if (e.solidFill !== false) {
               ctx.fill()
+              // 实心箭头额外描边，避免缩放较小时纯填充边缘不明显。
+              ctx.stroke()
             } else {
               ctx.stroke()
             }
