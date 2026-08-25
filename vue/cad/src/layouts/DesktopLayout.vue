@@ -34,6 +34,7 @@ onMounted(async () => {
 
 <template>
   <div class="bg-fx">
+    <div class="starfield"></div>
     <div class="bg-grid"></div>
     <div class="orb o1"></div>
     <div class="orb o2"></div>

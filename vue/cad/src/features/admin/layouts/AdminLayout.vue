@@ -30,7 +30,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="bg-fx"><div class="bg-grid"></div><div class="orb o1"></div><div class="orb o2"></div></div>
+  <div class="bg-fx"><div class="starfield"></div><div class="bg-grid"></div><div class="orb o1"></div><div class="orb o2"></div></div>
   <section class="admin-workspace app-shell layout-expand-in">
     <DesktopTitleBar />
     <div id="layout">
