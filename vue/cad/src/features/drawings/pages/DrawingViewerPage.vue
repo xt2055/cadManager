@@ -468,7 +468,7 @@ onMounted(() => {
 .viewer-canvas-container {
   flex: 1;
   height: 100%;
-  background: var(--cad-bg, #12151c);
+  background: #0a0d14;
   position: relative;
   overflow: hidden;
 }

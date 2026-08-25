@@ -156,40 +156,44 @@ class AttribEntityHandler {
 }
 
 // 解析 CAD 文字并提取字号缩放及清洗后的文本
-function parseCadText(raw: string): { lines: string[]; fontScale: number } {
-  if (!raw) return { lines: [], fontScale: 1 }
+function parseCadText(raw: string): { lines: string[]; fontScale: number; isTolerance: boolean } {
+  if (!raw) return { lines: [], fontScale: 1, isTolerance: false }
   let str = raw
+  let isTol = false
 
   // 1. 提取局部字号缩放比例 \H...x;
   let fontScale = 1
   const hMatch = str.match(/\\H([0-9.]+)x;/i)
   if (hMatch && hMatch[1]) {
     fontScale = parseFloat(hMatch[1]) || 1
+    if (fontScale < 0.95) {
+      isTol = true
+    }
   }
 
   // 2. 优先处理 CAXA 自定义上下标公差格式如 {\D\H0.7x;+0.1^+0.2|a;} -> (+0.1 / +0.2)
-  str = str.replace(/\{\\D\\H[0-9.]+x;([^|}]+)\^([^|}]+)\|a;\}/gi, '($1 / $2)')
+  str = str.replace(/\{\\D\\H[0-9.]+x;([^|}]+)\^([^|}]+)\|a;\}/gi, '  ($1 / $2)')
 
   // 3. 处理 AutoCAD 标注堆叠公差如 \S+0.035^ 0; 或 \S-0.043^-0.083; 或 \S+0.1^;
-  // 在主尺寸与公差之间保留一个清晰空格，且上下偏差格式为 (+0.035 / -0.010)
+  // 在主尺寸与公差之间保留 2 个空格的充分距离，防止数字遮挡正负号
   str = str.replace(/\\S([^;^/#]+)\^([^;]*);?/gi, (match, top, btm) => {
     top = top ? top.trim() : ''
     btm = btm ? btm.trim() : ''
-    if (top && btm) return ` (${top} / ${btm})`
-    if (top) return ` (${top})`
-    if (btm) return ` (${btm})`
+    if (top && btm) return `  (${top} / ${btm})`
+    if (top) return `  (${top})`
+    if (btm) return `  (${btm})`
     return ''
   })
-  str = str.replace(/\\S\^([^;]+);?/gi, (match, btm) => ` (${btm.trim()})`)
-  str = str.replace(/\\S([^;]+)\^;?/gi, (match, top) => ` (${top.trim()})`)
-  str = str.replace(/\\S([^;/#]+)[/#]([^;]+);?/gi, (match, top, btm) => ` (${top.trim()} / ${btm.trim()})`)
+  str = str.replace(/\\S\^([^;]+);?/gi, (match, btm) => `  (${btm.trim()})`)
+  str = str.replace(/\\S([^;]+)\^;?/gi, (match, top) => `  (${top.trim()})`)
+  str = str.replace(/\\S([^;/#]+)[/#]([^;]+);?/gi, (match, top, btm) => `  (${top.trim()} / ${btm.trim()})`)
 
   // 4. 标准工程符号替换
   str = str
     .replace(/\\P/gi, '\n')
     .replace(/%%C/gi, 'Φ').replace(/%C/gi, 'Φ')
     .replace(/%%D/gi, '°').replace(/%D/gi, '°')
-    .replace(/%%P/gi, ' ±').replace(/%P/gi, ' ±')
+    .replace(/%%P/gi, '  ±').replace(/%P/gi, '  ±')
     .replace(/%%U/gi, '')
     .replace(/%%O/gi, '')
 
@@ -197,9 +201,18 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number } {
   str = str.replace(/\\[A-Za-z0-9.]+(;|\s)?/g, '')
   str = str.replace(/[{}]/g, '')
 
+  const lines = str.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+  if (lines.length > 0) {
+    const first = lines[0] ?? ''
+    if (/^[+\-±]/.test(first) || first.startsWith('(')) {
+      isTol = true
+    }
+  }
+
   return {
-    lines: str.split('\n').map(l => l.trim()).filter(l => l.length > 0),
+    lines,
     fontScale,
+    isTolerance: isTol,
   }
 }
 
@@ -213,14 +226,13 @@ function redraw() {
   const width = canvas.width
   const height = canvas.height
 
-  // 1. 读取系统主题的背景色（若存在 --cad-bg / --bg 则自适应，保证与当前主题完美契合）
-  const computedBg = getComputedStyle(canvas).getPropertyValue('--cad-bg').trim() || '#1a1d24'
-  ctx.fillStyle = computedBg
+  // 1. 专业 CAD 纯黑高对比度背景
+  ctx.fillStyle = '#0a0d14'
   ctx.fillRect(0, 0, width, height)
 
   // 绘制工程网格背景
   ctx.lineWidth = 1
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)'
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)'
   const gridSize = 50 * viewScale.value
   if (gridSize > 20 && gridSize < 300) {
     const offsetX = (width / 2 - viewCenter.value.x * viewScale.value) % gridSize
@@ -313,7 +325,7 @@ function redraw() {
         }
       } else if (e.type === 'TEXT' || e.type === 'MTEXT' || e.type === 'ATTRIB') {
         const raw = e.text || e.string || e.value || ''
-        const { lines, fontScale } = parseCadText(raw)
+        const { lines, fontScale, isTolerance } = parseCadText(raw)
         
         // AutoCAD 对齐点决策：对于 TEXT/ATTRIB，如果有对齐方式(halign/valign)，DXF 规范以 endPoint (组码 11) 为基准点，否则以 startPoint (组码 10)
         let posRaw = e.position || e.startPoint
@@ -358,15 +370,18 @@ function redraw() {
               }
             }
 
+            // 如果是公差类文本（以 + / - / ± 开头或有缩放），沿文字书写方向自动增加安全间距，防止主尺寸数字遮挡正负号
+            const tolOffset = isTolerance ? Math.max(6, fontSize * 0.45) : 0
+
             if (rotDeg !== 0) {
               ctx.translate(pos.x, pos.y)
               ctx.rotate((-rotDeg * Math.PI) / 180)
               lines.forEach((line, idx) => {
-                ctx.fillText(line, 0, idx * (fontSize * 1.25))
+                ctx.fillText(line, tolOffset, idx * (fontSize * 1.25))
               })
             } else {
               lines.forEach((line, idx) => {
-                ctx.fillText(line, pos.x, pos.y + idx * (fontSize * 1.25))
+                ctx.fillText(line, pos.x + tolOffset, pos.y + idx * (fontSize * 1.25))
               })
             }
             ctx.restore()
