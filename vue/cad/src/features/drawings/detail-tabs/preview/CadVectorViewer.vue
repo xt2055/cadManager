@@ -25,6 +25,7 @@ const errorMessage = ref('')
 
 // CAD 图形数据
 let parsedDxf: any = null
+let hatchDiagPrinted = false
 const layerMap = ref<Map<string, { name: string; color: string; visible: boolean }>>(new Map())
 
 // 视图变换状态 (CAD 坐标 -> Canvas 屏幕坐标)
@@ -559,6 +560,7 @@ function redraw() {
   // 递归渲染实体
   let hatchEntityCount = 0
   let hatchPolygonCount = 0
+  const hatchFailSamples: Array<Record<string, unknown>> = []
   function drawEntities(entities: any[], transform: Transform2D, inheritedLayer?: string, inheritedColor?: string) {
     if (!ctx) return
     for (const e of entities) {
@@ -699,15 +701,17 @@ function redraw() {
       } else if (e.type === 'HATCH') {
         // 渲染 CAD 标注箭头、剖面填充与实心多边形
         hatchEntityCount++
-        if (e.polygons && e.polygons.length > 0) {
+        const validPolygons = (e.polygons || []).filter(
+          (poly: Array<{ x: number; y: number }>) => poly.length >= 3 && polygonArea(poly) > 1e-10,
+        )
+        if (validPolygons.length > 0) {
           ctx.save()
           ctx.globalCompositeOperation = 'source-over'
           ctx.fillStyle = color
           ctx.strokeStyle = color
           ctx.lineJoin = 'round'
           ctx.lineCap = 'round'
-          for (const poly of e.polygons) {
-            if (poly.length < 3 || polygonArea(poly) <= 1e-10) continue
+          for (const poly of validPolygons) {
             hatchPolygonCount++
             ctx.beginPath()
             const p0 = toScreen(transform.apply(poly[0]))
@@ -726,6 +730,15 @@ function redraw() {
             }
           }
           ctx.restore()
+        } else if (hatchFailSamples.length < 5) {
+          // 收集解析失败的 HATCH 样本，用于定位真实图纸箭头结构差异
+          hatchFailSamples.push({
+            layer: layerName,
+            pattern: e.patternName,
+            solid: e.solidFill,
+            polygonCount: e.polygons?.length ?? -1,
+            firstPolygonPoints: e.polygons?.[0]?.length ?? -1,
+          })
         }
       } else if (e.type === 'SOLID' || e.type === 'TRACE') {
         // 渲染 3 点或 4 点实心箭头/填充面 (AutoCAD SOLID 点序为 0, 1, 3, 2)
@@ -770,7 +783,11 @@ function redraw() {
   drawEntities(parsedDxf.entities || [], new Transform2D())
 
   // 诊断日志：确认浏览器运行的代码版本与 HATCH 箭头实际绘制数量（打开 F12 控制台可见）
-  console.log(`[CAD] 箭头诊断 v3: HATCH实体=${hatchEntityCount}, 已绘制多边形=${hatchPolygonCount}, 缩放=${viewScale.value.toFixed(4)}`)
+  console.log(`[CAD] 箭头诊断 v4: HATCH实体=${hatchEntityCount}, 已绘制多边形=${hatchPolygonCount}, 缩放=${viewScale.value.toFixed(4)}`)
+  if (hatchFailSamples.length > 0 && !hatchDiagPrinted) {
+    hatchDiagPrinted = true
+    console.log('[CAD] 解析失败的 HATCH 样本:', JSON.stringify(hatchFailSamples))
+  }
 }
 
 // 计算所有几何体包围盒自适应居中
@@ -863,6 +880,7 @@ function fitView() {
 // 加载 DXF 矢量图
 async function loadDxf(url: string) {
   loading.value = true
+  hatchDiagPrinted = false
   errorMessage.value = ''
   loadingProgress.value = 10
   loadingStage.value = '正在请求 CAD 图纸数据...'
