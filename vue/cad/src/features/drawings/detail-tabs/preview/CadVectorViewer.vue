@@ -155,6 +155,47 @@ class AttribEntityHandler {
   }
 }
 
+// 注册自定义 HATCH 实体解析器（解析 CAD 标注箭头、剖面填充与实心多边形）
+class HatchEntityHandler {
+  ForEntityName = 'HATCH'
+  parseEntity(scanner: any, curr: any) {
+    const entity: any = { type: 'HATCH', polygons: [] }
+    curr = scanner.next()
+    let currentPoly: Array<{ x: number; y: number }> | null = null
+    let pendingPoint: { x: number; y: number } | null = null
+
+    while (!scanner.isEOF()) {
+      if (curr.code === 0) break
+      switch (curr.code) {
+        case 2: entity.patternName = curr.value; break
+        case 70: entity.solidFill = curr.value === 1; break
+        case 8: entity.layer = curr.value; break
+        case 62: entity.colorIndex = curr.value; break
+        case 92:
+          currentPoly = []
+          entity.polygons.push(currentPoly)
+          break
+        case 10:
+          pendingPoint = { x: curr.value, y: 0 }
+          if (currentPoly) currentPoly.push(pendingPoint)
+          break
+        case 20:
+          if (pendingPoint) pendingPoint.y = curr.value
+          break
+        case 11:
+          pendingPoint = { x: curr.value, y: 0 }
+          if (currentPoly) currentPoly.push(pendingPoint)
+          break
+        case 21:
+          if (pendingPoint) pendingPoint.y = curr.value
+          break
+      }
+      curr = scanner.next()
+    }
+    return entity
+  }
+}
+
 // 预处理 DXF 字节流：仅精准缝合 MTEXT 超长文本连续组码（组码 3 紧跟组码 1 或 3）的跨行中文字节断裂，绝不误伤其它组码与图层颜色定义
 function mergeDxfMTextSplitBytes(buffer: ArrayBuffer): ArrayBuffer {
   const bytes = new Uint8Array(buffer)
@@ -179,6 +220,29 @@ function mergeDxfMTextSplitBytes(buffer: ArrayBuffer): ArrayBuffer {
   return outBytes.buffer
 }
 
+// GDT 字体形位公差符号映射表（AutoCAD/CAXA 标准机械形位公差字符映射）
+const GDT_CHAR_MAP: Record<string, string> = {
+  'a': '—',   // 直线度 (Straightness)
+  'b': '⏢',   // 平面度 (Flatness)
+  'c': '○',   // 圆度 (Circularity)
+  'd': '⌭',   // 圆柱度 (Cylindricity)
+  'e': '⌒',   // 线轮廓度 (Profile of a line)
+  'f': '⌓',   // 面轮廓度 (Profile of a surface)
+  'g': '∥',   // 平行度 (Parallelism)
+  'h': '⟂',   // 垂直度 (Perpendicularity)
+  'i': '∠',   // 倾斜度 (Angularity)
+  'j': '◎',   // 同轴度/同心度 (Concentricity)
+  'k': '⌯',   // 对称度 (Symmetry)
+  'l': '⌖',   // 位置度 (Position)
+  'm': '↗',   // 圆跳动 (Circular runout)
+  'n': '⌰',   // 全跳动 (Total runout)
+  'p': 'Ⓜ',   // 最大实体 MMC
+  's': 'Ⓛ',   // 最小实体 LMC
+  'r': 'Ⓢ',   // 自由状态 RFS
+  'v': 'Φ',   // 直径符号
+  'w': '□',   // 正方形符号
+}
+
 // 解析 CAD 文字并提取字号缩放及清洗后的文本
 function parseCadText(raw: string): { lines: string[]; fontScale: number; isTolerance: boolean } {
   if (!raw) return { lines: [], fontScale: 1, isTolerance: false }
@@ -197,7 +261,40 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number; isTole
   // 2. 解码 AutoCAD 多字节/MIF 转义 \M+1XXXX 或 \M+5XXXX 等
   str = str.replace(/\\M\+[0-9A-Fa-f]{5}/gi, '')
 
-  // 3. 提取局部字号缩放比例 \H...x; 或 \H...;
+  // 3. 处理 GDT 形位公差字体块（将 {\Fgdt...;h} / \Fgdt;h 等字体字符精准映射为机械公差符号 ⟂, ∥, ◎, ⏢ 等）
+  str = str.replace(/\{\\F[gG][dD][tT][^;]*;([^}]+)\}/gi, (_, inner) => {
+    let res = ''
+    for (const ch of inner) {
+      const lower = ch.toLowerCase()
+      res += GDT_CHAR_MAP[lower] || ch
+    }
+    return res
+  })
+  str = str.replace(/\\F[gG][dD][tT][^;]*;([A-Za-z0-9]+)/gi, (_, inner) => {
+    let res = ''
+    for (const ch of inner) {
+      const lower = ch.toLowerCase()
+      res += GDT_CHAR_MAP[lower] || ch
+    }
+    return res
+  })
+
+  // 4. 处理 CAXA/AutoCAD 特殊形位公差转义符
+  str = str
+    .replace(/%%v/gi, 'Φ')
+    .replace(/%%h/gi, '⟂')
+    .replace(/%%g/gi, '∥')
+    .replace(/%%b/gi, '⏢')
+    .replace(/%%a/gi, '—')
+    .replace(/%%c/gi, '○')
+    .replace(/%%d/gi, '⌭')
+    .replace(/%%j/gi, '◎')
+    .replace(/%%k/gi, '⌯')
+    .replace(/%%l/gi, '⌖')
+    .replace(/%%m/gi, '↗')
+    .replace(/%%n/gi, '⌰')
+
+  // 5. 提取局部字号缩放比例 \H...x; 或 \H...;
   let fontScale = 1
   const hMatch = str.match(/\\H([0-9.]+)x;/i) || str.match(/\\H([0-9.]+);/i)
   if (hMatch && hMatch[1]) {
@@ -210,10 +307,10 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number; isTole
     }
   }
 
-  // 4. 优先处理 CAXA 自定义上下标公差格式如 {\D\H0.7x;+0.1^+0.2|a;} -> (+0.1 / +0.2)
+  // 6. 优先处理 CAXA 自定义上下标公差格式如 {\D\H0.7x;+0.1^+0.2|a;} -> (+0.1 / +0.2)
   str = str.replace(/\{\\D\\H[0-9.]+x;([^|}]+)\^([^|}]+)\|a;\}/gi, '  ($1 / $2)')
 
-  // 5. 处理 AutoCAD 标注堆叠公差如 \S+0.035^ 0; 或 \S-0.043^-0.083; 或 \S+0.1^;
+  // 7. 处理 AutoCAD 标注堆叠公差如 \S+0.035^ 0; 或 \S-0.043^-0.083; 或 \S+0.1^;
   // 在主尺寸与公差之间保留充分安全距离，防止数字遮挡正负号
   str = str.replace(/\\S([^;^/#]+)\^([^;]*);?/gi, (match, top, btm) => {
     top = top ? top.trim() : ''
@@ -227,7 +324,7 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number; isTole
   str = str.replace(/\\S([^;]+)\^;?/gi, (match, top) => `  (${top.trim()})`)
   str = str.replace(/\\S([^;/#]+)[/#]([^;]+);?/gi, (match, top, btm) => `  (${top.trim()} / ${btm.trim()})`)
 
-  // 6. 标准工程特殊符号替换
+  // 8. 标准工程特殊符号替换
   str = str
     .replace(/\\P/gi, '\n')
     .replace(/\\X/gi, '\n')
@@ -242,7 +339,7 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number; isTole
     .replace(/%%O/gi, '')
     .replace(/%%%/gi, '%')
 
-  // 7. 清理 AutoCAD MTEXT 各种格式控制指令（彻底清除带管道符 |b0|i0|c134|p2 的字体参数，防止残留乱码）
+  // 9. 清理 AutoCAD MTEXT 各种格式控制指令（彻底清除带管道符 |b0|i0|c134|p2 的字体参数，防止残留乱码）
   // 匹配 \fFontName|b0|i0|c134|p2; 或 \Ffont.shx,gbcbig.shx;
   str = str.replace(/\\[fF][^;]*;/g, '')
   // 清理字高、宽度、倾斜、字距、颜色、对齐、段落控制等带分号指令
@@ -440,6 +537,45 @@ function redraw() {
             ctx.restore()
           }
         }
+      } else if (e.type === 'HATCH') {
+        // 渲染 CAD 标注箭头、剖面填充与实心多边形
+        if (e.polygons && e.polygons.length > 0) {
+          ctx.save()
+          for (const poly of e.polygons) {
+            if (poly.length < 2) continue
+            ctx.beginPath()
+            const p0 = toScreen(transform.apply(poly[0]))
+            ctx.moveTo(p0.x, p0.y)
+            for (let i = 1; i < poly.length; i++) {
+              const pt = toScreen(transform.apply(poly[i]))
+              ctx.lineTo(pt.x, pt.y)
+            }
+            ctx.closePath()
+            if (e.solidFill !== false) {
+              ctx.fill()
+            } else {
+              ctx.stroke()
+            }
+          }
+          ctx.restore()
+        }
+      } else if (e.type === 'SOLID' || e.type === 'TRACE') {
+        // 渲染 3 点或 4 点实心箭头/填充面 (AutoCAD SOLID 点序为 0, 1, 3, 2)
+        if (e.points && e.points.length >= 3) {
+          ctx.save()
+          ctx.beginPath()
+          const p0 = toScreen(transform.apply(e.points[0]))
+          const p1 = toScreen(transform.apply(e.points[1]))
+          const p2 = e.points[3] ? toScreen(transform.apply(e.points[3])) : toScreen(transform.apply(e.points[2]))
+          const p3 = e.points[2] ? toScreen(transform.apply(e.points[2])) : null
+          ctx.moveTo(p0.x, p0.y)
+          ctx.lineTo(p1.x, p1.y)
+          ctx.lineTo(p2.x, p2.y)
+          if (p3) ctx.lineTo(p3.x, p3.y)
+          ctx.closePath()
+          ctx.fill()
+          ctx.restore()
+        }
       } else if (e.type === 'INSERT') {
         const block = parsedDxf.blocks?.[e.name]
         if (block && block.entities) {
@@ -593,6 +729,7 @@ async function loadDxf(url: string) {
     loadingStage.value = '正在解析图元拓扑与块表格...'
     const parser = new DxfParser()
     parser.registerEntityHandler(AttribEntityHandler as any)
+    parser.registerEntityHandler(HatchEntityHandler as any)
     parsedDxf = parser.parseSync(dxfText)
     if (!parsedDxf || !parsedDxf.entities) {
       throw new Error('未解析到有效的 DXF 实体')
