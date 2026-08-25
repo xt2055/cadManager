@@ -155,6 +155,30 @@ class AttribEntityHandler {
   }
 }
 
+// 预处理 DXF 字节流：缝合因 DXF 单行 250 字节限制被拆分在组码 3 与组码 1 之间的多字节中文字符（防止汉字字节被换行切成两半产生雪崩乱码）
+function mergeDxfMTextSplitBytes(buffer: ArrayBuffer): ArrayBuffer {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunkSize = 32768
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)))
+  }
+
+  const pattern = /(\r?\n[ \t]*3\r?\n[^\r\n]*)\r?\n[ \t]*[13]\r?\n/g
+  let prev = ''
+  while (prev !== binary) {
+    prev = binary
+    binary = binary.replace(pattern, (match, p1) => p1)
+  }
+  binary = binary.replace(/(\r?\n[ \t]*)3(\r?\n)/g, (match, p1, p2) => p1 + '1' + p2)
+
+  const outBytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    outBytes[i] = binary.charCodeAt(i) & 0xff
+  }
+  return outBytes.buffer
+}
+
 // 解析 CAD 文字并提取字号缩放及清洗后的文本
 function parseCadText(raw: string): { lines: string[]; fontScale: number; isTolerance: boolean } {
   if (!raw) return { lines: [], fontScale: 1, isTolerance: false }
@@ -538,10 +562,13 @@ async function loadDxf(url: string) {
 
     loadingProgress.value = 40
     loadingStage.value = '正在智能探测并解码 CAD 图纸编码...'
-    const buffer = await res.arrayBuffer()
-    if (!buffer || buffer.byteLength === 0) {
+    const rawBuffer = await res.arrayBuffer()
+    if (!rawBuffer || rawBuffer.byteLength === 0) {
       throw new Error('获取到的 CAD 图纸数据为空')
     }
+
+    // 缝合 DXF 超长文本（组码 3 与组码 1）被换行切断的中文字节，防止跨行断字乱码
+    const buffer = mergeDxfMTextSplitBytes(rawBuffer)
 
     let dxfText = ''
     // 智能编码探测：
