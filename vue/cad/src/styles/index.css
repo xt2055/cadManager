@@ -5,6 +5,10 @@
 @import './themes/tech-dark.css';
 @import './themes/classic-light.css';
 @import './themes/classic-dark.css';
+@import './themes/starry-light.css';
+@import './themes/starry-dark.css';
+@import './themes/bamboo-light.css';
+@import './themes/bamboo-dark.css';
 
 :root {
   color-scheme: dark;

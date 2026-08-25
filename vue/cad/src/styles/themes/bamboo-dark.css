@@ -1,0 +1,35 @@
+html[data-skin='bamboo'][data-dark='true'],
+html[data-skin='bamboo'][data-theme='dark'] {
+  --bg: #0c1410;
+  --bg-soft: #080f0b;
+  --panel: #131d17;
+  --panel-2: #192720;
+  --panel-top: #101913;
+  --line: #213329;
+  --line-strong: #314d3e;
+  --hover: rgb(52 211 153 / 7%);
+  --active: rgb(52 211 153 / 12%);
+  --text-1: #eaf5ef;
+  --text-2: #9db8a9;
+  --text-3: #627a6c;
+  --accent: #2dd4bf;
+  --accent-2: #34d399;
+  --accent-ink: #042f2e;
+  --accent-soft: rgb(45 212 191 / 14%);
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --info: #38bdf8;
+  --glow: rgb(45 212 191 / 20%);
+  --shadow: 0 18px 45px rgb(0 0 0 / 45%);
+  --font-display: 'Noto Serif SC', serif;
+  --radius: 12px;
+  --grid: rgb(45 212 191 / 4%);
+  --cad-bg: #0d1712;
+  --cad-line: #eaf5ef;
+  --cad-center: #2dd4bf;
+  --cad-dim: #627a6c;
+  --cad-text: #eaf5ef;
+  --cad-hatch: #192720;
+  --cad-frame: #314d3e;
+}

@@ -35,9 +35,21 @@ const skins: Array<{ key: ThemeSkin; title: string; desc: string; icon: string }
   },
   {
     key: 'elegant',
-    title: '轻奢主题',
-    desc: '雅致沉稳、注重层次对比的高级质感配色',
+    title: '护眼主题',
+    desc: '温暖柔和、降低视觉疲劳的舒适防眩光配色',
     icon: 'sparkles',
+  },
+  {
+    key: 'starry',
+    title: '星空主题',
+    desc: '深邃深蓝与紫青星芒交织的现代高对比度视觉体系',
+    icon: 'moon',
+  },
+  {
+    key: 'bamboo',
+    title: '墨竹主题',
+    desc: '清雅苍翠、融合东方美学与自然沉静的墨绿质感风格',
+    icon: 'layers',
   },
 ]
 

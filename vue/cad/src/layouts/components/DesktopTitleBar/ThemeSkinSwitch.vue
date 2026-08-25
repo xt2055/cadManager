@@ -9,9 +9,11 @@ defineOptions({
 const themeStore = useThemeStore()
 
 const skins: Array<{ key: ThemeSkin; label: string }> = [
-  { key: 'elegant', label: '轻奢' },
-  { key: 'tech', label: '科技' },
   { key: 'classic', label: '经典' },
+  { key: 'tech', label: '科技' },
+  { key: 'elegant', label: '护眼' },
+  { key: 'starry', label: '星空' },
+  { key: 'bamboo', label: '墨竹' },
 ]
 
 function handleClick(skin: ThemeSkin) {

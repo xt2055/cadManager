@@ -1,0 +1,35 @@
+html[data-skin='starry'][data-dark='true'],
+html[data-skin='starry'][data-theme='dark'] {
+  --bg: #0b0f19;
+  --bg-soft: #080c14;
+  --panel: #111827;
+  --panel-2: #162032;
+  --panel-top: #0e1522;
+  --line: #1e293b;
+  --line-strong: #334155;
+  --hover: rgb(99 102 241 / 8%);
+  --active: rgb(99 102 241 / 14%);
+  --text-1: #f1f5f9;
+  --text-2: #94a3b8;
+  --text-3: #64748b;
+  --accent: #818cf8;
+  --accent-2: #c084fc;
+  --accent-ink: #0f172a;
+  --accent-soft: rgb(129 140 248 / 15%);
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --info: #38bdf8;
+  --glow: rgb(129 140 248 / 25%);
+  --shadow: 0 18px 45px rgb(0 0 0 / 45%);
+  --font-display: 'Noto Sans SC', sans-serif;
+  --radius: 10px;
+  --grid: rgb(99 102 241 / 4%);
+  --cad-bg: #0d121f;
+  --cad-line: #f1f5f9;
+  --cad-center: #818cf8;
+  --cad-dim: #64748b;
+  --cad-text: #f1f5f9;
+  --cad-hatch: #1e293b;
+  --cad-frame: #475569;
+}

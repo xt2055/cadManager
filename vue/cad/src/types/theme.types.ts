@@ -1,4 +1,4 @@
-export type ThemeSkin = 'elegant' | 'tech' | 'classic'
+export type ThemeSkin = 'elegant' | 'tech' | 'classic' | 'starry' | 'bamboo'
 
 export type ThemeMode = 'light' | 'dark'
 
