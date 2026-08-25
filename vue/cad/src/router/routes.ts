@@ -42,6 +42,12 @@ export const routes: RouteRecordRaw[] = [
           import('@/features/drawings/pages/DrawingCreatePage.vue'),
       },
       {
+        path: 'drawings/:drawingId/view',
+        name: RouteName.DrawingViewer,
+        component: () =>
+          import('@/features/drawings/pages/DrawingViewerPage.vue'),
+      },
+      {
         path: 'drawings/:drawingId',
         component: () =>
           import('@/features/drawings/layouts/DrawingDetailLayout.vue'),

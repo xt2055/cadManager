@@ -4,8 +4,8 @@ import type { DrawingDetailTabItem } from '@/constants/drawing.constants'
 export const drawingDetailTabs: DrawingDetailTabItem[] = [
   {
     key: 'preview',
-    title: '图纸预览',
-    icon: 'eye',
+    title: '图纸文件',
+    icon: 'folder',
     routeName: RouteName.DrawingPreview,
   },
   {

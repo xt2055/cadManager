@@ -6,6 +6,7 @@ export const RouteName = {
   DrawingLibrary: 'drawing-library',
   DrawingCreate: 'drawing-create',
   DrawingDetail: 'drawing-detail',
+  DrawingViewer: 'drawing-viewer',
 
   DrawingPreview: 'drawing-preview',
   DrawingStructure: 'drawing-structure',
