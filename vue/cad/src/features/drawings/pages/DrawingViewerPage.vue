@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import CadVectorViewer from '@/features/drawings/detail-tabs/preview/CadVectorViewer.vue'
 import { useDomainStore } from '@/stores/domain.store'
-import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
+import type { DrawingFile } from '@/types/domain.types'
 
 defineOptions({
   name: 'DrawingViewerPage',
@@ -21,82 +21,73 @@ const fileId = computed(() => String(route.query.fileId ?? ''))
 const currentDrawing = computed(() => domainStore.currentDrawing)
 const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in currentDrawing.value))
 
-// 汇总所有关联图纸文件
-const allFiles = computed<DrawingFile[]>(() => {
-  if (!currentDrawing.value) return []
-  const files: DrawingFile[] = []
-
-  if (isAssembly.value) {
-    const mainDrawing = currentDrawing.value as Drawing
-    files.push(...(mainDrawing.files ?? []), ...(mainDrawing.otherFiles ?? []))
-    const belongsToDrawing = (part: StructurePart): boolean => {
-      if (part.parentNo === mainDrawing.no || part.no.startsWith(`${mainDrawing.no}-`)) return true
-      const visited = new Set<string>()
-      let parentNo = part.parentNo
-      while (parentNo && !visited.has(parentNo)) {
-        if (parentNo === mainDrawing.no) return true
-        visited.add(parentNo)
-        const parent = domainStore.structure.find((candidate) => candidate.no === parentNo)
-        if (!parent) return part.no.startsWith(`${mainDrawing.no}-`)
-        parentNo = parent.parentNo
-      }
-      return false
-    }
-
-    domainStore.structure
-      .filter(belongsToDrawing)
-      .forEach((part) => files.push(...(part.files ?? []), ...(part.otherFiles ?? [])))
-  } else {
-    const part = currentDrawing.value as StructurePart
-    files.push(...(part.files ?? []), ...(part.otherFiles ?? []))
-  }
-
-  return files.filter((file, index, sourceFiles) => sourceFiles.findIndex((candidate) => candidate.id === file.id) === index)
-})
-
-// 当前选中的图纸文件
-const activeFile = ref<DrawingFile | null>(null)
+// 当前指定查看的图纸文件
+const targetFile = ref<DrawingFile | null>(null)
 const cadDxfUrl = ref<string | null>(null)
 const cadViewerRef = ref<InstanceType<typeof CadVectorViewer> | null>(null)
 
 // 视图与图层控制
 const layerPanelVisible = ref(true)
-const fileListVisible = ref(true)
 const dynamicLayers = ref<Array<{ name: string; color: string; visible: boolean }>>([])
 const zoomLevel = ref(1)
 
 const zoomText = computed(() => `${Math.round(zoomLevel.value * 100)}%`)
 
-function selectFile(file: DrawingFile) {
-  activeFile.value = file
-  dynamicLayers.value = []
-
-  const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
-  if (isCad) {
-    const storageKey = file.storageKey
-    const params = new URLSearchParams()
-    if (storageKey) {
-      params.set('storageKey', storageKey)
-    }
-    // 无论是否有 storageKey，都附带 drawingNo/partNo/fileName 作为双重保险，避免因分叉或局部引用丢失 storageKey 导致后端查找失败
-    if (file.drawingNo) params.set('drawingNo', file.drawingNo)
-    if (file.partNo) params.set('partNo', file.partNo)
-    params.set('fileName', file.name)
-    // 增加时间戳防缓存
-    params.set('_t', String(Date.now()))
-    const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
-    cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
-  } else {
-    cadDxfUrl.value = null
+function loadTargetFile() {
+  if (drawingId.value) {
+    domainStore.openDrawing(drawingId.value)
   }
 
-  void domainStore.recordActivityAndPersist({
-    drawingNo: file.partNo || file.drawingNo,
-    targetType: 'file',
-    act: 'view',
-    text: `独立浏览 CAD 图纸 <b>${file.name}</b>`,
-    detail: { fileId: file.id, fileName: file.name },
-  })
+  // 1. 查找指定文件
+  let file: DrawingFile | undefined
+  if (currentDrawing.value) {
+    const all = [...(currentDrawing.value.files ?? []), ...(currentDrawing.value.otherFiles ?? [])]
+    if (fileId.value) {
+      file = all.find((f) => f.id === fileId.value)
+    }
+    if (!file && all.length > 0) {
+      file = all[0]
+    }
+  }
+
+  if (!file) {
+    // 尝试在全部结构中查找
+    for (const part of domainStore.structure) {
+      const partFiles = [...(part.files ?? []), ...(part.otherFiles ?? [])]
+      const match = partFiles.find((f) => f.id === fileId.value)
+      if (match) {
+        file = match
+        break
+      }
+    }
+  }
+
+  targetFile.value = file || null
+  dynamicLayers.value = []
+
+  if (file) {
+    const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
+    if (isCad) {
+      const params = new URLSearchParams()
+      if (file.storageKey) params.set('storageKey', file.storageKey)
+      if (file.drawingNo) params.set('drawingNo', file.drawingNo)
+      if (file.partNo) params.set('partNo', file.partNo)
+      params.set('fileName', file.name)
+      params.set('_t', String(Date.now()))
+      const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+      cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
+    } else {
+      cadDxfUrl.value = null
+    }
+
+    void domainStore.recordActivityAndPersist({
+      drawingNo: file.partNo || file.drawingNo,
+      targetType: 'file',
+      act: 'view',
+      text: `独立浏览 CAD 图纸 <b>${file.name}</b>`,
+      detail: { fileId: file.id, fileName: file.name },
+    })
+  }
 }
 
 function handleLayersLoaded(layers: Array<{ name: string; color: string; visible: boolean }>) {
@@ -127,72 +118,28 @@ function goBack() {
   router.push({ name: 'drawing-preview', params: { drawingId: drawingId.value } })
 }
 
-function initCurrentFile() {
-  if (drawingId.value) {
-    domainStore.openDrawing(drawingId.value)
-  }
-  if (allFiles.value.length > 0) {
-    if (fileId.value) {
-      const match = allFiles.value.find((f) => f.id === fileId.value)
-      if (match) {
-        selectFile(match)
-        return
-      }
-    }
-    const firstFile = allFiles.value[0]
-    if (firstFile) {
-      selectFile(firstFile)
-    }
-  }
-}
-
-watch(
-  () => [drawingId.value, allFiles.value.length],
-  () => {
-    if (!activeFile.value && allFiles.value.length > 0) {
-      initCurrentFile()
-    }
-  },
-  { immediate: true },
-)
-
 onMounted(() => {
-  initCurrentFile()
+  loadTargetFile()
 })
 </script>
 
 <template>
   <div class="drawing-standalone-viewer">
-    <!-- 顶部导航与操作栏 -->
+    <!-- 顶部导航与操作栏：与全局主题严格协同融合 -->
     <header class="viewer-header">
       <div class="header-left">
-        <button class="back-btn" type="button" title="返回图纸详情" @click="goBack">
-          <DemoIcon name="arrow-left" :size="16" />
-          <span>返回详情</span>
+        <button class="back-btn" type="button" title="返回图纸文件列表" @click="goBack">
+          <DemoIcon name="arrow-left" :size="15" />
+          <span>返回图纸</span>
         </button>
         <div class="divider"></div>
         <div class="drawing-meta">
           <span class="tag tag-no-dot" :class="isAssembly ? 'plain' : 'info'">
             {{ isAssembly ? '总图' : '零件图' }}
           </span>
-          <h2 class="title">{{ currentDrawing?.name || 'CAD 图纸独立浏览' }}</h2>
-          <span class="no">{{ currentDrawing?.no }}</span>
+          <span class="file-name-highlight">{{ targetFile?.name || currentDrawing?.name }}</span>
+          <span class="drawing-no">{{ targetFile?.partNo || targetFile?.drawingNo || currentDrawing?.no }}</span>
         </div>
-      </div>
-
-      <!-- 中间文件选择胶囊（多文件时方便快速切换） -->
-      <div v-if="allFiles.length > 1" class="file-selector-capsule">
-        <button
-          v-for="file in allFiles"
-          :key="file.id"
-          class="file-pill"
-          :class="{ active: activeFile?.id === file.id }"
-          type="button"
-          @click="selectFile(file)"
-        >
-          <DemoIcon :name="file.role === 'assembly' ? 'layout' : 'file-code'" :size="13" />
-          <span class="file-pill-name">{{ file.name }}</span>
-        </button>
       </div>
 
       <div class="header-right">
@@ -219,65 +166,26 @@ onMounted(() => {
           @click="layerPanelVisible = !layerPanelVisible"
         >
           <DemoIcon name="layers" :size="15" />
-          <span>图层</span>
-        </button>
-
-        <button
-          class="toggle-btn"
-          :class="{ active: fileListVisible }"
-          type="button"
-          title="切换图纸清单"
-          @click="fileListVisible = !fileListVisible"
-        >
-          <DemoIcon name="files" :size="15" />
-          <span>图纸列表 ({{ allFiles.length }})</span>
+          <span>图层 ({{ dynamicLayers.length }})</span>
         </button>
       </div>
     </header>
 
     <!-- 核心画布工作区 -->
     <div class="viewer-body">
-      <!-- 左侧图纸列表面板（可收起） -->
-      <aside v-if="fileListVisible" class="side-panel file-list-panel">
-        <div class="panel-header">
-          <DemoIcon name="files" :size="14" />
-          <span>关联图纸文件 ({{ allFiles.length }})</span>
-        </div>
-        <div class="panel-content">
-          <div
-            v-for="file in allFiles"
-            :key="file.id"
-            class="file-item-card"
-            :class="{ active: activeFile?.id === file.id }"
-            @click="selectFile(file)"
-          >
-            <div class="file-icon-box">
-              <DemoIcon :name="file.role === 'assembly' ? 'layout' : 'file-code'" :size="18" />
-            </div>
-            <div class="file-details">
-              <div class="file-title" :title="file.name">{{ file.name }}</div>
-              <div class="file-sub">
-                <span class="tag-sub">{{ file.role === 'assembly' ? '总图' : '零件' }}</span>
-                <span>{{ file.partNo || file.drawingNo }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
       <!-- 中间 CAD 矢量图画板 -->
       <main class="viewer-canvas-container">
         <CadVectorViewer
           v-if="cadDxfUrl"
           ref="cadViewerRef"
           :dxf-url="cadDxfUrl"
-          :file-name="activeFile?.name"
+          :file-name="targetFile?.name"
           @layers-loaded="handleLayersLoaded"
           @zoom-change="handleZoomChange"
         />
         <div v-else class="empty-prompt">
           <DemoIcon name="file-question" :size="48" />
-          <p>{{ activeFile ? '该格式暂不支持矢量直接渲染' : '暂无选中的图纸文件' }}</p>
+          <p>{{ targetFile ? '该格式暂不支持矢量直接渲染' : '暂无选中的图纸文件' }}</p>
         </div>
       </main>
 
@@ -317,22 +225,21 @@ onMounted(() => {
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background: #0d1117;
-  color: #f0f6fc;
+  background: var(--cad-bg, #1a1d24);
+  color: var(--text-1);
   overflow: hidden;
   position: relative;
 }
 
-/* 顶部导航栏 */
+/* 顶部导航栏，采用系统主题的 --panel 和 --line 变量 */
 .viewer-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 52px;
+  height: 50px;
   padding: 0 16px;
-  background: rgba(22, 27, 34, 0.95);
-  border-bottom: 1px solid rgba(48, 54, 61, 0.8);
-  backdrop-filter: blur(8px);
+  background: var(--panel-top, var(--panel));
+  border-bottom: 1px solid var(--line);
   z-index: 20;
   flex-shrink: 0;
   gap: 16px;
@@ -349,93 +256,52 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #f0f6fc;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text-1);
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .back-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.24);
-  color: #58a6ff;
+  background: var(--hover);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .divider {
   width: 1px;
-  height: 20px;
-  background: rgba(48, 54, 61, 0.8);
+  height: 18px;
+  background: var(--line);
 }
 
 .drawing-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
-.title {
-  margin: 0;
+.file-name-highlight {
   font-size: 14.5px;
   font-weight: 600;
-  color: #f0f6fc;
-  max-width: 240px;
+  color: var(--text-1);
+  max-width: 320px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.no {
-  font-size: 12.5px;
-  color: #8b949e;
-  font-family: 'JetBrains Mono', monospace;
-}
-
-/* 顶部快速切图胶囊 */
-.file-selector-capsule {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(13, 17, 23, 0.8);
-  padding: 3px;
-  border-radius: 20px;
-  border: 1px solid rgba(48, 54, 61, 0.6);
-  max-width: 420px;
-  overflow-x: auto;
-}
-
-.file-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: 16px;
-  background: transparent;
-  border: none;
-  color: #8b949e;
+.drawing-no {
   font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s ease;
-}
-
-.file-pill:hover {
-  color: #f0f6fc;
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.file-pill.active {
-  background: #1f6feb;
-  color: #ffffff;
-  font-weight: 500;
-}
-
-.file-pill-name {
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--panel-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
 }
 
 /* 头部右侧操作区 */
@@ -449,10 +315,10 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: rgba(13, 17, 23, 0.7);
+  background: var(--panel-2);
   padding: 2px 4px;
-  border-radius: 6px;
-  border: 1px solid rgba(48, 54, 61, 0.6);
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--line);
 }
 
 .ctrl-btn {
@@ -464,21 +330,21 @@ onMounted(() => {
   border-radius: 4px;
   background: transparent;
   border: none;
-  color: #c9d1d9;
+  color: var(--text-2);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .ctrl-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #58a6ff;
+  background: var(--hover);
+  color: var(--accent);
 }
 
 .zoom-value {
   font-size: 12px;
   font-family: 'JetBrains Mono', monospace;
   padding: 0 6px;
-  color: #58a6ff;
+  color: var(--accent);
   min-width: 44px;
   text-align: center;
 }
@@ -487,54 +353,48 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #8b949e;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text-2);
   font-size: 12.5px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .toggle-btn:hover {
-  color: #f0f6fc;
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-1);
+  background: var(--hover);
+  border-color: var(--accent);
 }
 
 .toggle-btn.active {
-  background: rgba(56, 189, 248, 0.12);
-  border-color: rgba(56, 189, 248, 0.35);
-  color: #38bdf8;
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
 }
 
-/* 主画布区与左右侧边栏 */
+/* 主画布区与右侧图层面板 */
 .viewer-body {
   display: flex;
   flex: 1;
   width: 100%;
-  height: calc(100% - 52px);
+  height: calc(100% - 50px);
   overflow: hidden;
   position: relative;
 }
 
 .side-panel {
-  width: 240px;
+  width: 220px;
   height: 100%;
-  background: rgba(22, 27, 34, 0.95);
-  border-color: rgba(48, 54, 61, 0.8);
+  background: var(--panel);
+  border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   z-index: 10;
   flex-shrink: 0;
-}
-
-.file-list-panel {
-  border-right: 1px solid rgba(48, 54, 61, 0.8);
-}
-
-.layer-panel {
-  border-left: 1px solid rgba(48, 54, 61, 0.8);
 }
 
 .panel-header {
@@ -542,10 +402,10 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   padding: 12px 14px;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
-  color: #8b949e;
-  border-bottom: 1px solid rgba(48, 54, 61, 0.6);
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
   letter-spacing: 0.5px;
 }
 
@@ -555,67 +415,7 @@ onMounted(() => {
   padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.file-item-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.file-item-card:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.1);
-}
-
-.file-item-card.active {
-  background: rgba(56, 189, 248, 0.12);
-  border-color: rgba(56, 189, 248, 0.35);
-}
-
-.file-icon-box {
-  color: #38bdf8;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.file-details {
-  flex: 1;
-  min-width: 0;
-}
-
-.file-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: #f0f6fc;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-sub {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  color: #8b949e;
-  margin-top: 2px;
-}
-
-.tag-sub {
-  font-size: 10.5px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #c9d1d9;
+  gap: 4px;
 }
 
 /* 图层列表项 */
@@ -623,21 +423,22 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 6px 10px;
   border-radius: 6px;
   font-size: 12.5px;
-  color: #c9d1d9;
+  color: var(--text-2);
   cursor: pointer;
   user-select: none;
-  transition: background 0.15s ease;
+  transition: all 0.15s ease;
 }
 
 .layer-row:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hover);
+  color: var(--text-1);
 }
 
 .layer-checkbox {
-  accent-color: #38bdf8;
+  accent-color: var(--accent);
   cursor: pointer;
 }
 
@@ -658,7 +459,7 @@ onMounted(() => {
 
 .no-layers {
   font-size: 12px;
-  color: #8b949e;
+  color: var(--text-3);
   text-align: center;
   padding: 24px 0;
 }
@@ -667,7 +468,7 @@ onMounted(() => {
 .viewer-canvas-container {
   flex: 1;
   height: 100%;
-  background: #12151c;
+  background: var(--cad-bg, #12151c);
   position: relative;
   overflow: hidden;
 }
@@ -678,8 +479,9 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #484f58;
+  color: var(--text-3);
   gap: 12px;
   font-size: 14px;
 }
 </style>
+

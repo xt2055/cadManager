@@ -171,24 +171,25 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number } {
   str = str.replace(/\{\\D\\H[0-9.]+x;([^|}]+)\^([^|}]+)\|a;\}/gi, '($1 / $2)')
 
   // 3. 处理 AutoCAD 标注堆叠公差如 \S+0.035^ 0; 或 \S-0.043^-0.083; 或 \S+0.1^;
+  // 在主尺寸与公差之间保留一个清晰空格，且上下偏差格式为 (+0.035 / -0.010)
   str = str.replace(/\\S([^;^/#]+)\^([^;]*);?/gi, (match, top, btm) => {
     top = top ? top.trim() : ''
     btm = btm ? btm.trim() : ''
-    if (top && btm) return `(${top} / ${btm})`
-    if (top) return top
-    if (btm) return btm
+    if (top && btm) return ` (${top} / ${btm})`
+    if (top) return ` (${top})`
+    if (btm) return ` (${btm})`
     return ''
   })
-  str = str.replace(/\\S\^([^;]+);?/gi, (match, btm) => btm.trim())
-  str = str.replace(/\\S([^;]+)\^;?/gi, (match, top) => top.trim())
-  str = str.replace(/\\S([^;/#]+)[/#]([^;]+);?/gi, (match, top, btm) => `(${top.trim()} / ${btm.trim()})`)
+  str = str.replace(/\\S\^([^;]+);?/gi, (match, btm) => ` (${btm.trim()})`)
+  str = str.replace(/\\S([^;]+)\^;?/gi, (match, top) => ` (${top.trim()})`)
+  str = str.replace(/\\S([^;/#]+)[/#]([^;]+);?/gi, (match, top, btm) => ` (${top.trim()} / ${btm.trim()})`)
 
   // 4. 标准工程符号替换
   str = str
     .replace(/\\P/gi, '\n')
     .replace(/%%C/gi, 'Φ').replace(/%C/gi, 'Φ')
     .replace(/%%D/gi, '°').replace(/%D/gi, '°')
-    .replace(/%%P/gi, '±').replace(/%P/gi, '±')
+    .replace(/%%P/gi, ' ±').replace(/%P/gi, ' ±')
     .replace(/%%U/gi, '')
     .replace(/%%O/gi, '')
 
@@ -212,13 +213,14 @@ function redraw() {
   const width = canvas.width
   const height = canvas.height
 
-  // 1. 清空背景 (现代深色 CAD 工业蓝灰背景)
-  ctx.fillStyle = '#12151c'
+  // 1. 读取系统主题的背景色（若存在 --cad-bg / --bg 则自适应，保证与当前主题完美契合）
+  const computedBg = getComputedStyle(canvas).getPropertyValue('--cad-bg').trim() || '#1a1d24'
+  ctx.fillStyle = computedBg
   ctx.fillRect(0, 0, width, height)
 
   // 绘制工程网格背景
   ctx.lineWidth = 1
-  ctx.strokeStyle = '#1a202c'
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)'
   const gridSize = 50 * viewScale.value
   if (gridSize > 20 && gridSize < 300) {
     const offsetX = (width / 2 - viewCenter.value.x * viewScale.value) % gridSize
@@ -705,7 +707,7 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   min-height: 400px;
-  background: #12151c;
+  background: var(--cad-bg, #1a1d24);
   overflow: hidden;
   user-select: none;
 }
@@ -729,15 +731,15 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background: rgba(18, 21, 28, 0.88);
+  background: color-mix(in srgb, var(--panel, #1e2228) 85%, transparent);
   backdrop-filter: blur(4px);
-  color: #f8fafc;
+  color: var(--text-1, #f8fafc);
   z-index: 10;
 }
 
 .spin-icon {
   animation: spin 1s linear infinite;
-  color: #00f3ff;
+  color: var(--accent, #38bdf8);
 }
 
 @keyframes spin {
@@ -748,10 +750,10 @@ onUnmounted(() => {
 .progress-card {
   width: min(440px, calc(100% - 48px));
   padding: 20px 24px;
-  border-radius: 12px;
-  background: rgba(24, 29, 41, 0.96);
-  border: 1px solid rgba(56, 189, 248, 0.25);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  border-radius: var(--radius, 12px);
+  background: var(--panel-top, var(--panel, #252a31));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  box-shadow: var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.5));
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -766,21 +768,21 @@ onUnmounted(() => {
 .progress-title {
   font-size: 14.5px;
   font-weight: 600;
-  color: #f8fafc;
+  color: var(--text-1, #f8fafc);
 }
 
 .progress-bar-bg {
   width: 100%;
-  height: 8px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-2, rgba(255, 255, 255, 0.08));
   overflow: hidden;
 }
 
 .progress-bar-fill {
   height: 100%;
-  border-radius: 4px;
-  background: linear-gradient(90deg, #0284c7, #38bdf8, #00f3ff);
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent, #0284c7), var(--accent-2, #38bdf8));
   transition: width 0.3s ease;
 }
 
@@ -792,7 +794,7 @@ onUnmounted(() => {
 }
 
 .progress-stage {
-  color: #94a3b8;
+  color: var(--text-3, #94a3b8);
   max-width: 80%;
   white-space: nowrap;
   overflow: hidden;
@@ -802,19 +804,19 @@ onUnmounted(() => {
 .progress-percent {
   font-weight: 700;
   font-family: 'JetBrains Mono', monospace;
-  color: #38bdf8;
+  color: var(--accent, #38bdf8);
 }
 
 .error-overlay {
-  color: #f87171;
+  color: var(--danger, #f87171);
 }
 
 .retry-btn {
   margin-top: 8px;
   padding: 6px 16px;
-  border-radius: 4px;
-  background: #38bdf8;
-  color: #0f172a;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--accent, #38bdf8);
+  color: var(--accent-ink, #0f172a);
   font-weight: 600;
   border: none;
   cursor: pointer;
