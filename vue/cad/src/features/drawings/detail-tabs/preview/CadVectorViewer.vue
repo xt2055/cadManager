@@ -191,6 +191,32 @@ class HatchEntityHandler {
       }
     }
 
+    const samePoint = (left: { x: number; y: number }, right: { x: number; y: number }) =>
+      Math.abs(left.x - right.x) < 1e-8 && Math.abs(left.y - right.y) < 1e-8
+
+    const orderEdges = (edges: Array<{ start: { x: number; y: number }; end: { x: number; y: number } }>) => {
+      if (edges.length === 0) return [] as Array<{ x: number; y: number }>
+
+      const first = edges[0]
+      if (!first) return [] as Array<{ x: number; y: number }>
+      const remaining = edges.slice(1)
+      const polygon: Array<{ x: number; y: number }> = [first.start, first.end]
+
+      while (remaining.length > 0) {
+        const tail = polygon[polygon.length - 1]
+        if (!tail) break
+        const nextIndex = remaining.findIndex((edge) => samePoint(edge.start, tail) || samePoint(edge.end, tail))
+        if (nextIndex < 0) break
+
+        const next = remaining.splice(nextIndex, 1)[0]
+        if (!next) break
+        const nextPoint = samePoint(next.start, tail) ? next.end : next.start
+        polygon.push(nextPoint)
+      }
+
+      return polygon
+    }
+
     while (index < groups.length) {
       const group = groups[index]
       switch (group.code) {
@@ -242,6 +268,7 @@ class HatchEntityHandler {
               // 独立边界：93 后读取指定数量的边；当前重点支持直线边组成的箭头。
               const edgeCount = groups[index]?.code === 93 ? groups[index].value : 0
               index += groups[index]?.code === 93 ? 1 : 0
+              const lineEdges: Array<{ start: { x: number; y: number }; end: { x: number; y: number } }> = []
 
               for (let edgeIndex = 0; edgeIndex < edgeCount && index < groups.length; edgeIndex++) {
                 const edgeType = groups[index]?.code === 72 ? groups[index].value : 0
@@ -252,8 +279,9 @@ class HatchEntityHandler {
                   index = start.nextIndex
                   const end = readPoint(index, 11, 21)
                   index = end.nextIndex
-                  if (start.point) appendPoint(polygon, start.point)
-                  if (edgeIndex === edgeCount - 1 && end.point) appendPoint(polygon, end.point)
+                  if (start.point && end.point) {
+                    lineEdges.push({ start: start.point, end: end.point })
+                  }
                 } else if (edgeType === 2) {
                   // 圆弧边界：离散采样，保证实心箭头和圆弧填充不会丢失。
                   const center = readPoint(index, 10, 20)
@@ -284,6 +312,10 @@ class HatchEntityHandler {
                   // 未支持的边类型无法安全猜测长度，跳过当前路径，避免污染后续实体。
                   break
                 }
+              }
+
+              for (const point of orderEdges(lineEdges)) {
+                appendPoint(polygon, point)
               }
             }
 
