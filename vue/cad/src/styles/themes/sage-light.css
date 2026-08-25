@@ -1,0 +1,35 @@
+html[data-skin='sage'][data-theme='light'] {
+  /* 超护眼 · 豆沙绿纸张色系：低蓝光、低对比、类纸质阅读体验 */
+  --bg: #deead9;
+  --bg-soft: #d4e3cd;
+  --panel: #eef5ea;
+  --panel-2: #e4efe0;
+  --panel-top: #e9f2e4;
+  --line: #c3d7bd;
+  --line-strong: #a9c3a1;
+  --hover: rgb(106 154 116 / 8%);
+  --active: rgb(106 154 116 / 14%);
+  --text-1: #2e4034;
+  --text-2: #54705c;
+  --text-3: #7e9a86;
+  --accent: #6a9a74;
+  --accent-2: #8ab892;
+  --accent-ink: #f4faf2;
+  --accent-soft: rgb(106 154 116 / 13%);
+  --ok: #5f9e6e;
+  --warn: #c19f58;
+  --danger: #c4827c;
+  --info: #7aa3b0;
+  --glow: rgb(106 154 116 / 12%);
+  --shadow: 0 10px 26px rgb(74 110 82 / 10%);
+  --font-display: 'Noto Sans SC', sans-serif;
+  --radius: 12px;
+  --grid: transparent;
+  --cad-bg: #1a231c;
+  --cad-line: #e6f0e2;
+  --cad-center: #8ab892;
+  --cad-dim: #7e9a86;
+  --cad-text: #e6f0e2;
+  --cad-hatch: #2a352c;
+  --cad-frame: #a9c3a1;
+}

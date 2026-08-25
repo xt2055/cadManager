@@ -9,6 +9,8 @@
 @import './themes/starry-dark.css';
 @import './themes/bamboo-light.css';
 @import './themes/bamboo-dark.css';
+@import './themes/sage-light.css';
+@import './themes/sage-dark.css';
 
 :root {
   color-scheme: dark;
@@ -101,7 +103,9 @@ html[data-tauri='true'] #app {
 html[data-skin='elegant'] .bg-grid,
 html[data-skin='elegant'] .orb,
 html[data-skin='classic'] .bg-grid,
-html[data-skin='classic'] .orb {
+html[data-skin='classic'] .orb,
+html[data-skin='sage'] .bg-grid,
+html[data-skin='sage'] .orb {
   display: none;
 }
 

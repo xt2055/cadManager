@@ -12,6 +12,7 @@ const skins: Array<{ key: ThemeSkin; label: string }> = [
   { key: 'classic', label: '经典' },
   { key: 'tech', label: '科技' },
   { key: 'elegant', label: '护眼' },
+  { key: 'sage', label: '柔光' },
   { key: 'starry', label: '星空' },
   { key: 'bamboo', label: '墨竹' },
 ]

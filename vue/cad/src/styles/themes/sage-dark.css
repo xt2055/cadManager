@@ -1,0 +1,35 @@
+html[data-skin='sage'][data-theme='dark'] {
+  /* 超护眼 · 墨绿暗色：极低亮度、无刺眼纯黑纯白，深夜温润 */
+  --bg: #151b16;
+  --bg-soft: #111612;
+  --panel: #1a221c;
+  --panel-2: #212a23;
+  --panel-top: #18201a;
+  --line: #2a352c;
+  --line-strong: #3b4a3f;
+  --hover: rgb(138 184 146 / 7%);
+  --active: rgb(138 184 146 / 12%);
+  --text-1: #d8e6d6;
+  --text-2: #9db39f;
+  --text-3: #6f8572;
+  --accent: #8ab892;
+  --accent-2: #a5cfab;
+  --accent-ink: #152018;
+  --accent-soft: rgb(138 184 146 / 13%);
+  --ok: #7fbf8d;
+  --warn: #d0b070;
+  --danger: #cf8f88;
+  --info: #8fb4c4;
+  --glow: rgb(138 184 146 / 15%);
+  --shadow: 0 16px 40px rgb(0 0 0 / 38%);
+  --font-display: 'Noto Sans SC', sans-serif;
+  --radius: 12px;
+  --grid: transparent;
+  --cad-bg: #171d18;
+  --cad-line: #dceadb;
+  --cad-center: #8ab892;
+  --cad-dim: #6f8572;
+  --cad-text: #dceadb;
+  --cad-hatch: #2a352c;
+  --cad-frame: #4a5a4e;
+}

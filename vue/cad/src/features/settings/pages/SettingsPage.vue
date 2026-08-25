@@ -40,6 +40,12 @@ const skins: Array<{ key: ThemeSkin; title: string; desc: string; icon: string }
     icon: 'sparkles',
   },
   {
+    key: 'sage',
+    title: '超级护眼主题',
+    desc: '豆沙绿纸张质感，极低蓝光与对比度，全天候极致温润护眼',
+    icon: 'leaf',
+  },
+  {
     key: 'starry',
     title: '星空主题',
     desc: '深邃深蓝与紫青星芒交织的现代高对比度视觉体系',
