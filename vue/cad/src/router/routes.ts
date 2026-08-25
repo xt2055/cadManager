@@ -48,6 +48,12 @@ export const routes: RouteRecordRaw[] = [
           import('@/features/drawings/pages/DrawingViewerPage.vue'),
       },
       {
+        path: 'drawings/:drawingId/file-history',
+        name: RouteName.DrawingFileHistory,
+        component: () =>
+          import('@/features/drawings/pages/DrawingFileHistoryPage.vue'),
+      },
+      {
         path: 'drawings/:drawingId',
         component: () =>
           import('@/features/drawings/layouts/DrawingDetailLayout.vue'),

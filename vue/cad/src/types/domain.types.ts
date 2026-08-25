@@ -27,6 +27,21 @@ export interface DrawingSigners {
   批准: string
 }
 
+export interface DrawingFileHistoryItem {
+  id: string
+  name: string
+  size: string
+  version: string
+  uploadedBy: string
+  uploadedAt: string
+  replacedBy?: string
+  replacedAt?: string
+  replaceReason?: string
+  storageKey?: string
+  mimeType?: string
+  previewable: boolean
+}
+
 export interface DrawingFile {
   id: string
   name: string
@@ -40,6 +55,10 @@ export interface DrawingFile {
   storageKey?: string
   mimeType?: string
   previewable: boolean
+  replaceReason?: string
+  replacedBy?: string
+  replacedAt?: string
+  history?: DrawingFileHistoryItem[]
 }
 
 export interface MaterialFile {

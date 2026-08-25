@@ -81,6 +81,132 @@ const hasAssemblyFile = computed(() => {
 // 文件上传 input ref
 const assemblyInput = ref<HTMLInputElement | null>(null)
 const partInput = ref<HTMLInputElement | null>(null)
+const replaceInput = ref<HTMLInputElement | null>(null)
+
+// 替换弹窗与正在替换的目标文件
+const isReplacing = ref(false)
+const targetReplaceFile = ref<DrawingFile | null>(null)
+const replaceReasonInput = ref('')
+const selectedReplaceBlob = ref<File | null>(null)
+
+// 借用零件弹窗与多维度智能选型系统
+const isBorrowing = ref(false)
+const borrowSearchMode = ref<'by-project' | 'global-part'>('by-project')
+const projectSearchQuery = ref('')
+const partSearchQuery = ref('')
+const selectedSourceProjectNo = ref('')
+const selectedSourcePartNo = ref('')
+const borrowReasonInput = ref('')
+
+// 获取除当前项目外的所有可选项目（支持名称、图号、厂商模糊过滤）
+const candidateProjects = computed(() => {
+  const curNo = currentItem.value?.no || ''
+  const q = projectSearchQuery.value.trim().toLowerCase()
+  const list = domainStore.drawings.filter((d) => d.no !== curNo)
+  if (!q) return list
+  return list.filter((d) =>
+    d.no.toLowerCase().includes(q) ||
+    d.name.toLowerCase().includes(q) ||
+    (d.vendor && d.vendor.toLowerCase().includes(q)) ||
+    (d.project && d.project.toLowerCase().includes(q))
+  )
+})
+
+// 当前选中的源项目对象
+const selectedProjectDetail = computed(() => {
+  if (!selectedSourceProjectNo.value) return candidateProjects.value[0] || null
+  return domainStore.drawings.find((d) => d.no === selectedSourceProjectNo.value) || null
+})
+
+// 根据模式和筛选条件获取零件列表
+const candidateParts = computed(() => {
+  const q = partSearchQuery.value.trim().toLowerCase()
+
+  if (borrowSearchMode.value === 'global-part') {
+    // 全库全局穿透搜索（排除当前项目自身的零件）
+    const curNo = currentItem.value?.no || ''
+    const allOtherParts = domainStore.structure.filter((p) => p.parentNo !== curNo)
+    if (!q) return allOtherParts.slice(0, 100) // 默认展示前 100 项
+    return allOtherParts.filter((p) =>
+      p.no.toLowerCase().includes(q) ||
+      p.name.toLowerCase().includes(q) ||
+      (p.material && p.material.toLowerCase().includes(q)) ||
+      (p.spec && p.spec.toLowerCase().includes(q)) ||
+      (p.parentNo && p.parentNo.toLowerCase().includes(q))
+    )
+  }
+
+  // 按项目浏览选型
+  const pNo = selectedSourceProjectNo.value || candidateProjects.value[0]?.no
+  if (!pNo) return []
+
+  const parts = domainStore.structure.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`))
+  if (!q) return parts
+
+  return parts.filter((p) =>
+    p.no.toLowerCase().includes(q) ||
+    p.name.toLowerCase().includes(q) ||
+    (p.material && p.material.toLowerCase().includes(q)) ||
+    (p.spec && p.spec.toLowerCase().includes(q))
+  )
+})
+
+// 计算各个项目的零件数量
+function getProjectPartCount(pNo: string): number {
+  return domainStore.structure.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`)).length
+}
+
+// 获取零件所属项目的名称
+function getPartProjectName(part: StructurePart): string {
+  const p = domainStore.drawings.find((d) => d.no === part.parentNo)
+  return p ? p.name : (part.parentNo || '未知项目')
+}
+
+const selectedPartDetail = computed(() => {
+  if (!selectedSourcePartNo.value) return null
+  return domainStore.structure.find((p) => p.no === selectedSourcePartNo.value) || null
+})
+
+function openBorrowModal() {
+  isBorrowing.value = true
+  borrowSearchMode.value = 'by-project'
+  projectSearchQuery.value = ''
+  partSearchQuery.value = ''
+  selectedSourceProjectNo.value = candidateProjects.value[0]?.no || ''
+  selectedSourcePartNo.value = ''
+  borrowReasonInput.value = ''
+}
+
+function cancelBorrowModal() {
+  isBorrowing.value = false
+  projectSearchQuery.value = ''
+  partSearchQuery.value = ''
+  selectedSourcePartNo.value = ''
+}
+
+function selectProject(projNo: string) {
+  selectedSourceProjectNo.value = projNo
+  selectedSourcePartNo.value = ''
+}
+
+async function confirmBorrowPart() {
+  if (!selectedSourcePartNo.value || !currentItem.value) return
+  const curNo = currentItem.value.no
+
+  try {
+    const borrowed = await domainStore.borrowPartToProject(
+      curNo,
+      selectedSourcePartNo.value,
+      borrowReasonInput.value.trim() || '跨项目工程设计借用',
+    )
+    uiStore.toast(`成功借用零件「${borrowed.name} (${borrowed.no})」到当前项目`, 'ok')
+    isBorrowing.value = false
+    selectedSourcePartNo.value = ''
+  } catch (err: any) {
+    console.error('借用失败', err)
+    uiStore.toast(err.message || '借用零件失败，请重试', 'warn')
+  }
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -95,6 +221,63 @@ function openBrowse(file: DrawingFile) {
     params: { drawingId: currentItem.value.no },
     query: { fileId: file.id },
   })
+}
+
+function openHistory(file: DrawingFile) {
+  if (!currentItem.value) return
+  router.push({
+    name: 'drawing-file-history',
+    params: { drawingId: currentItem.value.no },
+    query: { fileId: file.id },
+  })
+}
+
+function triggerReplace(file: DrawingFile) {
+  targetReplaceFile.value = file
+  replaceReasonInput.value = ''
+  selectedReplaceBlob.value = null
+  replaceInput.value?.click()
+}
+
+function onReplaceFileSelected(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file || !targetReplaceFile.value) return
+  selectedReplaceBlob.value = file
+  isReplacing.value = true
+  target.value = ''
+}
+
+async function confirmReplace() {
+  if (!targetReplaceFile.value || !selectedReplaceBlob.value) return
+  const cur = targetReplaceFile.value
+  const targetNo = cur.partNo || cur.drawingNo || currentItem.value?.no || ''
+
+  try {
+    const updated = await domainStore.replaceDrawingFile(
+      targetNo,
+      cur.id,
+      {
+        name: selectedReplaceBlob.value.name,
+        size: formatFileSize(selectedReplaceBlob.value.size),
+        replaceReason: replaceReasonInput.value.trim() || '版本替换更新',
+      },
+      selectedReplaceBlob.value,
+    )
+    uiStore.toast(`文件已成功替换为 ${updated.version} · 历史版本已归档留痕`, 'ok')
+    isReplacing.value = false
+    targetReplaceFile.value = null
+    selectedReplaceBlob.value = null
+  } catch (error) {
+    console.error('替换文件失败', error)
+    uiStore.toast('替换文件失败，请重试', 'warn')
+  }
+}
+
+function cancelReplace() {
+  isReplacing.value = false
+  targetReplaceFile.value = null
+  selectedReplaceBlob.value = null
 }
 
 async function handleDeleteFile(file: DrawingFile) {
@@ -253,6 +436,13 @@ async function onPartFilesChange(event: Event) {
       class="hidden-file-input"
       @change="onPartFilesChange"
     />
+    <input
+      ref="replaceInput"
+      type="file"
+      accept=".exb,.dwg,.dxf,.pdf,.step,.stp"
+      class="hidden-file-input"
+      @change="onReplaceFileSelected"
+    />
 
     <!-- 顶部操作栏：规范的上传总图 / 零件图入口 -->
     <div class="preview-actions-header card card-pad">
@@ -265,6 +455,9 @@ async function onPartFilesChange(event: Event) {
       </div>
 
       <div class="header-buttons">
+        <button class="btn" type="button" title="从其他工程项目借用零件图及关联文件" @click="openBorrowModal">
+          <DemoIcon name="share-2" :size="14" />借用零件
+        </button>
         <button class="btn primary" type="button" @click="triggerUploadAssembly">
           <DemoIcon name="upload" :size="14" />上传总图文件
         </button>
@@ -300,7 +493,7 @@ async function onPartFilesChange(event: Event) {
               <th>版本</th>
               <th>上传人</th>
               <th>上传时间</th>
-              <th style="width: 140px; text-align: right">操作</th>
+              <th style="width: 250px; text-align: right">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -316,14 +509,21 @@ async function onPartFilesChange(event: Event) {
               </td>
               <td class="num mono">{{ file.partNo || file.drawingNo }}</td>
               <td class="num">{{ file.size }}</td>
-              <td class="num">{{ file.version }}</td>
+              <td class="num"><span class="ver-badge">{{ file.version }}</span></td>
               <td>{{ file.uploadedBy }}</td>
               <td class="num updated">{{ file.uploadedAt }}</td>
               <td class="row-actions" style="text-align: right">
-                <button class="btn sm primary" type="button" @click="openBrowse(file)">
+                <button class="btn sm primary" type="button" title="在线 CAD 矢量浏览" @click="openBrowse(file)">
                   <DemoIcon name="eye" :size="13" />浏览
                 </button>
-                <button class="btn sm danger" type="button" @click="handleDeleteFile(file)">
+                <button class="btn sm" type="button" title="替换当前图纸文件并生成新版本" @click="triggerReplace(file)">
+                  <DemoIcon name="refresh-cw" :size="13" />替换
+                </button>
+                <button class="btn sm" type="button" title="查看该文件所有历史版本树与演进" @click="openHistory(file)">
+                  <DemoIcon name="history" :size="13" />历史
+                  <span v-if="file.history?.length" class="hist-count">{{ file.history.length }}</span>
+                </button>
+                <button class="btn sm danger" type="button" title="删除文件" @click="handleDeleteFile(file)">
                   <DemoIcon name="trash-2" :size="13" />删除
                 </button>
               </td>
@@ -341,8 +541,835 @@ async function onPartFilesChange(event: Event) {
         </table>
       </div>
     </div>
+
+    <!-- 替换图纸确认与说明弹窗 -->
+    <div v-if="isReplacing" class="modal-backdrop">
+      <div class="modal card replace-modal">
+        <div class="modal-head">
+          <div class="modal-title">
+            <DemoIcon name="refresh-cw" :size="18" />
+            <span>替换图纸文件并生成新版本</span>
+          </div>
+          <button class="btn sm close-btn" type="button" @click="cancelReplace">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="replace-meta-box">
+            <div class="meta-row">
+              <span class="lbl">原文件：</span>
+              <span class="val mono bold">{{ targetReplaceFile?.name }}</span>
+              <span class="tag info">{{ targetReplaceFile?.version || 'v1.0' }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="lbl">新文件：</span>
+              <span class="val mono bold text-accent">{{ selectedReplaceBlob?.name }}</span>
+              <span class="tag ok">({{ formatFileSize(selectedReplaceBlob?.size || 0) }})</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="bold">版本更新说明 / 替换原因</label>
+            <input
+              v-model="replaceReasonInput"
+              type="text"
+              class="inp"
+              placeholder="例如：修改活塞密封槽倒角与公差，重新出图"
+            />
+          </div>
+
+          <div class="note info-note">
+            <DemoIcon name="shield-check" :size="15" />
+            <div>替换将保留原文件所有图纸历史树与下载凭据，版本号自动递进，全程留痕。</div>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <button class="btn" type="button" @click="cancelReplace">取消</button>
+          <button class="btn primary" type="button" @click="confirmReplace">
+            <DemoIcon name="check" :size="14" />确认替换升级
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- 借用其他项目零件弹窗 (支持千级项目/海量零件双模智能选型体系) -->
+    <div v-if="isBorrowing" class="modal-backdrop">
+      <div class="modal card borrow-modal">
+        <div class="modal-head">
+          <div class="modal-title">
+            <DemoIcon name="share-2" :size="18" />
+            <span>跨工程项目借用零件与图纸</span>
+          </div>
+          <div class="modal-mode-tabs">
+            <button
+              class="mode-tab-btn"
+              :class="{ active: borrowSearchMode === 'by-project' }"
+              type="button"
+              @click="borrowSearchMode = 'by-project'"
+            >
+              <DemoIcon name="folder" :size="13" />按工程项目选型
+            </button>
+            <button
+              class="mode-tab-btn"
+              :class="{ active: borrowSearchMode === 'global-part' }"
+              type="button"
+              @click="borrowSearchMode = 'global-part'"
+            >
+              <DemoIcon name="search" :size="13" />全库全局穿透搜索
+            </button>
+          </div>
+          <button class="btn sm close-btn" type="button" @click="cancelBorrowModal">✕</button>
+        </div>
+
+        <div class="modal-body borrow-modal-body">
+          <!-- 模式 1：按工程项目三栏分级导航与选型（专为几千个项目设计） -->
+          <div v-if="borrowSearchMode === 'by-project'" class="borrow-three-grid">
+            <!-- 栏 1：项目库快速检索与选择 -->
+            <div class="borrow-panel-col">
+              <div class="col-header">
+                <span class="col-title"><DemoIcon name="folder" :size="13" />工程项目库 ({{ candidateProjects.length }})</span>
+              </div>
+              <div class="search-input-wrap compact">
+                <DemoIcon name="search" :size="13" />
+                <input
+                  v-model="projectSearchQuery"
+                  type="text"
+                  class="inp filter-inp"
+                  placeholder="搜索项目名称/图号/厂商..."
+                />
+              </div>
+              <div class="scroll-select-list">
+                <div
+                  v-for="proj in candidateProjects"
+                  :key="proj.no"
+                  class="project-item-card"
+                  :class="{ active: (selectedSourceProjectNo || candidateProjects[0]?.no) === proj.no }"
+                  @click="selectProject(proj.no)"
+                >
+                  <div class="proj-card-title">{{ proj.name }}</div>
+                  <div class="proj-card-meta">
+                    <span class="mono">{{ proj.no }}</span>
+                    <span class="tag tag-no-dot plain tag-xs">{{ getProjectPartCount(proj.no) }} 个零件</span>
+                  </div>
+                </div>
+                <div v-if="!candidateProjects.length" class="empty-list-prompt">
+                  <DemoIcon name="search-x" :size="20" />
+                  <span>未找到匹配的项目</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 栏 2：当前项目下的零件列表 -->
+            <div class="borrow-panel-col">
+              <div class="col-header">
+                <span class="col-title"><DemoIcon name="file" :size="13" />可选零件清单 ({{ candidateParts.length }})</span>
+                <span class="col-badge mono">{{ selectedProjectDetail?.no }}</span>
+              </div>
+              <div class="search-input-wrap compact">
+                <DemoIcon name="filter" :size="13" />
+                <input
+                  v-model="partSearchQuery"
+                  type="text"
+                  class="inp filter-inp"
+                  placeholder="过滤零件图号/名称/材质..."
+                />
+              </div>
+              <div class="scroll-select-list">
+                <div
+                  v-for="part in candidateParts"
+                  :key="part.no"
+                  class="part-candidate-card"
+                  :class="{ active: selectedSourcePartNo === part.no }"
+                  @click="selectedSourcePartNo = part.no"
+                >
+                  <div class="part-card-head">
+                    <span class="part-name">{{ part.name }}</span>
+                    <span class="tag tag-no-dot mono tag-xs">{{ part.no }}</span>
+                  </div>
+                  <div class="part-card-sub">
+                    <span>材质: {{ part.material || '—' }}</span>
+                    <span>数量: {{ part.qty || 1 }}</span>
+                    <span class="has-file-badge" :class="{ ok: part.files?.length }">
+                      {{ part.files?.length ? `${part.files.length} 份图纸` : '无图纸' }}
+                    </span>
+                  </div>
+                </div>
+                <div v-if="!candidateParts.length" class="empty-list-prompt">
+                  <DemoIcon name="search-x" :size="20" />
+                  <span>该项目暂无匹配零件</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 栏 3：选中零件档案核对与借用理由 -->
+            <div class="borrow-panel-col borrow-detail-col">
+              <div class="col-header">
+                <span class="col-title"><DemoIcon name="check-square" :size="13" />借用档案核对</span>
+              </div>
+
+              <div v-if="selectedPartDetail" class="borrow-card-detail-content">
+                <div class="preview-hero-card">
+                  <DemoIcon name="file-check-2" :size="22" />
+                  <div>
+                    <h4>{{ selectedPartDetail.name }}</h4>
+                    <span class="mono text-accent">{{ selectedPartDetail.no }}</span>
+                  </div>
+                </div>
+
+                <div class="preview-spec-grid">
+                  <div class="spec-row"><span class="k">来源工程：</span><span class="v">{{ selectedProjectDetail?.name }}</span></div>
+                  <div class="spec-row"><span class="k">制造分类：</span><span class="v tag plain">{{ selectedPartDetail.partType }}</span></div>
+                  <div class="spec-row"><span class="k">材质规格：</span><span class="v mono">{{ selectedPartDetail.material }} {{ selectedPartDetail.spec }}</span></div>
+                  <div class="spec-row"><span class="k">单重/数量：</span><span class="v">{{ selectedPartDetail.weight ? `${selectedPartDetail.weight} kg` : '—' }} / {{ selectedPartDetail.qty }} 件</span></div>
+                  <div class="spec-row"><span class="k">表面处理：</span><span class="v">{{ selectedPartDetail.surfaceTreatment || '—' }}</span></div>
+                  <div class="spec-row"><span class="k">关联图纸：</span><span class="v mono text-accent">{{ selectedPartDetail.files?.[0]?.name || '（无独立图纸文件）' }}</span></div>
+                </div>
+
+                <div class="field" style="margin-top: auto;">
+                  <label class="bold">借用备注说明 / 选型原因</label>
+                  <input
+                    v-model="borrowReasonInput"
+                    type="text"
+                    class="inp"
+                    placeholder="例如：复用成熟导向套设计，缩短加工周期"
+                  />
+                </div>
+              </div>
+
+              <div v-else class="empty-preview-prompt">
+                <DemoIcon name="mouse-pointer-click" :size="32" />
+                <p>请点击中间列表选择需要借用的零件</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 模式 2：全库全局穿透搜索（直击数万图纸） -->
+          <div v-else class="borrow-two-grid">
+            <div class="borrow-panel-col">
+              <div class="search-input-wrap">
+                <DemoIcon name="search" :size="15" />
+                <input
+                  v-model="partSearchQuery"
+                  type="text"
+                  class="inp global-search-inp"
+                  placeholder="在企业全库中穿透搜索：输入图号如 04、活塞、HT200、或项目名称..."
+                  autofocus
+                />
+              </div>
+
+              <div class="scroll-select-list global-list" style="margin-top: 10px;">
+                <div
+                  v-for="part in candidateParts"
+                  :key="part.no"
+                  class="global-part-card"
+                  :class="{ active: selectedSourcePartNo === part.no }"
+                  @click="selectedSourcePartNo = part.no; selectedSourceProjectNo = part.parentNo"
+                >
+                  <div class="gp-top">
+                    <span class="gp-name">{{ part.name }}</span>
+                    <span class="mono gp-no">{{ part.no }}</span>
+                    <span class="tag info tag-xs">{{ getPartProjectName(part) }}</span>
+                  </div>
+                  <div class="gp-btm">
+                    <span>材质: {{ part.material || '—' }}</span>
+                    <span>数量: {{ part.qty || 1 }}</span>
+                    <span>图纸: {{ part.files?.[0]?.name || '无文件' }}</span>
+                  </div>
+                </div>
+                <div v-if="!candidateParts.length" class="empty-list-prompt">
+                  <DemoIcon name="search-x" :size="24" />
+                  <span>全库中未找到匹配的零件，请尝试更简短的关键词</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右侧详情 -->
+            <div class="borrow-panel-col borrow-detail-col">
+              <div class="col-header">
+                <span class="col-title"><DemoIcon name="check-square" :size="13" />借用档案核对</span>
+              </div>
+
+              <div v-if="selectedPartDetail" class="borrow-card-detail-content">
+                <div class="preview-hero-card">
+                  <DemoIcon name="file-check-2" :size="22" />
+                  <div>
+                    <h4>{{ selectedPartDetail.name }}</h4>
+                    <span class="mono text-accent">{{ selectedPartDetail.no }}</span>
+                  </div>
+                </div>
+
+                <div class="preview-spec-grid">
+                  <div class="spec-row"><span class="k">来源工程：</span><span class="v">{{ getPartProjectName(selectedPartDetail) }}</span></div>
+                  <div class="spec-row"><span class="k">制造分类：</span><span class="v tag plain">{{ selectedPartDetail.partType }}</span></div>
+                  <div class="spec-row"><span class="k">材质规格：</span><span class="v mono">{{ selectedPartDetail.material }} {{ selectedPartDetail.spec }}</span></div>
+                  <div class="spec-row"><span class="k">关联图纸：</span><span class="v mono text-accent">{{ selectedPartDetail.files?.[0]?.name || '（无文件）' }}</span></div>
+                </div>
+
+                <div class="field" style="margin-top: auto;">
+                  <label class="bold">借用备注说明</label>
+                  <input
+                    v-model="borrowReasonInput"
+                    type="text"
+                    class="inp"
+                    placeholder="输入借用说明..."
+                  />
+                </div>
+              </div>
+
+              <div v-else class="empty-preview-prompt">
+                <DemoIcon name="mouse-pointer-click" :size="32" />
+                <p>请在搜索结果中点击选定要借用的零件</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="note info-note" style="margin-top: 12px;">
+            <DemoIcon name="shield-check" :size="14" />
+            <div>系统将自动克隆图纸零件并挂载至当前工程，在借用记录台账中建立双向可追溯凭据，不污染源工程。</div>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <button class="btn" type="button" @click="cancelBorrowModal">取消</button>
+          <button
+            class="btn primary"
+            type="button"
+            :disabled="!selectedSourcePartNo"
+            @click="confirmBorrowPart"
+          >
+            <DemoIcon name="check" :size="14" />确认借入此零件
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.ver-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--panel-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+
+.hist-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  padding: 0 4px;
+  margin-left: 2px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.replace-modal {
+  width: 520px;
+  max-width: 90vw;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.modal-title svg {
+  color: var(--accent);
+}
+
+.close-btn {
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.close-btn:hover {
+  color: var(--text-1);
+}
+
+.modal-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.replace-meta-box {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.meta-row .lbl {
+  color: var(--text-3);
+  min-width: 60px;
+}
+
+.meta-row .val {
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.text-accent {
+  color: var(--accent) !important;
+}
+
+.info-note {
+  margin: 0;
+}
+
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+}
+
+/* 借用零件高阶选型体系弹窗 */
+.borrow-modal {
+  width: 960px;
+  max-width: 96vw;
+  height: 640px;
+  max-height: 92vh;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-mode-tabs {
+  display: flex;
+  gap: 6px;
+  background: var(--panel-2);
+  padding: 3px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.mode-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-tab-btn:hover {
+  color: var(--text-1);
+}
+
+.mode-tab-btn.active {
+  background: var(--panel);
+  color: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.borrow-modal-body {
+  flex: 1;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 模式 1：三栏式自适应布局 */
+.borrow-three-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 260px 310px 1fr;
+  gap: 14px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 模式 2：双栏穿透搜索布局 */
+.borrow-two-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 14px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.borrow-panel-col {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.col-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.col-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.col-title svg {
+  color: var(--accent);
+}
+
+.col-badge {
+  font-size: 11px;
+  color: var(--text-3);
+  background: var(--panel);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact {
+  margin-top: 0 !important;
+  margin-bottom: 8px;
+}
+
+.filter-inp {
+  font-size: 12px !important;
+  height: 30px !important;
+  padding-left: 28px !important;
+}
+
+.global-search-inp {
+  padding-left: 36px !important;
+  height: 38px !important;
+  font-size: 13px !important;
+}
+
+.scroll-select-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 2px;
+}
+
+.project-item-card {
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-item-card:hover {
+  background: var(--hover);
+  border-color: var(--accent-light, var(--line-strong));
+}
+
+.project-item-card.active {
+  background: var(--panel);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.proj-card-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proj-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.part-candidate-card {
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.part-candidate-card:hover {
+  background: var(--hover);
+  border-color: var(--accent-light, var(--line-strong));
+}
+
+.part-candidate-card.active {
+  background: var(--panel);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.part-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.part-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.part-card-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.has-file-badge {
+  color: var(--text-3);
+}
+
+.has-file-badge.ok {
+  color: var(--accent);
+}
+
+.global-part-card {
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.global-part-card:hover {
+  background: var(--hover);
+  border-color: var(--accent);
+}
+
+.global-part-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.gp-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gp-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.gp-no {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.gp-btm {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.borrow-detail-col {
+  background: var(--panel);
+  padding: 14px;
+}
+
+.borrow-card-detail-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.preview-hero-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.preview-hero-card svg {
+  color: var(--accent);
+}
+
+.preview-hero-card h4 {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+.preview-spec-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel-2);
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.spec-row {
+  display: flex;
+  align-items: center;
+  font-size: 12.5px;
+  gap: 6px;
+}
+
+.spec-row .k {
+  color: var(--text-3);
+  width: 75px;
+  flex-shrink: 0;
+}
+
+.spec-row .v {
+  color: var(--text-1);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty-list-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 10px;
+  color: var(--text-3);
+  gap: 6px;
+  font-size: 12px;
+}
+
+.empty-preview-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-3);
+  gap: 8px;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .borrow-three-grid {
+    grid-template-columns: 1fr;
+  }
+  .borrow-two-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+
 
 <style scoped>
 .drawing-preview-view {

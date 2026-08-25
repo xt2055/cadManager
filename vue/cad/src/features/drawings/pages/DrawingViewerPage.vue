@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -33,33 +33,27 @@ const zoomLevel = ref(1)
 
 const zoomText = computed(() => `${Math.round(zoomLevel.value * 100)}%`)
 
-function loadTargetFile() {
+async function loadTargetFile() {
+  await domainStore.initialize()
+
   if (drawingId.value) {
     domainStore.openDrawing(drawingId.value)
   }
 
-  // 1. 查找指定文件
+  // 优先按 fileId 在当前总图及其全部零件中精确查找，避免零件文件回退到总图。
   let file: DrawingFile | undefined
-  if (currentDrawing.value) {
-    const all = [...(currentDrawing.value.files ?? []), ...(currentDrawing.value.otherFiles ?? [])]
-    if (fileId.value) {
-      file = all.find((f) => f.id === fileId.value)
-    }
-    if (!file && all.length > 0) {
-      file = all[0]
-    }
-  }
+  const currentFiles = currentDrawing.value
+    ? [...(currentDrawing.value.files ?? []), ...(currentDrawing.value.otherFiles ?? [])]
+    : []
+  const structureFiles = domainStore.structure.flatMap((part) => [
+    ...(part.files ?? []),
+    ...(part.otherFiles ?? []),
+  ])
 
-  if (!file) {
-    // 尝试在全部结构中查找
-    for (const part of domainStore.structure) {
-      const partFiles = [...(part.files ?? []), ...(part.otherFiles ?? [])]
-      const match = partFiles.find((f) => f.id === fileId.value)
-      if (match) {
-        file = match
-        break
-      }
-    }
+  if (fileId.value) {
+    file = [...currentFiles, ...structureFiles].find((candidate) => candidate.id === fileId.value)
+  } else if (currentFiles.length > 0) {
+    file = currentFiles[0]
   }
 
   targetFile.value = file || null
@@ -119,7 +113,11 @@ function goBack() {
 }
 
 onMounted(() => {
-  loadTargetFile()
+  void loadTargetFile()
+})
+
+watch([drawingId, fileId], () => {
+  void loadTargetFile()
 })
 </script>
 
@@ -484,4 +482,3 @@ onMounted(() => {
   font-size: 14px;
 }
 </style>
-

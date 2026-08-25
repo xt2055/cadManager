@@ -676,6 +676,202 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
+  // 借用其他项目的零件到当前项目（包含其图纸文件、属性，并建立双向借用追溯记录）
+  async function borrowPartToProject(
+    targetProjectNo: string,
+    sourcePartNo: string,
+    borrowReason?: string,
+  ): Promise<StructurePart> {
+    await initialize()
+    const targetDrawing = findDrawingOrPart(targetProjectNo)
+    if (!targetDrawing) throw new Error(`未找到目标项目：${targetProjectNo}`)
+    const sourcePart = structure.value.find((p) => p.no === sourcePartNo)
+    if (!sourcePart) throw new Error(`未找到源零件：${sourcePartNo}`)
+
+    // 检查是否已经在目标项目中存在
+    if (structure.value.some((p) => p.no === sourcePartNo && p.parentNo === targetProjectNo)) {
+      throw new Error(`零件「${sourcePart.name} (${sourcePartNo})」已在当前项目中，无需重复借用`)
+    }
+
+    const operatorName = authStore.currentUser?.displayName || '当前用户'
+    const today = new Date().toISOString().slice(0, 10)
+
+    // 克隆源零件数据到目标项目
+    const clonedFiles = (sourcePart.files ?? []).map((f) => ({
+      ...f,
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      drawingNo: targetProjectNo,
+      partNo: sourcePart.no,
+    }))
+
+    const borrowedPart: StructurePart = {
+      ...sourcePart,
+      parentNo: targetProjectNo,
+      project: ('project' in targetDrawing ? targetDrawing.project : targetDrawing.name) || targetProjectNo,
+      borrowFrom: sourcePart.parentNo || sourcePart.borrowFrom || '其他项目',
+      files: clonedFiles,
+      otherFiles: (sourcePart.otherFiles ?? []).map((f) => ({
+        ...f,
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        drawingNo: targetProjectNo,
+      })),
+      hasFile: clonedFiles.length > 0,
+      status: 'published',
+    }
+
+    structure.value.push(borrowedPart)
+
+    // 记录借入与借出两条流转台账
+    const sourceProjectName = drawings.value.find((d) => d.no === sourcePart.parentNo)?.name || sourcePart.parentNo
+    const targetProjectName = targetDrawing.name || targetProjectNo
+
+    const inRecord: BorrowRecord = {
+      dir: 'in',
+      project: `${sourceProjectName} (${sourcePart.parentNo})`,
+      part: `${sourcePart.no} ${sourcePart.name}`,
+      user: operatorName,
+      date: today,
+      status: '使用中',
+    }
+
+    const outRecord: BorrowRecord = {
+      dir: 'out',
+      project: `${targetProjectName} (${targetProjectNo})`,
+      part: `${sourcePart.no} ${sourcePart.name}`,
+      user: operatorName,
+      date: today,
+      status: '使用中',
+    }
+
+    borrows.value.unshift(inRecord, outRecord)
+
+    // 增加源图与目标图的借用计数
+    if ('borrow' in targetDrawing && typeof targetDrawing.borrow === 'number') {
+      targetDrawing.borrow += 1
+    }
+    const sourceDrawing = drawings.value.find((d) => d.no === sourcePart.parentNo)
+    if (sourceDrawing && typeof sourceDrawing.borrow === 'number') {
+      sourceDrawing.borrow += 1
+    }
+
+    await persist()
+
+    recordActivity({
+      drawingNo: targetProjectNo,
+      drawingName: targetDrawing.name,
+      targetType: 'drawing',
+      act: 'create',
+      text: `借用了项目 <b>${sourceProjectName}</b> 的零件 <b>${sourcePart.name}</b> (${sourcePart.no})`,
+      detail: { sourcePartNo, sourceParentNo: sourcePart.parentNo, reason: borrowReason || '' },
+    })
+
+    await persist()
+    return borrowedPart
+  }
+  async function replaceDrawingFile(
+    drawingNo: string,
+    fileId: string,
+    newFileInfo: {
+      name: string
+      size: string
+      replaceReason?: string
+    },
+    content?: Blob,
+  ): Promise<DrawingFile> {
+    await initialize()
+    const target = findDrawingOrPart(drawingNo)
+    if (!target) throw new Error(`未找到图纸或零件：${drawingNo}`)
+
+    // 查找目标文件（优先在 files，其次在 otherFiles）
+    const isMainFiles = (target.files ?? []).some((f) => f.id === fileId)
+    const fileList = isMainFiles ? (target.files ?? []) : (target.otherFiles ?? [])
+    const currentFile = fileList.find((f) => f.id === fileId)
+    if (!currentFile) throw new Error(`未找到待替换文件：${fileId}`)
+
+    // 智能版本递进：v1.0 -> v1.1, v1.9 -> v2.0
+    const parseVer = (vStr: string) => {
+      const m = vStr.match(/v?(\d+)\.(\d+)/i)
+      if (!m || !m[1] || !m[2]) return { major: 1, minor: 1 }
+      const maj = parseInt(m[1], 10)
+      const min = parseInt(m[2], 10)
+      return { major: maj, minor: min + 1 }
+    }
+    const nextVerObj = parseVer(currentFile.version || 'v1.0')
+    const nextVersion = `v${nextVerObj.major}.${nextVerObj.minor}`
+
+    const operatorName = authStore.currentUser?.displayName || '当前用户'
+    const replaceTime = nowLabel()
+
+    // 1. 将当前版本完整记录进历史归档数组
+    const oldHistoryItem: import('@/types/domain.types').DrawingFileHistoryItem = {
+      id: currentFile.id,
+      name: currentFile.name,
+      size: currentFile.size,
+      version: currentFile.version,
+      uploadedBy: currentFile.uploadedBy,
+      uploadedAt: currentFile.uploadedAt,
+      replacedBy: operatorName,
+      replacedAt: replaceTime,
+      replaceReason: newFileInfo.replaceReason || '版本替换更新',
+      storageKey: currentFile.storageKey,
+      mimeType: currentFile.mimeType,
+      previewable: currentFile.previewable,
+    }
+
+    const previousHistory = currentFile.history ? [...currentFile.history] : []
+    const updatedHistory = [...previousHistory, oldHistoryItem]
+
+    // 2. 构造替换后的新 DrawingFile
+    const updatedFile: DrawingFile = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: newFileInfo.name,
+      size: newFileInfo.size,
+      role: currentFile.role,
+      drawingNo: currentFile.drawingNo,
+      ...(currentFile.partNo ? { partNo: currentFile.partNo } : {}),
+      version: nextVersion,
+      uploadedBy: operatorName,
+      uploadedAt: replaceTime,
+      previewable: true,
+      replaceReason: newFileInfo.replaceReason || '',
+      replacedBy: operatorName,
+      replacedAt: replaceTime,
+      history: updatedHistory,
+    }
+
+    let storageKey: string | undefined
+    try {
+      storageKey = await saveAttachmentContent(updatedFile, content)
+
+      // 更新在目标数组中的对象引用
+      const idx = fileList.findIndex((f) => f.id === fileId)
+      if (idx >= 0) {
+        fileList[idx] = updatedFile
+      }
+      if ('updated' in target) target.updated = replaceTime
+      await persist()
+
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'edit',
+        text: `替换了图纸文件 <b>${currentFile.name}</b> (${currentFile.version}) 为 <b>${updatedFile.name}</b> (${updatedFile.version})`,
+        detail: {
+          previousFileId: currentFile.id,
+          newFileId: updatedFile.id,
+          version: nextVersion,
+          reason: newFileInfo.replaceReason || '',
+        },
+      })
+      await persist()
+      return updatedFile
+    } catch (saveError) {
+      if (storageKey) await dataManager.deleteAttachment(storageKey).catch(() => undefined)
+      throw saveError
+    }
+  }
+
   async function uploadOtherFile(ownerNo: string, file: DrawingFile, content?: Blob): Promise<void> {
     await initialize()
     const target = findDrawingOrPart(ownerNo)
@@ -1256,7 +1452,9 @@ export const useDomainStore = defineStore('domain', () => {
     addDrawing,
     forkDrawing,
     createPartWithFile,
+    borrowPartToProject,
     uploadDrawingFile,
+    replaceDrawingFile,
     uploadOtherFile,
     deleteOtherFile,
     deleteDrawingFile,

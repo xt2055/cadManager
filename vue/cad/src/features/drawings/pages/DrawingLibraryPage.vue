@@ -125,7 +125,6 @@ function menuAction(action: string, no: string) {
                 <button class="icon-btn row-menu-button" type="button" @click.stop="toggleMenu(drawing.no)"><DemoIcon name="ellipsis" :size="16" /></button>
                 <div v-if="menuFor === drawing.no" class="dropdown row-dropdown">
                   <button class="dd-item" type="button" @click="menuAction('detail', drawing.no)"><DemoIcon name="eye" :size="14" />查看详情与文件</button>
-                  <button class="dd-item" type="button" @click="menuAction('borrow', drawing.no)"><DemoIcon name="share-2" :size="14" />借用此图</button>
                   <div class="dd-sep"></div>
                   <button class="dd-item" type="button" @click="menuAction('hide', drawing.no)"><DemoIcon name="eye-off" :size="14" />隐藏图纸（管理员）</button>
                 </div>

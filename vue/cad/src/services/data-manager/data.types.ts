@@ -181,6 +181,25 @@ function normalizeDrawingFile(
   const drawingNo = asString(source.drawingNo, ownerNo)
   const id = asString(source.id, stableId('file', `${drawingNo}|${partNo}|${name}|${asString(source.version, 'v1.0')}`))
 
+  const rawHistory = readArray<unknown>(source.history)
+  const history = rawHistory.map((item, index) => {
+    const rec = isRecord(item) ? item : {}
+    return {
+      id: asString(rec.id, stableId('file-hist', `${id}|${index}`)),
+      name: asString(rec.name, name),
+      size: asString(rec.size, '—'),
+      version: asString(rec.version, `v1.${index}`),
+      uploadedBy: asString(rec.uploadedBy, '未知用户'),
+      uploadedAt: asString(rec.uploadedAt, '历史记录'),
+      ...(asString(rec.replacedBy) ? { replacedBy: asString(rec.replacedBy) } : {}),
+      ...(asString(rec.replacedAt) ? { replacedAt: asString(rec.replacedAt) } : {}),
+      ...(asString(rec.replaceReason) ? { replaceReason: asString(rec.replaceReason) } : {}),
+      ...(asString(rec.storageKey) ? { storageKey: asString(rec.storageKey) } : {}),
+      ...(asString(rec.mimeType) ? { mimeType: asString(rec.mimeType) } : {}),
+      previewable: asBoolean(rec.previewable, true),
+    }
+  })
+
   return {
     id,
     name,
@@ -194,6 +213,10 @@ function normalizeDrawingFile(
     ...(asString(source.storageKey) ? { storageKey: asString(source.storageKey) } : {}),
     ...(asString(source.mimeType) ? { mimeType: asString(source.mimeType) } : {}),
     previewable: asBoolean(source.previewable, true),
+    ...(asString(source.replaceReason) ? { replaceReason: asString(source.replaceReason) } : {}),
+    ...(asString(source.replacedBy) ? { replacedBy: asString(source.replacedBy) } : {}),
+    ...(asString(source.replacedAt) ? { replacedAt: asString(source.replacedAt) } : {}),
+    ...(history.length > 0 ? { history } : {}),
   }
 }
 
