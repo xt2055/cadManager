@@ -19,9 +19,9 @@ import (
 type Priority int
 
 const (
-	PriorityLow  Priority = 0
+	PriorityLow    Priority = 0
 	PriorityNormal Priority = 1
-	PriorityHigh Priority = 2
+	PriorityHigh   Priority = 2
 )
 
 type Job struct {
@@ -185,7 +185,18 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 	dxfKey := strings.TrimSuffix(att.StorageKey, ext) + ".dxf"
 	if reader, info, err := s.storage.Open(ctx, dxfKey); err == nil {
 		reader.Close()
-		if info.Size > 0 {
+		// EXB 除了 DXF 还需要保留一份 DWG，供支持 DWG 的前端引擎直接读取。
+		// 不能仅凭已有 DXF 判断 EXB 已完成全部转换。
+		dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
+		dwgReader, dwgInfo, dwgErr := s.storage.Open(ctx, dwgKey)
+		if dwgErr == nil {
+			dwgReader.Close()
+			if dwgInfo.Size > 0 {
+				return nil
+			}
+			_ = s.storage.Delete(ctx, dwgKey)
+		}
+		if info.Size > 0 && !strings.EqualFold(ext, ".exb") {
 			return nil
 		}
 		_ = s.storage.Delete(ctx, dxfKey)
@@ -300,6 +311,51 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 
 	log.Printf("[CAD Converter] 成功生成矢量 DXF: %s -> %s", att.StorageKey, dxfKey)
 	return nil
+}
+
+// EnsureDwg 确保 EXB 已转换为可供浏览器 CAD 引擎读取的 DWG，并返回实际存储键。
+func (s *Service) EnsureDwg(ctx context.Context, att attachment.Attachment) (string, error) {
+	ext := filepathExt(att.StorageKey)
+	if ext == "" {
+		ext = filepathExt(att.Name)
+	}
+	if strings.EqualFold(ext, ".dwg") {
+		return att.StorageKey, nil
+	}
+	if !strings.EqualFold(ext, ".exb") {
+		return "", fmt.Errorf("文件格式不支持 DWG 渲染源: %s", att.Name)
+	}
+
+	dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
+	if reader, info, err := s.storage.Open(ctx, dwgKey); err == nil {
+		reader.Close()
+		if info.Size > 0 {
+			return dwgKey, nil
+		}
+		_ = s.storage.Delete(ctx, dwgKey)
+	}
+
+	done := s.PushJob(att, PriorityHigh)
+	select {
+	case err := <-done:
+		if err != nil {
+			return "", err
+		}
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(60 * time.Second):
+		return "", errors.New("EXB 转换 DWG 超时")
+	}
+
+	reader, info, err := s.storage.Open(ctx, dwgKey)
+	if err != nil {
+		return "", fmt.Errorf("EXB 转换后未生成 DWG: %w", err)
+	}
+	reader.Close()
+	if info.Size == 0 {
+		return "", errors.New("EXB 转换后生成的 DWG 为空")
+	}
+	return dwgKey, nil
 }
 
 func waitForJobFileFree(path string, timeout time.Duration) error {

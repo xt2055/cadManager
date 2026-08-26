@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -168,6 +170,66 @@ func PreviewEXB(repository attachment.Repository, objectStorage storage.ObjectSt
 		writer.WriteHeader(http.StatusOK)
 		_, _ = io.Copy(writer, reader)
 		_ = obj
+	}
+}
+
+// CADSource 返回 CAD 引擎应直接读取的原始或转换后文件。
+// EXB 返回后台生成的 DWG，DWG/DXF 返回原文件。
+func CADSource(repository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodGet {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		storageKey := strings.TrimSpace(request.URL.Query().Get("storageKey"))
+		if storageKey == "" {
+			response.WriteError(writer, http.StatusBadRequest, "storageKey 必填")
+			return
+		}
+		item, err := repository.Find(request.Context(), storageKey)
+		if err != nil {
+			writeAttachmentError(writer, err)
+			return
+		}
+
+		ext := filepathExt(storageKey)
+		if ext == "" {
+			ext = filepathExt(item.Name)
+		}
+		sourceKey := storageKey
+		fileName := item.Name
+		if strings.EqualFold(ext, ".exb") {
+			if convService == nil {
+				response.WriteError(writer, http.StatusServiceUnavailable, "CAD 转换服务未启动")
+				return
+			}
+			sourceKey, err = convService.EnsureDwg(request.Context(), item)
+			if err != nil {
+				response.WriteError(writer, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+			fileName = strings.TrimSuffix(fileName, filepathExt(fileName)) + ".dwg"
+		}
+
+		reader, object, err := objectStorage.Open(request.Context(), sourceKey)
+		if err != nil || object.Size == 0 {
+			if reader != nil {
+				reader.Close()
+			}
+			response.WriteError(writer, http.StatusNotFound, "CAD 渲染源文件不存在或为空")
+			return
+		}
+		defer reader.Close()
+		writer.Header().Set("Content-Type", firstNonEmpty(object.MimeType, item.MimeType, "application/octet-stream"))
+		writer.Header().Set("Content-Disposition", "inline; filename*=UTF-8''"+url.PathEscape(fileName))
+		writer.Header().Set("Content-Length", fmt.Sprintf("%d", object.Size))
+		writer.Header().Set("Cache-Control", "private, max-age=86400")
+		_, _ = io.Copy(writer, reader)
 	}
 }
 

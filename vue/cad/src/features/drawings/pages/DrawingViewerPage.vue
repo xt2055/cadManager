@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import CadVectorViewer from '@/features/drawings/detail-tabs/preview/CadVectorViewer.vue'
+import MlightCadViewer from '@/features/drawings/detail-tabs/preview/MlightCadViewer.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import type { DrawingFile } from '@/types/domain.types'
 
@@ -24,14 +25,30 @@ const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in curre
 // 当前指定查看的图纸文件
 const targetFile = ref<DrawingFile | null>(null)
 const cadDxfUrl = ref<string | null>(null)
+const cadOriginalUrl = ref<string | null>(null)
+const cadSourceFileName = ref<string | null>(null)
+const cadOriginalError = ref('')
 const cadViewerRef = ref<InstanceType<typeof CadVectorViewer> | null>(null)
+const mlightCadViewerRef = ref<InstanceType<typeof MlightCadViewer> | null>(null)
 
 // 视图与图层控制
 const layerPanelVisible = ref(true)
 const dynamicLayers = ref<Array<{ name: string; color: string; visible: boolean }>>([])
 const zoomLevel = ref(1)
+const renderEngine = ref<'canvas' | 'mlightcad'>('mlightcad')
+const renderEngineKey = ref(0)
 
 const zoomText = computed(() => `${Math.round(zoomLevel.value * 100)}%`)
+
+function getAccessToken() {
+  return localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+}
+
+function revokeOriginalUrl() {
+  if (cadOriginalUrl.value) URL.revokeObjectURL(cadOriginalUrl.value)
+  cadOriginalUrl.value = null
+  cadSourceFileName.value = null
+}
 
 async function loadTargetFile() {
   await domainStore.initialize()
@@ -58,6 +75,8 @@ async function loadTargetFile() {
 
   targetFile.value = file || null
   dynamicLayers.value = []
+  cadOriginalError.value = ''
+  revokeOriginalUrl()
 
   if (file) {
     const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
@@ -70,8 +89,34 @@ async function loadTargetFile() {
       params.set('_t', String(Date.now()))
       const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
       cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
+      if (file.storageKey) {
+        try {
+          const token = getAccessToken()
+          const response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(file.storageKey)}`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            credentials: 'include',
+          })
+           if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const sourceName = file.name.toLowerCase().endsWith('.exb')
+            ? `${file.name.replace(/\.exb$/i, '')}.dwg`
+            : file.name
+          const contentType = response.headers.get('content-type') || ''
+          if (contentType.includes('text/html') || contentType.includes('application/json')) {
+            throw new Error(`渲染源接口返回了错误内容类型: ${contentType}`)
+          }
+           cadOriginalUrl.value = URL.createObjectURL(await response.blob())
+           cadSourceFileName.value = sourceName
+           console.info('[DrawingViewerPage] 原始 CAD 已加载', { sourceName, storageKey: file.storageKey })
+        } catch (error) {
+          cadOriginalError.value = error instanceof Error ? error.message : String(error)
+          console.warn('读取原始 CAD 文件失败，MLightCAD 将不可用', error)
+        }
+      } else {
+        cadOriginalError.value = '当前图纸没有 storageKey，无法读取原始 DWG'
+      }
     } else {
       cadDxfUrl.value = null
+      revokeOriginalUrl()
     }
 
     void domainStore.recordActivityAndPersist({
@@ -89,7 +134,11 @@ function handleLayersLoaded(layers: Array<{ name: string; color: string; visible
 }
 
 function toggleDynamicLayer(layer: { name: string; color: string; visible: boolean }) {
-  cadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
+  if (renderEngine.value === 'canvas') {
+    cadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
+  } else {
+    mlightCadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
+  }
 }
 
 function handleZoomChange(val: number) {
@@ -97,15 +146,30 @@ function handleZoomChange(val: number) {
 }
 
 function zoomIn() {
-  cadViewerRef.value?.zoomIn()
+  if (renderEngine.value === 'canvas') cadViewerRef.value?.zoomIn()
+  else mlightCadViewerRef.value?.zoomIn()
 }
 
 function zoomOut() {
-  cadViewerRef.value?.zoomOut()
+  if (renderEngine.value === 'canvas') cadViewerRef.value?.zoomOut()
+  else mlightCadViewerRef.value?.zoomOut()
 }
 
 function resetView() {
-  cadViewerRef.value?.resetView()
+  if (renderEngine.value === 'canvas') cadViewerRef.value?.resetView()
+  else mlightCadViewerRef.value?.resetView()
+}
+
+function selectRenderEngine(engine: 'canvas' | 'mlightcad') {
+  if (renderEngine.value === engine) return
+  console.info('[DrawingViewerPage] 切换 CAD 引擎', {
+    engine,
+    hasOriginalCad: Boolean(cadOriginalUrl.value),
+    originalError: cadOriginalError.value || undefined,
+  })
+  renderEngine.value = engine
+  renderEngineKey.value++
+  zoomLevel.value = 1
 }
 
 function goBack() {
@@ -114,6 +178,10 @@ function goBack() {
 
 onMounted(() => {
   void loadTargetFile()
+})
+
+onUnmounted(() => {
+  revokeOriginalUrl()
 })
 
 watch([drawingId, fileId], () => {
@@ -141,6 +209,25 @@ watch([drawingId, fileId], () => {
       </div>
 
       <div class="header-right">
+        <div class="engine-switcher" role="group" aria-label="CAD 渲染引擎">
+          <button
+            class="engine-btn"
+            :class="{ active: renderEngine === 'canvas' }"
+            type="button"
+            @click="selectRenderEngine('canvas')"
+          >
+            Canvas
+          </button>
+          <button
+            class="engine-btn"
+            :class="{ active: renderEngine === 'mlightcad' }"
+            type="button"
+            @click="selectRenderEngine('mlightcad')"
+          >
+            MLightCAD
+          </button>
+        </div>
+
         <div class="view-controls">
           <button class="ctrl-btn" type="button" title="缩小" @click="zoomOut">
             <DemoIcon name="zoom-out" :size="15" />
@@ -174,16 +261,26 @@ watch([drawingId, fileId], () => {
       <!-- 中间 CAD 矢量图画板 -->
       <main class="viewer-canvas-container">
         <CadVectorViewer
-          v-if="cadDxfUrl"
+          v-if="cadDxfUrl && renderEngine === 'canvas'"
+          :key="`canvas-${renderEngineKey}`"
           ref="cadViewerRef"
           :dxf-url="cadDxfUrl"
           :file-name="targetFile?.name"
           @layers-loaded="handleLayersLoaded"
           @zoom-change="handleZoomChange"
         />
+        <MlightCadViewer
+          v-else-if="cadOriginalUrl && renderEngine === 'mlightcad'"
+          :key="`mlightcad-${renderEngineKey}`"
+          ref="mlightCadViewerRef"
+          :dxf-url="cadOriginalUrl"
+          :file-name="cadSourceFileName"
+          @layers-loaded="handleLayersLoaded"
+          @zoom-change="handleZoomChange"
+        />
         <div v-else class="empty-prompt">
           <DemoIcon name="file-question" :size="48" />
-          <p>{{ targetFile ? '该格式暂不支持矢量直接渲染' : '暂无选中的图纸文件' }}</p>
+          <p>{{ targetFile ? (cadOriginalError || '原始 CAD 文件不可用，无法使用 MLightCAD') : '暂无选中的图纸文件' }}</p>
         </div>
       </main>
 
@@ -307,6 +404,38 @@ watch([drawingId, fileId], () => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.engine-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--panel-2);
+}
+
+.engine-btn {
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.engine-btn:hover {
+  color: var(--text-1);
+  background: var(--hover);
+}
+
+.engine-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .view-controls {

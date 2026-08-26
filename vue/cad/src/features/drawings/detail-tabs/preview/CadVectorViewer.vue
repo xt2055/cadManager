@@ -603,26 +603,10 @@ class HatchEntityHandler {
 
 // 预处理 DXF 字节流：仅精准缝合 MTEXT 超长文本连续组码（组码 3 紧跟组码 1 或 3）的跨行中文字节断裂，绝不误伤其它组码与图层颜色定义
 function mergeDxfMTextSplitBytes(buffer: ArrayBuffer): ArrayBuffer {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  const chunkSize = 32768
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)))
-  }
-
-  // 仅匹配组码 3 文本行后紧接着出现组码 1 或 3 的接续情况，移除中间的分割标记使字节流连续
-  const pattern = /(\r?\n[ \t]*3\r?\n[^\r\n]*)\r?\n[ \t]*[13]\r?\n/g
-  let prev = ''
-  while (prev !== binary) {
-    prev = binary
-    binary = binary.replace(pattern, (match, p1) => p1)
-  }
-
-  const outBytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    outBytes[i] = binary.charCodeAt(i) & 0xff
-  }
-  return outBytes.buffer
+  // 不再删除组码 1/3 前的换行。DXF 的每个组码和值都必须保持独立，
+  // 否则相邻数值会被拼接成非法组码，例如 1071 + 1071 => 10711071。
+  // 中文 MTEXT 的编码修复应在字节层完成，不能用文本正则破坏 DXF 结构。
+  return buffer
 }
 
 // GDT 字体形位公差符号映射表（AutoCAD/CAXA 标准机械形位公差字符映射）

@@ -16,6 +16,12 @@ export const routes: RouteRecordRaw[] = [
     ],
   },
   {
+    path: '/cad-render-test',
+    name: RouteName.CadRenderTest,
+    component: () => import('@/features/drawings/pages/CadRenderTestPage.vue'),
+    meta: { requiresAuth: false },
+  },
+  {
     path: '/',
     component: () => import('@/layouts/DesktopLayout.vue'),
     meta: { requiresAuth: true },
