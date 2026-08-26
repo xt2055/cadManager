@@ -157,6 +157,14 @@ class AttribEntityHandler {
 }
 
 // 注册自定义 HATCH 实体解析器（解析 CAD 标注箭头、剖面填充与实心多边形）
+const HATCH_RELEVANT_CODES = new Set([
+  // 实体属性与边界路径控制字段
+  2, 8, 62, 70, 71, 72, 73, 75, 76, 77, 78, 91, 92, 93, 97, 98, 99,
+  // 直线、圆弧和多段线边界坐标/参数
+  10, 11, 20, 21, 30, 31, 40, 42, 50, 51, 52, 53, 63,
+  94, 95, 96, 210, 220, 230,
+])
+
 class HatchEntityHandler {
   ForEntityName = 'HATCH'
 
@@ -166,7 +174,11 @@ class HatchEntityHandler {
 
     curr = scanner.next()
     while (!scanner.isEOF() && curr.code !== 0) {
-      groups.push(curr)
+      // HATCH 边界只依赖上述字段。过滤 XDATA 和转换器产生的异常组码，
+      // 避免它们插入 91/92/93 结构后使边界读取位置错位。
+      if (HATCH_RELEVANT_CODES.has(curr.code)) {
+        groups.push(curr)
+      }
       curr = scanner.next()
     }
 
