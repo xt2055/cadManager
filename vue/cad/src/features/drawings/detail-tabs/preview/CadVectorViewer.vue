@@ -25,8 +25,6 @@ const errorMessage = ref('')
 
 // CAD 图形数据
 let parsedDxf: any = null
-let hatchRecoveredCount = 0
-let hatchDiagPrinted = false
 const layerMap = ref<Map<string, { name: string; color: string; visible: boolean }>>(new Map())
 
 // 视图变换状态 (CAD 坐标 -> Canvas 屏幕坐标)
@@ -108,6 +106,72 @@ class Transform2D {
       x: this.a * pt.x + this.c * pt.y + this.tx,
       y: this.b * pt.x + this.d * pt.y + this.ty,
     }
+  }
+}
+
+function evaluateSplinePoint(
+  points: Array<{ x: number; y: number }>,
+  knots: number[],
+  degree: number,
+  parameter: number,
+  weights?: number[],
+) {
+  const pointCount = points.length
+  const lastPointIndex = pointCount - 1
+  let span = degree
+
+  if (parameter >= knots[lastPointIndex + 1]!) {
+    span = lastPointIndex
+  } else {
+    let low = degree
+    let high = lastPointIndex + 1
+    while (high - low > 1) {
+      const middle = Math.floor((low + high) / 2)
+      if (parameter < knots[middle]!) high = middle
+      else low = middle
+    }
+    span = low
+  }
+
+  const homogeneous = Array.from({ length: degree + 1 }, (_, index) => {
+    const point = points[span - degree + index]!
+    const weight = weights?.[span - degree + index] || 1
+    return { x: point.x * weight, y: point.y * weight, weight }
+  })
+
+  for (let level = 1; level <= degree; level++) {
+    for (let index = degree; index >= level; index--) {
+      const left = knots[span - degree + index]!
+      const right = knots[span + 1 + index - level]!
+      const denominator = right - left
+      const ratio = denominator === 0 ? 0 : (parameter - left) / denominator
+      const previous = homogeneous[index - 1]!
+      const current = homogeneous[index]!
+      current.x = (1 - ratio) * previous.x + ratio * current.x
+      current.y = (1 - ratio) * previous.y + ratio * current.y
+      current.weight = (1 - ratio) * previous.weight + ratio * current.weight
+    }
+  }
+
+  const result = homogeneous[degree]!
+  return {
+    x: result.weight === 0 ? result.x : result.x / result.weight,
+    y: result.weight === 0 ? result.y : result.y / result.weight,
+  }
+}
+
+function evaluateCatmullRomPoint(points: Array<{ x: number; y: number }>, position: number) {
+  const segment = Math.min(points.length - 2, Math.floor(position))
+  const local = position - segment
+  const p0 = points[Math.max(0, segment - 1)]!
+  const p1 = points[segment]!
+  const p2 = points[segment + 1]!
+  const p3 = points[Math.min(points.length - 1, segment + 2)]!
+  const t2 = local * local
+  const t3 = t2 * local
+  return {
+    x: 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * local + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+    y: 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * local + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
   }
 }
 
@@ -382,11 +446,11 @@ class HatchEntityHandler {
       }
     }
 
-    if (entity.solidFill === true && entity.polygons.length === 0) {
+    const isDimensionLayer = /尺寸|dim|tol|公差/i.test(String(entity.layer || ''))
+    if (entity.solidFill === true && entity.polygons.length === 0 && isDimensionLayer) {
       const recovered = recoverSolidPolygon()
       if (recovered.length >= 3) {
         entity.polygons.push(recovered)
-        hatchRecoveredCount++
       }
     }
 
@@ -615,9 +679,6 @@ function redraw() {
   }
 
   // 递归渲染实体
-  let hatchEntityCount = 0
-  let hatchPolygonCount = 0
-  const hatchFailSamples: Array<Record<string, unknown>> = []
   function drawEntities(entities: any[], transform: Transform2D, inheritedLayer?: string, inheritedColor?: string) {
     if (!ctx) return
     for (const e of entities) {
@@ -647,8 +708,36 @@ function redraw() {
           const first = toScreen(transform.apply(e.vertices[0]))
           ctx.moveTo(first.x, first.y)
           for (let i = 1; i < e.vertices.length; i++) {
-            const pt = toScreen(transform.apply(e.vertices[i]))
-            ctx.lineTo(pt.x, pt.y)
+            const start = e.vertices[i - 1]
+            const end = e.vertices[i]
+            const bulge = Number(start?.bulge || 0)
+            if (!bulge) {
+              const pt = toScreen(transform.apply(end))
+              ctx.lineTo(pt.x, pt.y)
+              continue
+            }
+
+            const dx = end.x - start.x
+            const dy = end.y - start.y
+            const chord = Math.hypot(dx, dy)
+            if (chord === 0) continue
+            const midpoint = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
+            const normal = { x: -dy / chord, y: dx / chord }
+            const offset = chord * (1 - bulge * bulge) / (4 * bulge)
+            const center = { x: midpoint.x + normal.x * offset, y: midpoint.y + normal.y * offset }
+            const radius = Math.hypot(start.x - center.x, start.y - center.y)
+            const startAngle = Math.atan2(start.y - center.y, start.x - center.x)
+            const span = 4 * Math.atan(bulge)
+            const samples = Math.max(8, Math.ceil(Math.abs(span) * 12))
+            for (let sampleIndex = 1; sampleIndex <= samples; sampleIndex++) {
+              const angle = startAngle + (span * sampleIndex) / samples
+              const point = {
+                x: center.x + Math.cos(angle) * radius,
+                y: center.y + Math.sin(angle) * radius,
+              }
+              const screen = toScreen(transform.apply(point))
+              ctx.lineTo(screen.x, screen.y)
+            }
           }
           if (e.shape) {
             ctx.lineTo(first.x, first.y)
@@ -665,24 +754,70 @@ function redraw() {
         }
       } else if (e.type === 'ARC') {
         if (e.center && e.radius) {
-          const center = toScreen(transform.apply(e.center))
-          const r = e.radius * viewScale.value * Math.abs(transform.a)
-          // 修正 ARC 弧度：dxf-parser 输出的 startAngle/endAngle 为弧度
-          const startAngle = -(e.endAngle || 0)
-          const endAngle = -(e.startAngle || 0)
+          const startAngle = e.startAngle || 0
+          let span = (e.endAngle || 0) - startAngle
+          while (span < 0) span += Math.PI * 2
+          const samples = Math.max(16, Math.ceil(Math.abs(span) * 20))
           ctx.beginPath()
-          ctx.arc(center.x, center.y, r, startAngle, endAngle, false)
+          for (let i = 0; i <= samples; i++) {
+            const angle = startAngle + (span * i) / samples
+            const screen = toScreen(transform.apply({
+              x: e.center.x + Math.cos(angle) * e.radius,
+              y: e.center.y + Math.sin(angle) * e.radius,
+            }))
+            if (i === 0) ctx.moveTo(screen.x, screen.y)
+            else ctx.lineTo(screen.x, screen.y)
+          }
           ctx.stroke()
         }
-      } else if (e.type === 'SPLINE') {
-        if (e.controlPoints && e.controlPoints.length > 1) {
-          ctx.beginPath()
-          const p0 = toScreen(transform.apply(e.controlPoints[0]))
-          ctx.moveTo(p0.x, p0.y)
-          for (let i = 1; i < e.controlPoints.length; i++) {
-            const pt = toScreen(transform.apply(e.controlPoints[i]))
-            ctx.lineTo(pt.x, pt.y)
+      } else if (e.type === 'ELLIPSE') {
+        if (e.center && e.majorAxisEndPoint && e.axisRatio > 0) {
+          const center = e.center
+          const major = e.majorAxisEndPoint
+          const majorLength = Math.hypot(major.x, major.y)
+          if (majorLength > 0) {
+            const startAngle = e.startAngle || 0
+            const endAngle = e.endAngle || Math.PI * 2
+            const span = endAngle >= startAngle ? endAngle - startAngle : endAngle + Math.PI * 2 - startAngle
+            const samples = Math.max(32, Math.ceil(Math.abs(span) * 24))
+            ctx.beginPath()
+            for (let i = 0; i <= samples; i++) {
+              const angle = startAngle + (span * i) / samples
+              const cos = Math.cos(angle)
+              const sin = Math.sin(angle)
+              const point = {
+                x: center.x + major.x * cos - major.y * e.axisRatio * sin,
+                y: center.y + major.y * cos + major.x * e.axisRatio * sin,
+              }
+              const screen = toScreen(transform.apply(point))
+              if (i === 0) ctx.moveTo(screen.x, screen.y)
+              else ctx.lineTo(screen.x, screen.y)
+            }
+            ctx.stroke()
           }
+        }
+      } else if (e.type === 'SPLINE') {
+        const points = e.fitPoints?.length > 1 ? e.fitPoints : e.controlPoints
+        if (points && points.length > 1) {
+          const degree = Math.max(1, Math.min(e.degreeOfSplineCurve || 3, points.length - 1))
+          const knots = e.knotValues
+          const weights = e.weights
+          const hasUsableKnots = Array.isArray(knots) && knots.length >= points.length + degree + 1
+          const maxParameter = hasUsableKnots ? knots[knots.length - degree - 1] : points.length - degree
+          const minParameter = hasUsableKnots ? knots[degree] : 0
+          const samples = Math.max(48, points.length * 24)
+          ctx.beginPath()
+          for (let sampleIndex = 0; sampleIndex <= samples; sampleIndex++) {
+            const parameter = minParameter + ((maxParameter - minParameter) * sampleIndex) / samples
+            const point = hasUsableKnots
+              ? evaluateSplinePoint(points, knots, degree, parameter, weights)
+              : evaluateCatmullRomPoint(points, (sampleIndex / samples) * (points.length - 1))
+            if (!point) continue
+            const screen = toScreen(transform.apply(point))
+            if (sampleIndex === 0) ctx.moveTo(screen.x, screen.y)
+            else ctx.lineTo(screen.x, screen.y)
+          }
+          if (e.closed || e.periodic) ctx.closePath()
           ctx.stroke()
         }
       } else if (e.type === 'TEXT' || e.type === 'MTEXT' || e.type === 'ATTRIB') {
@@ -757,7 +892,6 @@ function redraw() {
         }
       } else if (e.type === 'HATCH') {
         // 渲染 CAD 标注箭头、剖面填充与实心多边形
-        hatchEntityCount++
         const validPolygons = (e.polygons || []).filter(
           (poly: Array<{ x: number; y: number }>) => poly.length >= 3 && polygonArea(poly) > 1e-10,
         )
@@ -769,7 +903,6 @@ function redraw() {
           ctx.lineJoin = 'round'
           ctx.lineCap = 'round'
           for (const poly of validPolygons) {
-            hatchPolygonCount++
             ctx.beginPath()
             const p0 = toScreen(transform.apply(poly[0]))
             ctx.moveTo(p0.x, p0.y)
@@ -778,7 +911,7 @@ function redraw() {
               ctx.lineTo(pt.x, pt.y)
             }
             ctx.closePath()
-            if (e.solidFill !== false) {
+            if (e.solidFill === true) {
               ctx.fill()
               // 实心箭头额外描边，避免缩放较小时纯填充边缘不明显。
               ctx.stroke()
@@ -787,15 +920,6 @@ function redraw() {
             }
           }
           ctx.restore()
-        } else if (hatchFailSamples.length < 5) {
-          // 收集解析失败的 HATCH 样本，用于定位真实图纸箭头结构差异
-          hatchFailSamples.push({
-            layer: layerName,
-            pattern: e.patternName,
-            solid: e.solidFill,
-            polygonCount: e.polygons?.length ?? -1,
-            firstPolygonPoints: e.polygons?.[0]?.length ?? -1,
-          })
         }
       } else if (e.type === 'SOLID' || e.type === 'TRACE') {
         // 渲染 3 点或 4 点实心箭头/填充面 (AutoCAD SOLID 点序为 0, 1, 3, 2)
@@ -839,12 +963,6 @@ function redraw() {
   // 从顶层实体开始绘制
   drawEntities(parsedDxf.entities || [], new Transform2D())
 
-  // 诊断日志：确认浏览器运行的代码版本与 HATCH 箭头实际绘制数量（打开 F12 控制台可见）
-  console.log(`[CAD] 箭头诊断 v5: HATCH实体=${hatchEntityCount}, 已绘制多边形=${hatchPolygonCount}, 恢复多边形=${hatchRecoveredCount}, 缩放=${viewScale.value.toFixed(4)}`)
-  if (hatchFailSamples.length > 0 && !hatchDiagPrinted) {
-    hatchDiagPrinted = true
-    console.log('[CAD] 解析失败的 HATCH 样本:', JSON.stringify(hatchFailSamples))
-  }
 }
 
 // 计算所有几何体包围盒自适应居中
@@ -875,6 +993,19 @@ function fitView() {
         minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x)
         minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y)
         count++
+      }
+
+      const boundsPoints = e.type === 'SPLINE' ? e.controlPoints : e.type === 'ELLIPSE' ? [e.center, e.majorAxisEndPoint] : null
+      if (boundsPoints) {
+        for (const v of boundsPoints) {
+          if (!v) continue
+          const pt = transform.apply(v)
+          if (Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
+            minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x)
+            minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y)
+            count++
+          }
+        }
       }
 
       // HATCH 实心箭头/填充顶点也必须纳入包围盒，避免视口计算偏差
@@ -937,8 +1068,6 @@ function fitView() {
 // 加载 DXF 矢量图
 async function loadDxf(url: string) {
   loading.value = true
-  hatchRecoveredCount = 0
-  hatchDiagPrinted = false
   errorMessage.value = ''
   loadingProgress.value = 10
   loadingStage.value = '正在请求 CAD 图纸数据...'
