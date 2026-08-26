@@ -25,6 +25,7 @@ const errorMessage = ref('')
 
 // CAD 图形数据
 let parsedDxf: any = null
+let hatchRecoveredCount = 0
 let hatchDiagPrinted = false
 const layerMap = ref<Map<string, { name: string; color: string; visible: boolean }>>(new Map())
 
@@ -230,6 +231,42 @@ class HatchEntityHandler {
       return polygon
     }
 
+    const recoverSolidPolygon = () => {
+      const lineEdges: Array<{ start: { x: number; y: number }; end: { x: number; y: number } }> = []
+
+      // 部分 CAXA/LibreDWG 输出会在 HATCH 边界控制字段中插入扩展数据，
+      // 但箭头的几何坐标仍保持标准的 10/20 -> 11/21 直线边格式。
+      for (let groupIndex = 0; groupIndex < groups.length - 3; groupIndex++) {
+        const start = readPoint(groupIndex, 10, 20)
+        if (!start.point) continue
+        const end = readPoint(start.nextIndex, 11, 21)
+        if (end.point) {
+          lineEdges.push({ start: start.point, end: end.point })
+          groupIndex = end.nextIndex - 1
+        }
+      }
+
+      const ordered = orderEdges(lineEdges)
+      if (ordered.length >= 3) return ordered
+
+      // 某些文件使用多段线边界，只保留连续的 10/20 顶点。
+      const vertices: Array<{ x: number; y: number }> = []
+      for (let groupIndex = 0; groupIndex < groups.length - 1; groupIndex++) {
+        const point = readPoint(groupIndex, 10, 20)
+        if (!point.point) continue
+        appendPoint(vertices, point.point)
+        groupIndex = point.nextIndex - 1
+      }
+      if (vertices.length >= 3) {
+        const first = vertices[0]
+        const last = vertices[vertices.length - 1]
+        if (first && last && !samePoint(first, last)) vertices.push(first)
+        return vertices
+      }
+
+      return [] as Array<{ x: number; y: number }>
+    }
+
     while (index < groups.length) {
       const group = groups[index]
       switch (group.code) {
@@ -342,6 +379,14 @@ class HatchEntityHandler {
           // 跳过 HATCH 标高、图案比例等非边界数据。
           index += 1
           break
+      }
+    }
+
+    if (entity.solidFill === true && entity.polygons.length === 0) {
+      const recovered = recoverSolidPolygon()
+      if (recovered.length >= 3) {
+        entity.polygons.push(recovered)
+        hatchRecoveredCount++
       }
     }
 
@@ -795,7 +840,7 @@ function redraw() {
   drawEntities(parsedDxf.entities || [], new Transform2D())
 
   // 诊断日志：确认浏览器运行的代码版本与 HATCH 箭头实际绘制数量（打开 F12 控制台可见）
-  console.log(`[CAD] 箭头诊断 v4: HATCH实体=${hatchEntityCount}, 已绘制多边形=${hatchPolygonCount}, 缩放=${viewScale.value.toFixed(4)}`)
+  console.log(`[CAD] 箭头诊断 v5: HATCH实体=${hatchEntityCount}, 已绘制多边形=${hatchPolygonCount}, 恢复多边形=${hatchRecoveredCount}, 缩放=${viewScale.value.toFixed(4)}`)
   if (hatchFailSamples.length > 0 && !hatchDiagPrinted) {
     hatchDiagPrinted = true
     console.log('[CAD] 解析失败的 HATCH 样本:', JSON.stringify(hatchFailSamples))
@@ -892,6 +937,7 @@ function fitView() {
 // 加载 DXF 矢量图
 async function loadDxf(url: string) {
   loading.value = true
+  hatchRecoveredCount = 0
   hatchDiagPrinted = false
   errorMessage.value = ''
   loadingProgress.value = 10
