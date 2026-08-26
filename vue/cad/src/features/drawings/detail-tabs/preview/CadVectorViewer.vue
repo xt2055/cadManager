@@ -226,7 +226,7 @@ const HATCH_RELEVANT_CODES = new Set([
   // 实体属性与边界路径控制字段
   2, 8, 62, 70, 71, 72, 73, 75, 76, 77, 78, 91, 92, 93, 97, 98, 99,
   // 直线、圆弧和多段线边界坐标/参数
-  10, 11, 20, 21, 30, 31, 40, 42, 50, 51, 52, 53, 63,
+  10, 11, 20, 21, 30, 31, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 63,
   94, 95, 96, 210, 220, 230,
 ])
 
@@ -260,6 +260,12 @@ class HatchEntityHandler {
         point: { x: xGroup.value, y: yGroup.value },
         nextIndex: startIndex + 2,
       }
+    }
+
+    const readValue = (startIndex: number, code: number, fallback = 0) => {
+      return groups[startIndex]?.code === code
+        ? { value: Number(groups[startIndex].value), nextIndex: startIndex + 1 }
+        : { value: fallback, nextIndex: startIndex }
     }
 
     const appendPoint = (polygon: Array<{ x: number; y: number }>, point: { x: number; y: number }) => {
@@ -422,8 +428,89 @@ class HatchEntityHandler {
                       })
                     }
                   }
+                } else if (edgeType === 3) {
+                  // 椭圆边界：DXF 11/21 是长轴端点，40 是短轴/长轴比例。
+                  const center = readPoint(index, 10, 20)
+                  index = center.nextIndex
+                  const majorAxis = readPoint(index, 11, 21)
+                  index = majorAxis.nextIndex
+                  const ratio = groups[index]?.code === 40 ? groups[index].value : 1
+                  index += groups[index]?.code === 40 ? 1 : 0
+                  const startAngle = groups[index]?.code === 50 ? groups[index].value : 0
+                  index += groups[index]?.code === 50 ? 1 : 0
+                  const endAngle = groups[index]?.code === 51 ? groups[index].value : Math.PI * 2
+                  index += groups[index]?.code === 51 ? 1 : 0
+                  const counterClockwise = groups[index]?.code === 73 ? groups[index].value !== 0 : true
+                  index += groups[index]?.code === 73 ? 1 : 0
+                  if (center.point && majorAxis.point && ratio > 0) {
+                    const majorLength = Math.hypot(majorAxis.point.x, majorAxis.point.y)
+                    const majorAngle = Math.atan2(majorAxis.point.y, majorAxis.point.x)
+                    let span = endAngle - startAngle
+                    if (counterClockwise && span < 0) span += Math.PI * 2
+                    if (!counterClockwise && span > 0) span -= Math.PI * 2
+                    const sampleCount = Math.max(16, Math.ceil(Math.abs(span) * majorLength * 2))
+                    for (let sampleIndex = 0; sampleIndex <= sampleCount; sampleIndex++) {
+                      const angle = startAngle + (span * sampleIndex) / sampleCount
+                      const localX = majorLength * Math.cos(angle)
+                      const localY = majorLength * ratio * Math.sin(angle)
+                      appendPoint(polygon, {
+                        x: center.point.x + localX * Math.cos(majorAngle) - localY * Math.sin(majorAngle),
+                        y: center.point.y + localX * Math.sin(majorAngle) + localY * Math.cos(majorAngle),
+                      })
+                    }
+                  }
+                } else if (edgeType === 4) {
+                  // 样条边界：读取节点、控制点和权重后离散采样。
+                  const degree = groups[index]?.code === 94 ? Math.max(1, groups[index].value) : 3
+                  index += groups[index]?.code === 94 ? 1 : 0
+                  index += groups[index]?.code === 73 ? 1 : 0
+                  const periodic = groups[index]?.code === 74 ? groups[index].value !== 0 : false
+                  index += groups[index]?.code === 74 ? 1 : 0
+                  const knotCount = groups[index]?.code === 95 ? groups[index].value : 0
+                  index += groups[index]?.code === 95 ? 1 : 0
+                  const controlPointCount = groups[index]?.code === 96 ? groups[index].value : 0
+                  index += groups[index]?.code === 96 ? 1 : 0
+                  const knots: number[] = []
+                  for (let knotIndex = 0; knotIndex < knotCount; knotIndex++) {
+                    const knot = readValue(index, 40)
+                    knots.push(knot.value)
+                    index = knot.nextIndex
+                  }
+                  const controlPoints: Array<{ x: number; y: number }> = []
+                  const weights: number[] = []
+                  for (let pointIndex = 0; pointIndex < controlPointCount; pointIndex++) {
+                    const point = readPoint(index, 10, 20)
+                    if (!point.point) break
+                    controlPoints.push(point.point)
+                    index = point.nextIndex
+                    const weight = readValue(index, 42, 1)
+                    weights.push(weight.value || 1)
+                    index = weight.nextIndex
+                  }
+                  const fitPointCount = groups[index]?.code === 97 ? groups[index].value : 0
+                  index += groups[index]?.code === 97 ? 1 : 0
+                  for (let fitIndex = 0; fitIndex < fitPointCount; fitIndex++) {
+                    const fitX = readValue(index, 11)
+                    index = fitX.nextIndex
+                    const fitY = readValue(index, 21)
+                    index = fitY.nextIndex
+                  }
+                  while (groups[index]?.code === 12 || groups[index]?.code === 22 || groups[index]?.code === 13 || groups[index]?.code === 23) {
+                    index += 1
+                  }
+                  if (controlPoints.length >= degree + 1 && knots.length >= controlPoints.length + degree + 1) {
+                    const startParameter = knots[degree]!
+                    const endParameter = knots[knots.length - degree - 1]!
+                    const sampleCount = Math.max(24, controlPoints.length * 16)
+                    for (let sampleIndex = 0; sampleIndex <= sampleCount; sampleIndex++) {
+                      const parameter = startParameter + ((endParameter - startParameter) * sampleIndex) / sampleCount
+                      appendPoint(polygon, evaluateSplinePoint(controlPoints, knots, degree, parameter, weights))
+                    }
+                    if (periodic && polygon.length > 0) polygon.push(polygon[0]!)
+                  }
                 } else {
-                  // 未支持的边类型无法安全猜测长度，跳过当前路径，避免污染后续实体。
+                  // 未知边类型至少跳过当前路径，不污染后续 HATCH 的图案参数。
+                  index = groups.length
                   break
                 }
               }
@@ -436,6 +523,50 @@ class HatchEntityHandler {
             if (polygon.length >= 3) {
               entity.polygons.push(polygon)
             }
+          }
+          break
+        }
+        case 41:
+          entity.patternScale = Number(group.value) || 1
+          index += 1
+          break
+        case 52:
+          entity.patternAngle = (Number(group.value) * Math.PI) / 180
+          index += 1
+          break
+        case 76:
+          entity.patternType = Number(group.value)
+          index += 1
+          break
+        case 78: {
+          const lineCount = Math.max(0, Number(group.value) || 0)
+          entity.patternLines = []
+          index += 1
+          for (let lineIndex = 0; lineIndex < lineCount && index < groups.length; lineIndex++) {
+            const line: any = { angle: 0, origin: { x: 0, y: 0 }, delta: { x: 0, y: 0 }, dash: [] }
+            const angle = readValue(index, 53)
+            line.angle = (angle.value * Math.PI) / 180
+            index = angle.nextIndex
+            const originX = readValue(index, 43)
+            line.origin.x = originX.value
+            index = originX.nextIndex
+            const originY = readValue(index, 44)
+            line.origin.y = originY.value
+            index = originY.nextIndex
+            const deltaX = readValue(index, 45)
+            line.delta.x = deltaX.value
+            index = deltaX.nextIndex
+            const deltaY = readValue(index, 46)
+            line.delta.y = deltaY.value
+            index = deltaY.nextIndex
+            const dashCount = readValue(index, 79)
+            index = dashCount.nextIndex
+            for (let dashIndex = 0; dashIndex < dashCount.value; dashIndex++) {
+              const dash = readValue(index, 49)
+              line.dash.push(dash.value)
+              index = dash.nextIndex
+            }
+            entity.patternLines.push(line)
           }
           break
         }
@@ -452,6 +583,18 @@ class HatchEntityHandler {
       if (recovered.length >= 3) {
         entity.polygons.push(recovered)
       }
+    }
+
+    // 部分 CAXA 导出只写入比例/角度扩展数据，没有写标准 78 图案线表。
+    // 这类剖面仍按常用 ANSI31 单线剖面兜底，避免退化为只有边界描边。
+    if (entity.solidFill !== true && entity.polygons.length > 0 && !entity.patternLines?.length) {
+      const scale = Math.max(0.1, Number(entity.patternScale) || 1)
+      entity.patternLines = [{
+        angle: 0,
+        origin: { x: 0, y: 0 },
+        delta: { x: -3 * scale, y: 3 * scale },
+        dash: [],
+      }]
     }
 
     return entity
@@ -626,6 +769,64 @@ function parseCadText(raw: string): { lines: string[]; fontScale: number; isTole
     fontScale,
     isTolerance: isTol,
   }
+}
+
+function pointInPolygon(point: { x: number; y: number }, polygon: Array<{ x: number; y: number }>) {
+  let inside = false
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const current = polygon[index]!
+    const prior = polygon[previous]!
+    if ((current.y > point.y) !== (prior.y > point.y)) {
+      const crossX = ((prior.x - current.x) * (point.y - current.y)) / (prior.y - current.y) + current.x
+      if (point.x < crossX) inside = !inside
+    }
+  }
+  return inside
+}
+
+function getPatternLineSegments(
+  polygon: Array<{ x: number; y: number }>,
+  base: { x: number; y: number },
+  direction: { x: number; y: number },
+  extent: number,
+) {
+  const parameters: number[] = [-extent, extent]
+  const epsilon = 1e-8
+
+  for (let index = 0; index < polygon.length; index++) {
+    const start = polygon[index]!
+    const end = polygon[(index + 1) % polygon.length]!
+    const edge = { x: end.x - start.x, y: end.y - start.y }
+    const denominator = direction.x * edge.y - direction.y * edge.x
+    if (Math.abs(denominator) < epsilon) continue
+
+    const fromBase = { x: start.x - base.x, y: start.y - base.y }
+    const lineParameter = (fromBase.x * edge.y - fromBase.y * edge.x) / denominator
+    const edgeParameter = (fromBase.x * direction.y - fromBase.y * direction.x) / denominator
+    if (edgeParameter >= -epsilon && edgeParameter <= 1 + epsilon) {
+      parameters.push(Math.max(-extent, Math.min(extent, lineParameter)))
+    }
+  }
+
+  parameters.sort((left, right) => left - right)
+  const uniqueParameters = parameters.filter((value, index) => index === 0 || Math.abs(value - parameters[index - 1]!) > 1e-7)
+  const segments: Array<[{ x: number; y: number }, { x: number; y: number }]> = []
+  for (let index = 0; index < uniqueParameters.length - 1; index++) {
+    const startParameter = uniqueParameters[index]!
+    const endParameter = uniqueParameters[index + 1]!
+    if (endParameter - startParameter < 1e-7) continue
+    const middleParameter = (startParameter + endParameter) / 2
+    const middle = {
+      x: base.x + direction.x * middleParameter,
+      y: base.y + direction.y * middleParameter,
+    }
+    if (!pointInPolygon(middle, polygon)) continue
+    segments.push([
+      { x: base.x + direction.x * startParameter, y: base.y + direction.y * startParameter },
+      { x: base.x + direction.x * endParameter, y: base.y + direction.y * endParameter },
+    ])
+  }
+  return segments
 }
 
 // 绘制主渲染逻辑
@@ -902,7 +1103,7 @@ function redraw() {
           ctx.strokeStyle = color
           ctx.lineJoin = 'round'
           ctx.lineCap = 'round'
-          for (const poly of validPolygons) {
+           for (const poly of validPolygons) {
             ctx.beginPath()
             const p0 = toScreen(transform.apply(poly[0]))
             ctx.moveTo(p0.x, p0.y)
@@ -911,13 +1112,59 @@ function redraw() {
               ctx.lineTo(pt.x, pt.y)
             }
             ctx.closePath()
-            if (e.solidFill === true) {
-              ctx.fill()
-              // 实心箭头额外描边，避免缩放较小时纯填充边缘不明显。
-              ctx.stroke()
-            } else {
-              ctx.stroke()
-            }
+             if (e.solidFill === true) {
+               ctx.fill()
+               // 实心箭头额外描边，避免缩放较小时纯填充边缘不明显。
+               ctx.stroke()
+             } else if (e.patternLines?.length) {
+               // 非实心 HATCH 不能只描边。按 DXF 图案线定义裁剪到边界内，
+               // 支持 ANSI31 等普通剖面线以及多线图案。
+                const minX = Math.min(...poly.map((point: { x: number; y: number }) => point.x))
+               const maxX = Math.max(...poly.map((point: { x: number; y: number }) => point.x))
+               const minY = Math.min(...poly.map((point: { x: number; y: number }) => point.y))
+               const maxY = Math.max(...poly.map((point: { x: number; y: number }) => point.y))
+                const diagonal = Math.hypot(maxX - minX, maxY - minY) + 2
+               ctx.strokeStyle = color
+               ctx.lineWidth = Math.max(0.5, Math.min(1.5, viewScale.value * 0.08))
+               for (const patternLine of e.patternLines) {
+                 const scale = e.patternScale || 1
+                 const angle = (patternLine.angle || 0) + (e.patternAngle || 0)
+                 const direction = { x: Math.cos(angle), y: Math.sin(angle) }
+                 const normal = { x: -direction.y, y: direction.x }
+                 const origin = {
+                   x: (patternLine.origin?.x || 0) * scale,
+                   y: (patternLine.origin?.y || 0) * scale,
+                 }
+                 const delta = {
+                   x: (patternLine.delta?.x || 0) * scale,
+                   y: (patternLine.delta?.y || 0) * scale,
+                 }
+                 const spacing = Math.max(0.01, Math.hypot(delta.x, delta.y))
+                 const center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+                 const offset = (center.x - origin.x) * normal.x + (center.y - origin.y) * normal.y
+                 const firstOffset = Math.floor((offset - diagonal) / spacing) * spacing
+                 const lastOffset = Math.ceil((offset + diagonal) / spacing) * spacing
+                 const dash = (patternLine.dash || []).map((value: number) => Math.max(0.01, Math.abs(value) * scale * viewScale.value))
+                  for (let lineOffset = firstOffset; lineOffset <= lastOffset; lineOffset += spacing) {
+                    const base = {
+                      x: origin.x + normal.x * lineOffset,
+                      y: origin.y + normal.y * lineOffset,
+                    }
+                    ctx.setLineDash(dash)
+                    for (const [segmentStart, segmentEnd] of getPatternLineSegments(poly, base, direction, diagonal)) {
+                      const start = toScreen(transform.apply(segmentStart))
+                      const end = toScreen(transform.apply(segmentEnd))
+                      ctx.beginPath()
+                      ctx.moveTo(start.x, start.y)
+                      ctx.lineTo(end.x, end.y)
+                      ctx.stroke()
+                    }
+                  }
+                }
+                ctx.stroke()
+             } else {
+               ctx.stroke()
+             }
           }
           ctx.restore()
         }
