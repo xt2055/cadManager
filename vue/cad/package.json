@@ -19,7 +19,6 @@
     "lucide-vue-next": "^1.0.0",
     "pinia": "^4.0.3",
     "three": "^0.185.1",
-    "view-dxf": "^1.6.5",
     "vue": "^3.5.40",
     "vue-router": "^5.2.0"
   },

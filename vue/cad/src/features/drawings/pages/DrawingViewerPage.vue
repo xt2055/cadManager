@@ -4,7 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import CadVectorViewer from '@/features/drawings/detail-tabs/preview/CadVectorViewer.vue'
-import ViewDxfViewer from '@/features/drawings/detail-tabs/preview/ViewDxfViewer.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import type { DrawingFile } from '@/types/domain.types'
 
@@ -31,8 +30,6 @@ const cadViewerRef = ref<InstanceType<typeof CadVectorViewer> | null>(null)
 const layerPanelVisible = ref(true)
 const dynamicLayers = ref<Array<{ name: string; color: string; visible: boolean }>>([])
 const zoomLevel = ref(1)
-const renderEngine = ref<'canvas' | 'view-dxf'>('canvas')
-const renderEngineKey = ref(0)
 
 const zoomText = computed(() => `${Math.round(zoomLevel.value * 100)}%`)
 
@@ -92,9 +89,7 @@ function handleLayersLoaded(layers: Array<{ name: string; color: string; visible
 }
 
 function toggleDynamicLayer(layer: { name: string; color: string; visible: boolean }) {
-  if (renderEngine.value === 'canvas') {
-    cadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
-  }
+  cadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
 }
 
 function handleZoomChange(val: number) {
@@ -102,22 +97,15 @@ function handleZoomChange(val: number) {
 }
 
 function zoomIn() {
-  if (renderEngine.value === 'canvas') cadViewerRef.value?.zoomIn()
+  cadViewerRef.value?.zoomIn()
 }
 
 function zoomOut() {
-  if (renderEngine.value === 'canvas') cadViewerRef.value?.zoomOut()
+  cadViewerRef.value?.zoomOut()
 }
 
 function resetView() {
-  if (renderEngine.value === 'canvas') cadViewerRef.value?.resetView()
-}
-
-function selectRenderEngine(engine: 'canvas' | 'view-dxf') {
-  if (renderEngine.value === engine) return
-  renderEngine.value = engine
-  renderEngineKey.value++
-  zoomLevel.value = 1
+  cadViewerRef.value?.resetView()
 }
 
 function goBack() {
@@ -153,25 +141,6 @@ watch([drawingId, fileId], () => {
       </div>
 
       <div class="header-right">
-        <div class="engine-switcher" role="group" aria-label="CAD 渲染引擎">
-          <button
-            class="engine-btn"
-            :class="{ active: renderEngine === 'canvas' }"
-            type="button"
-            @click="selectRenderEngine('canvas')"
-          >
-            Canvas
-          </button>
-          <button
-            class="engine-btn"
-            :class="{ active: renderEngine === 'view-dxf' }"
-            type="button"
-            @click="selectRenderEngine('view-dxf')"
-          >
-            view-dxf
-          </button>
-        </div>
-
         <div class="view-controls">
           <button class="ctrl-btn" type="button" title="缩小" @click="zoomOut">
             <DemoIcon name="zoom-out" :size="15" />
@@ -205,18 +174,12 @@ watch([drawingId, fileId], () => {
       <!-- 中间 CAD 矢量图画板 -->
       <main class="viewer-canvas-container">
         <CadVectorViewer
-          v-if="cadDxfUrl && renderEngine === 'canvas'"
-          :key="`canvas-${renderEngineKey}`"
+          v-if="cadDxfUrl"
           ref="cadViewerRef"
           :dxf-url="cadDxfUrl"
           :file-name="targetFile?.name"
           @layers-loaded="handleLayersLoaded"
           @zoom-change="handleZoomChange"
-        />
-        <ViewDxfViewer
-          v-else-if="cadDxfUrl && renderEngine === 'view-dxf'"
-          :key="`view-dxf-${renderEngineKey}`"
-          :dxf-url="cadDxfUrl"
         />
         <div v-else class="empty-prompt">
           <DemoIcon name="file-question" :size="48" />
@@ -344,38 +307,6 @@ watch([drawingId, fileId], () => {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-.engine-switcher {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm, 6px);
-  background: var(--panel-2);
-}
-
-.engine-btn {
-  padding: 5px 9px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-3);
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.engine-btn:hover {
-  color: var(--text-1);
-  background: var(--hover);
-}
-
-.engine-btn.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
 }
 
 .view-controls {
