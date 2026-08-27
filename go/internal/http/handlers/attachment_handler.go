@@ -117,10 +117,14 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 			return
 		}
 
-		// 如果上传的是 EXB/DWG 文件，立即加入普通优先级转换队列
-		if convService != nil && (strings.EqualFold(filepathExt(name), ".exb") || strings.EqualFold(filepathExt(key), ".exb") || strings.EqualFold(filepathExt(name), ".dwg") || strings.EqualFold(filepathExt(key), ".dwg")) {
+		// 当前队列只处理 EXB -> DWG，DWG 文件无需再进入转换队列。
+		if convService != nil && (strings.EqualFold(filepathExt(name), ".exb") || strings.EqualFold(filepathExt(key), ".exb")) {
 			convService.PushJob(item, converter.PriorityNormal)
 		}
+		// 已废弃：旧逻辑会把 DWG 也加入队列，并继续生成 DXF，保留原条件供回溯。
+		// if convService != nil && (strings.EqualFold(filepathExt(name), ".exb") || strings.EqualFold(filepathExt(key), ".exb") || strings.EqualFold(filepathExt(name), ".dwg") || strings.EqualFold(filepathExt(key), ".dwg")) {
+		// 	convService.PushJob(item, converter.PriorityNormal)
+		// }
 
 		response.WriteData(writer, http.StatusCreated, item)
 	}

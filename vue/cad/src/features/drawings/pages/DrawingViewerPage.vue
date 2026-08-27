@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import CadVectorViewer from '@/features/drawings/detail-tabs/preview/CadVectorViewer.vue'
+// 已废弃：前端不再使用 Canvas DXF 渲染器，保留原组件引用以便回溯。
+// import CadVectorViewer from '@/features/drawings/detail-tabs/preview/CadVectorViewer.vue'
 import MlightCadViewer from '@/features/drawings/detail-tabs/preview/MlightCadViewer.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import type { DrawingFile } from '@/types/domain.types'
@@ -24,17 +25,20 @@ const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in curre
 
 // 当前指定查看的图纸文件
 const targetFile = ref<DrawingFile | null>(null)
-const cadDxfUrl = ref<string | null>(null)
+// 已废弃：Canvas DXF 地址保留，不再参与详情页渲染。
+// const cadDxfUrl = ref<string | null>(null)
 const cadOriginalUrl = ref<string | null>(null)
 const cadSourceFileName = ref<string | null>(null)
 const cadOriginalError = ref('')
-const cadViewerRef = ref<InstanceType<typeof CadVectorViewer> | null>(null)
+// 已废弃：Canvas 查看器引用保留，不再挂载。
+// const cadViewerRef = ref<InstanceType<typeof CadVectorViewer> | null>(null)
 const mlightCadViewerRef = ref<InstanceType<typeof MlightCadViewer> | null>(null)
 
 // 视图与图层控制
 const layerPanelVisible = ref(true)
 const dynamicLayers = ref<Array<{ name: string; color: string; visible: boolean }>>([])
 const zoomLevel = ref(1)
+// 已废弃：渲染引擎切换已固定为 MLightCAD，保留状态供旧逻辑回溯。
 const renderEngine = ref<'canvas' | 'mlightcad'>('mlightcad')
 const renderEngineKey = ref(0)
 
@@ -81,14 +85,16 @@ async function loadTargetFile() {
   if (file) {
     const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
     if (isCad) {
-      const params = new URLSearchParams()
-      if (file.storageKey) params.set('storageKey', file.storageKey)
-      if (file.drawingNo) params.set('drawingNo', file.drawingNo)
-      if (file.partNo) params.set('partNo', file.partNo)
-      params.set('fileName', file.name)
-      params.set('_t', String(Date.now()))
+      // 已废弃：Canvas DXF 预览请求参数保留，不再发送 /api/exb/preview。
+      // const params = new URLSearchParams()
+      // if (file.storageKey) params.set('storageKey', file.storageKey)
+      // if (file.drawingNo) params.set('drawingNo', file.drawingNo)
+      // if (file.partNo) params.set('partNo', file.partNo)
+      // params.set('fileName', file.name)
+      // params.set('_t', String(Date.now()))
       const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
-      cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
+      // 已废弃：Canvas 渲染需要的 DXF 预览接口不再由前端调用。
+      // cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
       if (file.storageKey) {
         try {
           const token = getAccessToken()
@@ -115,7 +121,8 @@ async function loadTargetFile() {
         cadOriginalError.value = '当前图纸没有 storageKey，无法读取原始 DWG'
       }
     } else {
-      cadDxfUrl.value = null
+      // 已废弃：Canvas DXF 地址清理逻辑保留，不再执行。
+      // cadDxfUrl.value = null
       revokeOriginalUrl()
     }
 
@@ -134,11 +141,13 @@ function handleLayersLoaded(layers: Array<{ name: string; color: string; visible
 }
 
 function toggleDynamicLayer(layer: { name: string; color: string; visible: boolean }) {
-  if (renderEngine.value === 'canvas') {
-    cadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
-  } else {
-    mlightCadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
-  }
+  mlightCadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
+  // 已废弃：Canvas 图层控制逻辑保留，不再执行。
+  // if (renderEngine.value === 'canvas') {
+  //   cadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
+  // } else {
+  //   mlightCadViewerRef.value?.setLayerVisibility(layer.name, layer.visible)
+  // }
 }
 
 function handleZoomChange(val: number) {
@@ -146,31 +155,38 @@ function handleZoomChange(val: number) {
 }
 
 function zoomIn() {
-  if (renderEngine.value === 'canvas') cadViewerRef.value?.zoomIn()
-  else mlightCadViewerRef.value?.zoomIn()
+  mlightCadViewerRef.value?.zoomIn()
+  // 已废弃：Canvas 缩放逻辑保留，不再执行。
+  // if (renderEngine.value === 'canvas') cadViewerRef.value?.zoomIn()
+  // else mlightCadViewerRef.value?.zoomIn()
 }
 
 function zoomOut() {
-  if (renderEngine.value === 'canvas') cadViewerRef.value?.zoomOut()
-  else mlightCadViewerRef.value?.zoomOut()
+  mlightCadViewerRef.value?.zoomOut()
+  // 已废弃：Canvas 缩放逻辑保留，不再执行。
+  // if (renderEngine.value === 'canvas') cadViewerRef.value?.zoomOut()
+  // else mlightCadViewerRef.value?.zoomOut()
 }
 
 function resetView() {
-  if (renderEngine.value === 'canvas') cadViewerRef.value?.resetView()
-  else mlightCadViewerRef.value?.resetView()
+  mlightCadViewerRef.value?.resetView()
+  // 已废弃：Canvas 复位逻辑保留，不再执行。
+  // if (renderEngine.value === 'canvas') cadViewerRef.value?.resetView()
+  // else mlightCadViewerRef.value?.resetView()
 }
 
-function selectRenderEngine(engine: 'canvas' | 'mlightcad') {
-  if (renderEngine.value === engine) return
-  console.info('[DrawingViewerPage] 切换 CAD 引擎', {
-    engine,
-    hasOriginalCad: Boolean(cadOriginalUrl.value),
-    originalError: cadOriginalError.value || undefined,
-  })
-  renderEngine.value = engine
-  renderEngineKey.value++
-  zoomLevel.value = 1
-}
+// 已废弃：Canvas/MLightCAD 切换逻辑保留，不再提供切换入口。
+// function selectRenderEngine(engine: 'canvas' | 'mlightcad') {
+//   if (renderEngine.value === engine) return
+//   console.info('[DrawingViewerPage] 切换 CAD 引擎', {
+//     engine,
+//     hasOriginalCad: Boolean(cadOriginalUrl.value),
+//     originalError: cadOriginalError.value || undefined,
+//   })
+//   renderEngine.value = engine
+//   renderEngineKey.value++
+//   zoomLevel.value = 1
+// }
 
 function goBack() {
   router.push({ name: 'drawing-preview', params: { drawingId: drawingId.value } })
@@ -209,6 +225,8 @@ watch([drawingId, fileId], () => {
       </div>
 
       <div class="header-right">
+        <!-- 已废弃：Canvas/MLightCAD 切换入口保留，不再显示，当前固定使用 MLightCAD。 -->
+        <!--
         <div class="engine-switcher" role="group" aria-label="CAD 渲染引擎">
           <button
             class="engine-btn"
@@ -227,6 +245,7 @@ watch([drawingId, fileId], () => {
             MLightCAD
           </button>
         </div>
+        -->
 
         <div class="view-controls">
           <button class="ctrl-btn" type="button" title="缩小" @click="zoomOut">
@@ -260,6 +279,8 @@ watch([drawingId, fileId], () => {
     <div class="viewer-body">
       <!-- 中间 CAD 矢量图画板 -->
       <main class="viewer-canvas-container">
+        <!-- 已废弃：Canvas DXF 渲染组件保留，不再挂载。 -->
+        <!--
         <CadVectorViewer
           v-if="cadDxfUrl && renderEngine === 'canvas'"
           :key="`canvas-${renderEngineKey}`"
@@ -269,8 +290,9 @@ watch([drawingId, fileId], () => {
           @layers-loaded="handleLayersLoaded"
           @zoom-change="handleZoomChange"
         />
+        -->
         <MlightCadViewer
-          v-else-if="cadOriginalUrl && renderEngine === 'mlightcad'"
+          v-if="cadOriginalUrl && renderEngine === 'mlightcad'"
           :key="`mlightcad-${renderEngineKey}`"
           ref="mlightCadViewerRef"
           :dxf-url="cadOriginalUrl"
@@ -406,6 +428,7 @@ watch([drawingId, fileId], () => {
   gap: 10px;
 }
 
+/* 已废弃：Canvas/MLightCAD 切换入口样式保留，不再使用。
 .engine-switcher {
   display: inline-flex;
   align-items: center;
@@ -437,6 +460,7 @@ watch([drawingId, fileId], () => {
   color: var(--accent);
   font-weight: 600;
 }
+*/
 
 .view-controls {
   display: flex;

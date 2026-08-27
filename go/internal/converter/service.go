@@ -182,37 +182,37 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 		ext = filepathExt(att.Name)
 	}
 
-	dxfKey := strings.TrimSuffix(att.StorageKey, ext) + ".dxf"
-	if reader, info, err := s.storage.Open(ctx, dxfKey); err == nil {
+	// 当前转换队列只负责生成 MLightCAD 使用的 DWG，不再以 DXF 是否存在作为完成条件。
+	dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
+	if reader, info, err := s.storage.Open(ctx, dwgKey); err == nil {
 		reader.Close()
-		// EXB 除了 DXF 还需要保留一份 DWG，供支持 DWG 的前端引擎直接读取。
-		// 不能仅凭已有 DXF 判断 EXB 已完成全部转换。
-		dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
-		dwgReader, dwgInfo, dwgErr := s.storage.Open(ctx, dwgKey)
-		if dwgErr == nil {
-			dwgReader.Close()
-			if dwgInfo.Size > 0 {
-				return nil
-			}
-			_ = s.storage.Delete(ctx, dwgKey)
-		}
-		if info.Size > 0 && !strings.EqualFold(ext, ".exb") {
+		if info.Size > 0 {
 			return nil
 		}
-		_ = s.storage.Delete(ctx, dxfKey)
+		_ = s.storage.Delete(ctx, dwgKey)
 	}
 
-	if strings.EqualFold(ext, ".dxf") {
-		return errors.New("DXF 文件为空，无法生成预览")
-	}
+	// 已废弃：旧队列曾检查并生成 DXF，代码保留以便后续回溯。
+	// dxfKey := strings.TrimSuffix(att.StorageKey, ext) + ".dxf"
+	// if reader, info, err := s.storage.Open(ctx, dxfKey); err == nil {
+	// 	reader.Close()
+	// 	if info.Size > 0 && !strings.EqualFold(ext, ".exb") {
+	// 		return nil
+	// 	}
+	// 	_ = s.storage.Delete(ctx, dxfKey)
+	// }
+	// if strings.EqualFold(ext, ".dxf") {
+	// 	return errors.New("DXF 文件为空，无法生成预览")
+	// }
 
 	tempDir := os.TempDir()
 	nowNano := time.Now().UnixNano()
 	tempDwg := filepath.Join(tempDir, fmt.Sprintf("caxa_out_%d.dwg", nowNano))
-	tempDxf := filepath.Join(tempDir, fmt.Sprintf("caxa_out_%d.dxf", nowNano))
 	defer os.Remove(tempDwg)
-	defer os.Remove(tempDxf)
 	defer os.Remove(tempDwg + ".done")
+	// 已废弃：DXF 临时文件仅由旧转换流程使用，现已停用。
+	// tempDxf := filepath.Join(tempDir, fmt.Sprintf("caxa_out_%d.dxf", nowNano))
+	// defer os.Remove(tempDxf)
 
 	if strings.EqualFold(ext, ".exb") {
 		if err := s.ensureCaxaRunning(ctx); err != nil {
@@ -294,22 +294,21 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 		return nil
 	}
 
-	if err := s.convertDwgToDxf(ctx, tempDwg, tempDxf); err != nil {
-		return fmt.Errorf("DWG 转 DXF 失败: %w", err)
-	}
+	// 已废弃：转换队列不再执行 DWG -> DXF，也不再写入 DXF 对象。
+	// if err := s.convertDwgToDxf(ctx, tempDwg, tempDxf); err != nil {
+	// 	return fmt.Errorf("DWG 转 DXF 失败: %w", err)
+	// }
+	// dxfReader, err := os.Open(tempDxf)
+	// if err != nil {
+	// 	return fmt.Errorf("打开生成 DXF 失败: %w", err)
+	// }
+	// defer dxfReader.Close()
+	// _, err = s.storage.Put(ctx, dxfKey, dxfReader, "application/dxf")
+	// if err != nil {
+	// 	return fmt.Errorf("保存 DXF 附件失败: %w", err)
+	// }
 
-	dxfReader, err := os.Open(tempDxf)
-	if err != nil {
-		return fmt.Errorf("打开生成 DXF 失败: %w", err)
-	}
-	defer dxfReader.Close()
-
-	_, err = s.storage.Put(ctx, dxfKey, dxfReader, "application/dxf")
-	if err != nil {
-		return fmt.Errorf("保存 DXF 附件失败: %w", err)
-	}
-
-	log.Printf("[CAD Converter] 成功生成矢量 DXF: %s -> %s", att.StorageKey, dxfKey)
+	log.Printf("[CAD Converter] 成功生成 DWG: %s -> %s", att.StorageKey, dwgKey)
 	return nil
 }
 
@@ -375,22 +374,23 @@ func waitForJobFileFree(path string, timeout time.Duration) error {
 	}
 }
 
-func (s *Service) convertDwgToDxf(ctx context.Context, dwgPath, dxfPath string) error {
-	binPath, err := resolveToolPath(s.dwg2dxfBin, "dwg2dxf.exe")
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, binPath, "-y", "-o", dxfPath, dwgPath)
-	cmd.Dir = filepath.Dir(binPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%w: %s", err, string(output))
-	}
-	if info, err := os.Stat(dxfPath); err != nil || info.Size() == 0 {
-		return fmt.Errorf("dwg2dxf 生成的文件为空或不存在: %s", string(output))
-	}
-	return nil
-}
+// 已废弃：转换队列不再执行 DWG -> DXF。原实现保留为注释，便于回溯。
+// func (s *Service) convertDwgToDxf(ctx context.Context, dwgPath, dxfPath string) error {
+// 	binPath, err := resolveToolPath(s.dwg2dxfBin, "dwg2dxf.exe")
+// 	if err != nil {
+// 		return err
+// 	}
+// 	cmd := exec.CommandContext(ctx, binPath, "-y", "-o", dxfPath, dwgPath)
+// 	cmd.Dir = filepath.Dir(binPath)
+// 	output, err := cmd.CombinedOutput()
+// 	if err != nil {
+// 		return fmt.Errorf("%w: %s", err, string(output))
+// 	}
+// 	if info, err := os.Stat(dxfPath); err != nil || info.Size() == 0 {
+// 		return fmt.Errorf("dwg2dxf 生成的文件为空或不存在: %s", string(output))
+// 	}
+// 	return nil
+// }
 
 func (s *Service) ensureCaxaRunning(ctx context.Context) error {
 	s.caxaMu.Lock()
@@ -506,7 +506,7 @@ func filepathExt(value string) string {
 
 func (s *Service) cronScanner(ctx context.Context) {
 	// 启动后先立即执行一次扫描
-	s.scanMissingDxf(ctx)
+	s.scanMissingDwg(ctx)
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -518,15 +518,15 @@ func (s *Service) cronScanner(ctx context.Context) {
 		case <-s.stopChan:
 			return
 		case <-ticker.C:
-			s.scanMissingDxf(ctx)
+			s.scanMissingDwg(ctx)
 		}
 	}
 }
 
-func (s *Service) scanMissingDxf(ctx context.Context) {
+func (s *Service) scanMissingDwg(ctx context.Context) {
 	list, err := s.repo.ListAllCad(ctx)
 	if err != nil {
-		log.Printf("[CAD Converter] 定时扫描 CAD 列表失败: %v", err)
+		log.Printf("[CAD Converter] 定时扫描 DWG 列表失败: %v", err)
 		return
 	}
 
@@ -535,16 +535,38 @@ func (s *Service) scanMissingDxf(ctx context.Context) {
 		if ext == "" {
 			ext = filepathExt(att.Name)
 		}
-		if strings.EqualFold(ext, ".dxf") {
+		if !strings.EqualFold(ext, ".exb") {
 			continue
 		}
-		dxfKey := strings.TrimSuffix(att.StorageKey, ext) + ".dxf"
-		if _, _, err := s.storage.Open(ctx, dxfKey); err != nil {
-			// DXF 还不存在，加入低优先级后台转换队列
+		dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
+		if _, _, err := s.storage.Open(ctx, dwgKey); err != nil {
+			// DWG 还不存在，加入低优先级后台转换队列
 			s.PushJob(att, PriorityLow)
 		}
 	}
 }
+
+// scanMissingDxf 保留旧版 DXF 扫描逻辑，仅作为迁移参考，不再执行。
+// func (s *Service) scanMissingDxf(ctx context.Context) {
+// 	list, err := s.repo.ListAllCad(ctx)
+// 	if err != nil {
+// 		log.Printf("[CAD Converter] 定时扫描 CAD 列表失败: %v", err)
+// 		return
+// 	}
+// 	for _, att := range list {
+// 		ext := filepathExt(att.StorageKey)
+// 		if ext == "" {
+// 			ext = filepathExt(att.Name)
+// 		}
+// 		if strings.EqualFold(ext, ".dxf") {
+// 			continue
+// 		}
+// 		dxfKey := strings.TrimSuffix(att.StorageKey, ext) + ".dxf"
+// 		if _, _, err := s.storage.Open(ctx, dxfKey); err != nil {
+// 			s.PushJob(att, PriorityLow)
+// 		}
+// 	}
+// }
 
 func ioCopy(dst *os.File, src interface{ Read([]byte) (int, error) }) (int64, error) {
 	buf := make([]byte, 32*1024)

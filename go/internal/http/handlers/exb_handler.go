@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/converter"
@@ -138,7 +137,7 @@ func ParseEXB(repository attachment.Repository, objectStorage storage.ObjectStor
 	}
 }
 
-// PreviewEXB 提取并直接输出 EXB/DWG 对应的高清矢量 DXF，若未转换完成则触发高优先级插队并等待
+// PreviewEXB 保留旧版 DXF 预览接口，当前 MLightCAD 直接读取 /api/cad/source 返回的 DWG。
 func PreviewEXB(repository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := middleware.UserFromContext(request.Context()); !ok {
@@ -192,33 +191,35 @@ func PreviewEXB(repository attachment.Repository, objectStorage storage.ObjectSt
 			dxfKey = storageKey
 		}
 
-		// 检查是否已有 DXF（确保大于 0 字节且有效），如果没有或为 0 字节，触发高优先级转换
-		needConvert := false
-		if reader, info, err := objectStorage.Open(request.Context(), dxfKey); err == nil {
-			reader.Close()
-			if info.Size == 0 {
-				_ = objectStorage.Delete(request.Context(), dxfKey)
-				needConvert = true
-			}
-		} else {
-			needConvert = true
-		}
+		// 已废弃：前端不再请求 DXF 预览；以下检查逻辑保留，供旧客户端迁移回溯。
+		// needConvert := false
+		// if reader, info, err := objectStorage.Open(request.Context(), dxfKey); err == nil {
+		// 	reader.Close()
+		// 	if info.Size == 0 {
+		// 		_ = objectStorage.Delete(request.Context(), dxfKey)
+		// 		needConvert = true
+		// 	}
+		// } else {
+		// 	needConvert = true
+		// }
 
-		if needConvert {
-			if convService != nil && (strings.EqualFold(ext, ".exb") || strings.EqualFold(ext, ".dwg")) {
-				doneChan := convService.PushJob(item, converter.PriorityHigh)
-				select {
-				case convertErr := <-doneChan:
-					if convertErr != nil {
-						response.WriteError(writer, http.StatusUnprocessableEntity, convertErr.Error())
-						return
-					}
-				case <-time.After(60 * time.Second):
-					response.WriteError(writer, http.StatusGatewayTimeout, "CAD 转换 DXF 超时")
-					return
-				}
-			}
-		}
+		// 已废弃：旧 Canvas 预览曾在此处把任务插入 DXF 转换队列。
+		// 当前后端队列只生成 MLightCAD 使用的 DWG，不能再由此接口触发 DXF 转换。
+		// if needConvert {
+		// 	if convService != nil && (strings.EqualFold(ext, ".exb") || strings.EqualFold(ext, ".dwg")) {
+		// 		doneChan := convService.PushJob(item, converter.PriorityHigh)
+		// 		select {
+		// 		case convertErr := <-doneChan:
+		// 			if convertErr != nil {
+		// 				response.WriteError(writer, http.StatusUnprocessableEntity, convertErr.Error())
+		// 				return
+		// 			}
+		// 		case <-time.After(60 * time.Second):
+		// 			response.WriteError(writer, http.StatusGatewayTimeout, "CAD 转换 DXF 超时")
+		// 			return
+		// 		}
+		// 	}
+		// }
 
 		// 读取 DXF
 		reader, obj, err := objectStorage.Open(request.Context(), dxfKey)
