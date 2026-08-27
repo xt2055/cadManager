@@ -15,6 +15,7 @@ export interface AttachmentResult {
   storageKey: string
   size: number
   mimeType: string
+  createdAt?: string
 }
 
 export interface DataProvider {
@@ -23,4 +24,6 @@ export interface DataProvider {
   uploadAttachment(file: Blob, metadata: AttachmentMetadata): Promise<AttachmentResult>
   deleteAttachment(storageKey: string): Promise<void>
   readAttachment(storageKey: string): Promise<Blob>
+  exportBOM?(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
+  scanDrawingDesigner?(drawingNo: string): Promise<string>
 }

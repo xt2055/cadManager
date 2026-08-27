@@ -235,6 +235,7 @@ function normalizeMaterialFile(value: unknown, drawingNo: string): MaterialFile 
     uploadedAt: asString(source.uploadedAt, '历史记录'),
     ...(asString(source.storageKey) ? { storageKey: asString(source.storageKey) } : {}),
     ...(asString(source.mimeType) ? { mimeType: asString(source.mimeType) } : {}),
+    ...(asString(source.author) ? { author: asString(source.author) } : {}),
   }
 }
 
@@ -255,6 +256,8 @@ function normalizeCraftFile(value: unknown, drawingNo: string): CraftFile {
     ...(asString(source.storageKey) ? { storageKey: asString(source.storageKey) } : {}),
     ...(asString(source.mimeType) ? { mimeType: asString(source.mimeType) } : {}),
     previewable: asBoolean(source.previewable, true),
+    ...(asString(source.author) ? { author: asString(source.author) } : {}),
+    scanned: asBoolean(source.scanned, false),
   }
 }
 
@@ -301,6 +304,7 @@ function normalizeDrawings(value: unknown): Drawing[] {
       ...(asString(source.borrowFrom) ? { borrowFrom: asString(source.borrowFrom) } : {}),
       ...(isRecord(source.signers) ? { signers: source.signers as Drawing['signers'] } : {}),
       ...(asString(source.remark) ? { remark: asString(source.remark) } : {}),
+      ...(asString(source.designer) ? { designer: asString(source.designer) } : {}),
       files,
       otherFiles: readArray<unknown>(source.otherFiles).map((file) => normalizeDrawingFile(file, no, 'other')),
       materialFiles: readArray<unknown>(source.materialFiles).map((file) => normalizeMaterialFile(file, no)),

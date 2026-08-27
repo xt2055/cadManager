@@ -20,14 +20,17 @@
     "@tauri-apps/api": "^2.11.1",
     "@types/three": "^0.172.0",
     "@velipso/polybool": "^1.1.1",
+    "docx-preview": "^0.4.0",
     "dxf-parser": "^1.1.2",
     "dxf-viewer": "^1.0.48",
+    "jszip": "^3.10.1",
     "lodash-es": "^4.17.21",
     "lucide-vue-next": "^1.0.0",
     "pinia": "^4.0.3",
     "three": "^0.172.0",
     "vue": "^3.5.40",
-    "vue-router": "^5.2.0"
+    "vue-router": "^5.2.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

@@ -22,6 +22,23 @@ const parentDrawing = computed(() => {
   return domainStore.drawings.find((item) => item.no === parentNo) ?? null
 })
 
+const designerName = computed(() => {
+  if (!drawing.value) return ''
+  if ('parentNo' in drawing.value) {
+    let parentNo = drawing.value.parentNo
+    const visited = new Set<string>()
+    while (parentNo && !visited.has(parentNo)) {
+      visited.add(parentNo)
+      const parent = domainStore.drawings.find((item) => item.no === parentNo)
+      if (parent) return parent.designer || ''
+      const parentPart = domainStore.structure.find((item) => item.no === parentNo)
+      if (!parentPart) break
+      parentNo = parentPart.parentNo
+    }
+  }
+  return 'designer' in drawing.value ? drawing.value.designer || '' : ''
+})
+
 function openModal(type: 'revert' | 'borrow-drawing', title: string) {
   uiStore.openModal(type, title)
 }
@@ -52,6 +69,10 @@ function openParentDrawing() {
       <div class="dh-main">
         <div class="dh-title">
           <h2>{{ drawing?.name }}</h2>
+          <span v-if="designerName" class="designer-badge">
+            <DemoIcon name="pen-tool" :size="13" />
+            设计：<b>{{ designerName }}</b>
+          </span>
           <span class="dh-no">{{ drawing?.no }}</span>
           <span class="tag plain tag-no-dot">{{ 'parentNo' in (drawing || {}) ? '零件图' : '总图' }}</span>
           <span v-if="drawing" class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span>
@@ -100,7 +121,23 @@ function openParentDrawing() {
 }
 
 @media (max-width: 760px) {
-  .parent-link {
+.designer-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-left: 2px;
+}
+.designer-badge b {
+  font-weight: 700;
+}
+.parent-link {
     width: 100%;
   }
 }

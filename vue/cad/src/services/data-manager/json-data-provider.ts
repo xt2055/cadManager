@@ -8,9 +8,17 @@ import seedDocument from './data.seed.json'
 const DATA_STORAGE_KEY = 'cad:data-document:v2'
 const LEGACY_DATA_STORAGE_KEY = 'cad:data-document:v1'
 
-function createStorageKey(name: string): string {
+function safePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'attachment'
+}
+
+function createStorageKey(name: string, metadata: AttachmentMetadata): string {
   const safeName = name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'attachment'
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`
+  const fileKey = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`
+  if (metadata.role === 'craft' && metadata.drawingNo) {
+    return `${safePathSegment(metadata.drawingNo)}/工艺文件/${fileKey}`
+  }
+  return fileKey
 }
 
 function isTauriRuntime(): boolean {
@@ -64,7 +72,7 @@ export class JsonDataProvider implements DataProvider {
   }
 
   async uploadAttachment(file: Blob, metadata: AttachmentMetadata): Promise<AttachmentResult> {
-    const storageKey = metadata.storageKey || createStorageKey(metadata.name)
+    const storageKey = metadata.storageKey || createStorageKey(metadata.name, metadata)
     const mimeType = metadata.mimeType || file.type || 'application/octet-stream'
 
     if (isTauriRuntime()) {
@@ -91,5 +99,27 @@ export class JsonDataProvider implements DataProvider {
       return new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' })
     }
     return readBrowserAttachment(storageKey)
+  }
+
+  async exportBOM(drawingNo: string, _storageKey: string, items: unknown[]): Promise<Blob> {
+    const XLSX = await import('xlsx')
+    const workbook = XLSX.utils.book_new()
+    const rows = (items as Array<Record<string, unknown>>).map((item, index) => ({
+      序号: item.no ?? index + 1,
+      '图号/标准号': item.id ?? '',
+      名称: item.name ?? '',
+      '规格/材质': item.spec ?? '',
+      数量: item.qty ?? 1,
+      '单重(kg)': item.weight ?? 0,
+      备注: item.remark ?? '',
+    }))
+    const worksheet = XLSX.utils.json_to_sheet(rows)
+    XLSX.utils.book_append_sheet(workbook, worksheet, '备料明细')
+    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+    return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  }
+
+  async scanDrawingDesigner(_drawingNo: string): Promise<string> {
+    return ''
   }
 }

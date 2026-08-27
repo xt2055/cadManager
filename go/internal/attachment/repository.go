@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -78,17 +79,18 @@ func (repository *PGRepository) Find(ctx context.Context, storageKey string) (At
 	var drawingNo string
 	var partNo *string
 	var uploadedBy *string
+	var createdAt time.Time
 	err := repository.pool.QueryRow(ctx, `
 		SELECT a.id::text, a.storage_key, a.original_name, COALESCE(d.drawing_no, parent.drawing_no, ''),
 		       p.part_no, a.file_role, a.size_bytes, a.mime_type, COALESCE(a.sha256, ''), a.version,
-		       a.previewable, COALESCE(a.uploaded_by::text, '')
+		       a.previewable, COALESCE(a.uploaded_by::text, ''), a.created_at
 		FROM attachments a
 		LEFT JOIN drawings d ON d.id = a.drawing_id
 		LEFT JOIN structure_parts p ON p.id = a.part_id
 		LEFT JOIN drawings parent ON parent.id = p.drawing_id
 		WHERE a.storage_key = $1 AND a.deleted_at IS NULL`, storageKey).Scan(
 		&item.ID, &item.StorageKey, &item.Name, &drawingNo, &partNo, &role, &item.Size, &item.MimeType,
-		&item.SHA256, &item.Version, &item.Previewable, &uploadedBy,
+		&item.SHA256, &item.Version, &item.Previewable, &uploadedBy, &createdAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Attachment{}, ErrNotFound
@@ -102,6 +104,7 @@ func (repository *PGRepository) Find(ctx context.Context, storageKey string) (At
 	if uploadedBy != nil {
 		item.UploadedBy = *uploadedBy
 	}
+	item.CreatedAt = createdAt.Format("2006-01-02 15:04:05")
 	return item, nil
 }
 
@@ -126,6 +129,57 @@ func (repository *PGRepository) FindByOwnerAndName(ctx context.Context, drawingN
 		return Attachment{}, fmt.Errorf("按图号和文件名查询附件失败: %w", err)
 	}
 	return repository.Find(ctx, storageKey)
+}
+
+func (repository *PGRepository) ListByDrawing(ctx context.Context, drawingNo string) ([]Attachment, error) {
+	rows, err := repository.pool.Query(ctx, `
+		SELECT a.id::text, a.storage_key, a.original_name,
+		       COALESCE(d.drawing_no, parent.drawing_no, ''), p.part_no, a.file_role,
+		       a.size_bytes, a.mime_type, COALESCE(a.sha256, ''), a.version,
+		       a.previewable, COALESCE(a.uploaded_by::text, ''), a.created_at
+		FROM attachments a
+		LEFT JOIN drawings d ON d.id = a.drawing_id
+		LEFT JOIN structure_parts p ON p.id = a.part_id
+		LEFT JOIN drawings parent ON parent.id = p.drawing_id
+		WHERE COALESCE(d.drawing_no, parent.drawing_no, '') = $1
+		  AND a.deleted_at IS NULL
+		ORDER BY
+		  CASE WHEN a.file_role = 'assembly' THEN 0 ELSE 1 END,
+		  CASE WHEN lower(a.original_name) LIKE '%.exb' THEN 0 ELSE 1 END,
+		  a.created_at DESC`, drawingNo)
+	if err != nil {
+		return nil, fmt.Errorf("查询图纸附件失败: %w", err)
+	}
+	defer rows.Close()
+
+	list := make([]Attachment, 0)
+	for rows.Next() {
+		var item Attachment
+		var role string
+		var drawingNoValue string
+		var partNo *string
+		var uploadedBy *string
+		var createdAt time.Time
+		if err := rows.Scan(
+			&item.ID, &item.StorageKey, &item.Name, &drawingNoValue, &partNo, &role,
+			&item.Size, &item.MimeType, &item.SHA256, &item.Version, &item.Previewable,
+			&uploadedBy, &createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("读取图纸附件失败: %w", err)
+		}
+		item.DrawingNo = drawingNoValue
+		item.PartNo = partNo
+		item.Role = Role(role)
+		if uploadedBy != nil {
+			item.UploadedBy = *uploadedBy
+		}
+		item.CreatedAt = createdAt.Format("2006-01-02 15:04:05")
+		list = append(list, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("读取图纸附件失败: %w", err)
+	}
+	return list, nil
 }
 
 func (repository *PGRepository) ListAllCad(ctx context.Context) ([]Attachment, error) {

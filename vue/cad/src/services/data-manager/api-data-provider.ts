@@ -60,6 +60,7 @@ export class ApiDataProvider implements DataProvider {
       storageKey: payload.storageKey,
       size: typeof payload.size === 'number' ? payload.size : file.size,
       mimeType: typeof payload.mimeType === 'string' ? payload.mimeType : file.type || 'application/octet-stream',
+      createdAt: typeof payload.createdAt === 'string' ? payload.createdAt : undefined,
     }
   }
 
@@ -80,7 +81,43 @@ export class ApiDataProvider implements DataProvider {
     return response.blob()
   }
 
-  private async request<T>(path: string, options: { method: 'GET' | 'PUT' | 'DELETE'; body?: string }): Promise<T> {
+  async exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, */*',
+    }
+    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    if (token) headers.Authorization = `Bearer ${token}`
+
+    const response = await fetch(`${this.baseUrl}/bom/export`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ drawingNo, storageKey, items }),
+      credentials: 'include',
+    })
+    if (!response.ok) throw new Error(`导出备料表失败：HTTP ${response.status}`)
+    return response.blob()
+  }
+
+  async scanDrawingDesigner(drawingNo: string): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/exb/designer?drawingNo=${encodeURIComponent(drawingNo)}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        ...(typeof window !== 'undefined' && window.localStorage.getItem('cad_access_token')
+          ? { Authorization: `Bearer ${window.localStorage.getItem('cad_access_token')}` }
+          : {}),
+      },
+      credentials: 'include',
+    })
+    if (!response.ok) throw new Error(`扫描图纸设计人失败：HTTP ${response.status}`)
+    const body: unknown = await response.json()
+    const payload = isRecord(body) && 'data' in body ? body.data : body
+    if (!isRecord(payload)) return ''
+    return typeof payload.designer === 'string' ? payload.designer : ''
+  }
+
+  private async request<T>(path: string, options: { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: string }): Promise<T> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
     }

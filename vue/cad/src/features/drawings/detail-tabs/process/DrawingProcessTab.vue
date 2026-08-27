@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import DocxPreviewModal from './DocxPreviewModal.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { CraftFile } from '@/types/domain.types'
@@ -13,6 +14,20 @@ const uiStore = useUiStore()
 
 const currentItem = computed(() => domainStore.currentDrawing)
 const fileInput = ref<HTMLInputElement | null>(null)
+const replaceInput = ref<HTMLInputElement | null>(null)
+const replacingFileId = ref<string | null>(null)
+
+const previewVisible = ref(false)
+const previewFile = ref<CraftFile | null>(null)
+
+function openPreview(file: CraftFile) {
+  if (!file.storageKey) {
+    uiStore.toast('该工艺文件尚未保存在本地或后端，暂无法预览', 'warn')
+    return
+  }
+  previewFile.value = file
+  previewVisible.value = true
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -24,29 +39,76 @@ function triggerUpload() {
   fileInput.value?.click()
 }
 
-async function onFileChange(event: Event) {
+function triggerReplace(file: CraftFile) {
+  replacingFileId.value = file.id
+  replaceInput.value?.click()
+}
+
+async function onReplaceChange(event: Event) {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
-  if (!file || !currentItem.value) return
-
-  const newFile: CraftFile = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    drawingNo: currentItem.value.no,
-    name: file.name,
-    op: '机加工与装配工艺',
-    ver: currentItem.value.ver || 'v1.0',
-    by: '张工',
-    date: '刚刚',
-    size: formatFileSize(file.size),
-    previewable: true,
-  }
-
+  const fileId = replacingFileId.value
+  if (!file || !fileId || !currentItem.value) return
   try {
-    await domainStore.uploadCraftFile(currentItem.value.no, newFile, file)
-    uiStore.toast(`工艺文件「${file.name}」上传成功`, 'ok')
+    await domainStore.replaceCraftFile(currentItem.value.no, fileId, file)
+    uiStore.toast(`工艺文件已替换：${file.name}`, 'ok')
   } catch (error) {
-    console.error('上传工艺文件失败', error)
-    uiStore.toast('上传工艺文件失败', 'warn')
+    console.error('替换工艺文件失败', error)
+    uiStore.toast('替换工艺文件失败', 'warn')
+  } finally {
+    target.value = ''
+    replacingFileId.value = null
+  }
+}
+
+function formatCurrentTime(): string {
+  const d = new Date()
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hours = String(d.getHours()).padStart(2, '0')
+  const minutes = String(d.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}`
+}
+
+async function onFileChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  const files = Array.from(target.files ?? [])
+  if (!files.length || !currentItem.value) return
+
+  let uploadedCount = 0
+  let failedCount = 0
+  try {
+    for (const file of files) {
+      const newFile: CraftFile = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        drawingNo: currentItem.value.no,
+        name: file.name,
+        op: '机加工与装配工艺',
+        ver: currentItem.value.ver || 'v1.0',
+        by: '张工',
+        date: formatCurrentTime(),
+        size: formatFileSize(file.size),
+        previewable: true,
+        scanned: false,
+      }
+
+      try {
+        await domainStore.uploadCraftFile(currentItem.value.no, newFile, file)
+        uploadedCount += 1
+      } catch (error) {
+        failedCount += 1
+        console.error(`上传工艺文件失败：${file.name}`, error)
+      }
+    }
+
+    if (failedCount === 0) {
+      uiStore.toast(`已上传 ${uploadedCount} 个工艺文件`, 'ok')
+    } else if (uploadedCount > 0) {
+      uiStore.toast(`已上传 ${uploadedCount} 个工艺文件，${failedCount} 个上传失败`, 'warn')
+    } else {
+      uiStore.toast('工艺文件上传失败', 'warn')
+    }
   } finally {
     target.value = ''
   }
@@ -74,6 +136,7 @@ async function handleDownloadCraft(file: CraftFile) {
     uiStore.toast('下载工艺文件失败：附件可能尚未保存', 'warn')
   }
 }
+
 </script>
 
 <template>
@@ -81,9 +144,18 @@ async function handleDownloadCraft(file: CraftFile) {
     <input
       ref="fileInput"
       type="file"
+      multiple
       accept=".pdf,.doc,.docx,.crd,.step,.xlsx"
       class="hidden-file-input"
       @change="onFileChange"
+    />
+    <input
+      ref="replaceInput"
+      type="file"
+      multiple
+      accept=".pdf,.doc,.docx,.crd,.step,.xlsx"
+      class="hidden-file-input"
+      @change="onReplaceChange"
     />
 
     <!-- 顶部操作栏 -->
@@ -119,13 +191,13 @@ async function handleDownloadCraft(file: CraftFile) {
         </div>
 
         <div class="craft-detail-fields">
+            <div class="field-item">
+              <span class="lbl">编制人员</span>
+              <span class="val">{{ file.author || file.by }}</span>
+            </div>
           <div class="field-item">
-            <span class="lbl">编制人员</span>
-            <span class="val">{{ file.by }}</span>
-          </div>
-          <div class="field-item">
-            <span class="lbl">上传日期</span>
-            <span class="val">{{ file.date }}</span>
+            <span class="lbl">上传时间</span>
+            <span class="val">{{ file.date && file.date !== '刚刚' ? file.date : formatCurrentTime() }}</span>
           </div>
           <div class="field-item">
             <span class="lbl">文件大小</span>
@@ -134,11 +206,14 @@ async function handleDownloadCraft(file: CraftFile) {
         </div>
 
         <div class="craft-card-footer">
-          <button class="btn sm" type="button" @click="uiStore.toast('工艺文件预览（Demo）', 'info')">
+          <button class="btn sm" type="button" @click="openPreview(file)">
             <DemoIcon name="eye" :size="13" />在线预览
           </button>
           <button class="btn sm" type="button" @click="handleDownloadCraft(file)">
             <DemoIcon name="download" :size="13" />下载
+          </button>
+          <button class="btn sm" type="button" @click="triggerReplace(file)">
+            <DemoIcon name="refresh-cw" :size="13" />替换
           </button>
           <button class="btn sm danger" type="button" @click="handleDeleteCraft(file)">
             <DemoIcon name="trash-2" :size="13" />删除
@@ -152,6 +227,14 @@ async function handleDownloadCraft(file: CraftFile) {
       <div class="t">暂无工艺文件</div>
       <p>请点击右上角「上传工艺文件」上传规程与指导卡</p>
     </div>
+
+    <!-- DOCX / PDF 阅读弹窗 -->
+    <DocxPreviewModal
+      v-model:visible="previewVisible"
+      :title="previewFile?.name || '工艺规程阅读'"
+      :file-name="previewFile?.name"
+      :storage-key="previewFile?.storageKey"
+    />
   </div>
 </template>
 

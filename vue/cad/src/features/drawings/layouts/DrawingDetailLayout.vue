@@ -18,10 +18,13 @@ const isPreview = computed(() => route.name === 'drawing-preview')
 
 async function syncDrawing() {
   await domainStore.initialize()
-  const drawingId = String(route.params.drawingId ?? '')
-  if (drawingId) {
-    domainStore.openDrawing(drawingId)
-  } else {
+    const drawingId = String(route.params.drawingId ?? '')
+    if (drawingId) {
+      domainStore.openDrawing(drawingId)
+      await domainStore.refreshDrawingDesigner(drawingId).catch((error) => {
+        console.warn('读取图纸标题栏设计人失败', error)
+      })
+    } else {
     domainStore.clearCurrentDrawing()
   }
 }

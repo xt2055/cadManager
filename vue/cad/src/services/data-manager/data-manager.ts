@@ -11,6 +11,8 @@ export interface DataManager {
   uploadAttachment(file: Blob, metadata: AttachmentMetadata): Promise<AttachmentResult>
   deleteAttachment(storageKey: string): Promise<void>
   readAttachment(storageKey: string): Promise<Blob>
+  exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
+  scanDrawingDesigner(drawingNo: string): Promise<string>
   resetProvider(): void
 }
 
@@ -57,6 +59,19 @@ export class DefaultDataManager implements DataManager {
 
   readAttachment(storageKey: string): Promise<Blob> {
     return this.getProvider().then((provider) => provider.readAttachment(storageKey))
+  }
+
+  async exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob> {
+    const provider = await this.getProvider()
+    if (provider.exportBOM) {
+      return provider.exportBOM(drawingNo, storageKey, items)
+    }
+    throw new Error('当前存储模式不支持服务端 BOM 导出')
+  }
+
+  async scanDrawingDesigner(drawingNo: string): Promise<string> {
+    const provider = await this.getProvider()
+    return provider.scanDrawingDesigner ? provider.scanDrawingDesigner(drawingNo) : ''
   }
 
   resetProvider(): void {

@@ -71,6 +71,7 @@ export interface MaterialFile {
   uploadedAt: string
   storageKey?: string
   mimeType?: string
+  author?: string
 }
 
 export interface CraftFile {
@@ -85,6 +86,8 @@ export interface CraftFile {
   storageKey?: string
   mimeType?: string
   previewable: boolean
+  author?: string
+  scanned: boolean
 }
 
 export interface Drawing {
@@ -102,6 +105,7 @@ export interface Drawing {
   createdAt?: string
   updatedBy?: string
   updatedAt?: string
+  designer?: string
   borrow: number
   hasFile: boolean
   borrowFrom?: string

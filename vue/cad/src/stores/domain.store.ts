@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { dataManager } from '@/services/data-manager'
+import { readDocxAuthor } from '@/utils/docx-metadata'
+import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { useAuthStore } from '@/stores/auth.store'
 import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
 import type { DataDocument } from '@/services/data-manager'
@@ -57,76 +59,23 @@ function createId(prefix: string): string {
 }
 
 function nowLabel(): string {
-  return '刚刚'
+  const d = new Date()
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hours = String(d.getHours()).padStart(2, '0')
+  const minutes = String(d.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}`
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function activityTime(): string {
   return new Date().toISOString()
-}
-
-function formatNumber(value: string | undefined): number {
-  if (!value) return 0
-  const normalized = value.replace(/,/g, '').trim()
-  const parsed = Number(normalized)
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function parseCsvLine(line: string): string[] {
-  const values: string[] = []
-  let value = ''
-  let quoted = false
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index]
-    if (character === '"') {
-      if (quoted && line[index + 1] === '"') {
-        value += '"'
-        index += 1
-      } else {
-        quoted = !quoted
-      }
-    } else if (character === ',' && !quoted) {
-      values.push(value.trim())
-      value = ''
-    } else {
-      value += character
-    }
-  }
-
-  values.push(value.trim())
-  return values
-}
-
-async function parseCsvBom(content: Blob, drawingNo: string, sourceFileId: string): Promise<BomItem[]> {
-  const text = await content.text()
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  if (lines.length < 2) return []
-
-  const headers = parseCsvLine(lines[0] ?? '').map((header) => header.toLowerCase().replace(/\s+/g, ''))
-  const findColumn = (names: string[]) => headers.findIndex((header) => names.some((name) => header.includes(name)))
-  const noIndex = findColumn(['序号', 'no', '编号'])
-  const idIndex = findColumn(['图号', '标准号', '零件号', 'id'])
-  const nameIndex = findColumn(['名称', '物料名称', 'name'])
-  const specIndex = findColumn(['规格', '材质', 'spec'])
-  const qtyIndex = findColumn(['数量', 'qty', 'count'])
-  const weightIndex = findColumn(['单重', '重量', 'weight'])
-  const remarkIndex = findColumn(['备注', 'remark', '说明'])
-
-  return lines.slice(1).map((line, index) => {
-    const columns = parseCsvLine(line)
-    const get = (columnIndex: number) => columnIndex >= 0 ? columns[columnIndex] : undefined
-    return {
-      no: formatNumber(get(noIndex)) || index + 1,
-      id: get(idIndex) || `${drawingNo}-BOM-${String(index + 1).padStart(3, '0')}`,
-      drawingNo,
-      sourceFileId,
-      name: get(nameIndex) || '未命名物料',
-      spec: get(specIndex) || '—',
-      qty: formatNumber(get(qtyIndex)),
-      weight: formatNumber(get(weightIndex)),
-      remark: get(remarkIndex) || '',
-    }
-  })
 }
 
 export const useDomainStore = defineStore('domain', () => {
@@ -283,6 +232,7 @@ export const useDomainStore = defineStore('domain', () => {
         flows.value = document.flows
         hiddenList.value = document.hiddenList
         adminLogs.value = document.adminLogs
+        await scanUnscannedCraftFiles()
         await persist()
         await loadRemoteActivityLogs()
         initialized.value = true
@@ -298,6 +248,131 @@ export const useDomainStore = defineStore('domain', () => {
     })()
 
     return initializationPromise
+  }
+
+  async function scanUnscannedCraftFiles(): Promise<void> {
+    let changed = false
+
+    for (const file of craftFiles.value) {
+      if (file.scanned || !file.name.toLowerCase().endsWith('.docx') || !file.storageKey) continue
+
+      try {
+        const content = await dataManager.readAttachment(file.storageKey)
+        file.author = await readDocxAuthor(content)
+        file.scanned = true
+
+        const target = findDrawingOrPart(file.drawingNo)
+        const targetFile = target?.craftFiles?.find((item) => item.id === file.id)
+        if (targetFile) {
+          targetFile.author = file.author
+          targetFile.scanned = true
+        }
+        changed = true
+      } catch (scanError) {
+        console.warn(`自动扫描工艺文件失败：${file.name}`, scanError)
+      }
+    }
+
+    // 自动扫描备料表中的编制人员
+    const allMaterialFiles = [
+      ...drawings.value.flatMap((d) => d.materialFiles ?? []),
+      ...structure.value.flatMap((p) => p.materialFiles ?? []),
+    ]
+    for (const file of allMaterialFiles) {
+      if (file.author || !file.storageKey) continue
+      try {
+        const content = await dataManager.readAttachment(file.storageKey)
+        const parseResult = await parseMaterialFileContent(content, file.name, file.drawingNo, file.id)
+        if (parseResult.author) {
+          file.author = parseResult.author
+          changed = true
+        }
+      } catch (scanErr) {
+        console.warn(`自动扫描备料表编制人员失败：${file.name}`, scanErr)
+      }
+    }
+
+    // 自动修复历史文件中显示为“刚刚”的上传时间
+    const formatTimeStr = (t: string) => (t === '刚刚' ? nowLabel() : t)
+    for (const d of drawings.value) {
+      if (d.materialFiles) {
+        for (const mf of d.materialFiles) {
+          if (mf.uploadedAt === '刚刚') {
+            mf.uploadedAt = nowLabel()
+            changed = true
+          }
+        }
+      }
+      if (d.craftFiles) {
+        for (const cf of d.craftFiles) {
+          if (cf.date === '刚刚') {
+            cf.date = nowLabel()
+            changed = true
+          }
+        }
+      }
+    }
+    for (const p of structure.value) {
+      if (p.materialFiles) {
+        for (const mf of p.materialFiles) {
+          if (mf.uploadedAt === '刚刚') {
+            mf.uploadedAt = nowLabel()
+            changed = true
+          }
+        }
+      }
+      if (p.craftFiles) {
+        for (const cf of p.craftFiles) {
+          if (cf.date === '刚刚') {
+            cf.date = nowLabel()
+            changed = true
+          }
+        }
+      }
+    }
+    for (const cf of craftFiles.value) {
+      if (cf.date === '刚刚') {
+        cf.date = nowLabel()
+        changed = true
+      }
+    }
+
+    // 从总图或同目录其他 CAD 图纸的标题栏读取设计人
+    for (const drawing of drawings.value) {
+      if (drawing.designer || drawing.kind !== '总图') continue
+      try {
+        const designer = await dataManager.scanDrawingDesigner(drawing.no)
+        if (designer) {
+          drawing.designer = designer
+          changed = true
+        }
+      } catch (scanErr) {
+        console.warn(`自动扫描图纸设计人失败：${drawing.no}`, scanErr)
+      }
+    }
+
+    if (changed) await persist()
+  }
+
+  async function refreshDrawingDesigner(drawingNo: string): Promise<void> {
+    await initialize()
+    let targetNo = drawingNo
+    const visited = new Set<string>()
+    while (targetNo && !visited.has(targetNo)) {
+      visited.add(targetNo)
+      const drawing = drawings.value.find((item) => item.no === targetNo)
+      if (drawing) {
+        const designer = await dataManager.scanDrawingDesigner(drawing.no)
+        if (designer && designer !== drawing.designer) {
+          drawing.designer = designer
+          await persist()
+        }
+        return
+      }
+      const part = structure.value.find((item) => item.no === targetNo)
+      if (!part) return
+      targetNo = part.parentNo
+    }
   }
 
   function findDrawingOrPart(no: string): Drawing | StructurePart | null {
@@ -980,14 +1055,17 @@ export const useDomainStore = defineStore('domain', () => {
       attachments.materialFiles.unshift(file)
 
       let importedCount = 0
-      if (file.name.toLowerCase().endsWith('.csv') && content) {
-        const importedItems = await parseCsvBom(content, drawingNo, file.id)
-        if (importedItems.length) {
+      if (content) {
+        const parseResult = await parseMaterialFileContent(content, file.name, drawingNo, file.id)
+        if (parseResult.author) {
+          file.author = parseResult.author
+        }
+        if (parseResult.items.length) {
           bomItems.value = [
             ...bomItems.value.filter((item) => item.drawingNo !== drawingNo),
-            ...importedItems,
+            ...parseResult.items,
           ]
-          importedCount = importedItems.length
+          importedCount = parseResult.items.length
         }
       }
 
@@ -1007,6 +1085,62 @@ export const useDomainStore = defineStore('domain', () => {
       bomItems.value = originalBom
       if (storageKey) await dataManager.deleteAttachment(storageKey).catch(() => undefined)
       throw saveError
+    }
+  }
+
+  async function replaceMaterialFile(drawingNo: string, fileId: string, content: File): Promise<MaterialUploadResult> {
+    await initialize()
+    const target = findDrawingOrPart(drawingNo)
+    if (!target) throw new Error(`未找到图纸或零件：${drawingNo}`)
+    const attachments = getTargetAttachmentFiles(target)
+    const currentFile = attachments.materialFiles.find((item) => item.id === fileId)
+    if (!currentFile) throw new Error(`未找到备料表文件：${fileId}`)
+
+    const originalFiles = [...attachments.materialFiles]
+    const originalBom = [...bomItems.value]
+    const oldStorageKey = currentFile.storageKey
+    const updatedFile: MaterialFile = {
+      ...currentFile,
+      name: content.name,
+      size: formatFileSize(content.size),
+      uploadedBy: '张工',
+      uploadedAt: nowLabel(),
+      storageKey: undefined,
+      mimeType: content.type || undefined,
+    }
+
+    try {
+      await saveAttachmentContent(updatedFile, content)
+      const index = attachments.materialFiles.findIndex((item) => item.id === fileId)
+      if (index >= 0) attachments.materialFiles[index] = updatedFile
+
+      const parseResult = await parseMaterialFileContent(content, updatedFile.name, drawingNo, updatedFile.id)
+      if (parseResult.author) {
+        updatedFile.author = parseResult.author
+      }
+      if (parseResult.items.length) {
+        bomItems.value = [
+          ...bomItems.value.filter((item) => item.drawingNo !== drawingNo),
+          ...parseResult.items,
+        ]
+      }
+      await persist()
+      if (oldStorageKey) await dataManager.deleteAttachment(oldStorageKey)
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'edit',
+        text: `替换备料表 <b>${currentFile.name}</b> 为 <b>${updatedFile.name}</b>`,
+        detail: { fileId, fileName: updatedFile.name, importedCount: parseResult.items.length },
+      })
+      await persist()
+      return { importedCount: parseResult.items.length }
+    } catch (replaceError) {
+      target.materialFiles = originalFiles
+      bomItems.value = originalBom
+      await persist().catch(() => undefined)
+      throw replaceError
     }
   }
 
@@ -1041,6 +1175,67 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
+  async function parseMaterialFile(drawingNo: string, fileId: string): Promise<MaterialUploadResult> {
+    await initialize()
+    const target = findDrawingOrPart(drawingNo)
+    if (!target) throw new Error(`未找到图纸或零件：${drawingNo}`)
+    const file = getTargetAttachmentFiles(target).materialFiles.find((item) => item.id === fileId)
+    if (!file) throw new Error(`未找到备料表文件：${fileId}`)
+    if (!file.storageKey) throw new Error(`备料表「${file.name}」没有可读取的附件内容`)
+
+    const content = await dataManager.readAttachment(file.storageKey)
+    const parseResult = await parseMaterialFileContent(content, file.name, drawingNo, file.id)
+    if (parseResult.author) {
+      file.author = parseResult.author
+    }
+    bomItems.value = [
+      ...bomItems.value.filter((item) => item.drawingNo !== drawingNo),
+      ...parseResult.items,
+    ]
+    await persist()
+    recordActivity({
+      drawingNo: target.no,
+      drawingName: target.name,
+      targetType: 'file',
+      act: 'parse',
+      text: `解析备料表 <b>${file.name}</b>`,
+      detail: { fileId: file.id, fileName: file.name, importedCount: parseResult.items.length },
+    })
+    await persist()
+    return { importedCount: parseResult.items.length }
+  }
+
+  async function saveDrawingBom(drawingNo: string, items: BomItem[]): Promise<void> {
+    await initialize()
+    const target = findDrawingOrPart(drawingNo)
+    if (!target) throw new Error(`未找到图纸或零件：${drawingNo}`)
+    const originalBom = [...bomItems.value]
+    bomItems.value = [
+      ...bomItems.value.filter((item) => item.drawingNo !== drawingNo),
+      ...items.map((item, index) => ({
+        ...item,
+        no: index + 1,
+        drawingNo,
+      })),
+    ]
+    try {
+      await persist()
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'edit',
+        text: `更新备料表数据（共 <b>${items.length}</b> 项）`,
+        detail: { count: items.length },
+      })
+      await persist()
+    } catch (saveError) {
+      bomItems.value = originalBom
+      await persist().catch(() => undefined)
+      throw saveError
+    }
+  }
+
   async function uploadCraftFile(drawingNo: string, file: CraftFile, content?: Blob): Promise<void> {
     await initialize()
     const target = findDrawingOrPart(drawingNo)
@@ -1051,6 +1246,15 @@ export const useDomainStore = defineStore('domain', () => {
     const originalGlobalCraftFiles = [...craftFiles.value]
     let storageKey: string | undefined
     try {
+      if (content && file.name.toLowerCase().endsWith('.docx')) {
+        try {
+          file.author = await readDocxAuthor(content)
+          file.scanned = true
+        } catch (scanError) {
+          file.scanned = false
+          console.warn(`读取工艺文件编制人员失败：${file.name}`, scanError)
+        }
+      }
       storageKey = await saveAttachmentContent(file, content)
       attachments.craftFiles.unshift(file)
       craftFiles.value = [file, ...craftFiles.value.filter((item) => item.id !== file.id)]
@@ -1069,6 +1273,63 @@ export const useDomainStore = defineStore('domain', () => {
       craftFiles.value = originalGlobalCraftFiles
       if (storageKey) await dataManager.deleteAttachment(storageKey).catch(() => undefined)
       throw saveError
+    }
+  }
+
+  async function replaceCraftFile(drawingNo: string, fileId: string, content: File): Promise<void> {
+    await initialize()
+    const target = findDrawingOrPart(drawingNo)
+    if (!target) throw new Error(`未找到图纸或零件：${drawingNo}`)
+    const attachments = getTargetAttachmentFiles(target)
+    const currentFile = attachments.craftFiles.find((item) => item.id === fileId)
+      ?? craftFiles.value.find((item) => item.id === fileId && item.drawingNo === drawingNo)
+    if (!currentFile) throw new Error(`未找到工艺文件：${fileId}`)
+
+    const originalFiles = [...attachments.craftFiles]
+    const originalGlobalFiles = [...craftFiles.value]
+    const oldStorageKey = currentFile.storageKey
+    const updatedFile: CraftFile = {
+      ...currentFile,
+      name: content.name,
+      size: formatFileSize(content.size),
+      by: '张工',
+      date: nowLabel(),
+      storageKey: undefined,
+      mimeType: content.type || undefined,
+      author: undefined,
+      scanned: false,
+    }
+
+    try {
+      if (content.name.toLowerCase().endsWith('.docx')) {
+        try {
+          updatedFile.author = await readDocxAuthor(content)
+          updatedFile.scanned = true
+        } catch (scanError) {
+          console.warn(`替换工艺文件后读取编制人员失败：${content.name}`, scanError)
+        }
+      }
+      await saveAttachmentContent(updatedFile, content)
+      const targetIndex = attachments.craftFiles.findIndex((item) => item.id === fileId)
+      if (targetIndex >= 0) attachments.craftFiles[targetIndex] = updatedFile
+      const globalIndex = craftFiles.value.findIndex((item) => item.id === fileId && item.drawingNo === drawingNo)
+      if (globalIndex >= 0) craftFiles.value[globalIndex] = updatedFile
+      await persist()
+      if (oldStorageKey) await dataManager.deleteAttachment(oldStorageKey)
+      recordActivity({
+        drawingNo: target.no,
+        drawingName: target.name,
+        targetType: 'file',
+        act: 'edit',
+        text: `替换工艺文件 <b>${currentFile.name}</b> 为 <b>${updatedFile.name}</b>`,
+        detail: { fileId, fileName: updatedFile.name, author: updatedFile.author },
+      })
+      await persist()
+    } catch (replaceError) {
+      target.craftFiles = originalFiles
+      craftFiles.value = originalGlobalFiles
+      await persist().catch(() => undefined)
+      throw replaceError
     }
   }
 
@@ -1444,6 +1705,7 @@ export const useDomainStore = defineStore('domain', () => {
     reviewCount,
     drawingStats,
     initialize,
+    refreshDrawingDesigner,
     recordActivity,
     recordActivityAndPersist,
     openDrawing,
@@ -1459,8 +1721,12 @@ export const useDomainStore = defineStore('domain', () => {
     deleteOtherFile,
     deleteDrawingFile,
     uploadMaterialFile,
+    replaceMaterialFile,
     deleteMaterialFile,
+    parseMaterialFile,
+    saveDrawingBom,
     uploadCraftFile,
+    replaceCraftFile,
     deleteCraftFile,
     downloadAttachment,
     startReview,

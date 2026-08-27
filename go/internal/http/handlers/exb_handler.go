@@ -22,6 +22,73 @@ type exbParseRequest struct {
 	StorageKey string `json:"storageKey"`
 }
 
+type drawingDesignerResponse struct {
+	Designer   string `json:"designer"`
+	StorageKey string `json:"storageKey,omitempty"`
+}
+
+func ScanDrawingDesigner(repository attachment.Repository, objectStorage storage.ObjectStorage) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodPost {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		drawingNo := strings.TrimSpace(request.URL.Query().Get("drawingNo"))
+		if drawingNo == "" {
+			var input struct {
+				DrawingNo string `json:"drawingNo"`
+			}
+			if err := decodeJSON(request, &input); err != nil {
+				response.WriteError(writer, http.StatusBadRequest, "drawingNo 必填且请求格式有效")
+				return
+			}
+			drawingNo = strings.TrimSpace(input.DrawingNo)
+		}
+		if drawingNo == "" {
+			response.WriteError(writer, http.StatusBadRequest, "drawingNo 必填")
+			return
+		}
+
+		attachments, err := repository.ListByDrawing(request.Context(), drawingNo)
+		if err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "查询图纸附件失败")
+			return
+		}
+
+		for _, item := range attachments {
+			if !strings.EqualFold(filepathExt(item.Name), ".exb") && !strings.EqualFold(filepathExt(item.StorageKey), ".exb") {
+				continue
+			}
+			reader, _, openErr := objectStorage.Open(request.Context(), item.StorageKey)
+			if openErr != nil {
+				continue
+			}
+			data, readErr := io.ReadAll(reader)
+			_ = reader.Close()
+			if readErr != nil {
+				continue
+			}
+			parsed, parseErr := exb.Parse(data)
+			if parseErr != nil {
+				continue
+			}
+			designer := strings.TrimSpace(parsed.TitleBlock["设计"])
+			if designer == "" || designer == "待定" {
+				continue
+			}
+			response.WriteData(writer, http.StatusOK, drawingDesignerResponse{Designer: designer, StorageKey: item.StorageKey})
+			return
+		}
+
+		response.WriteData(writer, http.StatusOK, drawingDesignerResponse{})
+	}
+}
+
 func ParseEXB(repository attachment.Repository, objectStorage storage.ObjectStorage) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := middleware.UserFromContext(request.Context()); !ok {

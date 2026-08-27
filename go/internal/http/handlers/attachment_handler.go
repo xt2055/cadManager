@@ -69,9 +69,15 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 			return
 		}
 		folder = safePathSegment(folder)
-		key := filepath.ToSlash(filepath.Join(folder, name))
+		attachmentFolder := folder
+		if role == attachment.RoleCraft {
+			attachmentFolder = filepath.ToSlash(filepath.Join(folder, "工艺文件"))
+		}
+		key := filepath.ToSlash(filepath.Join(attachmentFolder, name))
 		if existingKey := strings.TrimSpace(request.FormValue("storageKey")); existingKey != "" {
-			if filepath.ToSlash(filepath.Dir(existingKey)) != filepath.ToSlash(folder) {
+			existingFolder := filepath.ToSlash(filepath.Dir(existingKey))
+			legacyFolder := filepath.ToSlash(folder)
+			if existingFolder != filepath.ToSlash(attachmentFolder) && !(role == attachment.RoleCraft && existingFolder == legacyFolder) {
 				response.WriteError(writer, http.StatusBadRequest, "附件存储键与所属图号不匹配")
 				return
 			}

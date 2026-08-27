@@ -43,10 +43,14 @@ fn attachments_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn attachment_path(app: &tauri::AppHandle, storage_key: &str) -> Result<PathBuf, String> {
-  if storage_key.is_empty() || storage_key.contains('/') || storage_key.contains('\\') || storage_key.contains("..") {
+  let normalized_key = storage_key.replace('\\', "/");
+  let segments: Vec<&str> = normalized_key.split('/').collect();
+  if normalized_key.is_empty() || segments.iter().any(|segment| {
+    segment.is_empty() || *segment == "." || *segment == ".." || segment.contains(':')
+  }) {
     return Err("附件存储键无效".to_string());
   }
-  Ok(attachments_dir(app)?.join(storage_key))
+  Ok(attachments_dir(app)?.join(segments.iter().collect::<PathBuf>()))
 }
 
 fn backup_file_path(path: &Path) -> PathBuf {
@@ -120,6 +124,9 @@ fn write_data_document(app: tauri::AppHandle, document: Value) -> Result<(), Str
 #[tauri::command]
 fn write_attachment(app: tauri::AppHandle, storage_key: String, bytes: Vec<u8>) -> Result<(), String> {
   let path = attachment_path(&app, &storage_key)?;
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
   let temporary_path = path.with_extension("tmp");
   let mut temporary_file = fs::File::create(&temporary_path).map_err(|error| error.to_string())?;
   temporary_file.write_all(&bytes).map_err(|error| error.to_string())?;
@@ -140,6 +147,30 @@ fn delete_attachment(app: tauri::AppHandle, storage_key: String) -> Result<(), S
   if path.exists() {
     fs::remove_file(path).map_err(|error| error.to_string())?;
   }
+  Ok(())
+}
+
+#[tauri::command]
+fn open_generated_excel(app: tauri::AppHandle, file_name: String, bytes: Vec<u8>) -> Result<(), String> {
+  use tauri::Manager;
+
+  let safe_name = file_name
+    .chars()
+    .map(|character| if ['\\', '/', ':', '*', '?', '"', '<', '>', '|'].contains(&character) { '_' } else { character })
+    .collect::<String>();
+  let file_name = if safe_name.to_lowercase().ends_with(".xlsx") {
+    safe_name
+  } else {
+    format!("{}.xlsx", safe_name)
+  };
+  let downloads_dir = app.path().download_dir().map_err(|error| error.to_string())?;
+  fs::create_dir_all(&downloads_dir).map_err(|error| error.to_string())?;
+  let path = downloads_dir.join(file_name);
+  fs::write(&path, bytes).map_err(|error| error.to_string())?;
+  std::process::Command::new("cmd")
+    .args(["/C", "start", "", &path.to_string_lossy()])
+    .spawn()
+    .map_err(|error| error.to_string())?;
   Ok(())
 }
 
@@ -172,6 +203,7 @@ pub fn run() {
       write_attachment,
       read_attachment,
       delete_attachment,
+      open_generated_excel,
       read_debug_mode,
       write_debug_mode
     ])
