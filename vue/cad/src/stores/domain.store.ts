@@ -240,6 +240,9 @@ export const useDomainStore = defineStore('domain', () => {
         myReviews.value = document.myReviews
         completedReviews.value = document.completedReviews
         users.value = document.users
+        if (authStore.hasRole('admin')) {
+          users.value = await dataManager.listUsers()
+        }
         flows.value = document.flows
         hiddenList.value = document.hiddenList
         adminLogs.value = document.adminLogs
@@ -1769,23 +1772,13 @@ export const useDomainStore = defineStore('domain', () => {
       throw new Error(`账号已存在：${normalizedAccount}`)
     }
 
-    const user: UserAccount = {
-      id: createId('user'),
+    const user = await dataManager.createUser({
       account: normalizedAccount,
       displayName: normalizedName,
       password: normalizedPassword,
       roles: normalizedRoles,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      lastLoginAt: null,
-    }
+    })
     users.value.unshift(user)
-    try {
-      await persist()
-    } catch (saveError) {
-      users.value = users.value.filter((item) => item.id !== user.id)
-      throw saveError
-    }
   }
 
   async function resetUserPassword(userId: string, password: string): Promise<void> {
@@ -1794,14 +1787,14 @@ export const useDomainStore = defineStore('domain', () => {
     if (!user) throw new Error('未找到目标账号')
     const normalizedPassword = password.trim()
     if (!normalizedPassword) throw new Error('请输入新密码')
-    const originalPassword = user.password
-    user.password = normalizedPassword
-    try {
-      await persist()
-    } catch (saveError) {
-      user.password = originalPassword
-      throw saveError
-    }
+    const updated = await dataManager.updateUser(userId, {
+      account: user.account,
+      displayName: user.displayName,
+      password: normalizedPassword,
+      roles: user.roles,
+      status: user.status,
+    })
+    Object.assign(user, updated)
   }
 
   async function toggleUser(userId: string): Promise<void> {
@@ -1813,14 +1806,13 @@ export const useDomainStore = defineStore('domain', () => {
       if (activeAdminCount <= 1) throw new Error('不能禁用最后一个管理员账号')
     }
 
-    const originalStatus = user.status
-    user.status = user.status === 'active' ? 'disabled' : 'active'
-    try {
-      await persist()
-    } catch (saveError) {
-      user.status = originalStatus
-      throw saveError
-    }
+    const updated = await dataManager.updateUser(userId, {
+      account: user.account,
+      displayName: user.displayName,
+      roles: user.roles,
+      status: user.status === 'active' ? 'disabled' : 'active',
+    })
+    Object.assign(user, updated)
   }
 
   async function toggleFlow(index: number): Promise<void> {

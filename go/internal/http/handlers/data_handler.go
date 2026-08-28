@@ -18,6 +18,7 @@ func DataDocument(repository *data.DocumentRepository) http.HandlerFunc {
 				response.WriteError(writer, http.StatusInternalServerError, "业务数据读取失败")
 				return
 			}
+			delete(document, "users")
 			response.WriteData(writer, http.StatusOK, document)
 		case http.MethodPut:
 			user, ok := middleware.UserFromContext(request.Context())

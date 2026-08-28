@@ -1,5 +1,7 @@
 import { normalizeDataDocument, type DataDocument } from './data.types'
 import type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, ReidentifyDrawingFileResult } from './data-provider'
+import type { UserAccount } from '@/types/domain.types'
+import type { UserManagementInput } from './data-provider'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -18,7 +20,8 @@ export class ApiDataProvider implements DataProvider {
   }
 
   async save(document: DataDocument): Promise<void> {
-    const payload = { ...document, logs: [] }
+    const { users: _users, ...businessDocument } = document
+    const payload = { ...businessDocument, logs: [] }
     await this.request('/data/document', {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -181,6 +184,29 @@ export class ApiDataProvider implements DataProvider {
       oldPartNo: typeof payload.oldPartNo === 'string' ? payload.oldPartNo : '',
       partNo: payload.partNo,
     }
+  }
+
+  async listUsers(): Promise<UserAccount[]> {
+    const body = await this.request<unknown>('/users', { method: 'GET' })
+    const payload = isRecord(body) && 'data' in body ? body.data : body
+    if (!Array.isArray(payload)) throw new Error('账号接口返回格式无效')
+    return payload as UserAccount[]
+  }
+
+  async createUser(input: UserManagementInput): Promise<UserAccount> {
+    const body = await this.request<unknown>('/users', { method: 'POST', body: JSON.stringify(input) })
+    return this.readUserResponse(body)
+  }
+
+  async updateUser(userId: string, input: UserManagementInput): Promise<UserAccount> {
+    const body = await this.request<unknown>(`/users/${encodeURIComponent(userId)}`, { method: 'PUT', body: JSON.stringify(input) })
+    return this.readUserResponse(body)
+  }
+
+  private readUserResponse(body: unknown): UserAccount {
+    const payload = isRecord(body) && 'data' in body ? body.data : body
+    if (!isRecord(payload) || typeof payload.id !== 'string') throw new Error('账号接口返回格式无效')
+    return payload as unknown as UserAccount
   }
 
   private async request<T>(path: string, options: { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: string }): Promise<T> {

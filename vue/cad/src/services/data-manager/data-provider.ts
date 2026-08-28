@@ -1,4 +1,5 @@
 import type { DataDocument } from './data.types'
+import type { UserAccount, UserRole, UserStatus } from '@/types/domain.types'
 
 export interface AttachmentMetadata {
   name: string
@@ -31,6 +32,14 @@ export interface ReidentifyDrawingFileResult {
   partNo: string
 }
 
+export interface UserManagementInput {
+  account: string
+  displayName: string
+  password?: string
+  roles: UserRole[]
+  status?: UserStatus
+}
+
 export interface DataProvider {
   load(): Promise<DataDocument>
   save(document: DataDocument): Promise<void>
@@ -42,4 +51,7 @@ export interface DataProvider {
   identifyDrawingFile?(file: Blob, name: string): Promise<DrawingFileIdentity>
   identifyDrawingMaterial?(file: Blob, name: string): Promise<DrawingFileIdentity>
   reidentifyDrawingFile?(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
+  listUsers?(): Promise<UserAccount[]>
+  createUser?(input: UserManagementInput): Promise<UserAccount>
+  updateUser?(userId: string, input: UserManagementInput): Promise<UserAccount>
 }

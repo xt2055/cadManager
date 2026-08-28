@@ -23,6 +23,9 @@ func Run(cfg config.Config) error {
 	}
 	defer pool.Close()
 	authService := auth.NewService(auth.NewPGRepository(pool))
+	if err := authService.MigrateLegacyUsers(context.Background()); err != nil {
+		return err
+	}
 
 	log.Printf("cadguanliq backend listening on %s", cfg.Addr)
 	return http.ListenAndServe(cfg.Addr, NewHandler(cfg, pool, authService))

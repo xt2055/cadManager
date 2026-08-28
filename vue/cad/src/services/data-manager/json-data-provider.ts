@@ -2,7 +2,8 @@ import { invoke } from '@tauri-apps/api/core'
 
 import { normalizeDataDocument, type DataDocument } from './data.types'
 import { deleteBrowserAttachment, readBrowserAttachment, saveBrowserAttachment } from './attachment-storage'
-import type { AttachmentMetadata, AttachmentResult, DataProvider } from './data-provider'
+import type { AttachmentMetadata, AttachmentResult, DataProvider, UserManagementInput } from './data-provider'
+import type { UserAccount } from '@/types/domain.types'
 import seedDocument from './data.seed.json'
 
 const DATA_STORAGE_KEY = 'cad:data-document:v2'
@@ -133,5 +134,41 @@ export class JsonDataProvider implements DataProvider {
 
   async scanDrawingDesigner(_drawingNo: string): Promise<string> {
     return ''
+  }
+
+  async listUsers(): Promise<UserAccount[]> {
+    return (await this.load()).users
+  }
+
+  async createUser(input: UserManagementInput): Promise<UserAccount> {
+    const document = await this.load()
+    const account = input.account.trim().toLowerCase()
+    if (document.users.some((user) => user.account.toLowerCase() === account)) throw new Error('登录账号已存在')
+    const user: UserAccount = {
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      account,
+      displayName: input.displayName.trim(),
+      password: input.password?.trim() || '',
+      roles: [...new Set(input.roles)],
+      status: 'active',
+      createdAt: new Date().toISOString(),
+      lastLoginAt: null,
+    }
+    document.users.unshift(user)
+    await this.save(document)
+    return user
+  }
+
+  async updateUser(userId: string, input: UserManagementInput): Promise<UserAccount> {
+    const document = await this.load()
+    const user = document.users.find((item) => item.id === userId)
+    if (!user) throw new Error('账号不存在')
+    user.account = input.account.trim().toLowerCase()
+    user.displayName = input.displayName.trim()
+    user.roles = [...new Set(input.roles)]
+    user.status = input.status || 'active'
+    if (input.password?.trim()) user.password = input.password.trim()
+    await this.save(document)
+    return user
   }
 }

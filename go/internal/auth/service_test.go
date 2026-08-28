@@ -25,6 +25,13 @@ func (repository *memoryRepository) FindByAccount(_ context.Context, account str
 	return repository.user, nil
 }
 
+func (repository *memoryRepository) FindByID(_ context.Context, userID string) (User, error) {
+	if repository.user.ID != userID {
+		return User{}, ErrUserNotFound
+	}
+	return repository.user, nil
+}
+
 func (repository *memoryRepository) FindBySessionToken(_ context.Context, tokenHash string) (User, error) {
 	if !repository.created || repository.tokenHash != tokenHash || repository.revoked || time.Now().After(repository.expiresAt) {
 		return User{}, ErrUserNotFound
@@ -69,6 +76,22 @@ func (repository *memoryRepository) ListActiveUsersByRole(_ context.Context, rol
 }
 
 func (repository *memoryRepository) TouchSession(_ context.Context, _ string) error {
+	return nil
+}
+
+func (repository *memoryRepository) ListUsers(_ context.Context) ([]AuthUser, error) {
+	return []AuthUser{toAuthUser(repository.user)}, nil
+}
+
+func (repository *memoryRepository) CreateUser(_ context.Context, _ UserInput) (AuthUser, error) {
+	return AuthUser{}, nil
+}
+
+func (repository *memoryRepository) UpdateUser(_ context.Context, _ string, _ UserInput) (AuthUser, error) {
+	return AuthUser{}, nil
+}
+
+func (repository *memoryRepository) MigrateLegacyUsers(_ context.Context) error {
 	return nil
 }
 

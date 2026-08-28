@@ -1,7 +1,8 @@
 import { ApiDataProvider } from './api-data-provider'
 import { createEmptyDataDocument, normalizeDataDocument, type DataDocument } from './data.types'
 import type { DataProvider } from './data-provider'
-import type { AttachmentMetadata, AttachmentResult, DrawingFileIdentity, ReidentifyDrawingFileResult } from './data-provider'
+import type { AttachmentMetadata, AttachmentResult, DrawingFileIdentity, ReidentifyDrawingFileResult, UserManagementInput } from './data-provider'
+import type { UserAccount } from '@/types/domain.types'
 import { JsonDataProvider } from './json-data-provider'
 import { readDebugMode } from '@/services/runtime-config.service'
 
@@ -16,6 +17,9 @@ export interface DataManager {
   identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity>
   identifyDrawingMaterial(file: Blob, name: string): Promise<DrawingFileIdentity>
   reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
+  listUsers(): Promise<UserAccount[]>
+  createUser(input: UserManagementInput): Promise<UserAccount>
+  updateUser(userId: string, input: UserManagementInput): Promise<UserAccount>
   resetProvider(): void
 }
 
@@ -99,6 +103,24 @@ export class DefaultDataManager implements DataManager {
       throw new Error('当前存储模式不支持校正历史图纸图号')
     }
     return provider.reidentifyDrawingFile(storageKey, partNo)
+  }
+
+  async listUsers(): Promise<UserAccount[]> {
+    const provider = await this.getProvider()
+    if (!provider.listUsers) throw new Error('当前存储模式不支持账号管理')
+    return provider.listUsers()
+  }
+
+  async createUser(input: UserManagementInput): Promise<UserAccount> {
+    const provider = await this.getProvider()
+    if (!provider.createUser) throw new Error('当前存储模式不支持账号管理')
+    return provider.createUser(input)
+  }
+
+  async updateUser(userId: string, input: UserManagementInput): Promise<UserAccount> {
+    const provider = await this.getProvider()
+    if (!provider.updateUser) throw new Error('当前存储模式不支持账号管理')
+    return provider.updateUser(userId, input)
   }
 
   resetProvider(): void {

@@ -17,6 +17,9 @@ var (
 	ErrInvalidCredentials = errors.New("账号或密码错误")
 	ErrDisabledUser       = errors.New("账号已被禁用，请联系管理员")
 	ErrInvalidToken       = errors.New("登录会话无效或已过期")
+	ErrInvalidUserInput   = errors.New("账号信息不完整或角色无效")
+	ErrUserConflict       = errors.New("登录账号已存在")
+	ErrLastAdmin          = errors.New("不能禁用或移除最后一个管理员")
 )
 
 type Service struct {
@@ -107,6 +110,56 @@ func (service *Service) ListActiveUsersByRole(ctx context.Context, role string) 
 	return service.repository.ListActiveUsersByRole(ctx, role)
 }
 
+func (service *Service) ListUsers(ctx context.Context) ([]AuthUser, error) {
+	return service.repository.ListUsers(ctx)
+}
+
+func (service *Service) CreateUser(ctx context.Context, input UserInput) (AuthUser, error) {
+	input.Account = NormalizeAccount(input.Account)
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+	input.Password = strings.TrimSpace(input.Password)
+	input.Roles = normalizeRoles(input.Roles)
+	if input.Account == "" || input.DisplayName == "" || input.Password == "" || len(input.Roles) == 0 {
+		return AuthUser{}, ErrInvalidUserInput
+	}
+	input.Status = "active"
+	return service.repository.CreateUser(ctx, input)
+}
+
+func (service *Service) UpdateUser(ctx context.Context, userID string, input UserInput) (AuthUser, error) {
+	input.Account = NormalizeAccount(input.Account)
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+	input.Password = strings.TrimSpace(input.Password)
+	input.Roles = normalizeRoles(input.Roles)
+	if userID == "" || input.Account == "" || input.DisplayName == "" || len(input.Roles) == 0 {
+		return AuthUser{}, ErrInvalidUserInput
+	}
+	if input.Status != "disabled" {
+		input.Status = "active"
+	}
+	return service.repository.UpdateUser(ctx, userID, input)
+}
+
+func (service *Service) MigrateLegacyUsers(ctx context.Context) error {
+	return service.repository.MigrateLegacyUsers(ctx)
+}
+
+func normalizeRoles(roles []string) []string {
+	seen := make(map[string]struct{}, len(roles))
+	result := make([]string, 0, len(roles))
+	for _, role := range roles {
+		if role != "admin" && role != "designer" && role != "reviewer" {
+			continue
+		}
+		if _, ok := seen[role]; ok {
+			continue
+		}
+		seen[role] = struct{}{}
+		result = append(result, role)
+	}
+	return result
+}
+
 func toAuthUser(user User) AuthUser {
 	return AuthUser{
 		ID:          user.ID,
@@ -114,6 +167,8 @@ func toAuthUser(user User) AuthUser {
 		DisplayName: user.DisplayName,
 		Roles:       user.Roles,
 		Status:      user.Status,
+		CreatedAt:   user.CreatedAt,
+		LastLoginAt: user.LastLoginAt,
 	}
 }
 
