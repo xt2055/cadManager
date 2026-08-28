@@ -239,30 +239,36 @@ async function handleSubmit() {
     signers: signerMap,
   }
 
-  let identifiedPartFiles: Array<{ part: UploadedPart; parsed: ReturnType<typeof parseDrawingNumber> }>
+  let identifiedPartFiles: Array<{ part: UploadedPart; parsed: ReturnType<typeof parseDrawingNumber>; material: string }>
   try {
     identifiedPartFiles = await Promise.all(partFiles.value.map(async (part) => {
       if (!part.file) throw new Error(`零件文件「${part.name}」缺少文件内容`)
       const identity = await dataManager.identifyDrawingFile(part.file, part.name)
       const parsed = parseDrawingNumber(identity.partNo)
       if (!parsed.isStandard) throw new Error(`零件文件「${part.name}」返回的图号无效`)
-      return { part, parsed }
+      return {
+        part,
+        parsed,
+        material: identity.material || identity.titleBlock?.['材料名称'] || identity.titleBlock?.['材料'] || identity.titleBlock?.['材质'] || '—',
+      }
     }))
   } catch (error) {
     uiStore.toast(error instanceof Error ? error.message : '读取零件图号失败，请检查图纸标题栏', 'warn')
     return
   }
 
-  const parsedPartFiles = identifiedPartFiles.map(({ part, parsed }) => ({
+  const parsedPartFiles = identifiedPartFiles.map(({ part, parsed, material }) => ({
     part,
     parsed,
+    material,
     isBorrowed: parsed.rootNo !== generatedNo,
   }))
   const structuredPartFiles = parsedPartFiles.filter(({ parsed }) => parsed.isStandard && parsed.no !== generatedNo)
-  const validPartEntries = structuredPartFiles.map(({ part, parsed, isBorrowed }, index) => ({
+  const validPartEntries = structuredPartFiles.map(({ part, parsed, isBorrowed, material }, index) => ({
     part,
     parsed,
     isBorrowed,
+    material,
     file: {
       id: `${Date.now()}-part-${index}`,
       name: part.name,
@@ -295,7 +301,7 @@ async function handleSubmit() {
       name: firstEntry.parsed.name || cleanName,
       parentNo: firstEntry.isBorrowed ? generatedNo : firstEntry.parsed.parentNo ?? generatedNo,
       project: projectName,
-      material: 'HT200',
+      material: firstEntry.material || '—',
       spec: '',
       weight: 0,
       surfaceTreatment: '',

@@ -194,13 +194,16 @@ html[data-skin='starry'][data-theme='light'] .starry-galaxy {
 html[data-tauri='true'] body {
   padding: 0;
   background: transparent;
+  border-radius: 16px;
+  overflow: hidden;
 }
 
 html[data-tauri='true'] #app {
   height: 100vh;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
+  overflow: hidden;
 }
 
 html[data-tauri='true'] body:has(.auth-window-root),

@@ -82,12 +82,12 @@ function openReview(no: string) {
     </div>
 
     <div class="dash-grid">
-      <div class="card">
+       <div class="card recent-activity-card">
         <div class="card-title">
           <DemoIcon name="activity" :size="16" />最近动态
           <span class="hint">谁查看 · 谁修改 · 谁分叉 · 谁上传</span>
         </div>
-        <div class="feed">
+         <div class="feed recent-activity-feed">
           <div v-for="item in domainStore.logs" :key="`${item.user}-${item.time}-${item.txt}`" class="feed-item">
             <div class="feed-ic" :class="item.act"><DemoIcon :name="feedIcons[item.act] ?? 'activity'" :size="14" /></div>
             <div class="feed-txt"><b>{{ item.user }}</b> <span v-html="item.txt"></span></div>
@@ -258,6 +258,18 @@ html[data-skin='tech'] .val {
   flex-direction: column;
 }
 
+.recent-activity-card {
+  min-height: 0;
+}
+
+.recent-activity-feed {
+  min-height: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .feed-item {
   display: flex;
   align-items: flex-start;
@@ -409,6 +421,9 @@ html[data-skin='tech'] .val {
 }
 
 @media (max-width: 760px) {
+  .recent-activity-feed {
+    max-height: 320px;
+  }
   .dash-hero {
     align-items: flex-start;
     flex-direction: column;

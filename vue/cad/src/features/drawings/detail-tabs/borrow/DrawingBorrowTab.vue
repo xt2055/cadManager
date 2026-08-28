@@ -1,10 +1,134 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useRouter } from 'vue-router'
+
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useDomainStore } from '@/stores/domain.store'
+import type { BorrowRecord, StructurePart } from '@/types/domain.types'
+import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 
 defineOptions({ name: 'DrawingBorrowTab' })
 
+const router = useRouter()
 const domainStore = useDomainStore()
+const currentNo = computed(() => domainStore.currentDrawing?.no || '')
+
+interface BorrowRow {
+  partNo: string
+  partName: string
+  drawingNo: string
+  user: string
+  date: string
+  status: BorrowRecord['status']
+}
+
+function rootDrawingNo(no: string): string {
+  let current = no
+  const visited = new Set<string>()
+  while (current && !visited.has(current)) {
+    visited.add(current)
+    if (domainStore.drawings.some((drawing) => drawing.no === current)) return current
+    const parent = domainStore.structure.find((part) => part.no === current)
+    if (!parent) break
+    current = parent.parentNo
+  }
+  return parseDrawingNumber(no).rootNo || no
+}
+
+function recordMatchesPart(record: BorrowRecord, part: StructurePart): boolean {
+  return record.partNo === part.no || record.part.startsWith(`${part.no} `)
+}
+
+function belongsToCurrentProject(part: StructurePart, projectNo: string): boolean {
+  if (part.parentNo === projectNo || part.no.startsWith(`${projectNo}-`)) return true
+  if (part.files?.some((file) => file.drawingNo === projectNo) || part.otherFiles?.some((file) => file.drawingNo === projectNo)) return true
+
+  const visited = new Set<string>()
+  let parentNo = part.parentNo
+  while (parentNo && !visited.has(parentNo)) {
+    if (parentNo === projectNo) return true
+    visited.add(parentNo)
+    parentNo = domainStore.structure.find((candidate) => candidate.no === parentNo)?.parentNo || ''
+  }
+  return false
+}
+
+const borrowedRows = computed<BorrowRow[]>(() => {
+  const current = currentNo.value
+  if (!current) return []
+
+  const rows: BorrowRow[] = []
+  const borrowedParts = domainStore.structure.filter((part) => {
+    if (!belongsToCurrentProject(part, current)) return false
+    const sourceNo = rootDrawingNo(part.borrowFrom || part.no)
+    return Boolean(part.borrowFrom) || Boolean(sourceNo && sourceNo !== current)
+  })
+  for (const part of borrowedParts) {
+    const sourceNo = rootDrawingNo(part.borrowFrom || '')
+    const record = domainStore.borrows.find((item) => item.dir === 'in' && recordMatchesPart(item, part) && (!item.targetDrawingNo || item.targetDrawingNo === current))
+    rows.push({
+      partNo: part.no,
+      partName: part.name,
+      drawingNo: record?.sourceDrawingNo || sourceNo,
+      user: record?.user || '历史记录',
+      date: record?.date || '历史记录',
+      status: record?.status || '使用中',
+    })
+  }
+
+  const knownPartNos = new Set(rows.map((row) => row.partNo))
+
+  // 兼容旧数据：部分跨项目零件只有 CAD 文件，没有生成借用流水记录。
+  const currentProjectFiles = [
+    ...(domainStore.currentDrawing?.files ?? []),
+    ...(domainStore.currentDrawing?.otherFiles ?? []),
+    ...domainStore.structure
+      .filter((part) => belongsToCurrentProject(part, current))
+      .flatMap((part) => [...(part.files ?? []), ...(part.otherFiles ?? [])]),
+  ]
+  for (const file of currentProjectFiles) {
+    if (file.role !== 'part' || !file.partNo || knownPartNos.has(file.partNo)) continue
+    const sourceNo = rootDrawingNo(file.partNo)
+    if (!sourceNo || sourceNo === current) continue
+    const part = domainStore.structure.find((candidate) => candidate.no === file.partNo)
+    const record = domainStore.borrows.find((item) => item.dir === 'in' && item.partNo === file.partNo && (!item.targetDrawingNo || item.targetDrawingNo === current))
+    rows.push({
+      partNo: file.partNo,
+      partName: part?.name || file.name.replace(/\.[^/.]+$/, ''),
+      drawingNo: record?.sourceDrawingNo || sourceNo,
+      user: record?.user || file.uploadedBy || '历史记录',
+      date: record?.date || file.uploadedAt || '历史记录',
+      status: record?.status || '使用中',
+    })
+    knownPartNos.add(file.partNo)
+  }
+
+  for (const record of domainStore.borrows) {
+    if (record.dir !== 'in' || (record.targetDrawingNo && record.targetDrawingNo !== current)) continue
+    const partNo = record.partNo || record.part.split(/\s+/, 1)[0] || ''
+    if (!partNo || knownPartNos.has(partNo)) continue
+    rows.push({
+      partNo,
+      partName: record.partName || record.part.replace(partNo, '').trim() || '未命名零件',
+      drawingNo: record.sourceDrawingNo || rootDrawingNo(record.project.match(/\(([^)]+)\)$/)?.[1] || ''),
+      user: record.user,
+      date: record.date,
+      status: record.status,
+    })
+  }
+
+  return rows.sort((left, right) => left.partNo.localeCompare(right.partNo, undefined, { numeric: true }))
+})
+
+function hasDrawing(no: string): boolean {
+  return Boolean(no && domainStore.drawings.some((drawing) => drawing.no === no))
+}
+
+function openDrawing(no: string) {
+  if (!hasDrawing(no)) return
+  domainStore.openDrawing(no)
+  void router.push({ name: 'drawing-preview', params: { drawingId: no } })
+}
 </script>
 
 <template>
@@ -12,41 +136,41 @@ const domainStore = useDomainStore()
     <div class="card borrow-card">
       <div class="card-title">
         <DemoIcon name="share-2" :size="16" />
-        借用记录清单
-        <span class="hint">借出 / 借入项目 · 零件版本 · 借用人追溯</span>
+        借用零件清单
+        <span class="hint">当前项目实际挂载的借用零件 · 来源图纸追溯</span>
       </div>
       <div class="table-pad">
         <table class="tbl">
           <thead>
             <tr>
-              <th>方向</th>
-              <th>关联项目</th>
-              <th>零件图号 / 版本</th>
+              <th>零件图号</th>
+              <th>借用零件</th>
+              <th>借用图纸号</th>
               <th>借用人</th>
               <th>记录日期</th>
               <th>当前状态</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="record in domainStore.borrows" :key="`${record.project}-${record.part}`">
+            <tr v-for="row in borrowedRows" :key="`${row.partNo}-${row.drawingNo}`">
+              <td class="num mono">{{ row.partNo }}</td>
+              <td>{{ row.partName }}</td>
               <td>
-                <span class="tag" :class="record.dir === 'out' ? 'info' : 'plain'">
-                  {{ record.dir === 'out' ? '借出' : '借入' }}
-                </span>
+                <button v-if="hasDrawing(row.drawingNo)" class="drawing-link mono" type="button" @click="openDrawing(row.drawingNo)">
+                  {{ row.drawingNo }}<DemoIcon name="arrow-up-right" :size="12" />
+                </button>
+                <span v-else class="missing-project">没有上传该项目</span>
               </td>
-              <td>{{ record.project }}</td>
-              <td class="num">{{ record.part }}</td>
-              <td>{{ record.user }}</td>
-              <td class="num">{{ record.date }}</td>
-              <td>
-                <span class="tag" :class="record.status === '使用中' ? 'ok' : 'mute'">{{ record.status }}</span>
-              </td>
+              <td>{{ row.user }}</td>
+              <td class="num">{{ row.date }}</td>
+              <td><span class="tag" :class="row.status === '使用中' ? 'ok' : 'mute'">{{ row.status }}</span></td>
             </tr>
-            <tr v-if="!domainStore.borrows.length">
+            <tr v-if="!borrowedRows.length">
               <td colspan="6">
                 <div class="empty">
                   <DemoIcon name="share-2" :size="34" />
-                  <div class="t">暂无图纸借用记录</div>
+                  <div class="t">暂无借用零件</div>
+                  <p>当前项目还没有挂载其他项目的零件图</p>
                 </div>
               </td>
             </tr>
@@ -71,6 +195,19 @@ const domainStore = useDomainStore()
   overflow-x: auto;
 }
 .tbl {
-  min-width: 700px;
+  min-width: 760px;
+}
+.drawing-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+}
+.drawing-link:hover {
+  text-decoration: underline;
+}
+.missing-project {
+  color: var(--text-3);
+  font-size: 12px;
 }
 </style>

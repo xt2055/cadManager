@@ -14,6 +14,7 @@ export interface DataManager {
   exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
   scanDrawingDesigner(drawingNo: string): Promise<string>
   identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity>
+  identifyDrawingMaterial(file: Blob, name: string): Promise<DrawingFileIdentity>
   reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
   resetProvider(): void
 }
@@ -82,6 +83,14 @@ export class DefaultDataManager implements DataManager {
       throw new Error('当前存储模式不支持从图纸内容读取图号')
     }
     return provider.identifyDrawingFile(file, name)
+  }
+
+  async identifyDrawingMaterial(file: Blob, name: string): Promise<DrawingFileIdentity> {
+    const provider = await this.getProvider()
+    if (!provider.identifyDrawingMaterial) {
+      throw new Error('当前存储模式不支持从图纸内容读取材料')
+    }
+    return provider.identifyDrawingMaterial(file, name)
   }
 
   async reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult> {

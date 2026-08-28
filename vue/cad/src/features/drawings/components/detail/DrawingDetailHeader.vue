@@ -1,19 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
-import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({
   name: 'DrawingDetailHeader',
 })
 
-const route = useRoute()
 const router = useRouter()
 const domainStore = useDomainStore()
-const uiStore = useUiStore()
 
 const drawing = computed(() => domainStore.currentDrawing)
 const isPart = computed(() => Boolean(drawing.value && 'parentNo' in drawing.value))
@@ -38,10 +35,6 @@ const designerName = computed(() => {
   }
   return 'designer' in drawing.value ? drawing.value.designer || '' : ''
 })
-
-function openModal(type: 'revert' | 'borrow-drawing', title: string) {
-  uiStore.openModal(type, title)
-}
 
 function openProperties() {
   if (!drawing.value) return
@@ -74,13 +67,10 @@ function openParentDrawing() {
             设计：<b>{{ designerName }}</b>
           </span>
           <span class="dh-no">{{ drawing?.no }}</span>
-          <span class="tag plain tag-no-dot">{{ 'parentNo' in (drawing || {}) ? '零件图' : '总图' }}</span>
-          <span v-if="drawing" class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span>
-          <span class="tag mute tag-no-dot">{{ drawing?.ver }}</span>
-        </div>
-        <div class="dh-meta">
-          <span>材料 <b>{{ drawing?.material }}</b></span>
-          <span>厂商 <b>{{ ('vendor' in (drawing || {})) ? (drawing as any).vendor : '内部加工' }}</b></span>
+           <span class="tag mute tag-no-dot">{{ drawing?.ver }}</span>
+         </div>
+         <div class="dh-meta">
+           <span>厂商 <b>{{ ('vendor' in (drawing || {})) ? (drawing as any).vendor : '内部加工' }}</b></span>
           <span>项目 <b>{{ ('project' in (drawing || {})) ? (drawing as any).project : '—' }}</b></span>
           <span>创建人 <b>{{ ('createdBy' in (drawing || {}) && (drawing as any).createdBy) ? (drawing as any).createdBy : ('by' in (drawing || {})) ? (drawing as any).by : '待定' }}</b></span>
           <span>更新时间 <b>{{ ('updated' in (drawing || {})) ? (drawing as any).updated : '刚刚' }}</b></span>
@@ -91,11 +81,9 @@ function openParentDrawing() {
         </div>
        </div>
 
-       <div class="dh-acts">
-         <button class="btn" type="button" @click="openProperties"><DemoIcon name="info" :size="14" />属性详情</button>
-         <button class="btn" type="button" @click="openModal('revert', '版本回退')"><DemoIcon name="undo-2" :size="14" />版本回退</button>
-        <button class="btn" type="button" @click="openModal('borrow-drawing', '借用图纸')"><DemoIcon name="share-2" :size="14" />借用此图</button>
-      </div>
+        <div class="dh-acts">
+          <button class="btn" type="button" @click="openProperties"><DemoIcon name="info" :size="14" />属性详情</button>
+       </div>
     </div>
   </div>
 </template>

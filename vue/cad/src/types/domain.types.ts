@@ -192,6 +192,10 @@ export interface BorrowRecord {
   dir: 'in' | 'out'
   project: string
   part: string
+  partNo?: string
+  partName?: string
+  sourceDrawingNo?: string
+  targetDrawingNo?: string
   user: string
   date: string
   sync?: string

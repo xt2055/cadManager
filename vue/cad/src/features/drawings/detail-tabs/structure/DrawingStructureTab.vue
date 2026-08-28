@@ -17,10 +17,32 @@ const allParts = computed(() => domainStore.structure)
 const treeNodes = computed<StructureTreeNode[]>(() => {
   if (!drawing.value) return []
   const childrenByParent = new Map<string, StructurePart[]>()
-  for (const part of allParts.value) {
-    const children = childrenByParent.get(part.parentNo) ?? []
+  const partByNo = new Map(allParts.value.map((part) => [part.no, part]))
+  const isUnderCurrentDrawing = (part: StructurePart): boolean => {
+    if (!drawing.value) return false
+    if (part.parentNo === drawing.value.no || part.no.startsWith(`${drawing.value.no}-`)) return true
+    const visited = new Set<string>()
+    let parentNo = part.parentNo
+    while (parentNo && !visited.has(parentNo)) {
+      if (parentNo === drawing.value.no) return true
+      visited.add(parentNo)
+      parentNo = partByNo.get(parentNo)?.parentNo || ''
+    }
+    // 只有存在明确的当前项目编号时才使用项目字段兜底，避免把其他项目同名零件混入树。
+    const currentProject = 'project' in drawing.value ? drawing.value.project : ''
+    return Boolean(currentProject && part.project === currentProject && part.parentNo !== drawing.value.no)
+  }
+
+  const relevantParts = allParts.value.filter(isUnderCurrentDrawing)
+  const relevantPartNos = new Set(relevantParts.map((part) => part.no))
+  for (const part of relevantParts) {
+    // 父级记录缺失或不在当前相关集合中时挂回当前总图，保证历史数据与借用件始终在树中可见。
+    const parentNo = part.parentNo && (part.parentNo === drawing.value.no || relevantPartNos.has(part.parentNo))
+      ? part.parentNo
+      : drawing.value.no
+    const children = childrenByParent.get(parentNo) ?? []
     children.push(part)
-    childrenByParent.set(part.parentNo, children)
+    childrenByParent.set(parentNo, children)
   }
 
   const build = (parentNo: string, visited: Set<string>): StructureTreeNode[] => {
@@ -48,11 +70,6 @@ const otherFiles = computed(() => {
 
 function openPartDetail(partNo: string) {
   domainStore.openDrawing(partNo)
-  router.push({ name: 'drawing-preview', params: { drawingId: partNo } })
-}
-
-function openPartProperties(partNo: string) {
-  domainStore.openDrawing(partNo)
   router.push({ name: 'drawing-properties', params: { drawingId: partNo } })
 }
 
@@ -60,6 +77,7 @@ function selectPart(partNo: string) {
   const index = parts.value.findIndex((part) => part.no === partNo)
   if (index >= 0) domainStore.selectedStructureIndex = index
 }
+
 </script>
 
 <template>
@@ -108,27 +126,33 @@ function selectPart(partNo: string) {
             <span class="tno mono">{{ selected.no }}</span>
           </div>
 
-          <div class="kv-grid">
-            <div class="kv"><div class="k">零件图号</div><div class="v mono">{{ selected.no }}</div></div>
-            <div class="kv"><div class="k">零件材料</div><div class="v">{{ selected.material }}</div></div>
-             <div class="kv"><div class="k">规格 / 尺寸</div><div class="v">{{ selected.spec || '—' }}</div></div>
-             <div class="kv"><div class="k">理论重量</div><div class="v mono">{{ selected.weight.toFixed(2) }} kg</div></div>
-             <div class="kv"><div class="k">表面 / 热处理</div><div class="v">{{ selected.surfaceTreatment || '—' }}</div></div>
-             <div class="kv"><div class="k">制造类别</div><div class="v"><span class="tag info">{{ selected.partType }}</span></div></div>
+             <div class="kv-grid">
+               <div class="kv"><div class="k">零件图号</div><div class="v mono">{{ selected.no }}</div></div>
+             <div class="kv"><div class="k">零件材料</div><div class="v">{{ selected.material || '—' }}</div></div>
+              <div class="kv"><div class="k">制造类别</div><div class="v"><span class="tag info">{{ selected.partType }}</span></div></div>
              <div class="kv"><div class="k">单机装配数量</div><div class="v mono">× {{ selected.qty }}</div></div>
             <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ selected.ver }}</div></div>
             <div class="kv"><div class="k">生命周期状态</div><div class="v"><span class="tag" :class="STATUS[selected.status].c">{{ STATUS[selected.status].t }}</span></div></div>
-            <div class="kv"><div class="k">借用来源</div><div class="v">{{ selected.borrowFrom ? selected.borrowFrom : '— 本项目原创' }}</div></div>
-          </div>
+             <div class="kv"><div class="k">借用来源</div><div class="v">{{ selected.borrowFrom ? selected.borrowFrom : '— 本项目原创' }}</div></div>
+           </div>
 
-          <div class="selection-actions">
-            <button class="btn primary sm" type="button" @click="openPartDetail(selected.no)">
-               <DemoIcon name="eye" :size="14" />进入零件图详情
-             </button>
-             <button class="btn sm" type="button" @click="openPartProperties(selected.no)">
+           <div class="detail-files-section">
+             <div class="detail-files-title"><DemoIcon name="file-text" :size="15" />关联文件</div>
+             <div v-if="selected.files?.length || selected.otherFiles?.length" class="detail-files-list">
+               <div v-for="file in [...(selected.files ?? []), ...(selected.otherFiles ?? [])]" :key="file.id" class="detail-file-row">
+                 <div class="detail-file-name"><DemoIcon name="file" :size="14" /><span :title="file.name">{{ file.name }}</span></div>
+                 <span class="detail-file-meta">大小 {{ file.size }}</span>
+                 <span class="detail-file-meta">上传 {{ file.uploadedAt }}</span>
+               </div>
+             </div>
+             <div v-else class="detail-file-empty">暂无关联图纸文件</div>
+           </div>
+
+           <div class="selection-actions">
+             <button class="btn sm" type="button" @click="openPartDetail(selected.no)">
                <DemoIcon name="pencil" :size="14" />编辑零件属性
              </button>
-          </div>
+           </div>
 
               <div class="struct-map">
                 结构关系提示：<b>{{ drawing?.name }}</b>（总图装配）→ 共关联 {{ parts.length }} 个零件图；系统按照“去掉最后一级图号后缀”的规则生成多级父子关系，不符合命名规则的文件归入“其他文件”。
@@ -291,6 +315,54 @@ function selectPart(partNo: string) {
   gap: 9px;
   margin-top: 18px;
 }
+.detail-files-section {
+  margin-top: 18px;
+  padding-top: 15px;
+  border-top: 1px solid var(--line);
+}
+.detail-files-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+.detail-files-title svg { color: var(--accent); }
+.detail-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.detail-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.detail-file-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  font-size: 12px;
+}
+.detail-file-name svg { flex: none; color: var(--accent); }
+.detail-file-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-file-meta {
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.detail-file-empty {
+  color: var(--text-3);
+  font-size: 11px;
+}
 .struct-map {
   margin-top: 18px;
   padding: 14px 16px;
@@ -307,5 +379,8 @@ function selectPart(partNo: string) {
   .struct-grid {
     grid-template-columns: 1fr;
   }
+}
+@media (max-width: 760px) {
+  .detail-file-row { grid-template-columns: 1fr; gap: 3px; }
 }
 </style>

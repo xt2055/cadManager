@@ -285,7 +285,7 @@ watch([drawingId, fileId], () => {
                 :title="selectedNode.previewable ? '进入完整版 CAD 在线编辑器' : '该格式暂不支持在线编辑'"
                 @click="openEditor(selectedNode)"
               >
-                <DemoIcon name="edit" :size="15" />在线编辑
+                <img class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />在线编辑
               </button>
               <button class="btn" type="button" title="下载此历史阶段的原始图纸文件" @click="downloadFile(selectedNode)">
                 <DemoIcon name="download" :size="15" />下载本版本
@@ -378,6 +378,12 @@ watch([drawingId, fileId], () => {
   background: var(--bg);
   color: var(--text-1);
   overflow: hidden;
+}
+
+.editor-icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
 }
 
 /* 顶部导航 */

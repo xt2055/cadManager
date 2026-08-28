@@ -347,7 +347,8 @@ function normalizeStructure(value: unknown, drawings: Drawing[]): StructurePart[
     const validFile = parsedFiles.find(({ parsed }) => parsed.isStandard && (parsed.level > 0 || Boolean(sourceBorrowFrom)))
     const parsedAgainstRoots = parseAgainstRoots(sourceNo, rootNos)
     const parsedSourceNo = parsedAgainstRoots.isStandard ? parsedAgainstRoots : parseStandaloneDrawingFileName(sourceNo)
-    const no = validFile?.parsed.no || (parsedSourceNo.isStandard ? parsedSourceNo.no : sourceNo)
+    // 已保存的结构编号和父级关系优先于文件名推导，避免重新加载时把用户数据改挂到别的节点。
+    const no = sourceNo || validFile?.parsed.no || (parsedSourceNo.isStandard ? parsedSourceNo.no : sourceNo)
     const parentRootNo = [...rootNos]
       .sort((left, right) => right.length - left.length)
       .find((rootNo) => sourceParentNo === rootNo || sourceParentNo.startsWith(`${rootNo}-`))
@@ -355,9 +356,9 @@ function normalizeStructure(value: unknown, drawings: Drawing[]): StructurePart[
       ? validFile.parsed.rootNo
       : ''
     const borrowFrom = sourceBorrowFrom || inferredBorrowFrom
-    const parentNo = borrowFrom
-      ? sourceParentNo || validFile?.parsed.parentNo || (parsedSourceNo.isStandard ? parsedSourceNo.parentNo : '') || ''
-      : validFile?.parsed.parentNo || (parsedSourceNo.isStandard ? parsedSourceNo.parentNo : '') || sourceParentNo
+    const parentNo = sourceParentNo || (borrowFrom
+      ? validFile?.parsed.parentNo || (parsedSourceNo.isStandard ? parsedSourceNo.parentNo : '') || ''
+      : validFile?.parsed.parentNo || (parsedSourceNo.isStandard ? parsedSourceNo.parentNo : '') || '')
     const files = parsedFiles
       .filter(({ parsed }) => parsed.isStandard && (parsed.level > 0 || Boolean(borrowFrom)))
       .map(({ file, parsed }) => ({
@@ -369,10 +370,10 @@ function normalizeStructure(value: unknown, drawings: Drawing[]): StructurePart[
     const otherFiles = parsedFiles
       .filter(({ parsed }) => !parsed.isStandard || (parsed.level <= 0 && !borrowFrom))
       .map(({ file }) => ({ ...file, role: 'other' as const, drawingNo: parentNo || file.drawingNo, partNo: undefined }))
-    const sourceName = asString(source.name, no)
-    const name = validFile?.parsed.name && validFile.parsed.name !== validFile.parsed.no
+    const sourceName = asString(source.name)
+    const name = sourceName || (validFile?.parsed.name && validFile.parsed.name !== validFile.parsed.no
       ? validFile.parsed.name
-      : sourceName
+      : no)
     return {
       no,
       name,
@@ -591,7 +592,22 @@ export function normalizeDataDocument(value: unknown): DataDocument {
     structure: recoveredStructure,
     versions: readArray<DrawingVersion>(source.versions),
     branches: readArray<Branch>(source.branches),
-    borrows: readArray<BorrowRecord>(source.borrows),
+    borrows: readArray<unknown>(source.borrows).map((item) => {
+      const record = isRecord(item) ? item : {}
+      return {
+        dir: record.dir === 'out' ? 'out' as const : 'in' as const,
+        project: asString(record.project),
+        part: asString(record.part),
+        ...(asString(record.partNo) ? { partNo: asString(record.partNo) } : {}),
+        ...(asString(record.partName) ? { partName: asString(record.partName) } : {}),
+        ...(asString(record.sourceDrawingNo) ? { sourceDrawingNo: asString(record.sourceDrawingNo) } : {}),
+        ...(asString(record.targetDrawingNo) ? { targetDrawingNo: asString(record.targetDrawingNo) } : {}),
+        user: asString(record.user, '未知用户'),
+        date: asString(record.date, '历史记录'),
+        ...(asString(record.sync) ? { sync: asString(record.sync) } : {}),
+        status: record.status === '已归档' ? '已归档' as const : '使用中' as const,
+      }
+    }),
     bom: normalizeBom(source.bom, fallbackDrawingNo),
     crafts: craftFiles,
     logs: normalizeActivityLogs(source.logs),

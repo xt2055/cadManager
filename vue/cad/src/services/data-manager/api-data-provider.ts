@@ -129,12 +129,20 @@ export class ApiDataProvider implements DataProvider {
   }
 
   async identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity> {
+    return this.identifyDrawingFields('/exb/identify', file, name, true)
+  }
+
+  async identifyDrawingMaterial(file: Blob, name: string): Promise<DrawingFileIdentity> {
+    return this.identifyDrawingFields('/exb/material', file, name, false)
+  }
+
+  private async identifyDrawingFields(path: string, file: Blob, name: string, requirePartNo: boolean): Promise<DrawingFileIdentity> {
     const formData = new FormData()
     formData.append('file', file, name)
     const headers: Record<string, string> = { Accept: 'application/json' }
     const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
     if (token) headers.Authorization = `Bearer ${token}`
-    const response = await fetch(`${this.baseUrl}/exb/identify`, {
+    const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers,
       body: formData,
@@ -146,11 +154,12 @@ export class ApiDataProvider implements DataProvider {
       throw new Error(message)
     }
     const payload = isRecord(body) && 'data' in body ? body.data : body
-    if (!isRecord(payload) || typeof payload.partNo !== 'string' || !payload.partNo.trim()) {
+    if (!isRecord(payload) || (requirePartNo && (typeof payload.partNo !== 'string' || !payload.partNo.trim()))) {
       throw new Error('图纸接口未返回有效内部图号')
     }
     return {
-      partNo: payload.partNo.trim(),
+      partNo: typeof payload.partNo === 'string' ? payload.partNo.trim() : '',
+      material: typeof payload.material === 'string' ? payload.material.trim() : undefined,
       titleBlock: isRecord(payload.titleBlock) ? Object.fromEntries(
         Object.entries(payload.titleBlock).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
       ) : undefined,

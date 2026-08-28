@@ -774,6 +774,19 @@ export const useDomainStore = defineStore('domain', () => {
     let storageKey: string | undefined
     try {
       storageKey = await saveAttachmentContent(file, content)
+      // 只有新上传 CAD 时读取一次标题栏材料，并随业务文档持久化。
+      if ('parentNo' in target && content) {
+        try {
+          const identity = await dataManager.identifyDrawingMaterial(content, file.name)
+          const material = identity.material
+            || identity.titleBlock?.['材料名称']
+            || identity.titleBlock?.['材料']
+            || identity.titleBlock?.['材质']
+          if (material) target.material = material
+        } catch (scanError) {
+          console.warn(`上传图纸后读取零件材料失败：${target.no}`, scanError)
+        }
+      }
       if ('parentNo' in target && !file.partNo) file.partNo = target.no
       files.push(file)
       target.hasFile = true
@@ -880,6 +893,19 @@ export const useDomainStore = defineStore('domain', () => {
 
     const operatorName = authStore.currentUser?.displayName || '当前用户'
     const today = new Date().toISOString().slice(0, 10)
+    const findSourceDrawingNo = (partNo: string): string => {
+      let currentNo = partNo
+      const visited = new Set<string>()
+      while (currentNo && !visited.has(currentNo)) {
+        visited.add(currentNo)
+        if (drawings.value.some((drawing) => drawing.no === currentNo)) return currentNo
+        const parent = structure.value.find((part) => part.no === currentNo)
+        if (!parent) break
+        currentNo = parent.parentNo
+      }
+      return sourcePart.parentNo || ''
+    }
+    const sourceDrawingNo = findSourceDrawingNo(sourcePart.no)
 
     // 克隆源零件数据到目标项目
     const clonedFiles = (sourcePart.files ?? []).map((f) => ({
@@ -914,6 +940,10 @@ export const useDomainStore = defineStore('domain', () => {
       dir: 'in',
       project: `${sourceProjectName} (${sourcePart.parentNo})`,
       part: `${sourcePart.no} ${sourcePart.name}`,
+      partNo: sourcePart.no,
+      partName: sourcePart.name,
+      sourceDrawingNo,
+      targetDrawingNo: targetProjectNo,
       user: operatorName,
       date: today,
       status: '使用中',
@@ -923,6 +953,10 @@ export const useDomainStore = defineStore('domain', () => {
       dir: 'out',
       project: `${targetProjectName} (${targetProjectNo})`,
       part: `${sourcePart.no} ${sourcePart.name}`,
+      partNo: sourcePart.no,
+      partName: sourcePart.name,
+      sourceDrawingNo,
+      targetDrawingNo: targetProjectNo,
       user: operatorName,
       date: today,
       status: '使用中',
@@ -1029,6 +1063,20 @@ export const useDomainStore = defineStore('domain', () => {
     let storageKey: string | undefined
     try {
       storageKey = await saveAttachmentContent(updatedFile, content)
+
+      // 只有替换产生新版本时重新读取标题栏材料，避免点击详情时重复请求。
+      if ('parentNo' in target && content) {
+        try {
+          const identity = await dataManager.identifyDrawingMaterial(content, updatedFile.name)
+          const material = identity.material
+            || identity.titleBlock?.['材料名称']
+            || identity.titleBlock?.['材料']
+            || identity.titleBlock?.['材质']
+          if (material) target.material = material
+        } catch (scanError) {
+          console.warn(`替换版本后读取零件材料失败：${target.no}`, scanError)
+        }
+      }
 
       // 更新在目标数组中的对象引用
       const idx = fileList.findIndex((f) => f.id === fileId)

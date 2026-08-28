@@ -30,6 +30,7 @@ TITLE_BLOCK_KEYS = (
     "图纸名称",
     "材料名称",
     "图纸编号",
+    "材质",
     "图纸比例",
     "设计",
     "校对",
@@ -189,7 +190,7 @@ def build_summary(texts: list[dict[str, Any]]) -> dict[str, Any]:
     joined = "\n".join(values)
 
     labels = {
-        "material_label": [value for value in values if value in ("材料", "材料名称")],
+        "material_label": [value for value in values if value in ("材料", "材料名称", "材质")],
         "signer_labels": [
             value
             for value in values
@@ -297,7 +298,7 @@ def is_title_block_value(value: str, key: str) -> bool:
         return bool(SCALE_PATTERN.fullmatch(value))
     if key == "图纸编号":
         return bool(DRAWING_NO_PATTERN.fullmatch(value))
-    if key in {"图纸名称", "材料名称", "单位名称"}:
+    if key in {"图纸名称", "材料名称", "材质", "单位名称"}:
         return any(char.isalnum() or "\u4e00" <= char <= "\u9fff" for char in value)
     return any("\u4e00" <= char <= "\u9fff" or char.isalpha() for char in value)
 

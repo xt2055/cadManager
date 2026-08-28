@@ -257,18 +257,6 @@ const signerData = computed(() => {
             <div class="readonly-value">{{ currentPart.project || parentDrawing?.project || '—' }}</div>
           </div>
           <div class="form-field">
-            <label for="part-spec">规格 / 尺寸</label>
-            <input id="part-spec" v-model="editForm.spec" class="inp" type="text" placeholder="如 Φ60×120、δ=12mm" />
-          </div>
-          <div class="form-field">
-            <label for="part-weight">理论重量（kg）</label>
-            <input id="part-weight" v-model.number="editForm.weight" class="inp" type="number" min="0" step="0.01" />
-          </div>
-          <div class="form-field">
-            <label for="part-treatment">表面 / 热处理</label>
-            <input id="part-treatment" v-model="editForm.surfaceTreatment" class="inp" type="text" placeholder="如 调质 HB220-250、发黑" />
-          </div>
-          <div class="form-field">
             <label for="part-type">制造类别</label>
             <select id="part-type" v-model="editForm.partType" class="inp">
               <option value="自制件">自制件</option>
@@ -295,13 +283,10 @@ const signerData = computed(() => {
           <div class="kv"><div class="k">零件图号</div><div class="v mono">{{ currentPart.no }}</div></div>
           <div class="kv"><div class="k">零件名称</div><div class="v">{{ currentPart.name }}</div></div>
           <div class="kv"><div class="k">对象分类</div><div class="v"><span class="tag plain">零件图</span></div></div>
-          <div class="kv"><div class="k">材料牌号</div><div class="v">{{ currentPart.material || '—' }}</div></div>
+           <div class="kv"><div class="k">材料牌号</div><div class="v">{{ currentPart.material || '—' }}</div></div>
           <div class="kv"><div class="k">所属总图</div><div class="v"><button class="related-drawing-link" type="button" @click="openParentDrawing">{{ parentDrawing?.name || currentPart.parentNo }}<DemoIcon name="arrow-up-right" :size="13" /></button></div></div>
           <div class="kv"><div class="k">所属项目</div><div class="v">{{ currentPart.project || parentDrawing?.project || '—' }}</div></div>
-          <div class="kv"><div class="k">规格 / 尺寸</div><div class="v">{{ currentPart.spec || '—' }}</div></div>
-          <div class="kv"><div class="k">理论重量</div><div class="v mono">{{ currentPart.weight.toFixed(2) }} kg</div></div>
-          <div class="kv"><div class="k">表面 / 热处理</div><div class="v">{{ currentPart.surfaceTreatment || '—' }}</div></div>
-          <div class="kv"><div class="k">制造类别</div><div class="v"><span class="tag info">{{ currentPart.partType }}</span></div></div>
+           <div class="kv"><div class="k">制造类别</div><div class="v"><span class="tag info">{{ currentPart.partType }}</span></div></div>
           <div class="kv"><div class="k">单台装配数量</div><div class="v mono">× {{ currentPart.qty }}</div></div>
           <div class="kv"><div class="k">承制厂商 / 外协单位</div><div class="v">{{ currentPart.vendor || '—' }}</div></div>
           <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ currentPart.ver }}</div></div>
@@ -314,7 +299,7 @@ const signerData = computed(() => {
         <div class="kv"><div class="k">图号</div><div class="v mono">{{ currentItem?.no }}</div></div>
         <div class="kv"><div class="k">图纸名称</div><div class="v">{{ currentItem?.name }}</div></div>
         <div class="kv"><div class="k">对象分类</div><div class="v"><span class="tag plain">项目总图</span></div></div>
-        <div class="kv"><div class="k">材料牌号</div><div class="v">{{ currentItem?.material || '—' }}</div></div>
+         <div class="kv"><div class="k">材料牌号</div><div class="v">总图</div></div>
         <div class="kv"><div class="k">承制厂商 / 责任单位</div><div class="v">{{ (currentItem as Drawing)?.vendor || '内部项目部' }}</div></div>
         <div class="kv"><div class="k">所属项目</div><div class="v">{{ (currentItem as Drawing)?.project || '—' }}</div></div>
         <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ currentItem?.ver || 'v1.0' }}</div></div>

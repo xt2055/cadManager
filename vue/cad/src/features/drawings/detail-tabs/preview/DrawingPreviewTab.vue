@@ -93,6 +93,7 @@ const selectedReplaceBlob = ref<File | null>(null)
 // 借用零件弹窗与多维度智能选型系统
 const isBorrowing = ref(false)
 const isReidentifyingAll = ref(false)
+const HISTORY_READ_STORAGE_KEY = 'cad:read-file-history:v1'
 const borrowSearchMode = ref<'by-project' | 'global-part'>('by-project')
 const projectSearchQuery = ref('')
 const partSearchQuery = ref('')
@@ -246,11 +247,32 @@ function openEditor(file: DrawingFile) {
 
 function openHistory(file: DrawingFile) {
   if (!currentItem.value) return
+  markHistoryAsRead(file.id)
   router.push({
     name: 'drawing-file-history',
     params: { drawingId: currentItem.value.no },
     query: { fileId: file.id },
   })
+}
+
+function readHistoryIds(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(HISTORY_READ_STORAGE_KEY)
+    const ids = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function markHistoryAsRead(fileId: string) {
+  const ids = readHistoryIds()
+  ids.add(fileId)
+  window.localStorage.setItem(HISTORY_READ_STORAGE_KEY, JSON.stringify([...ids]))
+}
+
+function isHistoryUnread(file: DrawingFile): boolean {
+  return Boolean(file.history?.length) && !readHistoryIds().has(file.id)
 }
 
 function triggerReplace(file: DrawingFile) {
@@ -394,6 +416,7 @@ async function onPartFilesChange(event: Event) {
 
       const identity = await dataManager.identifyDrawingFile(file, file.name)
       const parsed = parseDrawingNumber(identity.partNo)
+      const material = identity.material || identity.titleBlock?.['材料名称'] || identity.titleBlock?.['材料'] || identity.titleBlock?.['材质'] || '—'
       const isBorrowed = parsed.rootNo !== rootNo
       const isStructuredPart = parsed.no !== rootNo
       const parentNo = isBorrowed ? rootNo : parsed.parentNo ?? rootNo
@@ -424,6 +447,7 @@ async function onPartFilesChange(event: Event) {
         await domainStore.uploadOtherFile(rootNo, newFile, file)
         otherCount += 1
       } else if (existingPart) {
+        if (material !== '—') existingPart.material = material
         await domainStore.uploadDrawingFile(partNo, newFile, file)
         createdCount += 1
       } else {
@@ -432,7 +456,7 @@ async function onPartFilesChange(event: Event) {
           name: cleanName,
           parentNo,
           project: '',
-          material: 'HT200',
+           material,
           spec: '',
           weight: 0,
           surfaceTreatment: '',
@@ -639,11 +663,9 @@ function closeReidentifyModal() {
               <th>文件类型</th>
               <th>文件名</th>
               <th>关联图号</th>
-              <th>文件大小</th>
-              <th>版本</th>
-              <th>上传人</th>
-              <th>上传时间</th>
-              <th style="width: 250px; text-align: right">操作</th>
+               <th>版本</th>
+               <th>上传人</th>
+               <th style="width: 360px; text-align: right">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -658,31 +680,29 @@ function closeReidentifyModal() {
                 <b>{{ file.name }}</b>
               </td>
               <td class="num mono">{{ file.partNo || file.drawingNo }}</td>
-              <td class="num">{{ file.size }}</td>
-              <td class="num"><span class="ver-badge">{{ file.version }}</span></td>
-              <td>{{ file.uploadedBy }}</td>
-              <td class="num updated">{{ file.uploadedAt }}</td>
-              <td class="row-actions" style="text-align: right">
+               <td class="num"><span class="ver-badge">{{ file.version }}</span></td>
+               <td>{{ file.uploadedBy }}</td>
+               <td class="row-actions" style="text-align: right">
                 <button class="btn sm primary" type="button" title="在线 CAD 矢量浏览" @click="openBrowse(file)">
                   <DemoIcon name="eye" :size="13" />浏览
                 </button>
                 <button class="btn sm" type="button" title="在线 CAD 编辑器" @click="openEditor(file)">
-                  <DemoIcon name="edit" :size="13" />在线编辑
+                   <img class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />在线编辑
                 </button>
                 <button class="btn sm" type="button" title="替换当前图纸文件并生成新版本" @click="triggerReplace(file)">
                   <DemoIcon name="refresh-cw" :size="13" />替换
                 </button>
-                <button class="btn sm" type="button" title="查看该文件所有历史版本树与演进" @click="openHistory(file)">
+                <button class="btn sm history-action" type="button" title="查看该文件所有历史版本树与演进" @click="openHistory(file)">
                   <DemoIcon name="history" :size="13" />历史
-                  <span v-if="file.history?.length" class="hist-count">{{ file.history.length }}</span>
+                   <span v-if="isHistoryUnread(file)" class="hist-count">{{ file.history?.length }}</span>
                 </button>
                 <button class="btn sm danger" type="button" title="删除文件" @click="handleDeleteFile(file)">
                   <DemoIcon name="trash-2" :size="13" />删除
                 </button>
               </td>
             </tr>
-            <tr v-if="!allFiles.length">
-              <td colspan="8">
+             <tr v-if="!allFiles.length">
+               <td colspan="6">
                 <div class="empty">
                   <DemoIcon name="file-up" :size="36" />
                   <div class="t">尚未上传任何图纸文件</div>
@@ -1754,8 +1774,8 @@ function closeReidentifyModal() {
 
 .files-table-card .tbl {
   width: 100%;
-  min-width: 0;
-  table-layout: fixed;
+  min-width: 1180px;
+  table-layout: auto;
 }
 
 .files-table-card .tbl th,
@@ -1766,38 +1786,19 @@ function closeReidentifyModal() {
 }
 
 .files-table-card .tbl th:nth-child(1),
-.files-table-card .tbl td:nth-child(1) {
-  width: 10%;
-}
-
+.files-table-card .tbl td:nth-child(1) { width: 110px; }
 .files-table-card .tbl th:nth-child(2),
-.files-table-card .tbl td:nth-child(2) {
-  width: 25%;
-}
-
+.files-table-card .tbl td:nth-child(2) { min-width: 300px; }
 .files-table-card .tbl th:nth-child(3),
-.files-table-card .tbl td:nth-child(3) {
-  width: 14%;
-}
-
+.files-table-card .tbl td:nth-child(3) { width: 180px; }
 .files-table-card .tbl th:nth-child(4),
-.files-table-card .tbl td:nth-child(4) {
-  width: 9%;
-}
-
+.files-table-card .tbl td:nth-child(4) { width: 90px; }
 .files-table-card .tbl th:nth-child(5),
-.files-table-card .tbl td:nth-child(5) {
-  width: 8%;
-}
-
+.files-table-card .tbl td:nth-child(5) { width: 110px; }
 .files-table-card .tbl th:nth-child(6),
 .files-table-card .tbl td:nth-child(6) {
-  width: 10%;
-}
-
-.files-table-card .tbl th:nth-child(7),
-.files-table-card .tbl td:nth-child(7) {
-  width: 14%;
+  width: 370px;
+  min-width: 370px;
 }
 
 .table-pad {
@@ -1805,7 +1806,7 @@ function closeReidentifyModal() {
   min-width: 0;
   padding: 10px 14px;
   max-height: none;
-  overflow-x: hidden;
+  overflow-x: auto;
   overflow-y: hidden;
 }
 
@@ -1848,12 +1849,12 @@ function closeReidentifyModal() {
 }
 
 .row-actions .btn {
-  width: 28px;
-  min-width: 28px;
+  width: auto;
+  min-width: 0;
   height: 28px;
-  padding: 5px;
-  gap: 0;
-  font-size: 0;
+  padding: 5px 8px;
+  gap: 5px;
+  font-size: 11px;
   white-space: nowrap;
   flex: 0 0 auto;
 }
@@ -1865,8 +1866,8 @@ function closeReidentifyModal() {
 
 .row-actions .hist-count {
   position: absolute;
-  margin-left: 16px;
-  margin-top: -15px;
+  top: -7px;
+  right: -5px;
   min-width: 13px;
   padding: 1px 3px;
   border-radius: 99px;
@@ -1875,6 +1876,16 @@ function closeReidentifyModal() {
   font-size: 9px;
   line-height: 12px;
   text-align: center;
+}
+
+.row-actions .history-action {
+  position: relative;
+}
+
+.editor-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
 }
 
 .empty {

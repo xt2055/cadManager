@@ -218,6 +218,90 @@ func IdentifyDrawingFile(convService *converter.Service) http.HandlerFunc {
 		}
 		response.WriteData(writer, http.StatusOK, map[string]any{
 			"partNo":     partNo,
+			"material":   firstTitleBlockValue(result.TitleBlock, "材料名称", "材料", "材质"),
+			"titleBlock": result.TitleBlock,
+		})
+	}
+}
+
+// IdentifyDrawingMaterial 只读取标题栏材料，不要求文件必须包含可识别的图号。
+func IdentifyDrawingMaterial(convService *converter.Service) http.HandlerFunc {
+	return identifyDrawingFields(convService, false)
+}
+
+func identifyDrawingFields(convService *converter.Service, requirePartNo bool) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodPost {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		file, header, err := request.FormFile("file")
+		if err != nil {
+			response.WriteError(writer, http.StatusBadRequest, "缺少待识别的图纸文件")
+			return
+		}
+		defer file.Close()
+
+		ext := strings.ToLower(filepath.Ext(header.Filename))
+		if ext != ".exb" && ext != ".dwg" && ext != ".dxf" {
+			response.WriteError(writer, http.StatusBadRequest, "只支持 EXB/DWG/DXF 文件读取标题栏")
+			return
+		}
+		inputFile, err := os.CreateTemp("", "cadguanliq-fields-*"+ext)
+		if err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "创建图纸识别临时文件失败")
+			return
+		}
+		inputPath := inputFile.Name()
+		defer os.Remove(inputPath)
+		if _, err := io.Copy(inputFile, file); err != nil {
+			_ = inputFile.Close()
+			response.WriteError(writer, http.StatusInternalServerError, "保存图纸识别临时文件失败")
+			return
+		}
+		if err := inputFile.Close(); err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "关闭图纸识别临时文件失败")
+			return
+		}
+		if ext == ".dxf" {
+			if err := cadtext.NormalizeDxfFileForCaxa(inputPath); err != nil {
+				response.WriteError(writer, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+		}
+		if ext != ".exb" {
+			if convService == nil {
+				response.WriteError(writer, http.StatusServiceUnavailable, "CAD 转换服务未启动")
+				return
+			}
+		}
+		exbPath := inputPath
+		if ext != ".exb" {
+			exbPath = inputPath + ".exb"
+			defer os.Remove(exbPath)
+			if err := convService.ConvertPathToExb(request.Context(), inputPath, exbPath); err != nil {
+				response.WriteError(writer, http.StatusUnprocessableEntity, "图纸转换失败，无法读取标题栏: "+err.Error())
+				return
+			}
+		}
+		result, err := exb.NewParser("").ParseFile(request.Context(), exbPath)
+		if err != nil {
+			response.WriteError(writer, http.StatusUnprocessableEntity, "读取图纸标题栏失败: "+err.Error())
+			return
+		}
+		partNo := firstTitleBlockValue(result.TitleBlock, "图纸编号", "图号", "零件图号", "零件号", "零件代号", "代号")
+		material := firstTitleBlockValue(result.TitleBlock, "材料名称", "材料", "材质")
+		if requirePartNo && partNo == "" {
+			response.WriteError(writer, http.StatusUnprocessableEntity, "图纸标题栏中未找到图号，不能使用文件名代替")
+			return
+		}
+		response.WriteData(writer, http.StatusOK, map[string]any{
+			"partNo":     partNo,
+			"material":   material,
 			"titleBlock": result.TitleBlock,
 		})
 	}

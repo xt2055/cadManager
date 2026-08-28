@@ -20,6 +20,7 @@ export interface AttachmentResult {
 
 export interface DrawingFileIdentity {
   partNo: string
+  material?: string
   titleBlock?: Record<string, string>
 }
 
@@ -39,5 +40,6 @@ export interface DataProvider {
   exportBOM?(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
   scanDrawingDesigner?(drawingNo: string): Promise<string>
   identifyDrawingFile?(file: Blob, name: string): Promise<DrawingFileIdentity>
+  identifyDrawingMaterial?(file: Blob, name: string): Promise<DrawingFileIdentity>
   reidentifyDrawingFile?(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
 }
