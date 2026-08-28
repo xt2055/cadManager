@@ -46,6 +46,8 @@ type Repository interface {
 	ListAllExb(ctx context.Context) ([]Attachment, error)
 	ListAllCad(ctx context.Context) ([]Attachment, error)
 	Delete(ctx context.Context, storageKey string, userID string) error
+	ReassignPart(ctx context.Context, storageKey, partID string) error
+	ReidentifyPart(ctx context.Context, storageKey, partNo, userID string) (ReidentifyResult, error)
 	FolderForDrawing(ctx context.Context, drawingNo string) (string, error)
 }
 
@@ -54,4 +56,11 @@ type StorageObject struct {
 	Size     int64
 	MimeType string
 	SHA256   string
+}
+
+type ReidentifyResult struct {
+	StorageKey string `json:"storageKey"`
+	DrawingNo  string `json:"drawingNo"`
+	OldPartNo  string `json:"oldPartNo"`
+	PartNo     string `json:"partNo"`
 }

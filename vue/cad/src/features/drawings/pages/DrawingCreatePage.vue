@@ -5,9 +5,10 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
+import { dataManager } from '@/services/data-manager'
 import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
-import { parseDrawingFileName, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
+import { parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 
 defineOptions({
   name: 'DrawingCreatePage',
@@ -238,19 +239,26 @@ async function handleSubmit() {
     signers: signerMap,
   }
 
-  const parsedPartFiles = partFiles.value.map((part) => {
-    const projectParsed = parseDrawingFileName(part.name, generatedNo)
-    const standaloneParsed = parseStandaloneDrawingFileName(part.name)
-    const parsed = projectParsed.isStandard ? projectParsed : standaloneParsed
-    return {
-      part,
-      parsed,
-      isBorrowed: standaloneParsed.isStandard && standaloneParsed.rootNo !== generatedNo,
-    }
-  })
-  const structuredPartFiles = parsedPartFiles.filter(({ parsed, isBorrowed }) => (
-    isBorrowed || (parsed.isStandard && parsed.level > 0 && parsed.rootNo === generatedNo)
-  ))
+  let identifiedPartFiles: Array<{ part: UploadedPart; parsed: ReturnType<typeof parseDrawingNumber> }>
+  try {
+    identifiedPartFiles = await Promise.all(partFiles.value.map(async (part) => {
+      if (!part.file) throw new Error(`零件文件「${part.name}」缺少文件内容`)
+      const identity = await dataManager.identifyDrawingFile(part.file, part.name)
+      const parsed = parseDrawingNumber(identity.partNo)
+      if (!parsed.isStandard) throw new Error(`零件文件「${part.name}」返回的图号无效`)
+      return { part, parsed }
+    }))
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '读取零件图号失败，请检查图纸标题栏', 'warn')
+    return
+  }
+
+  const parsedPartFiles = identifiedPartFiles.map(({ part, parsed }) => ({
+    part,
+    parsed,
+    isBorrowed: parsed.rootNo !== generatedNo,
+  }))
+  const structuredPartFiles = parsedPartFiles.filter(({ parsed }) => parsed.isStandard && parsed.no !== generatedNo)
   const validPartEntries = structuredPartFiles.map(({ part, parsed, isBorrowed }, index) => ({
     part,
     parsed,
@@ -304,7 +312,7 @@ async function handleSubmit() {
     }
   })
   const otherDrawingFiles: DrawingFile[] = parsedPartFiles
-    .filter(({ parsed, isBorrowed }) => !isBorrowed && (!parsed.isStandard || parsed.level <= 0 || parsed.rootNo !== generatedNo))
+    .filter(({ parsed }) => !parsed.isStandard || parsed.no === generatedNo)
     .map(({ part }, index) => ({
       id: `${Date.now()}-other-${index}`,
       name: part.name,

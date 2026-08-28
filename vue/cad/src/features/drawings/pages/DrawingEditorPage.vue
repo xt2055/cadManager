@@ -157,6 +157,69 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+const isExportingExb = ref(false)
+
+async function exportAsExb() {
+  if (!targetFile.value || isExportingExb.value) return
+
+  const document = AcApDocManager.instance.curDocument
+  if (!document?.database) {
+    uiStore.toast('编辑器尚未完成初始化，暂时无法导出', 'warn')
+    return
+  }
+
+  isExportingExb.value = true
+  try {
+    // 1. 先保存当前编辑内容或确保当前版本有存储
+    if (!targetFile.value.storageKey) {
+      await saveAsNewVersion()
+    }
+    if (!targetFile.value.storageKey) {
+      throw new Error('未找到当前文件的存储位置，请先保存')
+    }
+
+    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+    const downloadUrl = `${baseUrl}/exb/convert?storageKey=${encodeURIComponent(targetFile.value.storageKey)}&download=true`
+
+    const response = await fetch(downloadUrl, {
+      method: 'GET',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    })
+
+    if (!response.ok) {
+      let msg = `转换为 EXB 失败：HTTP ${response.status}`
+      try {
+        const errJson = await response.json()
+        if (errJson?.message) msg = errJson.message
+      } catch {
+        // ignore
+      }
+      throw new Error(msg)
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = window.document.createElement('a')
+    a.href = url
+    const baseName = targetFile.value.name.replace(/\.[^.]+$/, '')
+    a.download = `${baseName}.exb`
+    window.document.body.appendChild(a)
+    a.click()
+    window.document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+    uiStore.toast('已成功转换为 EXB 并开始下载', 'ok')
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    uiStore.toast(msg, 'warn')
+  } finally {
+    isExportingExb.value = false
+  }
+}
+
 async function saveAsNewVersion() {
   if (!targetFile.value || !currentDrawing.value || isSaving.value) return
 
@@ -172,7 +235,8 @@ async function saveAsNewVersion() {
     const dxfContent = document.database.dxfOut(undefined, 6)
     const blobPart: BlobPart = typeof dxfContent === 'string' ? dxfContent : new Uint8Array(dxfContent)
     const baseName = targetFile.value.name.replace(/\.[^.]+$/, '') || 'drawing'
-    const savedFile = new File([blobPart], `${baseName}.dxf`, { type: 'application/dxf;charset=utf-8' })
+    // 后端会将 DXF 统一转换为 CAXA 兼容的 ANSI_936/GB18030 编码。
+    const savedFile = new File([blobPart], `${baseName}.dxf`, { type: 'application/dxf' })
     const updatedFile = await domainStore.replaceDrawingFile(
       targetFile.value.partNo || targetFile.value.drawingNo || currentDrawing.value.no,
       targetFile.value.id,
@@ -241,6 +305,10 @@ watch([drawingId, fileId], () => {
       </div>
 
       <div class="header-right">
+        <button class="btn sm" type="button" :disabled="isExportingExb || !isReady" title="将当前图纸转换为 EXB 格式并下载" @mousedown.stop @click="exportAsExb">
+          <DemoIcon name="download" :size="14" />
+          <span>{{ isExportingExb ? '转换中...' : '导出 EXB' }}</span>
+        </button>
         <button class="btn sm primary" type="button" :disabled="isSaving || !isReady" title="保存在线编辑结果并生成新版本" @mousedown.stop @click="saveAsNewVersion">
           <DemoIcon name="save" :size="14" />
           <span>{{ isSaving ? '保存中...' : '保存新版本' }}</span>

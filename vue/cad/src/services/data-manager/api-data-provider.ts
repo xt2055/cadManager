@@ -1,5 +1,5 @@
 import { normalizeDataDocument, type DataDocument } from './data.types'
-import type { AttachmentMetadata, AttachmentResult, DataProvider } from './data-provider'
+import type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, ReidentifyDrawingFileResult } from './data-provider'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -126,6 +126,52 @@ export class ApiDataProvider implements DataProvider {
     const payload = isRecord(body) && 'data' in body ? body.data : body
     if (!isRecord(payload)) return ''
     return typeof payload.designer === 'string' ? payload.designer : ''
+  }
+
+  async identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity> {
+    const formData = new FormData()
+    formData.append('file', file, name)
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    if (token) headers.Authorization = `Bearer ${token}`
+    const response = await fetch(`${this.baseUrl}/exb/identify`, {
+      method: 'POST',
+      headers,
+      body: formData,
+      credentials: 'include',
+    })
+    const body: unknown = await response.json().catch(() => undefined)
+    if (!response.ok) {
+      const message = isRecord(body) && typeof body.message === 'string' ? body.message : `读取图纸图号失败：HTTP ${response.status}`
+      throw new Error(message)
+    }
+    const payload = isRecord(body) && 'data' in body ? body.data : body
+    if (!isRecord(payload) || typeof payload.partNo !== 'string' || !payload.partNo.trim()) {
+      throw new Error('图纸接口未返回有效内部图号')
+    }
+    return {
+      partNo: payload.partNo.trim(),
+      titleBlock: isRecord(payload.titleBlock) ? Object.fromEntries(
+        Object.entries(payload.titleBlock).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+      ) : undefined,
+    }
+  }
+
+  async reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult> {
+    const body = await this.request<unknown>('/exb/reidentify', {
+      method: 'POST',
+      body: JSON.stringify({ storageKey, partNo }),
+    })
+    const payload = isRecord(body) && typeof body.storageKey === 'string' ? body : body
+    if (!isRecord(payload) || typeof payload.storageKey !== 'string' || typeof payload.partNo !== 'string') {
+      throw new Error('历史图纸校正接口未返回有效结果')
+    }
+    return {
+      storageKey: payload.storageKey,
+      drawingNo: typeof payload.drawingNo === 'string' ? payload.drawingNo : '',
+      oldPartNo: typeof payload.oldPartNo === 'string' ? payload.oldPartNo : '',
+      partNo: payload.partNo,
+    }
   }
 
   private async request<T>(path: string, options: { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: string }): Promise<T> {

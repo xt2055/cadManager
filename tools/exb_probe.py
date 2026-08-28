@@ -21,7 +21,7 @@ import olefile
 ZLIB_HEADERS = {b"\x78\x01", b"\x78\x9c", b"\x78\xda"}
 TEXT_PATTERN = re.compile(r"[\x20-\x7e\u3400-\u9fff]{2,}")
 SCALE_PATTERN = re.compile(r"^\d+(?:\.\d+)?:\d+(?:\.\d+)?$")
-DRAWING_NO_PATTERN = re.compile(r"^[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+){2,}$")
+DRAWING_NO_PATTERN = re.compile(r"^(?=.*\d)[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)+$")
 STANDARD_PATTERN = re.compile(r"\b(?:GB|JB)(?:/[A-Z]+)?/[A-Z0-9.-]+", re.IGNORECASE)
 MATERIAL_PATTERN = re.compile(r"^(?:\d+[A-Za-z]+\d*[A-Za-z0-9]*|[A-Za-z]+\d+[A-Za-z0-9]*)$")
 TITLE_BLOCK_STREAM = "*BlockStg/*Blk_fffffffb"
@@ -41,6 +41,11 @@ TITLE_BLOCK_KEYS = (
 )
 
 TITLE_BLOCK_KEY_ALIASES = {
+    "图号": "图纸编号",
+    "零件图号": "图纸编号",
+    "零件号": "图纸编号",
+    "零件代号": "图纸编号",
+    "代号": "图纸编号",
     "设计_人员编号": "设计",
     "设计_日期": "设计日期",
     "校对_人员编号": "校对",
@@ -243,6 +248,10 @@ def extract_title_block_fields(texts: list[dict[str, Any]]) -> dict[str, str]:
                 normalized_candidate_key = TITLE_BLOCK_KEY_ALIASES.get(value, value)
                 if normalized_candidate_key in TITLE_BLOCK_KEYS:
                     break
+                # 键和值必须来自相同的 UTF-16 对齐方式，避免把错位二进制解析结果当成标题栏内容。
+                if candidate["offset"] % 2 != item["offset"] % 2:
+                    next_index += 1
+                    continue
                 if is_title_block_value(value, key):
                     if key in {"设计", "校对", "审核", "工艺", "标准化", "批准"} and not is_person_name(value):
                         next_index += 1
@@ -256,9 +265,20 @@ def extract_title_block_fields(texts: list[dict[str, Any]]) -> dict[str, str]:
                 repeated = [value for value in candidates if counts[value] >= 2]
                 if repeated:
                     fields[key] = max(repeated, key=lambda value: (counts[value], len(value)))
+                elif key not in {"设计", "校对", "审核", "工艺", "标准化", "批准"}:
+                    fields[key] = max(candidates, key=title_block_value_score)
         index += 1
 
     return fields
+
+
+def title_block_value_score(value: str) -> tuple[int, int, int]:
+    """优先选择规范图号，避免将错位二进制文本作为标题栏值。"""
+    normalized = value.strip()
+    is_drawing_number = bool(DRAWING_NO_PATTERN.fullmatch(normalized))
+    has_digit = any(char.isdigit() for char in normalized)
+    has_separator = any(char in normalized for char in ".-_/")
+    return (3 if is_drawing_number else 0, 1 if has_digit else 0, 1 if has_separator else 0)
 
 
 def is_title_block_value(value: str, key: str) -> bool:
@@ -275,7 +295,9 @@ def is_title_block_value(value: str, key: str) -> bool:
         return False
     if key == "图纸比例":
         return bool(SCALE_PATTERN.fullmatch(value))
-    if key in {"图纸编号", "图纸名称", "材料名称", "单位名称"}:
+    if key == "图纸编号":
+        return bool(DRAWING_NO_PATTERN.fullmatch(value))
+    if key in {"图纸名称", "材料名称", "单位名称"}:
         return any(char.isalnum() or "\u4e00" <= char <= "\u9fff" for char in value)
     return any("\u4e00" <= char <= "\u9fff" or char.isalpha() for char in value)
 

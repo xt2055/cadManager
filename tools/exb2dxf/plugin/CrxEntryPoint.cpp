@@ -19,6 +19,59 @@ std::wstring getTempDirectory() {
     return std::wstring(tempDir);
 }
 
+// 自动检测并关闭 CAXA 阻塞弹窗（如“指定形文件”、“字体替换”、“代理信息”等）
+static BOOL CALLBACK DismissBlockerDialogsProc(HWND hwnd, LPARAM lParam) {
+    if (!IsWindowVisible(hwnd)) return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != GetCurrentProcessId()) return TRUE;
+
+    wchar_t className[256];
+    memset(className, 0, sizeof(className));
+    GetClassNameW(hwnd, className, 255);
+
+    // 只针对对话框类窗口
+    if (wcscmp(className, L"#32770") == 0) {
+        wchar_t title[512];
+        memset(title, 0, sizeof(title));
+        GetWindowTextW(hwnd, title, 511);
+        std::wstring titleStr(title);
+
+        // 识别常见的阻塞弹窗关键字
+        if (titleStr.find(L"\x5f62\x6587\x4ef6") != std::wstring::npos || // 形文件
+            titleStr.find(L"\x5b57\x4f53") != std::wstring::npos ||     // 字体
+            titleStr.find(L"Shape") != std::wstring::npos ||
+            titleStr.find(L"Font") != std::wstring::npos ||
+            titleStr.find(L"\x4ee3\x7406") != std::wstring::npos ||     // 代理
+            titleStr.find(L"Proxy") != std::wstring::npos ||
+            titleStr.find(L"\x672a\x627e\x5230") != std::wstring::npos || // 未找到
+            titleStr.find(L"\x7f3a\x5c11") != std::wstring::npos) {       // 缺少
+
+            const std::wstring logPath = getTempDirectory() + L"caxa_worker_log.txt";
+            FILE* fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
+            if (fp) {
+                fwprintf(fp, L"[AutoDismiss] Found blocking dialog '%ls', sending IDCANCEL/ESC\n", title);
+                fclose(fp);
+            }
+
+            // 优先点“取消”或“忽略”，跳过缺失形文件继续执行
+            HWND btnCancel = GetDlgItem(hwnd, IDCANCEL);
+            if (btnCancel && IsWindowEnabled(btnCancel)) {
+                SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), (LPARAM)btnCancel);
+            } else {
+                SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+            }
+            PostMessage(hwnd, WM_CLOSE, 0, 0);
+        }
+    }
+    return TRUE;
+}
+
+static void autoDismissModalDialogs() {
+    EnumThreadWindows(GetCurrentThreadId(), DismissBlockerDialogsProc, 0);
+}
+
 bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputPath) {
     const std::wstring logPath = getTempDirectory() + L"caxa_worker_log.txt";
 
@@ -41,11 +94,25 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
     CRxApDocument* newDoc = crxDocManager->curDocument();
     bool saveOk = false;
     if (newDoc && newDoc->database()) {
-        auto saveRes = newDoc->database()->saveAs(outputPath.c_str(), false, CRxDb::kDHL_1800);
+        std::wstring ext = L"";
+        const size_t dotPos = outputPath.find_last_of(L'.');
+        if (dotPos != std::wstring::npos) {
+            ext = outputPath.substr(dotPos);
+        }
+        for (size_t i = 0; i < ext.length(); ++i) {
+            ext[i] = towlower(ext[i]);
+        }
+
+        CDraft::ErrorStatus saveRes = CDraft::eInvalidInput;
+        if (ext == L".exb") {
+            saveRes = newDoc->database()->saveAs(outputPath.c_str(), false, CRxDb::kEXB_CURRENT);
+        } else {
+            saveRes = newDoc->database()->saveAs(outputPath.c_str(), false, CRxDb::kDHL_1800);
+        }
         saveOk = (saveRes == CDraft::eOk);
         fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
         if (fp) {
-            fwprintf(fp, L"saveAs status: %d\n", (int)saveRes);
+            fwprintf(fp, L"saveAs (%ls) status: %d\n", ext.c_str(), (int)saveRes);
             fclose(fp);
         }
     } else {
@@ -64,6 +131,11 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
 }
 
 UINT_PTR g_timerId = 0;
+UINT_PTR g_dialogKillerTimerId = 0;
+
+VOID CALLBACK DialogKillerTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    autoDismissModalDialogs();
+}
 
 VOID CALLBACK MainThreadTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     const std::wstring jobFilePath = getTempDirectory() + L"caxa_exb_jobs.txt";
@@ -152,6 +224,10 @@ public:
         if (g_timerId == 0) {
             g_timerId = SetTimer(NULL, 0, 500, MainThreadTimerProc);
         }
+        if (g_dialogKillerTimerId == 0) {
+            // 每 200ms 自动巡检并压制/关闭形文件或字体丢失弹窗
+            g_dialogKillerTimerId = SetTimer(NULL, 0, 200, DialogKillerTimerProc);
+        }
 
         const std::wstring logPath = getTempDirectory() + L"caxa_worker_log.txt";
         std::wofstream log(logPath, std::ios::app);
@@ -169,6 +245,10 @@ public:
         if (g_timerId != 0) {
             KillTimer(NULL, g_timerId);
             g_timerId = 0;
+        }
+        if (g_dialogKillerTimerId != 0) {
+            KillTimer(NULL, g_dialogKillerTimerId);
+            g_dialogKillerTimerId = 0;
         }
         return result;
     }

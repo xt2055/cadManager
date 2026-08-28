@@ -1,7 +1,7 @@
 import { ApiDataProvider } from './api-data-provider'
 import { createEmptyDataDocument, normalizeDataDocument, type DataDocument } from './data.types'
 import type { DataProvider } from './data-provider'
-import type { AttachmentMetadata, AttachmentResult } from './data-provider'
+import type { AttachmentMetadata, AttachmentResult, DrawingFileIdentity, ReidentifyDrawingFileResult } from './data-provider'
 import { JsonDataProvider } from './json-data-provider'
 import { readDebugMode } from '@/services/runtime-config.service'
 
@@ -13,6 +13,8 @@ export interface DataManager {
   readAttachment(storageKey: string): Promise<Blob>
   exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
   scanDrawingDesigner(drawingNo: string): Promise<string>
+  identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity>
+  reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
   resetProvider(): void
 }
 
@@ -72,6 +74,22 @@ export class DefaultDataManager implements DataManager {
   async scanDrawingDesigner(drawingNo: string): Promise<string> {
     const provider = await this.getProvider()
     return provider.scanDrawingDesigner ? provider.scanDrawingDesigner(drawingNo) : ''
+  }
+
+  async identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity> {
+    const provider = await this.getProvider()
+    if (!provider.identifyDrawingFile) {
+      throw new Error('当前存储模式不支持从图纸内容读取图号')
+    }
+    return provider.identifyDrawingFile(file, name)
+  }
+
+  async reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult> {
+    const provider = await this.getProvider()
+    if (!provider.reidentifyDrawingFile) {
+      throw new Error('当前存储模式不支持校正历史图纸图号')
+    }
+    return provider.reidentifyDrawingFile(storageKey, partNo)
   }
 
   resetProvider(): void {

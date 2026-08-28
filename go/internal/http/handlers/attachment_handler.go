@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"cadguanliq/internal/attachment"
+	"cadguanliq/internal/cadtext"
 	"cadguanliq/internal/converter"
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
@@ -87,7 +89,26 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		object, err := objectStorage.Put(request.Context(), key, file, mimeType)
+		var uploadReader io.Reader = file
+		if strings.EqualFold(filepathExt(name), ".dxf") {
+			content, readErr := io.ReadAll(file)
+			if readErr != nil {
+				var tooLargeError *http.MaxBytesError
+				if errors.As(readErr, &tooLargeError) {
+					response.WriteError(writer, http.StatusRequestEntityTooLarge, "附件超过大小限制")
+					return
+				}
+				response.WriteError(writer, http.StatusInternalServerError, "读取 DXF 文件失败")
+				return
+			}
+			if normalized, normalizeErr := cadtext.NormalizeDxfForCaxa(content); normalizeErr != nil {
+				response.WriteError(writer, http.StatusUnprocessableEntity, normalizeErr.Error())
+				return
+			} else {
+				uploadReader = bytes.NewReader(normalized)
+			}
+		}
+		object, err := objectStorage.Put(request.Context(), key, uploadReader, mimeType)
 		if err != nil {
 			var tooLargeError *http.MaxBytesError
 			if errors.As(err, &tooLargeError) {
@@ -155,6 +176,24 @@ func AttachmentResource(repository attachment.Repository, objectStorage storage.
 				return
 			}
 			defer reader.Close()
+			if strings.EqualFold(filepathExt(item.Name), ".dxf") || strings.EqualFold(filepathExt(key), ".dxf") {
+				content, readErr := io.ReadAll(reader)
+				if readErr != nil {
+					response.WriteError(writer, http.StatusInternalServerError, "读取 DXF 文件失败")
+					return
+				}
+				normalized, normalizeErr := cadtext.NormalizeDxfForCaxa(content)
+				if normalizeErr != nil {
+					response.WriteError(writer, http.StatusUnprocessableEntity, normalizeErr.Error())
+					return
+				}
+				content = normalized
+				writer.Header().Set("Content-Type", "application/dxf")
+				writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(item.Name)))
+				writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+				_, _ = writer.Write(content)
+				return
+			}
 			writer.Header().Set("Content-Type", firstNonEmpty(item.MimeType, object.MimeType, "application/octet-stream"))
 			writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(item.Name)))
 			writer.Header().Set("Content-Length", fmt.Sprintf("%d", object.Size))

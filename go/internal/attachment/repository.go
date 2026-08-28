@@ -245,6 +245,121 @@ func (repository *PGRepository) Delete(ctx context.Context, storageKey string, u
 	return nil
 }
 
+func (repository *PGRepository) ReassignPart(ctx context.Context, storageKey, partID string) error {
+	result, err := repository.pool.Exec(ctx, `
+		UPDATE attachments
+		SET drawing_id = NULL, part_id = $2::uuid, file_role = 'part'
+		WHERE storage_key = $1 AND deleted_at IS NULL`, storageKey, partID)
+	if err != nil {
+		return fmt.Errorf("更新附件所属零件失败: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (repository *PGRepository) ReidentifyPart(ctx context.Context, storageKey, partNo, userID string) (ReidentifyResult, error) {
+	tx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		return ReidentifyResult{}, fmt.Errorf("开始校正附件图号事务失败: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var result ReidentifyResult
+	var currentPartID *string
+	var drawingID string
+	err = tx.QueryRow(ctx, `
+		SELECT a.part_id::text, COALESCE(a.drawing_id, p.drawing_id)::text,
+		       COALESCE(parent.drawing_no, d.drawing_no, ''), COALESCE(p.part_no, '')
+		FROM attachments a
+		LEFT JOIN drawings d ON d.id = a.drawing_id
+		LEFT JOIN structure_parts p ON p.id = a.part_id
+		LEFT JOIN drawings parent ON parent.id = p.drawing_id
+		WHERE a.storage_key = $1 AND a.deleted_at IS NULL`, storageKey).
+		Scan(&currentPartID, &drawingID, &result.DrawingNo, &result.OldPartNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReidentifyResult{}, ErrNotFound
+	}
+	if err != nil {
+		return ReidentifyResult{}, fmt.Errorf("读取待校正附件失败: %w", err)
+	}
+	result.StorageKey = storageKey
+	result.PartNo = strings.TrimSpace(partNo)
+	if result.PartNo == "" {
+		return ReidentifyResult{}, errors.New("新零件图号不能为空")
+	}
+	if result.OldPartNo == result.PartNo && currentPartID != nil {
+		return result, nil
+	}
+
+	var targetPartID *string
+	err = tx.QueryRow(ctx, `
+		SELECT id::text FROM structure_parts
+		WHERE drawing_id = $1::uuid AND part_no = $2`, drawingID, result.PartNo).Scan(&targetPartID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		targetPartID = nil
+	} else if err != nil {
+		return ReidentifyResult{}, fmt.Errorf("查询目标零件失败: %w", err)
+	}
+
+	if targetPartID != nil && (currentPartID == nil || *targetPartID != *currentPartID) {
+		_, err = tx.Exec(ctx, `
+			UPDATE attachments
+			SET drawing_id = NULL, part_id = $2::uuid, file_role = 'part'
+			WHERE storage_key = $1 AND deleted_at IS NULL`, storageKey, *targetPartID)
+	} else if currentPartID != nil {
+		_, err = tx.Exec(ctx, `
+			UPDATE structure_parts
+			SET part_no = $2, updated_by = $3::uuid, updated_at = now()
+			WHERE id = $1::uuid`, *currentPartID, result.PartNo, userID)
+	} else {
+		parentPartNo := directParentPartNo(result.PartNo)
+		var parentPartID *string
+		if parentPartNo != "" {
+			_ = tx.QueryRow(ctx, `
+				SELECT id::text FROM structure_parts
+				WHERE drawing_id = $1::uuid AND part_no = $2`, drawingID, parentPartNo).Scan(&parentPartID)
+		}
+		var createdPartID string
+		err = tx.QueryRow(ctx, `
+			INSERT INTO structure_parts (drawing_id, parent_part_id, part_no, name, project, material, status, version, created_by, updated_by)
+			SELECT d.id, $2::uuid, $3, $3, d.project, d.material, d.status, d.version, $4::uuid, $4::uuid
+			FROM drawings d WHERE d.id = $1::uuid
+			RETURNING id::text`, drawingID, parentPartID, result.PartNo, userID).Scan(&createdPartID)
+		if err == nil {
+			_, err = tx.Exec(ctx, `
+				UPDATE attachments
+				SET drawing_id = NULL, part_id = $2::uuid, file_role = 'part'
+				WHERE storage_key = $1 AND deleted_at IS NULL`, storageKey, createdPartID)
+		}
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "unique constraint") {
+			return ReidentifyResult{}, ErrConflict
+		}
+		return ReidentifyResult{}, fmt.Errorf("更新历史零件图号失败: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ReidentifyResult{}, fmt.Errorf("提交历史零件图号校正失败: %w", err)
+	}
+	return result, nil
+}
+
+func directParentPartNo(partNo string) string {
+	index := strings.LastIndex(partNo, "-")
+	if index <= 0 {
+		return ""
+	}
+	parent := partNo[:index]
+	for _, value := range partNo[index+1:] {
+		if value < '0' || value > '9' {
+			return ""
+		}
+	}
+	return parent
+}
+
 func (repository *PGRepository) FolderForDrawing(ctx context.Context, drawingNo string) (string, error) {
 	var name string
 	err := repository.pool.QueryRow(ctx, `SELECT name FROM drawings WHERE drawing_no = $1`, drawingNo).Scan(&name)

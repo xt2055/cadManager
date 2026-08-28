@@ -6,10 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"cadguanliq/internal/attachment"
+	"cadguanliq/internal/cadtext"
 	"cadguanliq/internal/converter"
 	"cadguanliq/internal/exb"
 	"cadguanliq/internal/http/middleware"
@@ -19,6 +21,11 @@ import (
 
 type exbParseRequest struct {
 	StorageKey string `json:"storageKey"`
+}
+
+type reidentifyPartRequest struct {
+	StorageKey string `json:"storageKey"`
+	PartNo     string `json:"partNo"`
 }
 
 type drawingDesignerResponse struct {
@@ -137,6 +144,128 @@ func ParseEXB(repository attachment.Repository, objectStorage storage.ObjectStor
 	}
 }
 
+// IdentifyDrawingFile 从图纸内容的标题栏读取图号，不使用文件名推断。
+// EXB 直接解析；DWG/DXF 先经 CAXA 转为临时 EXB 后解析。
+func IdentifyDrawingFile(convService *converter.Service) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodPost {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		file, header, err := request.FormFile("file")
+		if err != nil {
+			response.WriteError(writer, http.StatusBadRequest, "缺少待识别的图纸文件")
+			return
+		}
+		defer file.Close()
+
+		ext := strings.ToLower(filepath.Ext(header.Filename))
+		if ext != ".exb" && ext != ".dwg" && ext != ".dxf" {
+			response.WriteError(writer, http.StatusBadRequest, "只支持 EXB/DWG/DXF 文件读取图号")
+			return
+		}
+
+		inputFile, err := os.CreateTemp("", "cadguanliq-identify-*"+ext)
+		if err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "创建图纸识别临时文件失败")
+			return
+		}
+		inputPath := inputFile.Name()
+		defer os.Remove(inputPath)
+		if _, err := io.Copy(inputFile, file); err != nil {
+			inputFile.Close()
+			response.WriteError(writer, http.StatusInternalServerError, "保存图纸识别临时文件失败")
+			return
+		}
+		if err := inputFile.Close(); err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "关闭图纸识别临时文件失败")
+			return
+		}
+		if ext == ".dxf" {
+			if err := cadtext.NormalizeDxfFileForCaxa(inputPath); err != nil {
+				response.WriteError(writer, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+		}
+
+		exbPath := inputPath
+		if ext != ".exb" {
+			if convService == nil {
+				response.WriteError(writer, http.StatusServiceUnavailable, "CAD 转换服务未启动")
+				return
+			}
+			exbPath = inputPath + ".exb"
+			defer os.Remove(exbPath)
+			if err := convService.ConvertPathToExb(request.Context(), inputPath, exbPath); err != nil {
+				response.WriteError(writer, http.StatusUnprocessableEntity, "图纸转换失败，无法读取内部图号: "+err.Error())
+				return
+			}
+		}
+
+		result, err := exb.NewParser("").ParseFile(request.Context(), exbPath)
+		if err != nil {
+			response.WriteError(writer, http.StatusUnprocessableEntity, "读取图纸内部图号失败: "+err.Error())
+			return
+		}
+		partNo := firstTitleBlockValue(result.TitleBlock, "图纸编号", "图号", "零件图号", "零件号", "零件代号", "代号")
+		if strings.TrimSpace(partNo) == "" {
+			response.WriteError(writer, http.StatusUnprocessableEntity, "图纸标题栏中未找到图号，不能使用文件名代替")
+			return
+		}
+		response.WriteData(writer, http.StatusOK, map[string]any{
+			"partNo":     partNo,
+			"titleBlock": result.TitleBlock,
+		})
+	}
+}
+
+// ReidentifyPart 根据图纸内部图号校正历史附件的零件关联。
+func ReidentifyPart(repository attachment.Repository) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodPost {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var input reidentifyPartRequest
+		if err := decodeJSON(request, &input); err != nil || strings.TrimSpace(input.StorageKey) == "" || strings.TrimSpace(input.PartNo) == "" {
+			response.WriteError(writer, http.StatusBadRequest, "storageKey 和 partNo 必填且请求格式有效")
+			return
+		}
+		result, err := repository.ReidentifyPart(request.Context(), strings.TrimSpace(input.StorageKey), strings.TrimSpace(input.PartNo), user.ID)
+		if err != nil {
+			if errors.Is(err, attachment.ErrNotFound) {
+				response.WriteError(writer, http.StatusNotFound, "附件不存在")
+				return
+			}
+			if errors.Is(err, attachment.ErrConflict) {
+				response.WriteError(writer, http.StatusConflict, "目标零件图号已存在且无法合并")
+				return
+			}
+			response.WriteError(writer, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		response.WriteData(writer, http.StatusOK, result)
+	}
+}
+
+func firstTitleBlockValue(fields map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(fields[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // PreviewEXB 保留旧版 DXF 预览接口，当前 MLightCAD 直接读取 /api/cad/source 返回的 DWG。
 func PreviewEXB(repository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
@@ -238,6 +367,82 @@ func PreviewEXB(repository attachment.Repository, objectStorage storage.ObjectSt
 		writer.WriteHeader(http.StatusOK)
 		_, _ = io.Copy(writer, reader)
 		_ = obj
+	}
+}
+
+// ConvertToEXB 将 DWG/DXF 附件转换为 EXB 格式。
+// 支持返回 JSON 元数据或直接下载二进制流。
+func ConvertToEXB(repository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodPost && request.Method != http.MethodGet {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		if convService == nil {
+			response.WriteError(writer, http.StatusServiceUnavailable, "CAD 转换服务未启动")
+			return
+		}
+
+		storageKey := strings.TrimSpace(request.URL.Query().Get("storageKey"))
+		if storageKey == "" && request.Method == http.MethodPost {
+			var input struct {
+				StorageKey string `json:"storageKey"`
+			}
+			if err := decodeJSON(request, &input); err == nil {
+				storageKey = strings.TrimSpace(input.StorageKey)
+			}
+		}
+
+		if storageKey == "" {
+			response.WriteError(writer, http.StatusBadRequest, "storageKey 必填")
+			return
+		}
+
+		item, err := repository.Find(request.Context(), storageKey)
+		if err != nil {
+			writeAttachmentError(writer, err)
+			return
+		}
+
+		exbKey, err := convService.ConvertToExb(request.Context(), item)
+		if err != nil {
+			response.WriteError(writer, http.StatusUnprocessableEntity, fmt.Sprintf("转换为 EXB 失败: %v", err))
+			return
+		}
+
+		reader, object, err := objectStorage.Open(request.Context(), exbKey)
+		if err != nil || object.Size == 0 {
+			if reader != nil {
+				reader.Close()
+			}
+			response.WriteError(writer, http.StatusInternalServerError, "读取生成的 EXB 文件失败")
+			return
+		}
+		defer reader.Close()
+
+		ext := filepathExt(item.Name)
+		exbFileName := strings.TrimSuffix(item.Name, ext) + ".exb"
+
+		// 如果请求要求下载二进制流 (通过 download 参数或 Accept 头)
+		isDownload := request.URL.Query().Get("download") == "true" || request.URL.Query().Get("download") == "1" || request.Method == http.MethodGet
+		if isDownload {
+			writer.Header().Set("Content-Type", "application/octet-stream")
+			writer.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(exbFileName))
+			writer.Header().Set("Content-Length", fmt.Sprintf("%d", object.Size))
+			_, _ = io.Copy(writer, reader)
+			return
+		}
+
+		response.WriteData(writer, http.StatusOK, map[string]interface{}{
+			"storageKey": exbKey,
+			"name":       exbFileName,
+			"size":       object.Size,
+		})
 	}
 }
 

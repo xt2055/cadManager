@@ -3,10 +3,11 @@ import { computed, nextTick, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { dataManager } from '@/services/data-manager'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
-import { parseDrawingFileName, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
+import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 
 defineOptions({
   name: 'DrawingPreviewTab',
@@ -91,6 +92,7 @@ const selectedReplaceBlob = ref<File | null>(null)
 
 // 借用零件弹窗与多维度智能选型系统
 const isBorrowing = ref(false)
+const isReidentifyingAll = ref(false)
 const borrowSearchMode = ref<'by-project' | 'global-part'>('by-project')
 const projectSearchQuery = ref('')
 const partSearchQuery = ref('')
@@ -371,11 +373,29 @@ async function onPartFilesChange(event: Event) {
       if (!file) continue
       const cleanName = file.name.replace(/\.[^/.]+$/, '')
       const rootNo = rootDrawingNo.value
-      const currentProjectParsed = parseDrawingFileName(file.name, rootNo)
-      const standaloneParsed = parseStandaloneDrawingFileName(file.name)
-      const parsed = currentProjectParsed.isStandard ? currentProjectParsed : standaloneParsed
-      const isBorrowed = standaloneParsed.isStandard && standaloneParsed.rootNo !== rootNo
-      const isStructuredPart = parsed.isStandard && (parsed.level > 0 && parsed.rootNo === rootNo || isBorrowed)
+      const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || ''
+      const isCadPart = extension === '.exb' || extension === '.dwg' || extension === '.dxf'
+      if (!isCadPart) {
+        const newFile: DrawingFile = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: file.name,
+          size: formatFileSize(file.size),
+          role: 'other',
+          drawingNo: rootNo,
+          version: 'v1.0',
+          uploadedBy: ('by' in currentItem.value ? currentItem.value.by : '当前用户') || '当前用户',
+          uploadedAt: formatCurrentTime(),
+          previewable: true,
+        }
+        await domainStore.uploadOtherFile(rootNo, newFile, file)
+        otherCount += 1
+        continue
+      }
+
+      const identity = await dataManager.identifyDrawingFile(file, file.name)
+      const parsed = parseDrawingNumber(identity.partNo)
+      const isBorrowed = parsed.rootNo !== rootNo
+      const isStructuredPart = parsed.no !== rootNo
       const parentNo = isBorrowed ? rootNo : parsed.parentNo ?? rootNo
       const partNo = parsed.no
 
@@ -409,7 +429,7 @@ async function onPartFilesChange(event: Event) {
       } else {
         await domainStore.createPartWithFile(parentNo, {
           no: partNo,
-          name: parsed.name || cleanName,
+          name: cleanName,
           parentNo,
           project: '',
           material: 'HT200',
@@ -422,7 +442,7 @@ async function onPartFilesChange(event: Event) {
           ver: 'v1.0',
           hasFile: true,
            files: [newFile],
-           ...(isBorrowed ? { borrowFrom: standaloneParsed.rootNo ?? standaloneParsed.no } : {}),
+            ...(isBorrowed ? { borrowFrom: parsed.rootNo ?? parsed.no } : {}),
          }, newFile, file)
         createdCount += 1
       }
@@ -434,6 +454,113 @@ async function onPartFilesChange(event: Event) {
   } finally {
     target.value = ''
   }
+}
+
+// 批量识别校正弹窗状态
+const isReidentifyModalOpen = ref(false)
+const reidentifyList = ref<Array<{ file: DrawingFile; oldPartNo: string; newPartNo: string; checked: boolean }>>([])
+const reidentifyFailures = ref<string[]>([])
+const isExecutingReidentify = ref(false)
+
+function isNonPartCadFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase()
+  return (
+    lower.includes('明细表') ||
+    lower.includes('外购件') ||
+    lower.includes('标准件') ||
+    lower.includes('密封件') ||
+    lower.includes('汇总表') ||
+    lower.includes('目录') ||
+    lower.includes('bom')
+  )
+}
+
+async function reidentifyAllPartFiles() {
+  if (isReidentifyingAll.value) return
+  const currentRootNo = rootDrawingNo.value
+  const cadFiles = allFiles.value.filter((file) => {
+    const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || ''
+    // 排除总图、非 CAD 以及明细表/BOM等表格文件
+    return (
+      file.role !== 'assembly' &&
+      Boolean(file.storageKey) &&
+      ['.exb', '.dwg', '.dxf'].includes(extension) &&
+      !isNonPartCadFile(file.name)
+    )
+  })
+  if (!cadFiles.length) {
+    uiStore.toast('当前图纸没有可重新识别的零件 CAD 文件（已自动过滤明细表与表格）', 'warn')
+    return
+  }
+
+  isReidentifyingAll.value = true
+  try {
+    const results: Array<{ file: DrawingFile; oldPartNo: string; newPartNo: string; checked: boolean }> = []
+    const failures: string[] = []
+    for (const file of cadFiles) {
+      try {
+        const content = await dataManager.readAttachment(file.storageKey as string)
+        const identity = await dataManager.identifyDrawingFile(content, file.name)
+        const identifiedNo = identity.partNo.trim()
+
+        // 过滤：如果识别出的图号与总图号完全相同，说明是附属文件或总图明细，跳过
+        if (currentRootNo && identifiedNo === currentRootNo) {
+          continue
+        }
+
+        if (identifiedNo !== (file.partNo || '')) {
+          results.push({ file, oldPartNo: file.partNo || '未关联', newPartNo: identifiedNo, checked: true })
+        }
+      } catch (error) {
+        failures.push(`${file.name}：${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
+    if (!results.length) {
+      uiStore.toast(failures.length ? `没有发现图号变化，${failures.length} 个文件识别失败` : '所有零件图号均已与标题栏一致', failures.length ? 'warn' : 'ok')
+      return
+    }
+
+    reidentifyList.value = results
+    reidentifyFailures.value = failures
+    isReidentifyModalOpen.value = true
+  } finally {
+    isReidentifyingAll.value = false
+  }
+}
+
+async function confirmBatchReidentify() {
+  const selected = reidentifyList.value.filter((item) => item.checked)
+  if (!selected.length) {
+    uiStore.toast('请至少勾选一个要校正的文件', 'warn')
+    return
+  }
+
+  isExecutingReidentify.value = true
+  let updatedCount = 0
+  const executeFailures: string[] = []
+  try {
+    for (const item of selected) {
+      try {
+        await domainStore.reidentifyDrawingFile(item.file, item.newPartNo)
+        updatedCount += 1
+      } catch (error) {
+        executeFailures.push(`${item.file.name}：${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    uiStore.toast(
+      `已完成 ${updatedCount}/${selected.length} 个文件的图号校正${executeFailures.length ? `，${executeFailures.length} 个失败` : ''}`,
+      executeFailures.length ? 'warn' : 'ok',
+    )
+    isReidentifyModalOpen.value = false
+  } finally {
+    isExecutingReidentify.value = false
+  }
+}
+
+function closeReidentifyModal() {
+  if (isExecutingReidentify.value) return
+  isReidentifyModalOpen.value = false
 }
 </script>
 
@@ -495,10 +622,14 @@ async function onPartFilesChange(event: Event) {
 
     <!-- 文件总览列表 -->
     <div class="card files-table-card">
-      <div class="card-title">
+      <div class="card-title files-title-row">
         <DemoIcon name="file-text" :size="16" />
         已关联图纸文件清单 ({{ allFiles.length }})
         <span class="hint">支持 DWG / DXF / EXB / PDF / STEP</span>
+        <button class="btn sm" type="button" :disabled="isReidentifyingAll" title="读取全部零件 CAD 文件标题栏并批量校正图号" @click="reidentifyAllPartFiles">
+          <DemoIcon name="scan" :size="13" />
+          {{ isReidentifyingAll ? '识别中...' : '全部重新识别图号' }}
+        </button>
       </div>
 
       <div class="table-pad">
@@ -561,6 +692,78 @@ async function onPartFilesChange(event: Event) {
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- 批量重新识别并校正图号弹窗 -->
+    <div v-if="isReidentifyModalOpen" class="modal-backdrop">
+      <div class="modal card reidentify-modal">
+        <div class="modal-head">
+          <div class="modal-title">
+            <DemoIcon name="scan" :size="18" />
+            <span>批量校正零件图号</span>
+          </div>
+          <button class="btn sm close-btn" type="button" :disabled="isExecutingReidentify" @click="closeReidentifyModal">✕</button>
+        </div>
+
+        <div class="modal-body reidentify-modal-body">
+          <div class="reidentify-hint">
+            <DemoIcon name="info" :size="14" />
+            <span>系统已从图纸内部标题栏读取到真实图号，并已自动过滤明细表和非零件图文件。请核对并勾选需校正的项：</span>
+          </div>
+
+          <div class="reidentify-table-wrap">
+            <table class="tbl compact-tbl">
+              <thead>
+                <tr>
+                  <th style="width: 40px; text-align: center">
+                    <input
+                      type="checkbox"
+                      :checked="reidentifyList.length > 0 && reidentifyList.every((i) => i.checked)"
+                      @change="reidentifyList.forEach((i) => (i.checked = ($event.target as HTMLInputElement).checked))"
+                    />
+                  </th>
+                  <th>文件名</th>
+                  <th>当前关联图号</th>
+                  <th>识别图号 (标题栏)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in reidentifyList" :key="item.file.id">
+                  <td style="text-align: center">
+                    <input v-model="item.checked" type="checkbox" />
+                  </td>
+                  <td class="file-name-cell">
+                    <DemoIcon name="file" :size="14" />
+                    <span>{{ item.file.name }}</span>
+                  </td>
+                  <td class="num mono text-muted">{{ item.oldPartNo }}</td>
+                  <td class="num mono bold text-accent">
+                    {{ item.newPartNo }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-if="reidentifyFailures.length" class="reidentify-fail-box">
+            <div class="fail-title">
+              <DemoIcon name="alert-triangle" :size="13" />
+              <span>以下 {{ reidentifyFailures.length }} 个文件未能在标题栏中找到规范图号（已忽略）：</span>
+            </div>
+            <ul>
+              <li v-for="(msg, idx) in reidentifyFailures" :key="idx">{{ msg }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <button class="btn" type="button" :disabled="isExecutingReidentify" @click="closeReidentifyModal">取消</button>
+          <button class="btn primary" type="button" :disabled="isExecutingReidentify" @click="confirmBatchReidentify">
+            <DemoIcon name="check" :size="14" />
+            {{ isExecutingReidentify ? '校正中...' : `确认校正 (${reidentifyList.filter((i) => i.checked).length} 项)` }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -915,6 +1118,84 @@ async function onPartFilesChange(event: Event) {
   flex-direction: column;
 }
 
+.reidentify-modal {
+  width: 680px;
+  max-width: 92vw;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+}
+
+.reidentify-modal-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.reidentify-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+  background: var(--panel-2);
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.reidentify-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.compact-tbl th,
+.compact-tbl td {
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+
+.text-muted {
+  color: var(--text-3);
+}
+
+.reidentify-fail-box {
+  background: rgba(234, 179, 8, 0.08);
+  border: 1px dashed rgba(234, 179, 8, 0.35);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.reidentify-fail-box .fail-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--warn, #eab308);
+  margin-bottom: 6px;
+}
+
+.reidentify-fail-box ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-3);
+  max-height: 80px;
+  overflow-y: auto;
+}
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -1003,6 +1284,23 @@ async function onPartFilesChange(event: Event) {
   background: var(--panel-2);
   border-bottom-left-radius: inherit;
   border-bottom-right-radius: inherit;
+}
+
+.files-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.files-title-row .hint {
+  flex: 1;
+  min-width: 180px;
+}
+
+.files-title-row .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* 借用零件高阶选型体系弹窗 */

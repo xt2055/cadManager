@@ -18,6 +18,18 @@ export interface AttachmentResult {
   createdAt?: string
 }
 
+export interface DrawingFileIdentity {
+  partNo: string
+  titleBlock?: Record<string, string>
+}
+
+export interface ReidentifyDrawingFileResult {
+  storageKey: string
+  drawingNo: string
+  oldPartNo: string
+  partNo: string
+}
+
 export interface DataProvider {
   load(): Promise<DataDocument>
   save(document: DataDocument): Promise<void>
@@ -26,4 +38,6 @@ export interface DataProvider {
   readAttachment(storageKey: string): Promise<Blob>
   exportBOM?(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
   scanDrawingDesigner?(drawingNo: string): Promise<string>
+  identifyDrawingFile?(file: Blob, name: string): Promise<DrawingFileIdentity>
+  reidentifyDrawingFile?(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
 }

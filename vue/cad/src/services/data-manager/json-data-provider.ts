@@ -85,6 +85,14 @@ export class JsonDataProvider implements DataProvider {
     return { storageKey, size: file.size, mimeType }
   }
 
+  async identifyDrawingFile(): Promise<never> {
+    throw new Error('本地 JSON 存储模式不支持从图纸内容读取图号，请切换到服务端存储模式')
+  }
+
+  async reidentifyDrawingFile(): Promise<never> {
+    throw new Error('本地 JSON 存储模式不支持校正历史图纸图号，请切换到服务端存储模式')
+  }
+
   async deleteAttachment(storageKey: string): Promise<void> {
     if (isTauriRuntime()) {
       await invoke('delete_attachment', { storageKey })

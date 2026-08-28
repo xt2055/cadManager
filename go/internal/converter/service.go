@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"cadguanliq/internal/attachment"
+	"cadguanliq/internal/cadtext"
 	"cadguanliq/internal/storage"
 )
 
@@ -310,6 +311,109 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 
 	log.Printf("[CAD Converter] 成功生成 DWG: %s -> %s", att.StorageKey, dwgKey)
 	return nil
+}
+
+// ConvertToExb 将 DWG 或 DXF 转换为 EXB 格式并存入对象存储，返回生成的 exbStorageKey
+func (s *Service) ConvertToExb(ctx context.Context, att attachment.Attachment) (string, error) {
+	ext := filepathExt(att.StorageKey)
+	if ext == "" {
+		ext = filepathExt(att.Name)
+	}
+	if strings.EqualFold(ext, ".exb") {
+		return att.StorageKey, nil
+	}
+	if !strings.EqualFold(ext, ".dwg") && !strings.EqualFold(ext, ".dxf") {
+		return "", fmt.Errorf("只支持 DWG/DXF 格式转换为 EXB: %s", att.Name)
+	}
+
+	if err := s.ensureCaxaRunning(ctx); err != nil {
+		return "", err
+	}
+
+	tempDir := os.TempDir()
+	nowNano := time.Now().UnixNano()
+	tempIn := filepath.Join(tempDir, fmt.Sprintf("caxa_in_%d%s", nowNano, ext))
+	tempExb := filepath.Join(tempDir, fmt.Sprintf("caxa_out_%d.exb", nowNano))
+	defer os.Remove(tempIn)
+	defer os.Remove(tempExb)
+	defer os.Remove(tempExb + ".done")
+
+	reader, _, err := s.storage.Open(ctx, att.StorageKey)
+	if err != nil {
+		return "", fmt.Errorf("读取源文件失败: %w", err)
+	}
+	defer reader.Close()
+
+	inFile, err := os.Create(tempIn)
+	if err != nil {
+		return "", fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	if _, err := ioCopy(inFile, reader); err != nil {
+		inFile.Close()
+		return "", fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	inFile.Close()
+	if strings.EqualFold(ext, ".dxf") {
+		if err := cadtext.NormalizeDxfFileForCaxa(tempIn); err != nil {
+			return "", err
+		}
+	}
+
+	if err := s.convertPathToExb(ctx, tempIn, tempExb); err != nil {
+		return "", err
+	}
+
+	exbKey := strings.TrimSuffix(att.StorageKey, ext) + ".exb"
+	exbReader, err := os.Open(tempExb)
+	if err != nil {
+		return "", fmt.Errorf("打开生成的 EXB 失败: %w", err)
+	}
+	defer exbReader.Close()
+
+	_, putErr := s.storage.Put(ctx, exbKey, exbReader, "application/octet-stream")
+	if putErr != nil {
+		return "", fmt.Errorf("保存 EXB 文件失败: %w", putErr)
+	}
+
+	log.Printf("[CAD Converter] 成功转换并保存 EXB: %s -> %s", att.StorageKey, exbKey)
+	return exbKey, nil
+}
+
+// ConvertPathToExb 将本地 DWG/DXF 文件转换为本地 EXB 文件，供上传前识别图纸内容使用。
+func (s *Service) ConvertPathToExb(ctx context.Context, inputPath, outputPath string) error {
+	if err := s.ensureCaxaRunning(ctx); err != nil {
+		return err
+	}
+	return s.convertPathToExb(ctx, inputPath, outputPath)
+}
+
+func (s *Service) convertPathToExb(ctx context.Context, inputPath, outputPath string) error {
+	jobFile := filepath.Join(os.TempDir(), "caxa_exb_jobs.txt")
+	if err := waitForJobFileFree(jobFile, 10*time.Second); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("%s|%s\n", inputPath, outputPath)
+	if err := os.WriteFile(jobFile, []byte(line), 0o644); err != nil {
+		return fmt.Errorf("写入 CAXA 调度任务失败: %w", err)
+	}
+
+	doneFile := outputPath + ".done"
+	for i := 0; i < 40; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		time.Sleep(500 * time.Millisecond)
+		if _, err := os.Stat(doneFile); err == nil {
+			statusBytes, _ := os.ReadFile(doneFile)
+			if strings.TrimSpace(string(statusBytes)) == "OK" {
+				return nil
+			}
+			return errors.New("CAXA 转换为 EXB 失败")
+		}
+	}
+	return errors.New("CAXA 转换为 EXB 超时")
 }
 
 // EnsureDwg 确保 EXB 已转换为可供浏览器 CAD 引擎读取的 DWG，并返回实际存储键。

@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import { dataManager } from '@/services/data-manager'
 import { readDocxAuthor } from '@/utils/docx-metadata'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
+import { directParentDrawingNo } from '@/utils/drawing-number-parser'
 import { useAuthStore } from '@/stores/auth.store'
 import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
 import type { DataDocument } from '@/services/data-manager'
@@ -795,6 +796,69 @@ export const useDomainStore = defineStore('domain', () => {
       if (storageKey) await dataManager.deleteAttachment(storageKey).catch(() => undefined)
       throw saveError
     }
+  }
+
+  async function reidentifyDrawingFile(file: DrawingFile, newPartNo: string): Promise<void> {
+    await initialize()
+    const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || ''
+    if (file.role === 'assembly' || !['.exb', '.dwg', '.dxf'].includes(extension) || !file.storageKey) {
+      throw new Error('只有已关联存储位置的零件图支持重新识别')
+    }
+    const result = await dataManager.reidentifyDrawingFile(file.storageKey, newPartNo)
+    const oldPart = structure.value.find((part) => part.no === result.oldPartNo)
+    const targetPart = structure.value.find((part) => part.no === result.partNo)
+
+    for (const drawing of drawings.value) {
+      drawing.files = (drawing.files ?? []).filter((item) => item.id !== file.id)
+      drawing.otherFiles = (drawing.otherFiles ?? []).filter((item) => item.id !== file.id)
+    }
+    for (const part of structure.value) {
+      part.files = (part.files ?? []).filter((item) => item.id !== file.id)
+      part.otherFiles = (part.otherFiles ?? []).filter((item) => item.id !== file.id)
+      part.hasFile = part.files.length > 0
+    }
+
+    if (oldPart && targetPart && oldPart !== targetPart) {
+      targetPart.files = [...(targetPart.files ?? []), { ...file, partNo: result.partNo }]
+      targetPart.hasFile = true
+    } else if (oldPart) {
+      const oldPartNo = oldPart.no
+      oldPart.no = result.partNo
+      oldPart.parentNo = directParentDrawingNo(result.partNo) || oldPart.parentNo
+      oldPart.files = (oldPart.files ?? []).map((item) => ({ ...item, partNo: result.partNo }))
+      for (const child of structure.value) {
+        if (child.parentNo === oldPartNo) child.parentNo = result.partNo
+      }
+      oldPart.files = [...(oldPart.files ?? []), { ...file, role: 'part', partNo: result.partNo }]
+      oldPart.hasFile = true
+    } else if (targetPart) {
+      targetPart.files = [...(targetPart.files ?? []), { ...file, role: 'part', partNo: result.partNo }]
+      targetPart.hasFile = true
+    } else {
+      const parentNo = directParentDrawingNo(result.partNo) || result.drawingNo
+      const drawing = drawings.value.find((item) => item.no === result.drawingNo)
+      structure.value.push({
+        no: result.partNo,
+        name: file.name.replace(/\.[^/.]+$/, ''),
+        parentNo,
+        project: drawing?.project || result.drawingNo,
+        material: '—',
+        spec: '',
+        weight: 0,
+        surfaceTreatment: '',
+        partType: '自制件',
+        qty: 1,
+        status: 'draft',
+        ver: file.version || 'v1.0',
+        hasFile: true,
+        files: [{ ...file, role: 'part', partNo: result.partNo }],
+        otherFiles: [],
+        materialFiles: [],
+        craftFiles: [],
+      })
+    }
+    file.partNo = result.partNo
+    await persist()
   }
 
   // 借用其他项目的零件到当前项目（包含其图纸文件、属性，并建立双向借用追溯记录）
@@ -1764,6 +1828,7 @@ export const useDomainStore = defineStore('domain', () => {
     createPartWithFile,
     borrowPartToProject,
     uploadDrawingFile,
+    reidentifyDrawingFile,
     replaceDrawingFile,
     uploadOtherFile,
     deleteOtherFile,

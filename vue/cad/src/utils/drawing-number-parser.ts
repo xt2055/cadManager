@@ -64,6 +64,21 @@ export function directParentDrawingNo(no: string): string | null {
   return match?.[1] ?? null
 }
 
+export function parseDrawingNumber(noValue: string): ParsedDrawingFileName {
+  const no = noValue.trim()
+  if (!no) return invalidResult()
+  const rootNo = drawingRootNo(no)
+  const segments = no.slice(rootNo.length).split('-').filter(Boolean)
+  return {
+    no,
+    name: '',
+    rootNo,
+    parentNo: directParentDrawingNo(no),
+    level: segments.length,
+    isStandard: true,
+  }
+}
+
 export function parseDrawingFileName(fileName: string, rootDrawingNo: string): ParsedDrawingFileName {
   const rootNo = rootDrawingNo.trim()
   const baseName = stripExtension(fileName)
@@ -94,15 +109,9 @@ export function parseStandaloneDrawingFileName(fileName: string): ParsedDrawingF
   const no = parseDrawingNumberPrefix(baseName)
   if (!no) return invalidResult()
 
-  const rootNo = drawingRootNo(no)
-  const segments = no.slice(rootNo.length).split('-').filter(Boolean)
   return {
-    no,
+    ...parseDrawingNumber(no),
     name: extractDrawingName(baseName, no),
-    rootNo,
-    parentNo: directParentDrawingNo(no),
-    level: segments.length,
-    isStandard: true,
   }
 }
 
