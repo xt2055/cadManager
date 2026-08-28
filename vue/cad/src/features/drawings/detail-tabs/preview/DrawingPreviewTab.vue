@@ -214,10 +214,29 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function formatCurrentTime(): string {
+  const current = new Date()
+  const year = current.getFullYear()
+  const month = String(current.getMonth() + 1).padStart(2, '0')
+  const day = String(current.getDate()).padStart(2, '0')
+  const hours = String(current.getHours()).padStart(2, '0')
+  const minutes = String(current.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}`
+}
+
 function openBrowse(file: DrawingFile) {
   if (!currentItem.value) return
   router.push({
     name: 'drawing-viewer',
+    params: { drawingId: currentItem.value.no },
+    query: { fileId: file.id },
+  })
+}
+
+function openEditor(file: DrawingFile) {
+  if (!currentItem.value) return
+  router.push({
+    name: 'drawing-editor',
     params: { drawingId: currentItem.value.no },
     query: { fileId: file.id },
   })
@@ -323,7 +342,7 @@ async function onAssemblyFileChange(event: Event) {
     drawingNo: currentItem.value.no,
     version: currentItem.value.ver || 'v1.0',
         uploadedBy: ('by' in (currentItem.value || {})) ? (currentItem.value as any).by : '当前用户',
-    uploadedAt: '刚刚',
+    uploadedAt: formatCurrentTime(),
     previewable: true,
   }
 
@@ -369,7 +388,7 @@ async function onPartFilesChange(event: Event) {
         ...(isStructuredPart ? { partNo } : {}),
         version: 'v1.0',
         uploadedBy: ('by' in currentItem.value ? currentItem.value.by : '当前用户') || '当前用户',
-        uploadedAt: '刚刚',
+        uploadedAt: formatCurrentTime(),
         previewable: true,
       }
 
@@ -515,6 +534,9 @@ async function onPartFilesChange(event: Event) {
               <td class="row-actions" style="text-align: right">
                 <button class="btn sm primary" type="button" title="在线 CAD 矢量浏览" @click="openBrowse(file)">
                   <DemoIcon name="eye" :size="13" />浏览
+                </button>
+                <button class="btn sm" type="button" title="在线 CAD 编辑器" @click="openEditor(file)">
+                  <DemoIcon name="edit" :size="13" />在线编辑
                 </button>
                 <button class="btn sm" type="button" title="替换当前图纸文件并生成新版本" @click="triggerReplace(file)">
                   <DemoIcon name="refresh-cw" :size="13" />替换
@@ -1376,6 +1398,14 @@ async function onPartFilesChange(event: Event) {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.drawing-preview-view > * {
+  max-width: 100%;
   min-width: 0;
 }
 
@@ -1418,13 +1448,73 @@ async function onPartFilesChange(event: Event) {
 }
 
 .files-table-card {
-  overflow: visible;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.files-table-card .tbl {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.files-table-card .tbl th,
+.files-table-card .tbl td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.files-table-card .tbl th:nth-child(1),
+.files-table-card .tbl td:nth-child(1) {
+  width: 10%;
+}
+
+.files-table-card .tbl th:nth-child(2),
+.files-table-card .tbl td:nth-child(2) {
+  width: 25%;
+}
+
+.files-table-card .tbl th:nth-child(3),
+.files-table-card .tbl td:nth-child(3) {
+  width: 14%;
+}
+
+.files-table-card .tbl th:nth-child(4),
+.files-table-card .tbl td:nth-child(4) {
+  width: 9%;
+}
+
+.files-table-card .tbl th:nth-child(5),
+.files-table-card .tbl td:nth-child(5) {
+  width: 8%;
+}
+
+.files-table-card .tbl th:nth-child(6),
+.files-table-card .tbl td:nth-child(6) {
+  width: 10%;
+}
+
+.files-table-card .tbl th:nth-child(7),
+.files-table-card .tbl td:nth-child(7) {
+  width: 14%;
 }
 
 .table-pad {
+  width: 100%;
+  min-width: 0;
   padding: 10px 14px;
   max-height: none;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: hidden;
+}
+
+.actions-heading {
+  width: 10%;
+  min-width: 0;
+  text-align: right !important;
 }
 
 .file-name-cell {
@@ -1439,15 +1529,54 @@ async function onPartFilesChange(event: Event) {
 }
 
 .file-name-cell b {
-  overflow-wrap: anywhere;
+  display: block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   line-height: 1.4;
 }
 
 .row-actions {
   display: flex;
+  position: relative;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.row-actions .btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 5px;
+  gap: 0;
+  font-size: 0;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.row-actions .btn :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+.row-actions .hist-count {
+  position: absolute;
+  margin-left: 16px;
+  margin-top: -15px;
+  min-width: 13px;
+  padding: 1px 3px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
 }
 
 .empty {

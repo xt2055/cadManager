@@ -45,7 +45,18 @@ export class ApiDataProvider implements DataProvider {
       body: formData,
       credentials: 'include',
     })
-    if (!response.ok) throw new Error(`附件上传失败：HTTP ${response.status}`)
+    if (!response.ok) {
+      let message = `附件上传失败：HTTP ${response.status}`
+      try {
+        const errorBody: unknown = await response.json()
+        if (isRecord(errorBody) && typeof errorBody.message === 'string' && errorBody.message.trim()) {
+          message = `附件上传失败：${errorBody.message}`
+        }
+      } catch {
+        // 非 JSON 错误响应使用默认 HTTP 错误信息。
+      }
+      throw new Error(message)
+    }
 
     const body: unknown = await response.json()
     if (isRecord(body) && typeof body.code === 'number' && body.code !== 0 && body.code !== 200) {

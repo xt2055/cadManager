@@ -137,6 +137,15 @@ function openViewer(node: HistoryTreeNode) {
   })
 }
 
+function openEditor(node: HistoryTreeNode) {
+  if (!targetFile.value) return
+  router.push({
+    name: 'drawing-editor',
+    params: { drawingId: drawingId.value },
+    query: { fileId: node.id },
+  })
+}
+
 async function downloadFile(node: HistoryTreeNode) {
   if (!node.storageKey) {
     uiStore.toast('该历史文件暂无物理存储路径', 'warn')
@@ -269,6 +278,14 @@ watch([drawingId, fileId], () => {
                 @click="openViewer(selectedNode)"
               >
                 <DemoIcon name="eye" :size="15" />在线浏览
+              </button>
+              <button
+                class="btn"
+                type="button"
+                :title="selectedNode.previewable ? '进入完整版 CAD 在线编辑器' : '该格式暂不支持在线编辑'"
+                @click="openEditor(selectedNode)"
+              >
+                <DemoIcon name="edit" :size="15" />在线编辑
               </button>
               <button class="btn" type="button" title="下载此历史阶段的原始图纸文件" @click="downloadFile(selectedNode)">
                 <DemoIcon name="download" :size="15" />下载本版本

@@ -74,6 +74,16 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function createVersionStorageKey(sourceKey: string | undefined, fileName: string): string | undefined {
+  if (!sourceKey) return undefined
+  const normalizedKey = sourceKey.replaceAll('\\', '/')
+  const directory = normalizedKey.includes('/') ? normalizedKey.slice(0, normalizedKey.lastIndexOf('/')) : ''
+  const extension = fileName.match(/\.[^./]+$/)?.[0] || '.dxf'
+  const baseName = fileName.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '-') || 'drawing'
+  const uniqueName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${baseName}${extension}`
+  return directory ? `${directory}/${uniqueName}` : uniqueName
+}
+
 function activityTime(): string {
   return new Date().toISOString()
 }
@@ -292,8 +302,40 @@ export const useDomainStore = defineStore('domain', () => {
       }
     }
 
-    // 自动修复历史文件中显示为“刚刚”的上传时间
-    const formatTimeStr = (t: string) => (t === '刚刚' ? nowLabel() : t)
+    // 自动修复历史文件中显示为“刚刚”、历史占位符或缺失的上传时间。
+    const formatTimeStr = (t: string) => (!t || t === '刚刚' || t === '历史记录' ? nowLabel() : t)
+    for (const d of drawings.value) {
+      for (const file of [...(d.files ?? []), ...(d.otherFiles ?? [])]) {
+        const uploadedAt = formatTimeStr(file.uploadedAt)
+        if (uploadedAt !== file.uploadedAt) {
+          file.uploadedAt = uploadedAt
+          changed = true
+        }
+        for (const history of file.history ?? []) {
+          const historyUploadedAt = formatTimeStr(history.uploadedAt)
+          if (historyUploadedAt !== history.uploadedAt) {
+            history.uploadedAt = historyUploadedAt
+            changed = true
+          }
+        }
+      }
+    }
+    for (const part of structure.value) {
+      for (const file of [...(part.files ?? []), ...(part.otherFiles ?? [])]) {
+        const uploadedAt = formatTimeStr(file.uploadedAt)
+        if (uploadedAt !== file.uploadedAt) {
+          file.uploadedAt = uploadedAt
+          changed = true
+        }
+        for (const history of file.history ?? []) {
+          const historyUploadedAt = formatTimeStr(history.uploadedAt)
+          if (historyUploadedAt !== history.uploadedAt) {
+            history.uploadedAt = historyUploadedAt
+            changed = true
+          }
+        }
+      }
+    }
     for (const d of drawings.value) {
       if (d.materialFiles) {
         for (const mf of d.materialFiles) {
@@ -429,6 +471,10 @@ export const useDomainStore = defineStore('domain', () => {
     })
     file.storageKey = result.storageKey
     file.mimeType = result.mimeType
+    if (isDrawingFile(file)) {
+      // 后端以 attachments.created_at 为准；本地模式没有后端时间时使用上传完成时刻。
+      file.uploadedAt = result.createdAt || nowLabel()
+    }
     return result.storageKey
   }
 
@@ -876,6 +922,7 @@ export const useDomainStore = defineStore('domain', () => {
 
     const operatorName = authStore.currentUser?.displayName || '当前用户'
     const replaceTime = nowLabel()
+    const newStorageKey = createVersionStorageKey(currentFile.storageKey, newFileInfo.name)
 
     // 1. 将当前版本完整记录进历史归档数组
     const oldHistoryItem: import('@/types/domain.types').DrawingFileHistoryItem = {
@@ -912,6 +959,7 @@ export const useDomainStore = defineStore('domain', () => {
       replacedBy: operatorName,
       replacedAt: replaceTime,
       history: updatedHistory,
+      ...(newStorageKey ? { storageKey: newStorageKey } : {}),
     }
 
     let storageKey: string | undefined

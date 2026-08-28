@@ -154,6 +154,13 @@ export const routes: RouteRecordRaw[] = [
     ],
   },
   {
+    path: '/drawings/:drawingId/edit',
+    name: RouteName.DrawingEditor,
+    component: () =>
+      import('@/features/drawings/pages/DrawingEditorPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/admin',
     component: () => import('@/features/admin/layouts/AdminLayout.vue'),
     meta: { requiresAuth: true, roles: ['admin'] satisfies UserRole[], permission: 'admin.access' },
