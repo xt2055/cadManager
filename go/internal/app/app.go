@@ -2,14 +2,16 @@ package app
 
 import (
 	"context"
-	"log"
 	"net/http"
+	"os"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/auth"
 	"cadguanliq/internal/config"
 	"cadguanliq/internal/data"
 	httpapi "cadguanliq/internal/http"
+	"cadguanliq/internal/logging"
+	"cadguanliq/internal/setup"
 	"cadguanliq/internal/smb"
 	"cadguanliq/internal/storage"
 	"cadguanliq/internal/versioning"
@@ -21,10 +23,18 @@ func NewHandler(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service
 }
 
 func Run(cfg config.Config) error {
+	if err := logging.Setup(cfg.LogDir); err != nil {
+		return err
+	}
+	// 首次运行（无 .env）进入安装向导，完成后自动重启进入正常模式
+	if _, statErr := os.Stat(".env"); os.IsNotExist(statErr) {
+		return setup.Run(cfg)
+	}
+	logging.Infof("[启动] cadguanliq 服务初始化开始，日志目录 %s", cfg.LogDir)
 	if err := smb.Ensure(context.Background(), cfg.SMB); err != nil {
 		return err
 	}
-	log.Printf("[SMB] 启动初始化完成，进入数据库和 HTTP 服务初始化")
+	logging.Infof("[SMB] 启动初始化完成，进入数据库和 HTTP 服务初始化")
 	pool, err := data.NewPool(context.Background(), cfg.Database)
 	if err != nil {
 		return err
@@ -58,9 +68,15 @@ func Run(cfg config.Config) error {
 		    current_sha256 = COALESCE(current_sha256, sha256)
 		WHERE current_storage_key IS NULL;
 	`); migErr != nil {
-		log.Printf("[DB Migration] 增量数据同步检查略过: %v", migErr)
+		logging.Warnf("[DB Migration] 增量数据同步检查略过: %v", migErr)
 	} else {
-		log.Printf("[DB Migration] attachments 表增量字段迁移检查完成")
+		logging.Infof("[DB Migration] attachments 表增量字段迁移检查完成")
+	}
+	if _, migErr := pool.Exec(context.Background(), `
+		ALTER TABLE update_manifests ADD COLUMN IF NOT EXISTS file_name VARCHAR(255) NOT NULL DEFAULT '';
+		ALTER TABLE update_manifests ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0;
+	`); migErr != nil {
+		logging.Warnf("[DB Migration] update_manifests 增量字段检查略过: %v", migErr)
 	}
 	attachmentRepository := attachment.NewPGRepository(pool)
 	attachmentStorage, err := storage.NewLocalStorage(cfg.StorageRoot)
@@ -70,6 +86,6 @@ func Run(cfg config.Config) error {
 	versionService := versioning.NewService(versioning.NewPGRepository(pool), attachmentRepository, attachmentStorage)
 	versionService.StartCleanup(context.Background())
 
-	log.Printf("cadguanliq backend listening on %s", cfg.Addr)
+	logging.Infof("[启动] 服务监听 %s", cfg.Addr)
 	return http.ListenAndServe(cfg.Addr, NewHandler(cfg, pool, authService))
 }

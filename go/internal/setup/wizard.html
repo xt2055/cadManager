@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图枢 · 安装向导</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171e2e; --panel-2: #1d2638; --line: #2a3550;
+    --text: #e6ebf5; --muted: #8b96ad; --accent: #4f8cff; --ok: #34c77b; --warn: #f0a020; --err: #ef5b6b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    background: radial-gradient(1200px 600px at 20% -10%, #1a2540 0%, var(--bg) 55%);
+    color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .wizard { width: 100%; max-width: 760px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .brand-badge { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, var(--accent), #7a5cff); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px; }
+  .brand-title { font-size: 18px; font-weight: 600; }
+  .brand-sub { font-size: 12px; color: var(--muted); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+  .steps { display: flex; gap: 6px; margin-bottom: 24px; }
+  .step-dot { flex: 1; height: 4px; border-radius: 2px; background: var(--line); transition: background .3s; }
+  .step-dot.active { background: var(--accent); }
+  .step-dot.done { background: var(--ok); }
+  h2 { font-size: 20px; margin-bottom: 6px; }
+  .desc { color: var(--muted); font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  .field input, .field select {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+    color: var(--text); font-size: 14px; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+  .checks { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+  .check { display: flex; align-items: center; justify-content: space-between; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .check-name { font-size: 14px; }
+  .check-detail { font-size: 12px; color: var(--muted); margin-top: 2px; word-break: break-all; }
+  .state { font-size: 12px; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .state.ok { color: var(--ok); background: rgba(52,199,123,.12); }
+  .state.warn { color: var(--warn); background: rgba(240,160,32,.12); }
+  .state.err { color: var(--err); background: rgba(239,91,107,.12); }
+  .actions { display: flex; justify-content: space-between; margin-top: 26px; }
+  .btn { border: none; border-radius: 10px; padding: 11px 22px; font-size: 14px; cursor: pointer; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .msg { margin-top: 16px; padding: 12px 14px; border-radius: 10px; font-size: 13px; line-height: 1.6; display: none; word-break: break-all; }
+  .msg.show { display: block; }
+  .msg.ok { background: rgba(52,199,123,.1); color: var(--ok); }
+  .msg.err { background: rgba(239,91,107,.1); color: var(--err); }
+  .msg.info { background: rgba(79,140,255,.1); color: #9db9ff; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.7; }
+  .step { display: none; } .step.active { display: block; }
+</style>
+</head>
+<body>
+<div class="wizard">
+  <div class="brand">
+    <div class="brand-badge">枢</div>
+    <div>
+      <div class="brand-title">图枢 · CAD 图纸管理系统</div>
+      <div class="brand-sub">首次运行安装向导 · 引导你完成服务初始化</div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="steps">
+      <div class="step-dot" data-dot="1"></div><div class="step-dot" data-dot="2"></div>
+      <div class="step-dot" data-dot="3"></div><div class="step-dot" data-dot="4"></div>
+      <div class="step-dot" data-dot="5"></div>
+    </div>
+
+    <section class="step active" data-step="1">
+      <h2>环境检测</h2>
+      <p class="desc">向导将引导你完成：数据库连接与建表 → 创建管理员账号 → Python 虚拟环境 → 生成配置并重启。以下为当前环境检测结果。</p>
+      <div class="checks" id="envChecks"><div class="check"><span class="check-name">正在检测环境…</span></div></div>
+      <div class="hint" id="envHint"></div>
+      <div class="actions"><span></span><button class="btn primary" id="envNext">下一步</button></div>
+    </section>
+
+    <section class="step" data-step="2">
+      <h2>数据库连接</h2>
+      <p class="desc">填入 PostgreSQL 连接信息。目标数据库不存在时会自动创建，并执行全部数据表迁移。</p>
+      <div class="grid">
+        <div class="field"><label>主机地址</label><input id="dbHost" value="127.0.0.1"></div>
+        <div class="field"><label>端口</label><input id="dbPort" type="number" value="5432"></div>
+        <div class="field"><label>数据库名</label><input id="dbName" value="cadguanliq"></div>
+        <div class="field"><label>连接用户名</label><input id="dbUser" value="postgres"></div>
+        <div class="field"><label>连接密码</label><input id="dbPassword" type="password" placeholder="PostgreSQL 密码"></div>
+        <div class="field"><label>SSL 模式</label>
+          <select id="dbSsl"><option value="disable">disable（本机常用）</option><option value="require">require</option></select>
+        </div>
+      </div>
+      <div class="msg" id="dbMsg"></div>
+      <div class="actions">
+        <button class="btn" data-goto="1">上一步</button>
+        <button class="btn primary" id="dbSubmit">测试连接并建表</button>
+      </div>
+    </section>
+
+    <section class="step" data-step="3">
+      <h2>创建管理员</h2>
+      <p class="desc">管理员拥有后台管理、日志查看与更新发布权限。该账号用于登录系统。</p>
+      <div class="grid">
+        <div class="field"><label>登录账号</label><input id="adminAccount" placeholder="例如 admin"></div>
+        <div class="field"><label>显示名称</label><input id="adminName" placeholder="例如 管理员"></div>
+        <div class="field"><label>登录密码（至少 6 位）</label><input id="adminPassword" type="password"></div>
+        <div class="field"><label>确认密码</label><input id="adminPassword2" type="password"></div>
+      </div>
+      <div class="msg" id="adminMsg"></div>
+      <div class="actions">
+        <button class="btn" data-goto="2">上一步</button>
+        <button class="btn primary" id="adminSubmit">创建管理员账号</button>
+      </div>
+    </section>
+
+    <section class="step" data-step="4">
+      <h2>Python 环境（可选）</h2>
+      <p class="desc">用于 EXB 图纸标题栏解析。将自动在工作目录创建 <code>.venv</code> 虚拟环境并安装依赖（olefile）。可跳过，之后手动配置。</p>
+      <div class="checks" id="pyChecks"></div>
+      <div class="msg" id="pyMsg"></div>
+      <div class="actions">
+        <button class="btn" data-goto="3">上一步</button>
+        <div style="display:flex; gap:10px;">
+          <button class="btn" id="pySkip">暂不配置</button>
+          <button class="btn primary" id="pySubmit">创建虚拟环境</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="step" data-step="5">
+      <h2>完成初始化</h2>
+      <p class="desc">确认无误后点击完成：系统将写入 <code>.env</code> 配置文件并自动重启，随后即可访问登录页。</p>
+      <div class="checks" id="finishChecks"></div>
+      <div class="msg" id="finishMsg"></div>
+      <div class="actions">
+        <button class="btn" data-goto="4">上一步</button>
+        <button class="btn primary" id="finishSubmit">完成并重启服务</button>
+      </div>
+    </section>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+let current = 1;
+let dbOK = false, adminOK = false, pythonOK = false;
+
+function goto(step) {
+  current = step;
+  document.querySelectorAll('.step').forEach(el => el.classList.toggle('active', +el.dataset.step === step));
+  document.querySelectorAll('.step-dot').forEach(el => {
+    const index = +el.dataset.dot;
+    el.classList.toggle('active', index === step);
+    el.classList.toggle('done', index < step);
+  });
+}
+
+document.querySelectorAll('[data-goto]').forEach(btn => btn.addEventListener('click', () => goto(+btn.dataset.goto)));
+
+function showMsg(id, type, text) {
+  const el = $(id);
+  el.className = 'msg show ' + type;
+  el.textContent = text;
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.message || body.error || ('HTTP ' + res.status));
+  return body.data !== undefined ? body.data : body;
+}
+
+const stateBadge = (ok, okText, errText) => `<span class="state ${ok ? 'ok' : 'err'}">${ok ? okText : errText}</span>`;
+
+async function loadStatus() {
+  try {
+    const status = await api('/api/setup/status');
+    dbOK = status.databaseOK; adminOK = status.adminOK; pythonOK = status.pythonOK;
+    const py = status.python || {};
+    $('envChecks').innerHTML = `
+      <div class="check"><div><div class="check-name">操作系统</div><div class="check-detail">${status.platform}</div></div>${stateBadge(true, '支持', '')}</div>
+      <div class="check"><div><div class="check-name">系统 Python</div><div class="check-detail">${py.systemPython || '未检测到，可选环境'}</div></div>${stateBadge(py.systemPython && py.systemPython !== '未检测到', '可用', '可选')}</div>
+      <div class="check"><div><div class="check-name">uv 包管理器</div><div class="check-detail">${py.uvAvailable ? '已安装，可自动注入依赖' : '未安装（可使用虚拟环境替代）'}</div></div>${stateBadge(py.uvAvailable, '可用', '可选')}</div>
+      <div class="check"><div><div class="check-name">CAXA CAD</div><div class="check-detail">${(status.caxa && status.caxa.path) || '未找到'}${status.caxa && status.caxa.error ? ' · ' + status.caxa.error : ''}</div></div>${stateBadge(status.caxa && status.caxa.available, '可用', '未找到')}</div>
+      <div class="check"><div><div class="check-name">服务端口</div><div class="check-detail">http://127.0.0.1:${status.listenPort || '8080'}</div></div>${stateBadge(true, '监听中', '')}</div>
+      <div class="check"><div><div class="check-name">附件存储目录</div><div class="check-detail">${status.storageRoot || './storage/attachments'}</div></div>${stateBadge(true, '默认', '')}</div>`;
+    $('envHint').textContent = py.systemPython === '未检测到' && !py.uvAvailable
+      ? '提示：未检测到 Python 与 uv，第 4 步将无法创建虚拟环境；请安装 Python 3.9+ 并勾选 Add to PATH（不影响其他步骤）。'
+      : '';
+    renderPyChecks(py);
+    renderFinishChecks();
+  } catch (err) {
+    $('envChecks').innerHTML = `<div class="check"><span class="check-name">环境检测失败：${err.message}</span></div>`;
+  }
+}
+
+function renderPyChecks(py) {
+  $('pyChecks').innerHTML = `
+    <div class="check"><div><div class="check-name">虚拟环境</div><div class="check-detail">${py.venvPath || '.venv'}</div></div>${stateBadge(py.venvReady, '已就绪', '未创建')}</div>
+    <div class="check"><div><div class="check-name">解释器</div><div class="check-detail">${py.interpreter || '未知'}</div></div>${stateBadge(py.pipReady || py.uvAvailable, '可用', '待配置')}</div>
+    <div class="check"><div><div class="check-name">Python 版本</div><div class="check-detail">${py.version || py.systemPython || '未知'}</div></div>${stateBadge(!!py.version, '正常', '—')}</div>`;
+}
+
+function renderFinishChecks() {
+  $('finishChecks').innerHTML = `
+    <div class="check"><span class="check-name">数据库初始化</span>${stateBadge(dbOK, '已完成', '未完成')}</div>
+    <div class="check"><span class="check-name">管理员账号</span>${stateBadge(adminOK, '已创建', '未创建')}</div>
+    <div class="check"><span class="check-name">Python 虚拟环境</span>${stateBadge(pythonOK, '已就绪', '未配置（可选）')}</div>`;
+}
+
+$('envNext').addEventListener('click', () => goto(2));
+
+$('dbSubmit').addEventListener('click', async () => {
+  const btn = $('dbSubmit');
+  btn.disabled = true;
+  showMsg('dbMsg', 'info', '正在连接数据库并执行迁移，请稍候…');
+  try {
+    const result = await api('/api/setup/database', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: $('dbHost').value.trim(), port: +$('dbPort').value || 5432,
+        name: $('dbName').value.trim(), user: $('dbUser').value.trim(),
+        password: $('dbPassword').value, sslMode: $('dbSsl').value
+      })
+    });
+    dbOK = true;
+    showMsg('dbMsg', 'ok', `数据库就绪：执行迁移 ${result.applied} 项，跳过 ${result.skipped} 项。`);
+    $('dbSubmit').textContent = '已完成，下一步';
+    setTimeout(() => goto(3), 900);
+  } catch (err) {
+    showMsg('dbMsg', 'err', '失败：' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('adminSubmit').addEventListener('click', async () => {
+  if ($('adminPassword').value !== $('adminPassword2').value) {
+    showMsg('adminMsg', 'err', '两次输入的密码不一致'); return;
+  }
+  const btn = $('adminSubmit');
+  btn.disabled = true;
+  try {
+    await api('/api/setup/admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account: $('adminAccount').value.trim(),
+        displayName: $('adminName').value.trim(),
+        password: $('adminPassword').value
+      })
+    });
+    adminOK = true;
+    showMsg('adminMsg', 'ok', '管理员账号创建成功！');
+    setTimeout(() => goto(4), 900);
+  } catch (err) {
+    showMsg('adminMsg', 'err', '失败：' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('pySubmit').addEventListener('click', async () => {
+  const btn = $('pySubmit');
+  btn.disabled = true;
+  showMsg('pyMsg', 'info', '正在创建虚拟环境并安装依赖（首次约 1-3 分钟）…');
+  try {
+    const status = await api('/api/setup/python', { method: 'POST' });
+    pythonOK = true;
+    renderPyChecks(status);
+    showMsg('pyMsg', 'ok', '虚拟环境创建成功，依赖安装完成。');
+  } catch (err) {
+    showMsg('pyMsg', 'err', '失败：' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('pySkip').addEventListener('click', () => goto(5));
+
+$('finishSubmit').addEventListener('click', async () => {
+  if (!dbOK) { showMsg('finishMsg', 'err', '请先完成数据库初始化'); return; }
+  if (!adminOK) { showMsg('finishMsg', 'err', '请先创建管理员账号'); return; }
+  const btn = $('finishSubmit');
+  btn.disabled = true;
+  showMsg('finishMsg', 'info', '正在写入配置并重启服务…');
+  try {
+    await api('/api/setup/finish', { method: 'POST' });
+    showMsg('finishMsg', 'ok', '初始化完成！服务正在重启，页面将在数秒后自动跳转登录页。');
+    setTimeout(() => location.href = '/', 5000);
+  } catch (err) {
+    showMsg('finishMsg', 'err', '失败：' + err.message);
+    btn.disabled = false;
+  }
+});
+
+goto(1);
+loadStatus();
+</script>
+</body>
+</html>

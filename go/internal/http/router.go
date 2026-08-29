@@ -17,6 +17,7 @@ import (
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/review"
 	"cadguanliq/internal/storage"
+	"cadguanliq/internal/update"
 	"cadguanliq/internal/versioning"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -78,7 +79,19 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/cad/convert-dwg", drawingHandler(handlers.ConvertDxfToDwg(convService, cfg.MaxUploadBytes)))
 	auditRepository := audit.NewPGRepository(pool)
 	mux.Handle("/api/drawing-operation-logs", drawingHandler(handlers.DrawingOperationLogs(auditRepository)))
-	mux.HandleFunc("/api/updates/latest", handlers.UpdateLatest(cfg))
+
+	// 管理端接口（admin 角色）：日志查看与更新管理
+	adminGuard := func(next http.Handler) http.Handler {
+		return protectedUsers(middleware.RequireAdmin(next))
+	}
+	mux.Handle("/api/system/logs", adminGuard(handlers.SystemLogs()))
+	mux.Handle("/api/system/logs/files", adminGuard(handlers.SystemLogFiles()))
+	mux.Handle("/api/system/logs/download", adminGuard(handlers.SystemLogDownload()))
+	updateStore := update.NewStore(pool)
+	mux.Handle("/api/system/updates", adminGuard(handlers.UpdateManagement(updateStore, cfg.UpdatesDir)))
+	mux.Handle("/api/system/updates/", adminGuard(handlers.UpdateResource(updateStore, cfg.UpdatesDir)))
+	mux.HandleFunc("/api/updates/latest", handlers.UpdateLatest(updateStore, cfg))
+	mux.Handle("/api/updates/", protectedUsers(handlers.UpdateDownload(updateStore, cfg.UpdatesDir)))
 
 	var handler http.Handler = mux
 	handler = middleware.Recovery(handler)

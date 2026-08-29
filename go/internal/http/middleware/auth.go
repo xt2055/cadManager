@@ -37,6 +37,24 @@ func UserFromContext(ctx context.Context) (auth.AuthUser, bool) {
 	return user, ok
 }
 
+// RequireAdmin 在 RequireAuth 之后使用：仅放行 admin 角色用户。
+func RequireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "请先登录")
+			return
+		}
+		for _, role := range user.Roles {
+			if strings.EqualFold(role, "admin") {
+				next.ServeHTTP(writer, request)
+				return
+			}
+		}
+		response.WriteError(writer, http.StatusForbidden, "需要管理员权限")
+	})
+}
+
 func BearerToken(value string) string {
 	parts := strings.Fields(value)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {

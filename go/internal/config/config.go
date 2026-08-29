@@ -18,6 +18,8 @@ type Config struct {
 	UpdateMandatory bool
 	StorageRoot     string
 	MaxUploadBytes  int64
+	LogDir          string
+	UpdatesDir      string
 	Dwg2DxfBin      string
 	CaxaBin         string
 	SMB             SMBConfig
@@ -58,6 +60,8 @@ func Load() Config {
 		UpdateMandatory: getenvBool("UPDATE_MANDATORY", false),
 		StorageRoot:     getenv("CAD_STORAGE_ROOT", "./storage/attachments"),
 		MaxUploadBytes:  int64(getenvInt("CAD_MAX_UPLOAD_MB", 100)) * 1024 * 1024,
+		LogDir:          getenv("CAD_LOG_DIR", "./logs"),
+		UpdatesDir:      getenv("CAD_UPDATES_DIR", "./updates"),
 		Dwg2DxfBin:      getenv("CAD_DWG2DXF_BIN", "./tools/exb2dxf/ok/dwg2dxf.exe"),
 		CaxaBin:         os.Getenv("CAD_CAXA_BIN"),
 		SMB: SMBConfig{

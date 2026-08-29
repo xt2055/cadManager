@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"cadguanliq/internal/pythonenv"
 )
 
 var ErrInvalidFile = errors.New("无效的 EXB 文件")
@@ -191,7 +193,9 @@ func ExtractPreview(data []byte) ([]byte, error) {
 
 func buildCommand(ctx context.Context, scriptPath, filePath string) *exec.Cmd {
 	var cmd *exec.Cmd
-	if _, err := exec.LookPath("uv"); err == nil {
+	if venvPython := pythonenv.Interpreter(""); venvPython != "" {
+		cmd = exec.CommandContext(ctx, venvPython, scriptPath, filePath)
+	} else if _, err := exec.LookPath("uv"); err == nil {
 		cmd = exec.CommandContext(ctx, "uv", "run", "--with", "olefile", "python", scriptPath, filePath)
 	} else {
 		cmd = exec.CommandContext(ctx, "python", scriptPath, filePath)

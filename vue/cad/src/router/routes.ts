@@ -189,6 +189,16 @@ export const routes: RouteRecordRaw[] = [
         name: RouteName.AdminLogs,
         component: () => import('@/features/admin/pages/AdminOperationLogPage.vue'),
       },
+      {
+        path: 'system-logs',
+        name: RouteName.AdminSystemLogs,
+        component: () => import('@/features/admin/pages/SystemLogPage.vue'),
+      },
+      {
+        path: 'updates',
+        name: RouteName.AdminUpdates,
+        component: () => import('@/features/admin/pages/UpdateManagementPage.vue'),
+      },
     ],
   },
 ]

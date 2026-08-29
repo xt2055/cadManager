@@ -33,6 +33,8 @@ export const RouteName = {
   AdminReviewFlows: 'admin-review-flows',
   AdminDrawingControl: 'admin-drawing-control',
   AdminLogs: 'admin-logs',
+  AdminSystemLogs: 'admin-system-logs',
+  AdminUpdates: 'admin-updates',
 } as const
 
 export type RouteNameKey = (typeof RouteName)[keyof typeof RouteName]
