@@ -101,7 +101,10 @@ func Ensure(ctx context.Context, root string) (Status, error) {
 		installCtx, installCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer installCancel()
 		args := []string{"-m", "pip", "install", "-r", requirements, "--disable-pip-version-check"}
-		if mirror := strings.TrimSpace(os.Getenv("CAD_PYPI_MIRROR")); mirror != "" {
+		// 离线部署：tools/wheels 内有离线包时完全离线安装，不访问 PyPI
+		if wheels := wheelsPath(root); wheels != "" {
+			args = append(args, "--no-index", "--find-links", wheels)
+		} else if mirror := strings.TrimSpace(os.Getenv("CAD_PYPI_MIRROR")); mirror != "" {
 			args = append(args, "-i", mirror)
 		}
 		if out, err := exec.CommandContext(installCtx, venvPython, args...).CombinedOutput(); err != nil {
@@ -111,16 +114,49 @@ func Ensure(ctx context.Context, root string) (Status, error) {
 	return Inspect(root), nil
 }
 
+// wheelsPath 返回离线依赖包目录（含 tools/wheels/*.whl 时），不存在返回空串。
+func wheelsPath(root string) string {
+	candidates := []string{
+		filepath.Join(orDot(root), "tools", "wheels"),
+		"tools/wheels",
+		"../tools/wheels",
+		"../../tools/wheels",
+		"../../../tools/wheels",
+	}
+	for _, item := range candidates {
+		if abs, err := filepath.Abs(item); err == nil {
+			if matches, globErr := filepath.Glob(filepath.Join(abs, "*.whl")); globErr == nil && len(matches) > 0 {
+				return abs
+			}
+		}
+	}
+	return ""
+}
+
 func basePython() (string, error) {
 	if custom := strings.TrimSpace(os.Getenv("CAD_PYTHON_BIN")); custom != "" {
 		return custom, nil
 	}
 	for _, name := range []string{"python", "python3", "py"} {
-		if _, err := exec.LookPath(name); err == nil {
+		if _, err := exec.LookPath(name); err != nil {
+			continue
+		}
+		if works(name) {
 			return name, nil
 		}
 	}
 	return "", fmt.Errorf("未检测到系统 Python，请安装 Python 3.9+ 并勾选 Add to PATH")
+}
+
+// works 校验候选解释器真实可用（排除 Microsoft Store 的 0 字节占位符）。
+func works(name string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, name, "--version").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToUpper(string(output)), "PYTHON")
 }
 
 func runVersion(interpreter string) (string, error) {

@@ -3,3 +3,7 @@
 cadguanliq.exe
 cadguanliq.exe~
 storage/attachments/
+.venv/
+logs/
+updates/
+data/
