@@ -31,7 +31,6 @@ import type {
   ReviewNode,
   StructurePart,
   StructurePartEditable,
-  SignerAssignments,
   UserAccount,
   UserRole,
 } from '@/types/domain.types'
@@ -1729,33 +1728,6 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
-  async function updateDrawingSigners(drawingNo: string, assignments: SignerAssignments): Promise<void> {
-    await initialize()
-    const target = findDrawingOrPart(drawingNo)
-    if (!target) throw new Error(`未找到图纸：${drawingNo}`)
-
-    const originalSigners = target.signers
-    const signers = Object.fromEntries(
-      Object.entries(assignments).map(([role, user]) => [role, user?.trim() || '待定']),
-    ) as SignerAssignments
-    target.signers = signers
-    try {
-      await persist()
-      recordActivity({
-        drawingNo,
-        drawingName: target.name,
-        targetType: 'drawing',
-        act: 'edit',
-        text: `修改图纸 <b>${drawingNo}</b> 的签署人员`,
-        detail: { before: originalSigners ?? {}, after: signers },
-      })
-      await persist()
-    } catch (saveError) {
-      target.signers = originalSigners
-      throw saveError
-    }
-  }
-
   async function createUser(
     account: string,
     displayName: string,
@@ -1889,7 +1861,6 @@ export const useDomainStore = defineStore('domain', () => {
     submitNodeReview,
     setReviewNodeStatus,
     updateStructurePart,
-    updateDrawingSigners,
     createUser,
     resetUserPassword,
     toggleUser,

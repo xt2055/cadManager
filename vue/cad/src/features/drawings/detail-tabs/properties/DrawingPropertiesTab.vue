@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
-import type { Drawing, SignerAssignments, StructurePart, StructurePartEditable } from '@/types/domain.types'
+import type { Drawing, StructurePart, StructurePartEditable } from '@/types/domain.types'
 
 defineOptions({ name: 'DrawingPropertiesTab' })
 
@@ -25,8 +24,6 @@ const parentDrawing = computed(() => {
 })
 const editing = ref(false)
 const saving = ref(false)
-const signerEditing = ref(false)
-const signerSaving = ref(false)
 
 function emptyEditForm(): StructurePartEditable {
   return {
@@ -43,16 +40,9 @@ function emptyEditForm(): StructurePartEditable {
 }
 
 const editForm = ref<StructurePartEditable>(emptyEditForm())
-const signerCandidates = ref<string[]>([])
-const signerForm = ref<SignerAssignments>({})
 const activityLogs = computed(() => {
   const drawingNo = currentItem.value?.no
   return drawingNo ? domainStore.logs.filter((item) => item.drawingNo === drawingNo) : []
-})
-
-onMounted(async () => {
-  const users = await fetchReviewerCandidates('reviewer')
-  signerCandidates.value = Array.from(new Set(users.map((item) => item.name).filter(Boolean)))
 })
 
 function loadEditForm(part: StructurePart) {
@@ -69,20 +59,9 @@ function loadEditForm(part: StructurePart) {
   }
 }
 
-const signRoles = ['设计', '校对', '审核', '工艺', '标准化', '批准'] as const
-
-function loadSignerForm(target: Drawing | StructurePart) {
-  signerForm.value = Object.fromEntries(signRoles.map((role) => [role, target.signers?.[role] || '待定'])) as SignerAssignments
-}
-
 watch(currentPart, (part) => {
   editing.value = false
   if (part) loadEditForm(part)
-}, { immediate: true })
-
-watch(currentItem, (item) => {
-  signerEditing.value = false
-  if (item) loadSignerForm(item)
 }, { immediate: true })
 
 function startEdit() {
@@ -111,31 +90,6 @@ async function saveEdit() {
   }
 }
 
-function startSignerEdit() {
-  if (!currentItem.value) return
-  loadSignerForm(currentItem.value)
-  signerEditing.value = true
-}
-
-function cancelSignerEdit() {
-  if (currentItem.value) loadSignerForm(currentItem.value)
-  signerEditing.value = false
-}
-
-async function saveSignerEdit() {
-  if (!currentItem.value) return
-  signerSaving.value = true
-  try {
-    await domainStore.updateDrawingSigners(currentItem.value.no, { ...signerForm.value })
-    signerEditing.value = false
-    uiStore.toast(`图纸「${currentItem.value.no}」签署与审批人员已保存`, 'ok')
-  } catch (error) {
-    uiStore.toast(error instanceof Error ? error.message : '签署人员保存失败，请稍后重试', 'warn')
-  } finally {
-    signerSaving.value = false
-  }
-}
-
 function openParentDrawing() {
   const parent = parentDrawing.value
   if (!parent) return
@@ -151,64 +105,10 @@ const feedIcons: Record<string, string> = {
   check: 'check-circle-2',
   back: 'undo-2',
 }
-
-const signerData = computed(() => {
-  if (!currentItem.value) return []
-  const map = currentItem.value.signers || {}
-  return signRoles.map((role) => {
-    const user = (map as Record<string, string>)[role] || '待定'
-    return {
-      role,
-      user,
-      status: user === '待定' ? '待定' : currentItem.value?.status === 'published' ? '已签署' : '已指定',
-    }
-  })
-})
 </script>
 
 <template>
   <div class="properties-page-view">
-    <!-- 签署人员与审核矩阵（6项标准卡片） -->
-    <div class="props-section card card-pad">
-      <div class="card-title no-padding">
-        <DemoIcon name="users" :size="16" />
-        工程签署与审批人员矩阵
-        <span class="hint">设计 · 校对 · 审核 · 工艺 · 标准化 · 批准</span>
-        <div class="signer-actions">
-          <template v-if="!signerEditing">
-            <button class="btn sm primary" type="button" @click="startSignerEdit"><DemoIcon name="pencil" :size="13" />编辑人员</button>
-          </template>
-          <template v-else>
-            <button class="btn sm" type="button" :disabled="signerSaving" @click="cancelSignerEdit">取消</button>
-            <button class="btn sm primary" type="button" :disabled="signerSaving" @click="saveSignerEdit"><DemoIcon :name="signerSaving ? 'loader' : 'check'" :size="13" />保存人员</button>
-          </template>
-        </div>
-      </div>
-
-      <div v-if="signerEditing" class="signer-edit-grid">
-        <div v-for="role in signRoles" :key="role" class="signer-edit-item">
-          <label :for="`signer-${role}`">{{ role }}</label>
-          <select :id="`signer-${role}`" v-model="signerForm[role]" class="inp">
-            <option value="待定">待定（稍后指定）</option>
-            <option v-for="user in signerCandidates" :key="user" :value="user">{{ user }}</option>
-          </select>
-        </div>
-      </div>
-
-      <div v-else class="signature-grid">
-        <div v-for="item in signerData" :key="item.role" class="signer-box">
-          <div class="signer-box-top">
-            <span class="role-badge">{{ item.role }}</span>
-            <span class="tag" :class="item.status === '已签署' ? 'ok' : 'mute'">{{ item.status }}</span>
-          </div>
-          <div class="signer-user">
-            <DemoIcon name="user-check" :size="14" />
-            <b>{{ item.user }}</b>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- 图纸 / 零件专属属性定义 -->
     <div class="props-section card card-pad">
       <div class="card-title no-padding property-title">
@@ -359,25 +259,6 @@ const signerData = computed(() => {
   gap: 7px;
   margin-left: auto;
 }
-.signer-actions {
-  display: flex;
-  gap: 7px;
-  margin-left: auto;
-}
-.signer-edit-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px 16px;
-}
-.signer-edit-item {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-.signer-edit-item label {
-  color: var(--text-3);
-  font-size: 11.5px;
-}
 .edit-form-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -426,40 +307,6 @@ const signerData = computed(() => {
   min-height: 76px;
   padding: 9px 12px;
   resize: vertical;
-}
-.signature-grid {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 12px;
-}
-.signer-box {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border-radius: 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-}
-.signer-box-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.role-badge {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text-2);
-}
-.signer-user {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-1);
-}
-.signer-user svg {
-  color: var(--accent);
 }
 .kv-grid {
   display: grid;
@@ -518,12 +365,6 @@ const signerData = computed(() => {
   font-family: 'JetBrains Mono', monospace;
 }
 @media (max-width: 1024px) {
-  .signature-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
-  .signer-edit-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
   .kv-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -538,12 +379,6 @@ const signerData = computed(() => {
   }
 }
 @media (max-width: 640px) {
-  .signature-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-  .signer-edit-grid {
-    grid-template-columns: 1fr;
-  }
   .kv-grid {
     grid-template-columns: 1fr;
   }
@@ -561,13 +396,11 @@ const signerData = computed(() => {
     flex-wrap: wrap;
   }
   .property-edit-button,
-  .property-actions,
-  .signer-actions {
+  .property-actions {
     width: 100%;
     margin-left: 0;
   }
-  .property-actions,
-  .signer-actions {
+  .property-actions {
     justify-content: flex-end;
   }
 }

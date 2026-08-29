@@ -516,8 +516,8 @@ async function handleCheckForUpdates() {
 .settings-page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 6px 4px 30px;
+  gap: 14px;
+  padding: 4px 2px 26px;
 }
 
 .settings-header {
@@ -525,39 +525,46 @@ async function handleCheckForUpdates() {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-bottom: 12px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
 }
 
 .settings-title {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 800;
 }
 
 .settings-subtitle {
-  margin: 4px 0 0;
+  margin: 3px 0 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 
 .settings-body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+/* 宽区块横跨两列：客户端更新与协同引擎内容较多 */
+.settings-section.update-section,
+.settings-section.collab-section {
+  grid-column: 1 / -1;
 }
 
 .settings-section {
-  padding: 20px;
+  padding: 16px 18px;
 }
 
 .section-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
-  padding-bottom: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -567,30 +574,30 @@ async function handleCheckForUpdates() {
 
 .section-title h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .sub-hint {
   margin-left: auto;
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
 .skin-card-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
+  gap: 10px;
 }
 
 .theme-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 9px;
+  padding: 12px;
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--panel-2);
   cursor: pointer;
   transition: all 0.25s ease;
@@ -616,11 +623,16 @@ async function handleCheckForUpdates() {
 .theme-icon {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.theme-icon svg {
+  width: 16px;
+  height: 16px;
 }
 
 .radio-indicator {
@@ -687,16 +699,16 @@ async function handleCheckForUpdates() {
 .mode-card-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
+  gap: 10px;
 }
 
 .mode-card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px;
+  gap: 11px;
+  padding: 12px;
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--panel-2);
   cursor: pointer;
   transition: all 0.25s ease;
@@ -715,17 +727,17 @@ async function handleCheckForUpdates() {
 .login-animation-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
+  gap: 10px;
 }
 
 .login-animation-card {
   display: flex;
   align-items: center;
-  gap: 13px;
+  gap: 11px;
   width: 100%;
-  padding: 15px;
+  padding: 11px 12px;
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--panel-2);
   color: var(--text-1);
   text-align: left;
@@ -747,10 +759,10 @@ async function handleCheckForUpdates() {
   display: grid;
   grid-template-columns: minmax(110px, 0.25fr) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 16px;
-  padding: 14px 16px;
+  gap: 14px;
+  padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 11px;
+  border-radius: 10px;
   background: var(--panel-2);
 }
 
@@ -836,15 +848,15 @@ async function handleCheckForUpdates() {
 .engine-cards-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
 .engine-card {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 13px 14px;
+  gap: 10px;
+  padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel-2);
@@ -853,10 +865,15 @@ async function handleCheckForUpdates() {
 .engine-card-icon {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   border-radius: 8px;
   flex: none;
+}
+
+.engine-card-icon svg {
+  width: 15px;
+  height: 15px;
 }
 
 .status-ok-bg {
@@ -1036,12 +1053,17 @@ async function handleCheckForUpdates() {
 .login-animation-icon {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
   flex: none;
-  border-radius: 11px;
+  border-radius: 9px;
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.login-animation-icon svg {
+  width: 17px;
+  height: 17px;
 }
 
 .login-animation-copy {
@@ -1065,12 +1087,17 @@ async function handleCheckForUpdates() {
 .mode-icon {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
   background: var(--accent-soft);
   color: var(--accent);
   flex: none;
+}
+
+.mode-icon svg {
+  width: 17px;
+  height: 17px;
 }
 
 .mode-info {
@@ -1078,28 +1105,28 @@ async function handleCheckForUpdates() {
 }
 
 .mode-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--text-1);
 }
 
 .mode-desc {
-  margin-top: 3px;
+  margin-top: 2px;
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
 .pref-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .pref-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel-2);
@@ -1119,6 +1146,12 @@ async function handleCheckForUpdates() {
 .pref-text span {
   color: var(--text-3);
   font-size: 11.5px;
+}
+
+@media (max-width: 1100px) {
+  .settings-body {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {

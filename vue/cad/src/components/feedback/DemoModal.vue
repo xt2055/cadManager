@@ -117,12 +117,17 @@ function toggleRole(role: UserRole) {
   }
 }
 
-async function submit() {
+  async function submit() {
   const current = modal.value
   if (!current) return
 
   try {
-    if (current.type === 'borrow-drawing') {
+    if (current.type === 'confirm') {
+      const callback = current.onConfirm
+      close()
+      if (callback) await callback()
+      return
+    } else if (current.type === 'borrow-drawing') {
     uiStore.toast('借用关系已建立 · 已记录借用人/时间/版本')
     } else if (current.type === 'revert') {
     uiStore.toast(`已回退：以 ${selectedVersion.value || '目标版本'} 内容生成新版本 · 历史版本原样保留 · 全程留痕`)
@@ -175,7 +180,14 @@ async function submit() {
       </header>
 
       <div class="modal-body">
-        <template v-if="modal.type === 'borrow-drawing'">
+        <template v-if="modal.type === 'confirm'">
+          <div class="confirm-body" :class="{ danger: modal.payload?.danger }">
+            <DemoIcon :name="modal.payload?.danger ? 'alert-triangle' : 'info'" :size="30" />
+            <p>{{ modal.payload?.message }}</p>
+          </div>
+        </template>
+
+        <template v-else-if="modal.type === 'borrow-drawing'">
           <div class="field"><label>借用到项目</label><select class="inp"><option>请选择目标项目</option><option>智能回转减速传动装置</option><option>伺服液压动力单元</option></select></div>
         </template>
 
@@ -227,7 +239,7 @@ async function submit() {
 
       <footer class="modal-foot">
         <button class="btn" type="button" @click="close">取消</button>
-         <button class="btn primary" type="button" @click="submit"><DemoIcon name="check" :size="14" />{{ modal.type === 'exit' ? '退出' : modal.type === 'borrow-drawing' ? '建立借用' : modal.type === 'revert' ? '执行回退' : modal.type === 'add-user' ? '创建账号' : modal.type === 'reset-user' ? '重置密码' : '保存流程' }}</button>
+         <button class="btn primary" :class="{ danger: modal.type === 'confirm' && modal.payload?.danger }" type="button" @click="submit"><DemoIcon :name="modal.type === 'confirm' && modal.payload?.danger ? 'alert-triangle' : 'check'" :size="14" />{{ modal.type === 'confirm' ? (modal.payload?.confirmText || '确定') : modal.type === 'exit' ? '退出' : modal.type === 'borrow-drawing' ? '建立借用' : modal.type === 'revert' ? '执行回退' : modal.type === 'add-user' ? '创建账号' : modal.type === 'reset-user' ? '重置密码' : '保存流程' }}</button>
       </footer>
     </section>
   </div>

@@ -72,6 +72,7 @@ function openParentDrawing() {
          <div class="dh-meta">
            <span>厂商 <b>{{ ('vendor' in (drawing || {})) ? (drawing as any).vendor : '内部加工' }}</b></span>
           <span>项目 <b>{{ ('project' in (drawing || {})) ? (drawing as any).project : '—' }}</b></span>
+          <span v-if="isPart">关联图号 <b class="mono">{{ drawing?.no }}</b></span>
           <span>创建人 <b>{{ ('createdBy' in (drawing || {}) && (drawing as any).createdBy) ? (drawing as any).createdBy : ('by' in (drawing || {})) ? (drawing as any).by : '待定' }}</b></span>
           <span>更新时间 <b>{{ ('updated' in (drawing || {})) ? (drawing as any).updated : '刚刚' }}</b></span>
           <span v-if="'forkedFrom' in (drawing || {}) && (drawing as any).forkedFrom" class="tag plain">分叉自·{{ (drawing as any).forkedFrom }}</span>

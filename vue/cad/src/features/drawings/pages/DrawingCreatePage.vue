@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import { dataManager } from '@/services/data-manager'
-import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 
@@ -21,7 +20,6 @@ const uiStore = useUiStore()
 const formProject = ref('')
 const formProjectNo = ref('')
 const formDrawingNo = ref('')
-const formVendor = ref('')
 const formRemark = ref('')
 const isIdentifyingAssembly = ref(false)
 const assemblyIdentifyMessage = ref('')
@@ -35,26 +33,12 @@ const existingDrawings = computed(() => domainStore.drawings)
 function onForkSourceChange() {
   const source = domainStore.drawings.find((item) => item.no === selectedForkSourceNo.value)
   if (!source) return
-  if (!formProject.value) formProject.value = `${source.name} (改进版)`
-  if (!formVendor.value) formVendor.value = source.vendor
-  if (!formRemark.value) formRemark.value = `分叉自 ${source.no} · 继承图纸结构与零件标签`
+  // 继承源项目的基本信息（均可修改）；总图图号预填源号，提交前必须改成新号。
+  formProject.value = `${source.name} (改进版)`
+  formProjectNo.value = source.project || ''
+  formDrawingNo.value = source.no
+  formRemark.value = `分叉自 ${source.no} · 继承图纸、备料与工艺文件及零件结构`
 }
-
-const signers = ref<Array<{ role: string; user: string; required: boolean }>>([
-  { role: '设计', user: '待定', required: true },
-  { role: '校对', user: '待定', required: true },
-  { role: '审核', user: '待定', required: true },
-  { role: '工艺', user: '待定', required: true },
-  { role: '标准化', user: '待定', required: false },
-  { role: '批准', user: '待定', required: true },
-])
-
-const candidateReviewers = ref<string[]>([])
-
-onMounted(async () => {
-  const users = await fetchReviewerCandidates('reviewer')
-  candidateReviewers.value = Array.from(new Set(users.map((item) => item.name).filter(Boolean)))
-})
 
 interface UploadedAssembly {
   name: string
@@ -79,8 +63,6 @@ const createStatus = ref('正在准备创建')
 const assemblyFileInput = ref<HTMLInputElement | null>(null)
 const partFilesInput = ref<HTMLInputElement | null>(null)
 const partFolderInput = ref<HTMLInputElement | null>(null)
-
-const canUploadParts = computed(() => Boolean(assemblyFile.value))
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -284,7 +266,7 @@ async function performCreate() {
         selectedForkSourceNo.value,
         drawingNo,
         projectName,
-        formVendor.value.trim(),
+        undefined,
         formRemark.value.trim(),
         undefined,
         projectNo,
@@ -300,25 +282,20 @@ async function performCreate() {
     }
   }
 
-  const signerMap: Record<string, string> = {}
-  signers.value.forEach((item) => {
-    signerMap[item.role] = item.user
-  })
-
   const newProjectDrawing: Drawing = {
     no: drawingNo,
     name: projectName,
     kind: '总图',
     project: projectNo,
     material: '—',
-    vendor: formVendor.value.trim() || '内部项目部',
+    vendor: '内部项目部',
     status: 'draft',
     ver: 'v1.0',
     updated: '刚刚',
      by: '当前用户',
     borrow: 0,
     hasFile: Boolean(assemblyFile.value),
-    signers: signerMap,
+    signers: {},
   }
 
   const identifiedPartFiles: Array<{ part: UploadedPart; parsed: ReturnType<typeof parseDrawingNumber>; material: string }> = []
@@ -412,7 +389,7 @@ async function performCreate() {
       status: 'draft',
       ver: 'v1.0',
       hasFile: true,
-      signers: { ...signerMap },
+      signers: {},
       files: entries.map((entry) => entry.file),
       ...(firstEntry.isBorrowed
         ? { borrowFrom: firstEntry.parsed.rootNo ?? firstEntry.parsed.no }
@@ -537,7 +514,7 @@ async function performCreate() {
                 {{ item.no }} · {{ item.name }} ({{ item.vendor || '内部项目部' }})
               </option>
             </select>
-            <p class="fork-tip">分叉将完整继承源图纸的所有零件结构、签署人员配置与文件元数据，生成全新项目图号。</p>
+            <p class="fork-tip">分叉将继承源图纸的项目信息、零件结构以及全部图纸、备料与工艺文件，以下表单已预填、均可修改；提交前请将总图图号改为新号。</p>
           </div>
 
           <div class="form-grid">
@@ -571,19 +548,12 @@ async function performCreate() {
                 :placeholder="isIdentifyingAssembly ? '正在读取标题栏…' : '从总图标题栏自动识别，也可核对后修改'"
                 :disabled="isIdentifyingAssembly"
               />
-              <small class="field-help" :class="{ error: assemblyIdentifyMessage && !formDrawingNo && !isIdentifyingAssembly }">
-                {{ assemblyIdentifyMessage || '总图图号来自图纸标题栏，不使用项目号代替。' }}
+              <small
+                class="field-help"
+                :class="{ error: (createMode === 'fork' && formDrawingNo === selectedForkSourceNo) || (assemblyIdentifyMessage && !formDrawingNo && !isIdentifyingAssembly) }"
+              >
+                {{ createMode === 'fork' && formDrawingNo === selectedForkSourceNo ? '分叉需要新的总图图号，请修改后再提交。' : assemblyIdentifyMessage || '总图图号来自图纸标题栏，不使用项目号代替。' }}
               </small>
-            </div>
-
-            <div class="form-item">
-              <label for="create-vendor">承制厂商 / 责任单位</label>
-              <input
-                id="create-vendor"
-                v-model="formVendor"
-                class="inp"
-                placeholder="例如：华辰重工 / 研发二组"
-              />
             </div>
 
             <div class="form-item">
@@ -594,37 +564,6 @@ async function performCreate() {
                 class="inp"
                 placeholder="填写项目背景、技术交底要求或交付期限等"
               />
-            </div>
-          </div>
-        </section>
-
-        <section class="card form-section">
-          <div class="section-head">
-            <DemoIcon name="users" :size="16" />
-            <h2>签署与审批人员</h2>
-            <span class="section-tip">规范清晰的人员矩阵，确保图纸审批流转可追溯</span>
-          </div>
-
-          <div class="signers-layout">
-            <div
-              v-for="item in signers"
-              :key="item.role"
-              class="signer-card"
-              :class="{ required: item.required }"
-            >
-              <div class="signer-role-wrap">
-                <span class="signer-badge">{{ item.role }}</span>
-                <span v-if="item.required" class="role-tag-req">必需</span>
-                <span v-else class="role-tag-opt">可选</span>
-              </div>
-              <div class="signer-select-wrap">
-                <select v-model="item.user" class="inp signer-select">
-                  <option value="待定">待定（稍后指定）</option>
-                  <option v-for="user in candidateReviewers" :key="user" :value="user">
-                    {{ user }}
-                  </option>
-                </select>
-              </div>
             </div>
           </div>
         </section>
@@ -693,8 +632,8 @@ async function performCreate() {
                 <h3>零件图文件上传</h3>
                 <span class="badge muted-badge">{{ partFiles.length }} 个</span>
               </div>
-              <span v-if="!canUploadParts" class="parts-lock-tip">
-                <DemoIcon name="lock" :size="12" />请先上传总图以解锁零件图批量上传
+              <span class="parts-lock-tip">
+                <DemoIcon name="info" :size="12" />可先跳过，立项后随时补传
               </span>
             </div>
 
@@ -717,13 +656,10 @@ async function performCreate() {
 
             <div
               class="upload-box parts-box"
-              :class="{
-                active: isDraggingParts && canUploadParts,
-                disabled: !canUploadParts,
-              }"
-              @dragover.prevent="canUploadParts && (isDraggingParts = true)"
+              :class="{ active: isDraggingParts }"
+              @dragover.prevent="isDraggingParts = true"
               @dragleave.prevent="isDraggingParts = false"
-              @drop.prevent="canUploadParts && onPartsDrop($event)"
+              @drop.prevent="onPartsDrop($event)"
             >
               <div class="upload-icon-wrap">
                 <DemoIcon name="boxes" :size="24" />
@@ -733,20 +669,10 @@ async function performCreate() {
                 <p>支持多选多个零件文件或直接选择整目录文件夹</p>
               </div>
               <div class="upload-actions">
-                <button
-                  class="btn sm"
-                  type="button"
-                  :disabled="!canUploadParts"
-                  @click="triggerPartsPick"
-                >
+                <button class="btn sm" type="button" @click="triggerPartsPick">
                   <DemoIcon name="files" :size="13" />多选文件
                 </button>
-                <button
-                  class="btn sm"
-                  type="button"
-                  :disabled="!canUploadParts"
-                  @click="triggerFolderPick"
-                >
+                <button class="btn sm" type="button" @click="triggerFolderPick">
                   <DemoIcon name="folder-up" :size="13" />选择文件夹
                 </button>
               </div>
@@ -956,62 +882,6 @@ async function performCreate() {
 
 .form-item:last-child {
   grid-column: span 2;
-}
-
-.signers-layout {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-}
-
-.signer-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel-2);
-  transition: all 0.2s ease;
-}
-
-.signer-card:hover {
-  border-color: var(--accent);
-}
-
-.signer-role-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.signer-badge {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--text-1);
-}
-
-.role-tag-req {
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.role-tag-opt {
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--panel);
-  color: var(--text-3);
-  font-size: 10px;
-}
-
-.signer-select {
-  width: 100%;
-  height: 32px;
-  font-size: 12px;
 }
 
 .create-mode-selector {
@@ -1317,15 +1187,9 @@ async function performCreate() {
   .create-content-grid {
     grid-template-columns: 1fr;
   }
-  .signers-layout {
-    grid-template-columns: repeat(2, 1fr);
-  }
 }
 
 @media (max-width: 640px) {
-  .signers-layout {
-    grid-template-columns: 1fr;
-  }
   .form-grid {
     grid-template-columns: 1fr;
   }

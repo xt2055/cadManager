@@ -319,8 +319,19 @@ async function stopSession(session: ActiveEditSessionInfo | { sessionId: string 
   const targetFileName = ('fileName' in session && session.fileName)
     || myActiveSessions.value.find((s) => s.sessionId === targetId)?.fileName
     || '当前文件'
-  if (!window.confirm(`确定要结束「${targetFileName}」的编辑吗？\n\n结束后端会等待图纸落盘并自动生成新版本，通常需要数秒，请耐心等待。`)) return
+  uiStore.confirm(
+    '结束本地编辑',
+    `确定要结束「${targetFileName}」的编辑吗？\n结束后端会等待图纸落盘并自动生成新版本，通常需要数秒，请耐心等待。`,
+    {
+      confirmText: '结束编辑',
+      danger: true,
+      onConfirm: () => doStopSession(targetId, targetFileName),
+    },
+  )
+}
 
+async function doStopSession(targetId: string, targetFileName: string) {
+  if (closingSessionIds.value.has(targetId)) return
   closingSessionIds.value.add(targetId)
   try {
     await dataManager.closeEditSession(targetId)
@@ -562,8 +573,19 @@ function cancelReplace() {
 
 async function handleDeleteFile(file: DrawingFile) {
   if (!currentItem.value) return
-  if (!window.confirm(`确定要删除图纸文件「${file.name}」吗？`)) return
+  uiStore.confirm(
+    '删除图纸文件',
+    `确定要删除图纸文件「${file.name}」吗？`,
+    {
+      confirmText: '删除',
+      danger: true,
+      onConfirm: () => doDeleteFile(file),
+    },
+  )
+}
 
+async function doDeleteFile(file: DrawingFile) {
+  if (!currentItem.value) return
   try {
     const targetNo = file.partNo || file.drawingNo || currentItem.value.no
     if (file.role === 'other') {
@@ -575,6 +597,109 @@ async function handleDeleteFile(file: DrawingFile) {
   } catch (error) {
     console.error('删除文件失败', error)
     uiStore.toast('删除文件失败，请重试', 'warn')
+  }
+}
+
+// ===== 批量下载：选择文件与格式（EXB 原始 / DWG），zip 打包下载 =====
+type DownloadFormat = 'exb' | 'dwg'
+
+interface DownloadCandidate {
+  file: DrawingFile
+  exbKey: string
+  dwgKey: string
+}
+
+const isDownloadOpen = ref(false)
+const downloadFormat = ref<DownloadFormat>('dwg')
+const downloadFileIds = ref<Set<string>>(new Set())
+const isDownloading = ref(false)
+const downloadProgress = ref('')
+
+const downloadCandidates = computed<DownloadCandidate[]>(() =>
+  allFiles.value.map((file) => ({
+    file,
+    exbKey: file.rawStorageKey || (/\.exb$/i.test(file.storageKey || '') ? file.storageKey! : ''),
+    dwgKey: file.currentStorageKey || (/\.dwg$/i.test(file.storageKey || '') ? file.storageKey! : ''),
+  })),
+)
+
+const allDownloadSelected = computed(() =>
+  downloadCandidates.value.length > 0
+  && downloadCandidates.value.filter((item) => candidateHasFormat(item, downloadFormat.value)).every((item) => downloadFileIds.value.has(item.file.id)),
+)
+
+function candidateHasFormat(item: DownloadCandidate, format: DownloadFormat): boolean {
+  return Boolean(format === 'exb' ? item.exbKey : item.dwgKey)
+}
+
+function openDownloadModal() {
+  downloadFormat.value = 'dwg'
+  downloadFileIds.value = new Set(downloadCandidates.value.filter((item) => candidateHasFormat(item, 'dwg')).map((item) => item.file.id))
+  isDownloadOpen.value = true
+}
+
+function toggleDownloadFile(id: string) {
+  const next = new Set(downloadFileIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  downloadFileIds.value = next
+}
+
+function toggleAllDownloadFiles() {
+  if (allDownloadSelected.value) {
+    downloadFileIds.value = new Set()
+  } else {
+    downloadFileIds.value = new Set(downloadCandidates.value.filter((item) => candidateHasFormat(item, downloadFormat.value)).map((item) => item.file.id))
+  }
+}
+
+async function executeDownload() {
+  const selected = downloadCandidates.value.filter((item) => downloadFileIds.value.has(item.file.id) && candidateHasFormat(item, downloadFormat.value))
+  if (!selected.length) {
+    uiStore.toast('请至少选择一个当前格式可用的文件', 'warn')
+    return
+  }
+  isDownloading.value = true
+  try {
+    const JSZip = (await import('jszip')).default
+    const zip = new JSZip()
+    const usedNames = new Set<string>()
+    let failed = 0
+    for (const [index, item] of selected.entries()) {
+      downloadProgress.value = `正在获取 ${index + 1}/${selected.length} · ${item.file.name}`
+      const key = downloadFormat.value === 'exb' ? item.exbKey : item.dwgKey
+      const baseName = item.file.name.replace(/\.[^/.]+$/, '')
+      const folder = item.file.role === 'other' ? '其他文件' : (item.file.partNo || item.file.drawingNo || '总图')
+      let fileName = `${baseName}.${downloadFormat.value}`
+      let suffix = 1
+      while (usedNames.has(`${folder}/${fileName}`)) {
+        fileName = `${baseName}(${suffix++}).${downloadFormat.value}`
+      }
+      usedNames.add(`${folder}/${fileName}`)
+      try {
+        const content = await dataManager.readAttachment(key)
+        zip.file(`${folder}/${fileName}`, content)
+      } catch {
+        failed += 1
+      }
+    }
+    downloadProgress.value = '正在打包 zip...'
+    const blob = await zip.generateAsync({ type: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${currentItem.value?.no || '图纸文件'}-${downloadFormat.value === 'exb' ? 'EXB原始格式' : 'DWG格式'}.zip`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    isDownloadOpen.value = false
+    const okCount = selected.length - failed
+    uiStore.toast(`已打包下载 ${okCount} 个文件${failed ? `，${failed} 个获取失败已跳过` : ''}`, failed ? 'warn' : 'ok')
+  } catch (error) {
+    console.error('批量下载失败', error)
+    uiStore.toast('批量下载失败，请重试', 'warn')
+  } finally {
+    isDownloading.value = false
+    downloadProgress.value = ''
   }
 }
 
@@ -862,6 +987,9 @@ function closeReidentifyModal() {
       </div>
 
       <div class="header-buttons">
+        <button class="btn" type="button" title="选择文件与格式（EXB / DWG），打包为 zip 下载" @click="openDownloadModal">
+          <DemoIcon name="download" :size="14" />下载
+        </button>
         <button class="btn" type="button" title="从其他工程项目借用零件图及关联文件" @click="openBorrowModal">
           <DemoIcon name="share-2" :size="14" />借用零件
         </button>
@@ -950,10 +1078,9 @@ function closeReidentifyModal() {
             <tr>
               <th>文件类型</th>
               <th>文件名</th>
-              <th>关联图号</th>
                <th>版本</th>
                <th>上传人</th>
-               <th style="width: 360px; text-align: right">操作</th>
+               <th style="width: 440px; text-align: right">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -975,7 +1102,6 @@ function closeReidentifyModal() {
                   </span>
                 </div>
               </td>
-              <td class="num mono">{{ file.partNo || file.drawingNo }}</td>
               <td class="num"><span class="ver-badge">{{ file.version }}</span></td>
               <td>{{ file.uploadedBy }}</td>
               <td class="row-actions" style="text-align: right">
@@ -1165,6 +1291,79 @@ function closeReidentifyModal() {
           <button class="btn" type="button" @click="cancelReplace">取消</button>
           <button class="btn primary" type="button" @click="confirmReplace">
             <DemoIcon name="check" :size="14" />确认替换升级
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- 批量下载弹窗：选择文件与格式（EXB 原始 / DWG），zip 打包 -->
+    <div v-if="isDownloadOpen" class="modal-backdrop">
+      <div class="modal card download-modal">
+        <div class="modal-head">
+          <div class="modal-title">
+            <DemoIcon name="download" :size="18" />
+            <span>批量下载图纸文件</span>
+          </div>
+          <button class="btn sm close-btn" type="button" @click="isDownloadOpen = false">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="download-format-row">
+            <span class="lbl bold">下载格式：</span>
+            <label class="mode-option" :class="{ active: downloadFormat === 'exb' }">
+              <input v-model="downloadFormat" type="radio" value="exb" />
+              <span>EXB 原始格式</span>
+            </label>
+            <label class="mode-option" :class="{ active: downloadFormat === 'dwg' }">
+              <input v-model="downloadFormat" type="radio" value="dwg" />
+              <span>DWG 格式</span>
+            </label>
+          </div>
+
+          <div class="download-list-head">
+            <label class="download-check-all">
+              <input type="checkbox" :checked="allDownloadSelected" @change="toggleAllDownloadFiles" />
+              <b>全选</b>
+            </label>
+            <span class="hint">已选 {{ downloadFileIds.size }} / {{ downloadCandidates.length }} 个文件 · 按零件图号分目录存放</span>
+          </div>
+
+          <div class="download-file-list">
+            <label
+              v-for="item in downloadCandidates"
+              :key="item.file.id"
+              class="download-file-row"
+              :class="{ unavailable: !candidateHasFormat(item, downloadFormat) }"
+            >
+              <input
+                type="checkbox"
+                :checked="downloadFileIds.has(item.file.id)"
+                :disabled="!candidateHasFormat(item, downloadFormat)"
+                @change="toggleDownloadFile(item.file.id)"
+              />
+              <span class="file-name mono" :title="item.file.name">{{ item.file.name }}</span>
+              <span class="dl-size">{{ item.file.size }}</span>
+              <span class="tag" :class="candidateHasFormat(item, downloadFormat) ? 'ok' : 'mute'">
+                {{ candidateHasFormat(item, downloadFormat) ? (downloadFormat === 'exb' ? 'EXB' : 'DWG') : '无此格式' }}
+              </span>
+            </label>
+            <div v-if="!downloadCandidates.length" class="empty compact-empty">
+              <DemoIcon name="file" :size="28" />
+              <div class="t">当前图纸暂无可下载的 CAD 文件</div>
+            </div>
+          </div>
+
+          <div class="note info-note">
+            <DemoIcon name="info" :size="15" />
+            <div>所选文件将打包为一个 zip 压缩包；没有对应格式文件的行会被跳过并标注。</div>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <button class="btn" type="button" @click="isDownloadOpen = false">取消</button>
+          <button class="btn primary" type="button" :disabled="isDownloading || downloadFileIds.size === 0" @click="executeDownload">
+            <span v-if="isDownloading" class="local-edit-spinner" aria-hidden="true"></span>
+            <DemoIcon v-else name="download" :size="14" />
+            {{ isDownloading ? (downloadProgress || '正在打包...') : `打包下载 (${downloadFileIds.size})` }}
           </button>
         </div>
       </div>
@@ -2118,7 +2317,7 @@ function closeReidentifyModal() {
 
 .files-table-card .tbl {
   width: 100%;
-  min-width: 1180px;
+  min-width: 1080px;
   table-layout: fixed;
 }
 
@@ -2143,7 +2342,7 @@ function closeReidentifyModal() {
 
 @media (max-width: 760px) {
   .files-table-card .tbl {
-    min-width: 1080px;
+    min-width: 1040px;
   }
 
   .files-table-card .tbl th:nth-child(2),
@@ -2151,8 +2350,8 @@ function closeReidentifyModal() {
     min-width: 220px;
   }
 
-  .files-table-card .tbl th:nth-child(6),
-  .files-table-card .tbl td:nth-child(6) {
+  .files-table-card .tbl th:nth-child(5),
+  .files-table-card .tbl td:nth-child(5) {
     min-width: 420px;
   }
 }
@@ -2162,13 +2361,11 @@ function closeReidentifyModal() {
 .files-table-card .tbl th:nth-child(2),
 .files-table-card .tbl td:nth-child(2) { min-width: 300px; }
 .files-table-card .tbl th:nth-child(3),
-.files-table-card .tbl td:nth-child(3) { width: 180px; }
+.files-table-card .tbl td:nth-child(3) { width: 90px; }
 .files-table-card .tbl th:nth-child(4),
-.files-table-card .tbl td:nth-child(4) { width: 90px; }
+.files-table-card .tbl td:nth-child(4) { width: 110px; }
 .files-table-card .tbl th:nth-child(5),
-.files-table-card .tbl td:nth-child(5) { width: 110px; }
-.files-table-card .tbl th:nth-child(6),
-.files-table-card .tbl td:nth-child(6) {
+.files-table-card .tbl td:nth-child(5) {
   width: 470px;
   min-width: 470px;
 }
@@ -2178,6 +2375,79 @@ function closeReidentifyModal() {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.download-modal {
+  width: 560px;
+}
+
+.download-format-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.download-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.download-check-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.download-file-list {
+  display: flex;
+  max-height: 320px;
+  flex-direction: column;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.download-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.download-file-row:last-child {
+  border-bottom: none;
+}
+
+.download-file-row:hover {
+  background: var(--panel-2);
+}
+
+.download-file-row.unavailable {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.download-file-row .file-name {
+  flex: 1;
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-file-row .dl-size {
+  flex-shrink: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
 }
 
 .badge-collab {

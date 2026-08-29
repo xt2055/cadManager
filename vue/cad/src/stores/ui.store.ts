@@ -13,6 +13,7 @@ export type ModalType =
   | 'add-user'
   | 'reset-user'
   | 'edit-flow'
+  | 'confirm'
 
 export interface ToastMessage {
   id: number
@@ -24,6 +25,7 @@ export interface ModalState {
   type: ModalType
   title: string
   payload?: Record<string, string>
+  onConfirm?: () => void | Promise<void>
 }
 
 let toastId = 0
@@ -40,8 +42,22 @@ export const useUiStore = defineStore('ui', () => {
     }, 2800)
   }
 
-  function openModal(type: ModalType, title: string, payload?: Record<string, string>) {
-    modal.value = { type, title, payload }
+  function openModal(type: ModalType, title: string, payload?: Record<string, string>, onConfirm?: () => void | Promise<void>) {
+    modal.value = { type, title, payload, onConfirm }
+  }
+
+  /** 通用确认弹窗：以项目自绘风格替代 window.confirm。 */
+  function confirm(title: string, message: string, options?: { confirmText?: string; danger?: boolean; onConfirm: () => void | Promise<void> }) {
+    openModal(
+      'confirm',
+      title,
+      {
+        message,
+        confirmText: options?.confirmText || '确定',
+        danger: options?.danger ? '1' : '',
+      },
+      options?.onConfirm,
+    )
   }
 
   function closeModal() {
@@ -53,6 +69,7 @@ export const useUiStore = defineStore('ui', () => {
     modal,
     toast,
     openModal,
+    confirm,
     closeModal,
   }
 })

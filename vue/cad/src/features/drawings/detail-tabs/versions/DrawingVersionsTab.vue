@@ -17,11 +17,28 @@ const uiStore = useUiStore()
 const isAdmin = computed(() => authStore.hasRole('admin'))
 
 const currentNo = computed(() => domainStore.currentDrawing?.no || '')
-const currentBranches = computed(() => {
+
+// 双向分支关系：我从哪里分叉（forkedFrom）+ 我衍生出哪些分支（branches.from === 当前图号）
+const forkedFromNo = computed(() => {
+  const target = domainStore.currentDrawing
+  return target && 'forkedFrom' in target ? (target as { forkedFrom?: string }).forkedFrom || '' : ''
+})
+
+const forkedFromName = computed(() => {
+  if (!forkedFromNo.value) return ''
+  const source = domainStore.drawings.find((item) => item.no === forkedFromNo.value)
+  return source?.name || '源图纸'
+})
+
+const derivedBranches = computed(() => {
   const no = currentNo.value
   if (!no) return domainStore.branches
-  return domainStore.branches.filter((item) => item.from === no || item.name.includes(no))
+  return domainStore.branches.filter((item) => item.from === no)
 })
+
+function openDrawingByNo(no: string) {
+  domainStore.openDrawing(no)
+}
 
 const cadFiles = computed<DrawingFile[]>(() => {
   const target = domainStore.currentDrawing
@@ -183,13 +200,28 @@ async function restoreVersion(version: FileVersionInfo) {
     <div>
       <div class="card branch-panel">
         <div class="card-title"><DemoIcon name="git-branch" :size="16" />分叉 / 分支<span class="hint">源图与衍生图独立维护 · 可追溯分叉人</span></div>
-        <div v-if="currentBranches.length" class="branch-list">
-          <div v-for="branch in currentBranches" :key="branch.name" class="card branch-card" :class="{ disabled: branch.status === '已禁用' }">
+
+        <div v-if="forkedFromNo" class="fork-origin-box">
+          <div class="fo-head"><DemoIcon name="corner-down-right" :size="14" /><b>我从哪里分叉</b></div>
+          <button class="fo-card" type="button" title="打开源图纸" @click="openDrawingByNo(forkedFromNo)">
+            <span class="mono">{{ forkedFromNo }}</span>
+            <span class="fo-name">{{ forkedFromName }}</span>
+            <DemoIcon name="arrow-up-right" :size="13" />
+          </button>
+        </div>
+
+        <div class="derived-head">
+          <DemoIcon name="git-branch" :size="14" />
+          <b>我的分支 ({{ derivedBranches.length }})</b>
+          <span class="hint">基于当前图纸分叉产生的衍生项目</span>
+        </div>
+        <div v-if="derivedBranches.length" class="branch-list">
+          <div v-for="branch in derivedBranches" :key="branch.name" class="card branch-card" :class="{ disabled: branch.status === '已禁用' }">
             <div class="bh"><DemoIcon name="git-branch" :size="15" /><b>{{ branch.name }}</b><span class="tag" :class="branch.status === '使用中' ? 'ok' : 'mute'">{{ branch.status }}</span><button class="btn sm" type="button" @click="uiStore.toast(`「${branch.status === '已禁用' ? '恢复分支' : '禁用分支'}」已执行 · 分支历史完整保留，可随时恢复`, branch.status === '已禁用' ? 'ok' : 'warn')">{{ branch.status === '已禁用' ? '恢复分支' : '禁用' }}</button></div>
             <div class="bd">分叉自 <span class="mono">{{ branch.from }}</span> · 分叉者 <b>{{ branch.by }}</b> 创建于 {{ branch.date }} — {{ branch.desc }}</div>
           </div>
         </div>
-        <div v-else class="empty"><DemoIcon name="git-branch" :size="34" /><div class="t">当前图纸暂无衍生分叉分支</div></div>
+        <div v-else class="empty compact-empty"><DemoIcon name="git-branch" :size="30" /><div class="t">当前图纸暂无衍生分叉分支</div></div>
       </div>
       <div class="note version-note"><DemoIcon name="shield-check" :size="14" /><div>本地编辑保存与在线编辑保存都会自动生成工作版本；仅管理员可执行回退，普通用户可浏览与下载任意版本。</div></div>
     </div>
@@ -216,6 +248,17 @@ html[data-skin='tech'] .tl-item.cur .tl-dot { box-shadow: 0 0 12px var(--glow); 
 .picker-label { color: var(--text-2); font-size: 12.5px; flex: none; }
 .picker-select { flex: 1; }
 .branch-panel { margin-bottom: 14px; }
+.fork-origin-box { padding: 10px 14px 0; }
+.fo-head { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: var(--text-2); font-size: 12.5px; }
+.fo-head svg { color: var(--accent); }
+.fo-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); cursor: pointer; font-size: 13px; text-align: left; transition: border-color 0.2s ease; }
+.fo-card:hover { border-color: var(--accent); }
+.fo-card .mono { font-weight: 700; }
+.fo-card .fo-name { flex: 1; overflow: hidden; color: var(--text-2); text-overflow: ellipsis; white-space: nowrap; }
+.fo-card svg { color: var(--text-3); }
+.derived-head { display: flex; align-items: center; gap: 7px; padding: 14px 14px 4px; font-size: 12.5px; }
+.derived-head svg { color: var(--accent); }
+.derived-head .hint { margin-left: auto; }
 .branch-list { padding: 6px 14px 14px; }
 .branch-card { margin-bottom: 11px; padding: 15px 17px; }
 .branch-card:last-child { margin-bottom: 0; }
@@ -226,5 +269,6 @@ html[data-skin='tech'] .tl-item.cur .tl-dot { box-shadow: 0 0 12px var(--glow); 
 .bh .btn { margin-left: auto; }
 .bd { color: var(--text-2); font-size: 12px; line-height: 1.65; }
 .version-note { margin-top: 0; }
+.compact-empty { padding: 18px 0 22px; }
 @media (max-width: 1180px) { .ver-grid { grid-template-columns: 1fr; } }
 </style>
