@@ -45,6 +45,7 @@ export interface DrawingFileHistoryItem {
 export interface DrawingFile {
   id: string
   name: string
+  rawName?: string
   size: string
   role: 'assembly' | 'part' | 'other'
   drawingNo: string
@@ -53,6 +54,8 @@ export interface DrawingFile {
   uploadedBy: string
   uploadedAt: string
   storageKey?: string
+  rawStorageKey?: string
+  currentStorageKey?: string
   mimeType?: string
   previewable: boolean
   replaceReason?: string

@@ -54,17 +54,20 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateInput, o
 	var err error
 	if partID == nil {
 		err = repository.pool.QueryRow(ctx, `
-			INSERT INTO attachments (drawing_id, file_role, storage_key, original_name, mime_type, size_bytes, sha256, version, previewable, uploaded_by)
-			SELECT id, $2, $3, $4, $5, $6, $7, $8, $9, $10::uuid
+			INSERT INTO attachments (drawing_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by)
+			SELECT id, $2, $3, $3, $4, $4, $5, $5, $6, $6, $7, $7, $8, $9, $10::uuid
 			FROM drawings WHERE drawing_no = $1
 			RETURNING id::text`, input.DrawingNo, role, object.Key, input.Name, object.MimeType, object.Size, object.SHA256, version, input.Previewable, userID).Scan(&id)
 	} else {
 		err = repository.pool.QueryRow(ctx, `
-			INSERT INTO attachments (part_id, file_role, storage_key, original_name, mime_type, size_bytes, sha256, version, previewable, uploaded_by)
-			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::uuid)
+			INSERT INTO attachments (part_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by)
+			VALUES ($1::uuid, $2, $3, $3, $4, $4, $5, $5, $6, $6, $7, $7, $8, $9, $10::uuid)
 			RETURNING id::text`, *partID, role, object.Key, input.Name, object.MimeType, object.Size, object.SHA256, version, input.Previewable, userID).Scan(&id)
 	}
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Attachment{}, ErrNotFound
+		}
 		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "unique constraint") {
 			return Attachment{}, ErrConflict
 		}
@@ -75,21 +78,29 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateInput, o
 
 func (repository *PGRepository) Find(ctx context.Context, storageKey string) (Attachment, error) {
 	var item Attachment
+	var currentStorageKey *string
+	var currentName *string
+	var currentMimeType *string
+	var currentSize *int64
+	var currentSHA256 *string
 	var role string
 	var drawingNo string
 	var partNo *string
 	var uploadedBy *string
 	var createdAt time.Time
 	err := repository.pool.QueryRow(ctx, `
-		SELECT a.id::text, a.storage_key, a.original_name, COALESCE(d.drawing_no, parent.drawing_no, ''),
+		SELECT a.id::text, a.storage_key, a.current_storage_key, a.original_name, a.current_name,
+		       a.current_mime_type, a.current_size_bytes, a.current_sha256,
+		       COALESCE(d.drawing_no, parent.drawing_no, ''),
 		       p.part_no, a.file_role, a.size_bytes, a.mime_type, COALESCE(a.sha256, ''), a.version,
 		       a.previewable, COALESCE(a.uploaded_by::text, ''), a.created_at
 		FROM attachments a
 		LEFT JOIN drawings d ON d.id = a.drawing_id
 		LEFT JOIN structure_parts p ON p.id = a.part_id
 		LEFT JOIN drawings parent ON parent.id = p.drawing_id
-		WHERE a.storage_key = $1 AND a.deleted_at IS NULL`, storageKey).Scan(
-		&item.ID, &item.StorageKey, &item.Name, &drawingNo, &partNo, &role, &item.Size, &item.MimeType,
+		WHERE (a.storage_key = $1 OR a.current_storage_key = $1) AND a.deleted_at IS NULL`, storageKey).Scan(
+		&item.ID, &item.StorageKey, &currentStorageKey, &item.Name, &currentName,
+		&currentMimeType, &currentSize, &currentSHA256, &drawingNo, &partNo, &role, &item.Size, &item.MimeType,
 		&item.SHA256, &item.Version, &item.Previewable, &uploadedBy, &createdAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -99,6 +110,21 @@ func (repository *PGRepository) Find(ctx context.Context, storageKey string) (At
 		return Attachment{}, fmt.Errorf("查询附件元数据失败: %w", err)
 	}
 	item.DrawingNo = drawingNo
+	if currentStorageKey != nil {
+		item.CurrentStorageKey = *currentStorageKey
+	}
+	if currentName != nil {
+		item.CurrentName = *currentName
+	}
+	if currentMimeType != nil {
+		item.CurrentMimeType = *currentMimeType
+	}
+	if currentSize != nil {
+		item.CurrentSize = *currentSize
+	}
+	if currentSHA256 != nil {
+		item.CurrentSHA256 = *currentSHA256
+	}
 	item.PartNo = partNo
 	item.Role = Role(role)
 	if uploadedBy != nil {
@@ -131,9 +157,42 @@ func (repository *PGRepository) FindByOwnerAndName(ctx context.Context, drawingN
 	return repository.Find(ctx, storageKey)
 }
 
+func (repository *PGRepository) UpdateContent(ctx context.Context, storageKey string, size int64, mimeType, sha256 string) error {
+	result, err := repository.pool.Exec(ctx, `
+		UPDATE attachments
+		SET size_bytes = $2, mime_type = $3, sha256 = $4
+		WHERE storage_key = $1 AND deleted_at IS NULL`, storageKey, size, mimeType, sha256)
+	if err != nil {
+		return fmt.Errorf("更新附件内容元数据失败: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (repository *PGRepository) SetCurrentContent(ctx context.Context, sourceStorageKey, currentStorageKey, name string, size int64, mimeType, sha256 string) error {
+	result, err := repository.pool.Exec(ctx, `
+		UPDATE attachments
+		SET current_storage_key = $2, current_name = $3, current_size_bytes = $4,
+		    current_mime_type = $5, current_sha256 = $6
+		WHERE storage_key = $1 AND deleted_at IS NULL`, sourceStorageKey, currentStorageKey, name, size, mimeType, sha256)
+	if err != nil {
+		return fmt.Errorf("更新当前 CAD 文件元数据失败: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (repository *PGRepository) ListByDrawing(ctx context.Context, drawingNo string) ([]Attachment, error) {
 	rows, err := repository.pool.Query(ctx, `
-		SELECT a.id::text, a.storage_key, a.original_name,
+		SELECT a.id::text, a.storage_key, COALESCE(a.current_storage_key, a.storage_key),
+		       a.original_name, COALESCE(a.current_name, a.original_name),
+		       COALESCE(a.current_mime_type, a.mime_type),
+		       COALESCE(a.current_size_bytes, a.size_bytes),
+		       COALESCE(a.current_sha256, COALESCE(a.sha256, '')),
 		       COALESCE(d.drawing_no, parent.drawing_no, ''), p.part_no, a.file_role,
 		       a.size_bytes, a.mime_type, COALESCE(a.sha256, ''), a.version,
 		       a.previewable, COALESCE(a.uploaded_by::text, ''), a.created_at
@@ -155,18 +214,30 @@ func (repository *PGRepository) ListByDrawing(ctx context.Context, drawingNo str
 	list := make([]Attachment, 0)
 	for rows.Next() {
 		var item Attachment
+		var currentStorageKey string
+		var currentName string
+		var currentMimeType string
+		var currentSize int64
+		var currentSHA256 string
 		var role string
 		var drawingNoValue string
 		var partNo *string
 		var uploadedBy *string
 		var createdAt time.Time
 		if err := rows.Scan(
-			&item.ID, &item.StorageKey, &item.Name, &drawingNoValue, &partNo, &role,
+			&item.ID, &item.StorageKey, &currentStorageKey,
+			&item.Name, &currentName, &currentMimeType, &currentSize, &currentSHA256,
+			&drawingNoValue, &partNo, &role,
 			&item.Size, &item.MimeType, &item.SHA256, &item.Version, &item.Previewable,
 			&uploadedBy, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("读取图纸附件失败: %w", err)
 		}
+		item.CurrentStorageKey = currentStorageKey
+		item.CurrentName = currentName
+		item.CurrentMimeType = currentMimeType
+		item.CurrentSize = currentSize
+		item.CurrentSHA256 = currentSHA256
 		item.DrawingNo = drawingNoValue
 		item.PartNo = partNo
 		item.Role = Role(role)
@@ -361,13 +432,17 @@ func directParentPartNo(partNo string) string {
 }
 
 func (repository *PGRepository) FolderForDrawing(ctx context.Context, drawingNo string) (string, error) {
+	var project string
 	var name string
-	err := repository.pool.QueryRow(ctx, `SELECT name FROM drawings WHERE drawing_no = $1`, drawingNo).Scan(&name)
+	err := repository.pool.QueryRow(ctx, `SELECT project, name FROM drawings WHERE drawing_no = $1`, drawingNo).Scan(&project, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("查询图号目录失败: %w", err)
 	}
-	return drawingNo + "(" + name + ")", nil
+	if strings.TrimSpace(project) == "" {
+		return "", errors.New("图纸项目号为空，无法生成附件目录")
+	}
+	return project + "(" + name + ")", nil
 }

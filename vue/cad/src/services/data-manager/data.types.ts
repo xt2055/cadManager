@@ -22,7 +22,7 @@ import type {
   UserRole,
   UserStatus,
 } from '@/types/domain.types'
-import { directParentDrawingNo, parseAgainstRoots, parseDrawingFileName, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
+import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, parseAgainstRoots, parseDrawingFileName, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 
 export interface DataDocument {
   version: 2
@@ -203,6 +203,7 @@ function normalizeDrawingFile(
   return {
     id,
     name,
+    ...(asString(source.rawName) ? { rawName: asString(source.rawName) } : {}),
     size: asString(source.size, '—'),
     role,
     drawingNo,
@@ -211,6 +212,8 @@ function normalizeDrawingFile(
     uploadedBy: asString(source.uploadedBy, '未知用户'),
     uploadedAt: asString(source.uploadedAt, '历史记录'),
     ...(asString(source.storageKey) ? { storageKey: asString(source.storageKey) } : {}),
+    ...(asString(source.rawStorageKey) ? { rawStorageKey: asString(source.rawStorageKey) } : {}),
+    ...(asString(source.currentStorageKey) ? { currentStorageKey: asString(source.currentStorageKey) } : {}),
     ...(asString(source.mimeType) ? { mimeType: asString(source.mimeType) } : {}),
     previewable: asBoolean(source.previewable, true),
     ...(asString(source.replaceReason) ? { replaceReason: asString(source.replaceReason) } : {}),
@@ -278,7 +281,7 @@ function inferParentNo(partNo: string, drawings: Drawing[]): string {
   const assemblies = drawings.filter((drawing) => drawing.kind === '总图')
   const matching = assemblies
     .sort((left, right) => right.no.length - left.no.length)
-    .find((drawing) => partNo.startsWith(`${drawing.no}-`))
+    .find((drawing) => isSameDrawingFamily(partNo, drawing.no) && !isEquivalentAssemblyNo(partNo, drawing.no, assemblies.map((item) => item.no)))
   if (!matching) return ''
   return directParentDrawingNo(partNo) ?? matching.no
 }
@@ -317,8 +320,8 @@ function classifyDrawingPartFile(file: DrawingFile, drawingNo: string): DrawingF
   const currentProjectParsed = parseDrawingFileName(file.name, drawingNo)
   const standaloneParsed = parseStandaloneDrawingFileName(file.name)
   const parsed = currentProjectParsed.isStandard ? currentProjectParsed : standaloneParsed
-  const isBorrowed = standaloneParsed.isStandard && standaloneParsed.rootNo !== drawingNo
-  if (!parsed.isStandard || (!isBorrowed && parsed.level < 1)) return null
+  const isBorrowed = standaloneParsed.isStandard && !isSameDrawingFamily(standaloneParsed.no, drawingNo)
+    if (!parsed.isStandard || isEquivalentAssemblyNo(parsed.no, drawingNo, [drawingNo]) || (!isBorrowed && parsed.level < 1)) return null
   return {
     ...file,
     role: 'part',
@@ -329,7 +332,9 @@ function classifyDrawingPartFile(file: DrawingFile, drawingNo: string): DrawingF
 
 function normalizeStructure(value: unknown, drawings: Drawing[]): StructurePart[] {
   const rootNos = drawings.filter((drawing) => drawing.kind === '总图').map((drawing) => drawing.no)
-  return readArray<unknown>(value).map((item) => {
+  const rawParts = readArray<unknown>(value)
+  const sourcePartNos = new Set(rawParts.map((item) => isRecord(item) ? asString(item.no) : '').filter(Boolean))
+  return rawParts.map((item) => {
     const source = isRecord(item) ? item : {}
     const sourceNo = asString(source.no, stableId('part', asString(source.name, '未命名零件')))
     const sourceBorrowFrom = asString(source.borrowFrom)
@@ -349,22 +354,35 @@ function normalizeStructure(value: unknown, drawings: Drawing[]): StructurePart[
     const parsedSourceNo = parsedAgainstRoots.isStandard ? parsedAgainstRoots : parseStandaloneDrawingFileName(sourceNo)
     // 已保存的结构编号和父级关系优先于文件名推导，避免重新加载时把用户数据改挂到别的节点。
     const no = sourceNo || validFile?.parsed.no || (parsedSourceNo.isStandard ? parsedSourceNo.no : sourceNo)
+    const assemblyRootNo = [...rootNos]
+      .sort((left, right) => right.length - left.length)
+      .find((rootNo) => isSameDrawingFamily(sourceNo, rootNo))
     const parentRootNo = [...rootNos]
       .sort((left, right) => right.length - left.length)
-      .find((rootNo) => sourceParentNo === rootNo || sourceParentNo.startsWith(`${rootNo}-`))
-    const inferredBorrowFrom = !sourceBorrowFrom && validFile?.parsed.rootNo && parentRootNo && validFile.parsed.rootNo !== parentRootNo
+      .find((rootNo) => isEquivalentAssemblyNo(sourceParentNo, rootNo, rootNos))
+    const effectiveRootNo = parentRootNo || assemblyRootNo
+    const normalizedSourceBorrowFrom = sourceBorrowFrom && effectiveRootNo && isSameDrawingFamily(sourceBorrowFrom, effectiveRootNo)
+      ? ''
+      : sourceBorrowFrom
+    const inferredBorrowFrom = !normalizedSourceBorrowFrom && validFile?.parsed.rootNo && effectiveRootNo && !isSameDrawingFamily(validFile.parsed.rootNo, effectiveRootNo)
       ? validFile.parsed.rootNo
       : ''
-    const borrowFrom = sourceBorrowFrom || inferredBorrowFrom
-    const parentNo = sourceParentNo || (borrowFrom
-      ? validFile?.parsed.parentNo || (parsedSourceNo.isStandard ? parsedSourceNo.parentNo : '') || ''
-      : validFile?.parsed.parentNo || (parsedSourceNo.isStandard ? parsedSourceNo.parentNo : '') || '')
+    const borrowFrom = normalizedSourceBorrowFrom || inferredBorrowFrom
+    const normalizedSourceParentNo = effectiveRootNo && isEquivalentAssemblyNo(sourceParentNo, effectiveRootNo, rootNos)
+      ? effectiveRootNo
+      : sourceParentNo
+    const inferredParentNo = validFile?.parsed.parentNo || (parsedSourceNo.isStandard ? parsedSourceNo.parentNo : '') || ''
+    const parentNo = normalizedSourceParentNo || (borrowFrom
+      ? inferredParentNo
+      : sourcePartNos.has(inferredParentNo)
+        ? inferredParentNo
+        : effectiveRootNo || inferredParentNo)
     const files = parsedFiles
       .filter(({ parsed }) => parsed.isStandard && (parsed.level > 0 || Boolean(borrowFrom)))
       .map(({ file, parsed }) => ({
         ...file,
         role: 'part' as const,
-        drawingNo: borrowFrom ? (file.drawingNo || parentNo) : parsed.rootNo ?? parentNo,
+        drawingNo: borrowFrom ? (file.drawingNo || parentNo) : effectiveRootNo || parsed.rootNo || parentNo,
         partNo: parsed.no,
       }))
     const otherFiles = parsedFiles

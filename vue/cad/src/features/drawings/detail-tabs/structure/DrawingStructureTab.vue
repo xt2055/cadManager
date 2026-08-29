@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingStructureNode from '@/features/drawings/components/detail/DrawingStructureNode.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
+import { isEquivalentAssemblyNo, isSameDrawingFamily, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 import type { StructurePart } from '@/types/domain.types'
 import type { StructureTreeNode } from '@/types/structure.types'
 
@@ -18,13 +19,18 @@ const treeNodes = computed<StructureTreeNode[]>(() => {
   if (!drawing.value) return []
   const childrenByParent = new Map<string, StructurePart[]>()
   const partByNo = new Map(allParts.value.map((part) => [part.no, part]))
+  const knownAssemblyNos = [
+    drawing.value.no,
+    ...('files' in drawing.value ? (drawing.value.files ?? []).map((file) => parseStandaloneDrawingFileName(file.name).no) : []),
+  ].filter(Boolean)
   const isUnderCurrentDrawing = (part: StructurePart): boolean => {
     if (!drawing.value) return false
-    if (part.parentNo === drawing.value.no || part.no.startsWith(`${drawing.value.no}-`)) return true
+    if (isEquivalentAssemblyNo(part.no, drawing.value.no, knownAssemblyNos)) return false
+    if (isEquivalentAssemblyNo(part.parentNo, drawing.value.no, knownAssemblyNos) || isSameDrawingFamily(part.no, drawing.value.no)) return true
     const visited = new Set<string>()
     let parentNo = part.parentNo
     while (parentNo && !visited.has(parentNo)) {
-      if (parentNo === drawing.value.no) return true
+      if (isEquivalentAssemblyNo(parentNo, drawing.value.no, knownAssemblyNos)) return true
       visited.add(parentNo)
       parentNo = partByNo.get(parentNo)?.parentNo || ''
     }
@@ -37,8 +43,10 @@ const treeNodes = computed<StructureTreeNode[]>(() => {
   const relevantPartNos = new Set(relevantParts.map((part) => part.no))
   for (const part of relevantParts) {
     // 父级记录缺失或不在当前相关集合中时挂回当前总图，保证历史数据与借用件始终在树中可见。
-    const parentNo = part.parentNo && (part.parentNo === drawing.value.no || relevantPartNos.has(part.parentNo))
-      ? part.parentNo
+    const parentNo = part.parentNo && isEquivalentAssemblyNo(part.parentNo, drawing.value.no, knownAssemblyNos)
+      ? drawing.value.no
+      : part.parentNo && relevantPartNos.has(part.parentNo)
+        ? part.parentNo
       : drawing.value.no
     const children = childrenByParent.get(parentNo) ?? []
     children.push(part)
@@ -90,12 +98,14 @@ function selectPart(partNo: string) {
       </div>
        <div class="tree">
          <div class="tree-node" :class="{ closed: !domainStore.treeOpen }">
-          <button class="row root-row" type="button" @click="domainStore.treeOpen = !domainStore.treeOpen">
-            <DemoIcon class="caret" name="chevron-down" :size="15" />
-            <DemoIcon class="tico" name="box" :size="15" />
-            <span class="tname"><b>{{ drawing?.name }}</b></span>
-            <span class="tno">{{ drawing?.no }}</span>
-          </button>
+           <button class="row root-row" type="button" @click="domainStore.treeOpen = !domainStore.treeOpen">
+             <DemoIcon class="caret" name="chevron-down" :size="15" />
+             <DemoIcon class="tico" name="box" :size="15" />
+             <span class="root-copy">
+               <span class="tname"><b>{{ drawing?.name }}</b></span>
+               <span class="root-meta"><span class="tno">{{ drawing?.no }}</span><span class="root-kind">总图</span></span>
+             </span>
+           </button>
            <div class="children">
              <DrawingStructureNode
                v-for="node in treeNodes"
@@ -191,8 +201,10 @@ function selectPart(partNo: string) {
 }
 .tree {
   flex: 1;
-  padding: 10px 12px;
+  min-width: 0;
+  padding: 10px 12px 14px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .tree-empty {
   padding: 16px 10px;
@@ -234,6 +246,18 @@ function selectPart(partNo: string) {
   text-align: left;
   transition: all 0.18s;
 }
+
+.root-copy,
+.root-meta {
+  min-width: 0;
+}
+
+.root-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
 .tree-node .row:hover {
   background: var(--hover);
 }
@@ -261,7 +285,6 @@ function selectPart(partNo: string) {
   flex: none;
 }
 .tname {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -277,10 +300,24 @@ function selectPart(partNo: string) {
   border-left: 1px dashed var(--line-strong);
 }
 .tno {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-3);
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.root-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.root-kind {
+  color: var(--text-3);
+  font-size: 10px;
 }
 .tree-borrow {
   padding: 1px 7px;
@@ -362,6 +399,55 @@ function selectPart(partNo: string) {
 .detail-file-empty {
   color: var(--text-3);
   font-size: 11px;
+}
+
+@media (max-width: 760px) {
+  .struct-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: auto;
+  }
+
+  .struct-tree-card {
+    max-height: min(62vh, 560px);
+  }
+
+  .struct-grid > .card:last-child {
+    min-height: 320px;
+  }
+
+  .tree {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .tree-node .row {
+    padding: 8px;
+  }
+
+  .children {
+    margin-left: 14px;
+    padding-left: 2px;
+  }
+
+  .sel-panel {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 420px) {
+  .struct-tree-card {
+    max-height: 64vh;
+  }
+
+  .tree-node .row {
+    gap: 6px;
+  }
+
+  .root-meta {
+    gap: 6px;
+  }
 }
 .struct-map {
   margin-top: 18px;

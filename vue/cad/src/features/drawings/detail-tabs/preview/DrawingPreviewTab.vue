@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { dataManager } from '@/services/data-manager'
+import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/services/data-manager/data-provider'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
+import { openCadEditSession } from '@/services/tauri/cad-edit.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 
@@ -99,6 +101,21 @@ const projectSearchQuery = ref('')
 const partSearchQuery = ref('')
 const selectedSourceProjectNo = ref('')
 const selectedSourcePartNo = ref('')
+interface LocalActiveEditSession {
+  sessionId: string
+  fileId: string
+  fileName: string
+  uncPath: string
+  openUrl: string
+  startedAt: string
+}
+
+let sessionPollTimer: number | null = null
+let heartbeatTimer: number | null = null
+const editingFileId = ref<string | null>(null)
+const activeSessionList = ref<ActiveEditSessionInfo[]>([])
+const myActiveSessions = ref<LocalActiveEditSession[]>([])
+const closingSessionIds = ref<Set<string>>(new Set())
 const borrowReasonInput = ref('')
 
 // 获取除当前项目外的所有可选项目（支持名称、图号、厂商模糊过滤）
@@ -236,14 +253,188 @@ function openBrowse(file: DrawingFile) {
   })
 }
 
-function openEditor(file: DrawingFile) {
+function openOnlineEditor(file: DrawingFile) {
   if (!currentItem.value) return
+  if (!file.storageKey) {
+    uiStore.toast('该文件尚未保存物理存储，无法使用在线编辑器打开', 'warn')
+    return
+  }
   router.push({
     name: 'drawing-editor',
     params: { drawingId: currentItem.value.no },
     query: { fileId: file.id },
   })
 }
+
+async function refreshActiveSessions() {
+  const drawingNo = currentItem.value?.no
+  if (!drawingNo) {
+    activeSessionList.value = []
+    return
+  }
+  try {
+    const list = await dataManager.listEditSessions(drawingNo)
+    activeSessionList.value = list
+
+    // 同步更新 myActiveSessions 状态：如果服务端已被关闭，则自动剔除
+    const validIds = new Set(list.filter((s) => s.isCurrent).map((s) => s.id))
+    myActiveSessions.value = myActiveSessions.value.filter((s) => validIds.has(s.sessionId))
+  } catch {
+    // 轮询静默失败
+  }
+}
+
+function getFileLockInfo(file: DrawingFile): ActiveEditSessionInfo | undefined {
+  if (!file.storageKey) return undefined
+  return activeSessionList.value.find((s) => s.storageKey === file.storageKey)
+}
+
+function isFileLockedByOther(file: DrawingFile): boolean {
+  const lock = getFileLockInfo(file)
+  return Boolean(lock && !lock.isCurrent)
+}
+
+function isFileEditingByMe(file: DrawingFile): boolean {
+  if (myActiveSessions.value.some((s) => s.fileId === file.id)) return true
+  const lock = getFileLockInfo(file)
+  return Boolean(lock && lock.isCurrent)
+}
+
+async function copyEditLink(value: string, label: string) {
+  try {
+    await navigator.clipboard.writeText(value)
+    uiStore.toast(`${label}已复制`, 'ok')
+  } catch {
+    uiStore.toast(`无法复制${label}，请手动选择文本`, 'warn')
+  }
+}
+
+async function stopSession(session: ActiveEditSessionInfo | { sessionId: string }) {
+  const targetId = 'id' in session ? session.id : session.sessionId
+  if (!targetId || closingSessionIds.value.has(targetId)) return
+
+  closingSessionIds.value.add(targetId)
+  try {
+    await dataManager.closeEditSession(targetId)
+    myActiveSessions.value = myActiveSessions.value.filter((s) => s.sessionId !== targetId)
+    await refreshActiveSessions()
+    uiStore.toast('已结束协同编辑会话，文件占用已释放', 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '释放编辑会话失败', 'warn')
+  } finally {
+    closingSessionIds.value.delete(targetId)
+  }
+}
+
+async function relaunchEditor(session: LocalActiveEditSession) {
+  try {
+    await openCadEditSession({
+      sessionId: session.sessionId,
+      openUrl: session.openUrl,
+      expiresAt: '',
+    })
+    uiStore.toast('已重新呼出本地 CAD', 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '重新唤醒本地 CAD 失败', 'warn')
+  }
+}
+
+async function relaunchEditorForFile(file: DrawingFile) {
+  const session = myActiveSessions.value.find((s) => s.fileId === file.id)
+  if (session) {
+    await relaunchEditor(session)
+  }
+}
+
+async function openEditor(file: DrawingFile) {
+  if (!currentItem.value) return
+  if (editingFileId.value) return
+  if (!file.storageKey) {
+    uiStore.toast('该文件尚未保存物理存储，无法使用本地 CAD 打开', 'warn')
+    return
+  }
+
+  // 检查是否已被他人锁定
+  const lock = getFileLockInfo(file)
+  if (lock && !lock.isCurrent) {
+    uiStore.toast(`该图纸正由「${lock.userName || lock.userAccount}」编辑中，已被协同锁定`, 'warn')
+    return
+  }
+
+  // 如果自己已经打开了该文件，直接重新唤醒 CAD
+  const existingMySession = myActiveSessions.value.find((s) => s.fileId === file.id)
+  if (existingMySession) {
+    await relaunchEditor(existingMySession)
+    return
+  }
+
+  editingFileId.value = file.id
+  let sessionId: string | null = null
+  try {
+    const session = await dataManager.openEditSession(file.storageKey)
+    sessionId = session.sessionId
+    window.localStorage.setItem('cad_last_edit_url', session.openUrl)
+
+    const newLocalSession: LocalActiveEditSession = {
+      sessionId: session.sessionId,
+      fileId: file.id,
+      fileName: file.name,
+      uncPath: session.uncPath,
+      openUrl: session.openUrl,
+      startedAt: new Date().toLocaleTimeString(),
+    }
+
+    myActiveSessions.value = [
+      ...myActiveSessions.value.filter((s) => s.sessionId !== session.sessionId && s.fileId !== file.id),
+      newLocalSession,
+    ]
+
+    await openCadEditSession(session)
+    await refreshActiveSessions()
+    uiStore.toast(`已在本地 CAD 中打开「${file.name}」，支持多开协同编辑`, 'ok')
+  } catch (error) {
+    if (sessionId) {
+      await dataManager.closeEditSession(sessionId).catch(() => undefined)
+    }
+    uiStore.toast(error instanceof Error ? error.message : '启动本地 CAD 失败', 'warn')
+  } finally {
+    editingFileId.value = null
+  }
+}
+
+watch(
+  () => currentItem.value?.no,
+  () => {
+    void refreshActiveSessions()
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  sessionPollTimer = window.setInterval(() => {
+    void refreshActiveSessions()
+  }, 10_000)
+
+  // 统一心跳轮询：对当前正在编辑的多开图纸批量保活
+  heartbeatTimer = window.setInterval(() => {
+    for (const session of myActiveSessions.value) {
+      void dataManager.heartbeatEditSession(session.sessionId).catch((error) => {
+        console.warn(`会话 ${session.sessionId} 心跳失败`, error)
+      })
+    }
+  }, 30_000)
+})
+
+onBeforeUnmount(() => {
+  if (heartbeatTimer) {
+    window.clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+  if (sessionPollTimer) {
+    window.clearInterval(sessionPollTimer)
+    sessionPollTimer = null
+  }
+})
 
 function openHistory(file: DrawingFile) {
   if (!currentItem.value) return
@@ -644,6 +835,39 @@ function closeReidentifyModal() {
       </div>
     </div>
 
+    <!-- 本地 CAD 协同状态面板（支持多开协同编辑，置于表格上方） -->
+    <div v-if="myActiveSessions.length > 0" class="collab-multi-container">
+      <div v-for="session in myActiveSessions" :key="session.sessionId" class="card collab-dock-card">
+        <div class="dock-left">
+          <div class="dock-status-tag">
+            <span class="pulse-dot"></span>
+            <strong>本地协同编辑中</strong>
+          </div>
+          <div class="dock-file-info">
+            <span class="file-name" :title="session.fileName">{{ session.fileName }}</span>
+            <span class="dock-time">开始于 {{ session.startedAt }} · 自动落盘与版本保护生效中</span>
+          </div>
+        </div>
+        <div class="dock-actions">
+          <button class="btn sm" type="button" title="在外部 CAD 或资源管理器中打开此共享路径" @click="copyEditLink(session.uncPath, '网络工作路径')">
+            <DemoIcon name="copy" :size="13" />复制路径
+          </button>
+          <button class="btn sm" type="button" title="重新唤醒本地 CAXA CAD 程序" @click="relaunchEditor(session)">
+            <DemoIcon name="external-link" :size="13" />呼出 CAXA
+          </button>
+          <button
+            class="btn sm primary danger-tone"
+            type="button"
+            :disabled="closingSessionIds.has(session.sessionId)"
+            title="结束当前编辑并释放文件独占锁"
+            @click="stopSession(session)"
+          >
+            <DemoIcon name="square" :size="12" />{{ closingSessionIds.has(session.sessionId) ? '释放中...' : '结束编辑' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 文件总览列表 -->
     <div class="card files-table-card">
       <div class="card-title files-title-row">
@@ -669,7 +893,7 @@ function closeReidentifyModal() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="file in allFiles" :key="file.id">
+            <tr v-for="file in allFiles" :key="file.id" :class="{ 'row-editing': isFileEditingByMe(file), 'row-locked': isFileLockedByOther(file) }">
               <td>
                 <span class="tag" :class="file.role === 'assembly' ? 'plain' : file.role === 'other' ? 'mute' : 'info'">
                   {{ file.role === 'assembly' ? '项目总图' : file.role === 'other' ? '其他文件' : '零件图' }}
@@ -677,32 +901,72 @@ function closeReidentifyModal() {
               </td>
               <td class="file-name-cell">
                 <DemoIcon name="file-check-2" :size="16" />
-                <b>{{ file.name }}</b>
+                <div class="file-title-wrap">
+                  <b>{{ file.name }}</b>
+                  <span v-if="isFileEditingByMe(file)" class="badge-collab active">
+                    <span class="pulse-dot"></span>我正在编辑
+                  </span>
+                  <span v-else-if="getFileLockInfo(file)" class="badge-collab locked" :title="`由 ${getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount} 锁定`">
+                    <DemoIcon name="lock" :size="11" />{{ getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount }} 编辑中
+                  </span>
+                </div>
               </td>
               <td class="num mono">{{ file.partNo || file.drawingNo }}</td>
-               <td class="num"><span class="ver-badge">{{ file.version }}</span></td>
-               <td>{{ file.uploadedBy }}</td>
-               <td class="row-actions" style="text-align: right">
+              <td class="num"><span class="ver-badge">{{ file.version }}</span></td>
+              <td>{{ file.uploadedBy }}</td>
+              <td class="row-actions" style="text-align: right">
                 <button class="btn sm primary" type="button" title="在线 CAD 矢量浏览" @click="openBrowse(file)">
                   <DemoIcon name="eye" :size="13" />浏览
                 </button>
-                <button class="btn sm" type="button" title="在线 CAD 编辑器" @click="openEditor(file)">
-                   <img class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />在线编辑
+                <button class="btn sm" type="button" title="使用网页 CAD 编辑器打开并编辑文件" @click="openOnlineEditor(file)">
+                  <img class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />在线编辑
                 </button>
+
+                <!-- 本地 CAD 编辑按钮三种状态：编辑中（绿色高亮）、被他人锁定（禁用锁止）、正常空闲 -->
+                <button
+                  v-if="isFileEditingByMe(file)"
+                  class="btn sm success-btn"
+                  type="button"
+                  title="当前已在本地 CAD 中打开，点击呼出/重新聚焦"
+                  @click="relaunchEditorForFile(file)"
+                >
+                  <span class="pulse-dot"></span>编辑中
+                </button>
+                <button
+                  v-else-if="isFileLockedByOther(file)"
+                  class="btn sm locked-btn"
+                  type="button"
+                  disabled
+                  :title="`文件正由「${getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount}」独占编辑中`"
+                >
+                  <DemoIcon name="lock" :size="12" />已被占用
+                </button>
+                <button
+                  v-else
+                  class="btn sm"
+                  type="button"
+                  :disabled="Boolean(editingFileId)"
+                  title="使用本机 CAD 软件（如 CAXA）打开并协同编辑"
+                  @click="openEditor(file)"
+                >
+                  <span v-if="editingFileId === file.id" class="local-edit-spinner" aria-hidden="true"></span>
+                  <img v-else class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />{{ editingFileId === file.id ? '启动中...' : '本地编辑' }}
+                </button>
+
                 <button class="btn sm" type="button" title="替换当前图纸文件并生成新版本" @click="triggerReplace(file)">
                   <DemoIcon name="refresh-cw" :size="13" />替换
                 </button>
                 <button class="btn sm history-action" type="button" title="查看该文件所有历史版本树与演进" @click="openHistory(file)">
                   <DemoIcon name="history" :size="13" />历史
-                   <span v-if="isHistoryUnread(file)" class="hist-count">{{ file.history?.length }}</span>
+                  <span v-if="isHistoryUnread(file)" class="hist-count">{{ file.history?.length }}</span>
                 </button>
                 <button class="btn sm danger" type="button" title="删除文件" @click="handleDeleteFile(file)">
                   <DemoIcon name="trash-2" :size="13" />删除
                 </button>
               </td>
             </tr>
-             <tr v-if="!allFiles.length">
-               <td colspan="6">
+            <tr v-if="!allFiles.length">
+              <td colspan="6">
                 <div class="empty">
                   <DemoIcon name="file-up" :size="36" />
                   <div class="t">尚未上传任何图纸文件</div>
@@ -1736,12 +2000,16 @@ function closeReidentifyModal() {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .header-info {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .header-info svg {
@@ -1758,11 +2026,18 @@ function closeReidentifyModal() {
   margin: 2px 0 0;
   color: var(--text-3);
   font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-buttons {
   display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
+  min-width: 0;
 }
 
 .files-table-card {
@@ -1775,7 +2050,7 @@ function closeReidentifyModal() {
 .files-table-card .tbl {
   width: 100%;
   min-width: 1180px;
-  table-layout: auto;
+  table-layout: fixed;
 }
 
 .files-table-card .tbl th,
@@ -1783,6 +2058,34 @@ function closeReidentifyModal() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 1280px) {
+  .preview-actions-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .header-buttons {
+    justify-content: flex-start;
+    width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .files-table-card .tbl {
+    min-width: 1080px;
+  }
+
+  .files-table-card .tbl th:nth-child(2),
+  .files-table-card .tbl td:nth-child(2) {
+    min-width: 220px;
+  }
+
+  .files-table-card .tbl th:nth-child(6),
+  .files-table-card .tbl td:nth-child(6) {
+    min-width: 420px;
+  }
 }
 
 .files-table-card .tbl th:nth-child(1),
@@ -1797,8 +2100,167 @@ function closeReidentifyModal() {
 .files-table-card .tbl td:nth-child(5) { width: 110px; }
 .files-table-card .tbl th:nth-child(6),
 .files-table-card .tbl td:nth-child(6) {
-  width: 370px;
-  min-width: 370px;
+  width: 470px;
+  min-width: 470px;
+}
+
+.file-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.badge-collab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 99px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  flex: none;
+}
+
+.badge-collab.active {
+  background: var(--ok-soft, rgba(34, 197, 94, 0.15));
+  color: var(--ok, #16a34a);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.badge-collab.locked {
+  background: var(--warn-soft, rgba(245, 158, 11, 0.15));
+  color: var(--warn, #d97706);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok, #22c55e);
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+  animation: pulse-ring 1.8s infinite cubic-bezier(0.66, 0, 0, 1);
+  flex: none;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+.row-editing {
+  background: var(--accent-soft, rgba(59, 130, 246, 0.05)) !important;
+}
+
+.row-locked {
+  opacity: 0.88;
+}
+
+.success-btn {
+  background: var(--ok-soft, rgba(34, 197, 94, 0.15)) !important;
+  color: var(--ok, #16a34a) !important;
+  border-color: rgba(34, 197, 94, 0.35) !important;
+  font-weight: 600;
+}
+
+.locked-btn {
+  opacity: 0.6;
+  cursor: not-allowed !important;
+}
+
+.collab-multi-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.collab-dock-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 18px;
+  border: 1px solid var(--accent);
+  background: linear-gradient(135deg, var(--panel) 0%, var(--panel-2) 100%);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.1);
+}
+
+.dock-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.dock-status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  background: var(--ok-soft, rgba(34, 197, 94, 0.12));
+  color: var(--ok, #16a34a);
+  border-radius: 99px;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex: none;
+}
+
+.dock-file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dock-file-info .file-name {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-file-info .dock-time {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.dock-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.danger-tone {
+  background: var(--danger, #ef4444) !important;
+  color: #fff !important;
+  border-color: transparent !important;
+}
+
+.dock-fade-enter-active,
+.dock-fade-leave-active {
+  transition: all 0.25s ease;
+}
+
+.dock-fade-enter-from,
+.dock-fade-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 .table-pad {
@@ -1820,7 +2282,7 @@ function closeReidentifyModal() {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 260px;
+  min-width: 0;
 }
 
 .file-name-cell svg {
@@ -1837,26 +2299,21 @@ function closeReidentifyModal() {
 }
 
 .row-actions {
-  display: flex;
   position: relative;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  width: 100%;
   min-width: 0;
   white-space: nowrap;
   text-align: right;
 }
 
 .row-actions .btn {
-  width: auto;
+  display: inline-flex;
   min-width: 0;
   height: 28px;
   padding: 5px 8px;
   gap: 5px;
   font-size: 11px;
   white-space: nowrap;
-  flex: 0 0 auto;
+  margin-left: 4px;
 }
 
 .row-actions .btn :deep(svg) {
@@ -1886,6 +2343,28 @@ function closeReidentifyModal() {
   width: 14px;
   height: 14px;
   flex: none;
+}
+
+.local-edit-spinner {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: local-edit-spin 0.75s linear infinite;
+}
+
+@keyframes local-edit-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .local-edit-spinner {
+    animation-duration: 1.5s;
+  }
 }
 
 .empty {

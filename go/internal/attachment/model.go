@@ -13,19 +13,24 @@ const (
 )
 
 type Attachment struct {
-	ID          string  `json:"id"`
-	StorageKey  string  `json:"storageKey"`
-	Name        string  `json:"name"`
-	DrawingNo   string  `json:"drawingNo"`
-	PartNo      *string `json:"partNo,omitempty"`
-	Role        Role    `json:"role"`
-	Size        int64   `json:"size"`
-	MimeType    string  `json:"mimeType"`
-	SHA256      string  `json:"sha256,omitempty"`
-	Version     string  `json:"version"`
-	Previewable bool    `json:"previewable"`
-	UploadedBy  string  `json:"uploadedBy,omitempty"`
-	CreatedAt   string  `json:"createdAt,omitempty"`
+	ID                string  `json:"id"`
+	StorageKey        string  `json:"storageKey"`
+	CurrentStorageKey string  `json:"currentStorageKey,omitempty"`
+	Name              string  `json:"name"`
+	CurrentName       string  `json:"currentName,omitempty"`
+	CurrentMimeType   string  `json:"currentMimeType,omitempty"`
+	CurrentSize       int64   `json:"currentSize,omitempty"`
+	CurrentSHA256     string  `json:"currentSha256,omitempty"`
+	DrawingNo         string  `json:"drawingNo"`
+	PartNo            *string `json:"partNo,omitempty"`
+	Role              Role    `json:"role"`
+	Size              int64   `json:"size"`
+	MimeType          string  `json:"mimeType"`
+	SHA256            string  `json:"sha256,omitempty"`
+	Version           string  `json:"version"`
+	Previewable       bool    `json:"previewable"`
+	UploadedBy        string  `json:"uploadedBy,omitempty"`
+	CreatedAt         string  `json:"createdAt,omitempty"`
 }
 
 type CreateInput struct {
@@ -42,6 +47,8 @@ type Repository interface {
 	Create(ctx context.Context, input CreateInput, object StorageObject, userID string) (Attachment, error)
 	Find(ctx context.Context, storageKey string) (Attachment, error)
 	FindByOwnerAndName(ctx context.Context, drawingNo, partNo, name string) (Attachment, error)
+	UpdateContent(ctx context.Context, storageKey string, size int64, mimeType, sha256 string) error
+	SetCurrentContent(ctx context.Context, sourceStorageKey, currentStorageKey, name string, size int64, mimeType, sha256 string) error
 	ListByDrawing(ctx context.Context, drawingNo string) ([]Attachment, error)
 	ListAllExb(ctx context.Context) ([]Attachment, error)
 	ListAllCad(ctx context.Context) ([]Attachment, error)

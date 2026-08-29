@@ -504,7 +504,7 @@ func (s *Service) ensureCaxaRunning(ctx context.Context) error {
 		return nil
 	}
 
-	binPath, err := resolveCaxaPath(s.caxaBin)
+	binPath, err := ResolveCaxaPath(s.caxaBin)
 	if err != nil {
 		return err
 	}
@@ -547,7 +547,7 @@ func resolveToolPath(configured, name string) (string, error) {
 	return "", fmt.Errorf("找不到 %s，请设置 CAD_DWG2DXF_BIN", name)
 }
 
-func resolveCaxaPath(configured string) (string, error) {
+func ResolveCaxaPath(configured string) (string, error) {
 	if strings.TrimSpace(configured) != "" {
 		for _, path := range candidatePaths(configured) {
 			if _, err := os.Stat(path); err == nil {

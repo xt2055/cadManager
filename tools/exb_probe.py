@@ -21,7 +21,7 @@ import olefile
 ZLIB_HEADERS = {b"\x78\x01", b"\x78\x9c", b"\x78\xda"}
 TEXT_PATTERN = re.compile(r"[\x20-\x7e\u3400-\u9fff]{2,}")
 SCALE_PATTERN = re.compile(r"^\d+(?:\.\d+)?:\d+(?:\.\d+)?$")
-DRAWING_NO_PATTERN = re.compile(r"^(?=.*\d)[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)+$")
+DRAWING_NO_PATTERN = re.compile(r"^(?=.*\d)(?=.*[A-Za-z])[A-Za-z0-9]+(?:[/.-][A-Za-z0-9]+)+$")
 STANDARD_PATTERN = re.compile(r"\b(?:GB|JB)(?:/[A-Z]+)?/[A-Z0-9.-]+", re.IGNORECASE)
 MATERIAL_PATTERN = re.compile(r"^(?:\d+[A-Za-z]+\d*[A-Za-z0-9]*|[A-Za-z]+\d+[A-Za-z0-9]*)$")
 TITLE_BLOCK_STREAM = "*BlockStg/*Blk_fffffffb"
@@ -270,16 +270,41 @@ def extract_title_block_fields(texts: list[dict[str, Any]]) -> dict[str, str]:
                     fields[key] = max(candidates, key=title_block_value_score)
         index += 1
 
+    # 部分 CAXA 图框没有保存“图纸编号”标签，但右下角仍保存了真实图号。
+    # 此时只从图框流中挑选严格符合工程图号规则的候选，取最后出现的候选近似右下角字段。
+    if "图纸编号" not in fields:
+        fallback_candidates = [
+            item["value"].strip()
+            for item in title_texts
+            if is_likely_drawing_number(item["value"])
+        ]
+        if fallback_candidates:
+            fields["图纸编号"] = fallback_candidates[-1]
+
     return fields
 
 
 def title_block_value_score(value: str) -> tuple[int, int, int]:
     """优先选择规范图号，避免将错位二进制文本作为标题栏值。"""
     normalized = value.strip()
-    is_drawing_number = bool(DRAWING_NO_PATTERN.fullmatch(normalized))
+    is_drawing_number = is_likely_drawing_number(normalized)
     has_digit = any(char.isdigit() for char in normalized)
     has_separator = any(char in normalized for char in ".-_/")
     return (3 if is_drawing_number else 0, 1 if has_digit else 0, 1 if has_separator else 0)
+
+
+def is_likely_drawing_number(value: str) -> bool:
+    """排除比例、公差、螺纹和标准件代号，避免它们抢占标题栏图号。"""
+    normalized = value.strip().upper()
+    if not DRAWING_NO_PATTERN.fullmatch(normalized):
+        return False
+    if SCALE_PATTERN.fullmatch(normalized) or re.fullmatch(r"\d+(?:\.\d+)?", normalized):
+        return False
+    if re.search(r"(?:^|[-.])M\d|\d-MN-\d|\d+WD\b|\b(?:MN|WD|UNC|UNF)\b", normalized):
+        return False
+    if re.match(r"^(?:GB|JB|ISO|DIN|HB)(?:[/.-]|\d)", normalized):
+        return False
+    return True
 
 
 def is_title_block_value(value: str, key: str) -> bool:
@@ -294,10 +319,12 @@ def is_title_block_value(value: str, key: str) -> bool:
         return False
     if any(char in value for char in "㠀塶䘀輀䘔耀郯疐鰁䡽䉽戡倀㜀"):
         return False
+    if any("\ufffd" in char or "\ud800" <= char <= "\udfff" for char in value):
+        return False
     if key == "图纸比例":
         return bool(SCALE_PATTERN.fullmatch(value))
     if key == "图纸编号":
-        return bool(DRAWING_NO_PATTERN.fullmatch(value))
+        return is_likely_drawing_number(value)
     if key in {"图纸名称", "材料名称", "材质", "单位名称"}:
         return any(char.isalnum() or "\u4e00" <= char <= "\u9fff" for char in value)
     return any("\u4e00" <= char <= "\u9fff" or char.isalpha() for char in value)

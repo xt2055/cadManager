@@ -24,6 +24,7 @@
     "@mlightcad/three-renderer": "^1.6.3",
     "@mlightcad/ui-components": "^0.1.11",
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-deep-link": "^2.0.0",
     "@types/three": "^0.172.0",
     "@velipso/polybool": "^1.1.1",
     "@vueuse/core": "^11.3.0",

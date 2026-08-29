@@ -8,7 +8,7 @@ import { useUiStore } from '@/stores/ui.store'
 import { dataManager } from '@/services/data-manager'
 import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
-import { parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
+import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 
 defineOptions({
   name: 'DrawingCreatePage',
@@ -20,8 +20,12 @@ const uiStore = useUiStore()
 
 const formProject = ref('')
 const formProjectNo = ref('')
+const formDrawingNo = ref('')
 const formVendor = ref('')
 const formRemark = ref('')
+const isIdentifyingAssembly = ref(false)
+const assemblyIdentifyMessage = ref('')
+let assemblyIdentifySequence = 0
 
 const createMode = ref<'blank' | 'fork'>('blank')
 const selectedForkSourceNo = ref('')
@@ -69,6 +73,8 @@ const assemblyFile = ref<UploadedAssembly | null>(null)
 const partFiles = ref<UploadedPart[]>([])
 const isDraggingAssembly = ref(false)
 const isDraggingParts = ref(false)
+const isCreating = ref(false)
+const createStatus = ref('正在准备创建')
 
 const assemblyFileInput = ref<HTMLInputElement | null>(null)
 const partFilesInput = ref<HTMLInputElement | null>(null)
@@ -82,20 +88,42 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function handleAssemblySelected(file: File) {
-  const parsed = parseStandaloneDrawingFileName(file.name)
+async function handleAssemblySelected(file: File) {
   assemblyFile.value = {
     name: file.name,
     size: formatFileSize(file.size),
     file,
   }
+  const sequence = ++assemblyIdentifySequence
+  const fileNameIdentity = parseStandaloneDrawingFileName(file.name)
+  formDrawingNo.value = ''
+  assemblyIdentifyMessage.value = '正在读取总图标题栏中的真实图号…'
+  isIdentifyingAssembly.value = true
   if (!formProject.value) {
-    formProject.value = parsed.isStandard && parsed.name !== parsed.no
-      ? parsed.name
-      : file.name.replace(/\.[^/.]+$/, '')
+    formProject.value = fileNameIdentity.name || file.name.replace(/\.[^/.]+$/, '')
   }
-  if (!formProjectNo.value && parsed.isStandard) {
-    formProjectNo.value = parsed.no
+  if (!formProjectNo.value) {
+    formProjectNo.value = projectNoFromFile(file)
+  }
+  if (file && supportsDrawingNumberIdentification(file.name)) {
+    try {
+      const identity = await dataManager.identifyDrawingFile(file, file.name, { titleBlockOnly: true })
+      if (sequence !== assemblyIdentifySequence) return
+      if (identity.partNoSource !== 'titleBlock' || !identity.partNo.trim()) {
+        assemblyIdentifyMessage.value = '标题栏未识别到总图图号，请核对图纸后手动填写。'
+      } else {
+        formDrawingNo.value = identity.partNo.trim()
+        assemblyIdentifyMessage.value = '已从总图标题栏读取真实图号。'
+      }
+    } catch (error) {
+      if (sequence !== assemblyIdentifySequence) return
+      assemblyIdentifyMessage.value = error instanceof Error ? error.message : '读取总图标题栏失败，请手动填写总图图号。'
+    } finally {
+      if (sequence === assemblyIdentifySequence) isIdentifyingAssembly.value = false
+    }
+  } else {
+    isIdentifyingAssembly.value = false
+    assemblyIdentifyMessage.value = '当前文件不是可读取标题栏的 CAD 格式，请手动填写总图图号。'
   }
   uiStore.toast(`总图 ${file.name} 已选择，现可继续添加零件图`, 'ok')
 }
@@ -104,7 +132,7 @@ function onAssemblyChange(event: Event) {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
   if (file) {
-    handleAssemblySelected(file)
+    void handleAssemblySelected(file)
   }
 }
 
@@ -112,7 +140,7 @@ function onAssemblyDrop(event: DragEvent) {
   isDraggingAssembly.value = false
   const file = event.dataTransfer?.files?.[0]
   if (file) {
-    handleAssemblySelected(file)
+    void handleAssemblySelected(file)
   }
 }
 
@@ -165,6 +193,34 @@ function clearAllParts() {
   partFiles.value = []
 }
 
+function supportsDrawingNumberIdentification(name: string): boolean {
+  const extension = name.slice(name.lastIndexOf('.')).toLowerCase()
+  return ['.exb', '.dwg', '.dxf'].includes(extension)
+}
+
+function projectNoFromFile(file: File): string {
+  const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || ''
+  const pathParts = relativePath.split(/[\\/]/).filter(Boolean)
+  const candidates = [...pathParts, file.name]
+
+  // 优先读取路径或文件名中的明确项目号，例如 PRJ-2026-782。
+  for (const candidate of candidates) {
+    const baseName = candidate.replace(/\.[^/.]+$/, '').trim()
+    const projectMatch = baseName.match(/^(PRJ[-_]\d+(?:[-_][A-Za-z0-9]+)*)/i)
+    if (projectMatch?.[1]) return projectMatch[1]
+  }
+
+  // 没有 PRJ 前缀时，项目号仍取文件名中的工程编号；它可以与总图图号字符串相同，语义由字段区分。
+  const fileBaseName = file.name.replace(/\.[^/.]+$/, '').trim()
+  const fileIdentity = parseStandaloneDrawingFileName(file.name)
+  if (fileIdentity.isStandard) return fileIdentity.no
+  return fileBaseName.split(/[（(【\[]/, 1)[0]?.trim() || ''
+}
+
+function isDetailListFile(name: string): boolean {
+  return /密封件|外购件/.test(name) && name.includes('明细表')
+}
+
 function triggerAssemblyPick() {
   assemblyFileInput.value?.click()
 }
@@ -181,35 +237,61 @@ function handleCancel() {
   router.push({ name: 'drawing-library' })
 }
 
-async function handleSubmit() {
+function handleSubmit() {
+  if (isCreating.value) return
+  isCreating.value = true
+  createStatus.value = '正在准备创建'
+  void performCreate().finally(() => {
+    isCreating.value = false
+    createStatus.value = '正在准备创建'
+  })
+}
+
+async function performCreate() {
   const projectName = formProject.value.trim()
   if (!projectName) {
     uiStore.toast('请填写项目名称', 'warn')
     return
   }
 
-  const generatedNo = formProjectNo.value.trim() || `PRJ-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`
+  const projectNo = formProjectNo.value.trim()
+  const drawingNo = formDrawingNo.value.trim()
+  if (!projectNo) {
+    uiStore.toast('请填写项目号；项目号只能来自总图文件名或用户手动输入', 'warn')
+    return
+  }
+  if (isIdentifyingAssembly.value) {
+    uiStore.toast('正在读取总图标题栏，请稍候再保存', 'warn')
+    return
+  }
+  if (!drawingNo) {
+    uiStore.toast('请填写总图图号；总图图号必须来自标题栏识别或用户核对后的手动输入', 'warn')
+    return
+  }
 
   if (createMode.value === 'fork') {
     if (!selectedForkSourceNo.value) {
       uiStore.toast('请选择要分叉的源图纸', 'warn')
       return
     }
-    if (selectedForkSourceNo.value === generatedNo) {
+    if (selectedForkSourceNo.value === drawingNo) {
       uiStore.toast('分叉新图号不能与源图号相同', 'warn')
       return
     }
     try {
+      createStatus.value = '正在继承源图纸结构与文件'
       await domainStore.forkDrawing(
         selectedForkSourceNo.value,
-        generatedNo,
+        drawingNo,
         projectName,
         formVendor.value.trim(),
         formRemark.value.trim(),
+        undefined,
+        projectNo,
       )
-      domainStore.openDrawing(generatedNo)
-      uiStore.toast(`已基于「${selectedForkSourceNo.value}」成功分叉新项目「${generatedNo}」`, 'ok')
-      router.push({ name: 'drawing-preview', params: { drawingId: generatedNo } })
+      domainStore.openDrawing(drawingNo)
+      uiStore.toast(`已基于「${selectedForkSourceNo.value}」成功分叉项目「${projectNo}」，总图图号为「${drawingNo}」`, 'ok')
+      router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
       return
     } catch (error) {
       console.error('分叉图纸失败', error)
@@ -224,10 +306,10 @@ async function handleSubmit() {
   })
 
   const newProjectDrawing: Drawing = {
-    no: generatedNo,
+    no: drawingNo,
     name: projectName,
     kind: '总图',
-    project: projectName,
+    project: projectNo,
     material: '—',
     vendor: formVendor.value.trim() || '内部项目部',
     status: 'draft',
@@ -239,31 +321,48 @@ async function handleSubmit() {
     signers: signerMap,
   }
 
-  let identifiedPartFiles: Array<{ part: UploadedPart; parsed: ReturnType<typeof parseDrawingNumber>; material: string }>
+  const identifiedPartFiles: Array<{ part: UploadedPart; parsed: ReturnType<typeof parseDrawingNumber>; material: string }> = []
   try {
-    identifiedPartFiles = await Promise.all(partFiles.value.map(async (part) => {
+    for (const [index, part] of partFiles.value.entries()) {
       if (!part.file) throw new Error(`零件文件「${part.name}」缺少文件内容`)
+      if (!supportsDrawingNumberIdentification(part.name) || isDetailListFile(part.name)) {
+        identifiedPartFiles.push({
+          part,
+          parsed: parseDrawingNumber(''),
+          material: '—',
+        })
+        continue
+      }
+      createStatus.value = `正在识别零件图号（${index + 1}/${partFiles.value.length}）`
       const identity = await dataManager.identifyDrawingFile(part.file, part.name)
       const parsed = parseDrawingNumber(identity.partNo)
-      if (!parsed.isStandard) throw new Error(`零件文件「${part.name}」返回的图号无效`)
-      return {
+      if (!parsed.isStandard) {
+        // 没有可靠工程图号的标准件、明细表等文件保留为其他文件，不能臆造零件号。
+        identifiedPartFiles.push({ part, parsed, material: identity.material || '—' })
+        continue
+      }
+      identifiedPartFiles.push({
         part,
         parsed,
         material: identity.material || identity.titleBlock?.['材料名称'] || identity.titleBlock?.['材料'] || identity.titleBlock?.['材质'] || '—',
-      }
-    }))
+      })
+    }
   } catch (error) {
     uiStore.toast(error instanceof Error ? error.message : '读取零件图号失败，请检查图纸标题栏', 'warn')
     return
   }
 
+  const projectFamilyNo = drawingNo
   const parsedPartFiles = identifiedPartFiles.map(({ part, parsed, material }) => ({
     part,
     parsed,
     material,
-    isBorrowed: parsed.rootNo !== generatedNo,
+    isBorrowed: parsed.isStandard && !isSameDrawingFamily(parsed.no, projectFamilyNo),
   }))
-  const structuredPartFiles = parsedPartFiles.filter(({ parsed }) => parsed.isStandard && parsed.no !== generatedNo)
+  const assemblyNos = [
+    drawingNo,
+  ].filter(Boolean)
+  const structuredPartFiles = parsedPartFiles.filter(({ parsed }) => parsed.isStandard && !isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
   const validPartEntries = structuredPartFiles.map(({ part, parsed, isBorrowed, material }, index) => ({
     part,
     parsed,
@@ -274,7 +373,7 @@ async function handleSubmit() {
       name: part.name,
       size: part.size,
       role: 'part' as const,
-      drawingNo: generatedNo,
+       drawingNo,
       partNo: parsed.no,
       version: 'v1.0',
       uploadedBy: '当前用户',
@@ -296,11 +395,14 @@ async function handleSubmit() {
     if (!firstEntry) throw new Error('零件文件分组为空')
     const cleanName = firstEntry.part.name.replace(/\.[^/.]+$/, '')
     const partNo = firstEntry.parsed.no
+    const localPartNos = new Set(structuredPartFiles.map((entry) => entry.parsed.no))
+    const directParentNo = directParentDrawingNo(partNo)
+     const parentNo = directParentNo && localPartNos.has(directParentNo) ? directParentNo : drawingNo
     return {
       no: partNo,
       name: firstEntry.parsed.name || cleanName,
-      parentNo: firstEntry.isBorrowed ? generatedNo : firstEntry.parsed.parentNo ?? generatedNo,
-      project: projectName,
+       parentNo: firstEntry.isBorrowed ? drawingNo : parentNo,
+       project: projectNo,
       material: firstEntry.material || '—',
       spec: '',
       weight: 0,
@@ -317,14 +419,15 @@ async function handleSubmit() {
         : {}),
     }
   })
-  const otherDrawingFiles: DrawingFile[] = parsedPartFiles
-    .filter(({ parsed }) => !parsed.isStandard || parsed.no === generatedNo)
+  const otherFileEntries = parsedPartFiles
+    .filter(({ parsed }) => !parsed.isStandard || isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
+  const otherDrawingFiles: DrawingFile[] = otherFileEntries
     .map(({ part }, index) => ({
       id: `${Date.now()}-other-${index}`,
       name: part.name,
       size: part.size,
       role: 'other' as const,
-      drawingNo: generatedNo,
+       drawingNo,
       version: 'v1.0',
        uploadedBy: '当前用户',
       uploadedAt: '刚刚',
@@ -337,7 +440,7 @@ async function handleSubmit() {
         name: assemblyFile.value.name,
         size: assemblyFile.value.size,
         role: 'assembly' as const,
-        drawingNo: generatedNo,
+         drawingNo,
         version: 'v1.0',
          uploadedBy: '当前用户',
         uploadedAt: '刚刚',
@@ -353,14 +456,15 @@ async function handleSubmit() {
       ? [{ id: assemblyDrawingFile?.id ?? '', content: assemblyFile.value.file }]
       : []),
     ...validPartEntries.map((entry) => ({ id: entry.file.id, content: entry.part.file })),
-    ...parsedPartFiles
-      .filter(({ parsed, isBorrowed }) => !isBorrowed && (!parsed.isStandard || parsed.level <= 0 || parsed.rootNo !== generatedNo))
-      .map(({ part }, index) => ({ id: otherDrawingFiles[index]?.id ?? '', content: part.file })),
+    ...otherFileEntries
+       .filter(({ parsed, isBorrowed }) => !isBorrowed && (!parsed.isStandard || parsed.level <= 0 || parsed.rootNo !== drawingNo))
+       .map(({ part }, index) => ({ id: otherDrawingFiles[index]?.id ?? '', content: part.file })),
   ]
 
   newProjectDrawing.remark = formRemark.value.trim()
 
   try {
+    createStatus.value = '正在保存项目结构并上传图纸文件'
     await domainStore.addDrawing(newProjectDrawing, partsForStructure, attachments.filter((item): item is { id: string; content: File } => Boolean(item.id && item.content)))
   } catch (error) {
     console.error('保存新建图纸失败', error)
@@ -368,16 +472,24 @@ async function handleSubmit() {
     return
   }
 
-  domainStore.openDrawing(newProjectDrawing.no)
+   domainStore.openDrawing(newProjectDrawing.no)
 
   const borrowedPartCount = groupedPartEntries.filter((entries) => entries[0]?.isBorrowed).length
-  uiStore.toast(`项目「${projectName}」已成功创建并保存${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}`, 'ok')
+   uiStore.toast(`项目「${projectNo}」已成功创建，总图图号为「${drawingNo}」${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}`, 'ok')
   router.push({ name: 'drawing-preview', params: { drawingId: newProjectDrawing.no } })
 }
 </script>
 
 <template>
   <div class="page drawing-create-view">
+    <div v-if="isCreating" class="create-loading-overlay" role="status" aria-live="polite">
+      <div class="create-loading-card">
+        <span class="create-spinner" aria-hidden="true"></span>
+        <strong>正在创建图纸</strong>
+        <span>{{ createStatus }}</span>
+        <small>请勿关闭页面或重复点击</small>
+      </div>
+    </div>
     <div class="create-topbar">
       <div class="topbar-left">
         <button class="btn icon-only" type="button" title="返回图纸库" @click="handleCancel">
@@ -389,9 +501,10 @@ async function handleSubmit() {
         </div>
       </div>
       <div class="topbar-actions">
-        <button class="btn" type="button" @click="handleCancel">取消</button>
-        <button class="btn primary" type="button" @click="handleSubmit">
-          <DemoIcon name="check" :size="14" />保存并创建
+        <button class="btn" type="button" :disabled="isCreating" @click="handleCancel">取消</button>
+        <button class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
+          <span v-if="isCreating" class="button-spinner" aria-hidden="true"></span>
+          <DemoIcon v-else name="check" :size="14" />{{ isCreating ? '创建中…' : '保存并创建' }}
         </button>
       </div>
     </div>
@@ -438,14 +551,29 @@ async function handleSubmit() {
               />
             </div>
 
-            <div class="form-item">
-              <label for="create-project-no">项目 / 图纸编号</label>
+            <div class="form-item required">
+              <label for="create-project-no">项目号</label>
               <input
                 id="create-project-no"
                 v-model="formProjectNo"
                 class="inp"
-                placeholder="留空自动按 PRJ-2026-xxx 规则生成"
+                placeholder="从总图文件名自动带入，也可手动修改"
               />
+              <small class="field-help">用于项目分类和文件夹目录，不是总图图号。</small>
+            </div>
+
+            <div class="form-item required">
+              <label for="create-drawing-no">总图图号</label>
+              <input
+                id="create-drawing-no"
+                v-model="formDrawingNo"
+                class="inp"
+                :placeholder="isIdentifyingAssembly ? '正在读取标题栏…' : '从总图标题栏自动识别，也可核对后修改'"
+                :disabled="isIdentifyingAssembly"
+              />
+              <small class="field-help" :class="{ error: assemblyIdentifyMessage && !formDrawingNo && !isIdentifyingAssembly }">
+                {{ assemblyIdentifyMessage || '总图图号来自图纸标题栏，不使用项目号代替。' }}
+              </small>
             </div>
 
             <div class="form-item">
@@ -530,7 +658,7 @@ async function handleSubmit() {
               </div>
               <div class="upload-texts">
                 <b>上传项目总图</b>
-                <p>支持 .exb / .dwg / .dxf / .pdf · 单文件 ≤ 100MB</p>
+              <p>支持 .exb / .dwg / .dxf / .pdf · 单文件 ≤ 100MB；选择后读取标题栏图号</p>
               </div>
               <div class="upload-actions">
                 <button class="btn sm primary" type="button" @click="triggerAssemblyPick">
@@ -654,6 +782,76 @@ async function handleSubmit() {
   gap: 16px;
   min-height: calc(100vh - 120px);
   padding: 6px 4px 20px;
+}
+
+.create-loading-overlay {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.create-loading-card {
+  display: flex;
+  min-width: 240px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 30px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 18%);
+  color: var(--text-1);
+  text-align: center;
+}
+
+.create-loading-card span:not(.create-spinner) {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.create-loading-card small {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.create-spinner,
+.button-spinner {
+  display: inline-block;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: create-spin 0.75s linear infinite;
+}
+
+.create-spinner {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 4px;
+  color: var(--accent);
+}
+
+.button-spinner {
+  width: 13px;
+  height: 13px;
+}
+
+@keyframes create-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .create-spinner,
+  .button-spinner {
+    animation-duration: 1.5s;
+  }
 }
 
 .create-topbar {
@@ -921,6 +1119,18 @@ async function handleSubmit() {
   margin: 4px 0 0;
   color: var(--text-3);
   font-size: 11.5px;
+}
+
+.field-help {
+  display: block;
+  margin-top: 5px;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.field-help.error {
+  color: var(--danger);
 }
 
 .upload-actions {

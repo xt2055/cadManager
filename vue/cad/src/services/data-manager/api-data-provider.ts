@@ -1,10 +1,24 @@
 import { normalizeDataDocument, type DataDocument } from './data.types'
-import type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, ReidentifyDrawingFileResult } from './data-provider'
+import type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, ReidentifyDrawingFileResult } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import type { UserManagementInput } from './data-provider'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function getAccessToken(): string {
+  if (typeof window === 'undefined') return ''
+  return window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token') || ''
+}
+
+function unwrapResponseData(value: unknown): unknown {
+  let current = value
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!isRecord(current) || !('data' in current)) return current
+    current = current.data
+  }
+  return current
 }
 
 export class ApiDataProvider implements DataProvider {
@@ -39,7 +53,7 @@ export class ApiDataProvider implements DataProvider {
     if (metadata.previewable !== undefined) formData.append('previewable', String(metadata.previewable))
 
     const headers: Record<string, string> = { Accept: 'application/json' }
-    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    const token = getAccessToken()
     if (token) headers.Authorization = `Bearer ${token}`
 
     const response = await fetch(`${this.baseUrl}/attachments`, {
@@ -84,7 +98,7 @@ export class ApiDataProvider implements DataProvider {
 
   async readAttachment(storageKey: string): Promise<Blob> {
     const headers: Record<string, string> = { Accept: '*/*' }
-    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    const token = getAccessToken()
     if (token) headers.Authorization = `Bearer ${token}`
     const response = await fetch(`${this.baseUrl}/attachments/${encodeURIComponent(storageKey)}`, {
       method: 'GET',
@@ -100,7 +114,7 @@ export class ApiDataProvider implements DataProvider {
       'Content-Type': 'application/json',
       Accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, */*',
     }
-    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    const token = getAccessToken()
     if (token) headers.Authorization = `Bearer ${token}`
 
     const response = await fetch(`${this.baseUrl}/bom/export`, {
@@ -118,32 +132,33 @@ export class ApiDataProvider implements DataProvider {
       method: 'POST',
       headers: {
         Accept: 'application/json',
-        ...(typeof window !== 'undefined' && window.localStorage.getItem('cad_access_token')
-          ? { Authorization: `Bearer ${window.localStorage.getItem('cad_access_token')}` }
+        ...(getAccessToken()
+          ? { Authorization: `Bearer ${getAccessToken()}` }
           : {}),
       },
       credentials: 'include',
     })
     if (!response.ok) throw new Error(`扫描图纸设计人失败：HTTP ${response.status}`)
     const body: unknown = await response.json()
-    const payload = isRecord(body) && 'data' in body ? body.data : body
+    const payload = unwrapResponseData(body)
     if (!isRecord(payload)) return ''
     return typeof payload.designer === 'string' ? payload.designer : ''
   }
 
-  async identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity> {
-    return this.identifyDrawingFields('/exb/identify', file, name, true)
+  async identifyDrawingFile(file: Blob, name: string, options?: DrawingFileIdentifyOptions): Promise<DrawingFileIdentity> {
+    return this.identifyDrawingFields('/exb/identify', file, name, !options?.titleBlockOnly, options)
   }
 
   async identifyDrawingMaterial(file: Blob, name: string): Promise<DrawingFileIdentity> {
     return this.identifyDrawingFields('/exb/material', file, name, false)
   }
 
-  private async identifyDrawingFields(path: string, file: Blob, name: string, requirePartNo: boolean): Promise<DrawingFileIdentity> {
+  private async identifyDrawingFields(path: string, file: Blob, name: string, requirePartNo: boolean, options?: DrawingFileIdentifyOptions): Promise<DrawingFileIdentity> {
     const formData = new FormData()
     formData.append('file', file, name)
+    if (options?.titleBlockOnly) formData.append('titleBlockOnly', 'true')
     const headers: Record<string, string> = { Accept: 'application/json' }
-    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    const token = getAccessToken()
     if (token) headers.Authorization = `Bearer ${token}`
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
@@ -153,15 +168,20 @@ export class ApiDataProvider implements DataProvider {
     })
     const body: unknown = await response.json().catch(() => undefined)
     if (!response.ok) {
-      const message = isRecord(body) && typeof body.message === 'string' ? body.message : `读取图纸图号失败：HTTP ${response.status}`
-      throw new Error(message)
+      const detail = isRecord(body) && typeof body.message === 'string'
+        ? body.message
+        : `HTTP ${response.status}`
+      throw new Error(`读取「${name}」图纸图号失败：${detail}`)
     }
-    const payload = isRecord(body) && 'data' in body ? body.data : body
+    const payload = unwrapResponseData(body)
     if (!isRecord(payload) || (requirePartNo && (typeof payload.partNo !== 'string' || !payload.partNo.trim()))) {
-      throw new Error('图纸接口未返回有效内部图号')
+      throw new Error(`读取「${name}」图纸时未返回有效内部图号`)
     }
     return {
       partNo: typeof payload.partNo === 'string' ? payload.partNo.trim() : '',
+      partNoSource: payload.partNoSource === 'titleBlock' || payload.partNoSource === 'filename' || payload.partNoSource === 'none'
+        ? payload.partNoSource
+        : undefined,
       material: typeof payload.material === 'string' ? payload.material.trim() : undefined,
       titleBlock: isRecord(payload.titleBlock) ? Object.fromEntries(
         Object.entries(payload.titleBlock).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
@@ -203,6 +223,42 @@ export class ApiDataProvider implements DataProvider {
     return this.readUserResponse(body)
   }
 
+  async listEditSessions(drawingNo?: string): Promise<ActiveEditSessionInfo[]> {
+    const query = drawingNo ? `?drawingNo=${encodeURIComponent(drawingNo)}` : ''
+    const body = await this.request<unknown>(`/edit-sessions${query}`, { method: 'GET' })
+    const payload = isRecord(body) && 'data' in body ? body.data : body
+    if (!Array.isArray(payload)) return []
+    return payload as ActiveEditSessionInfo[]
+  }
+
+  async openEditSession(storageKey: string): Promise<EditSessionOpenResult> {
+    const body = await this.request<unknown>('/edit-sessions/open', {
+      method: 'POST',
+      body: JSON.stringify({ storageKey }),
+    })
+    const payload = isRecord(body) && 'data' in body ? body.data : body
+    if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.openUrl !== 'string' || typeof payload.uncPath !== 'string' || typeof payload.smbRoot !== 'string' || typeof payload.expiresAt !== 'string') {
+      throw new Error('编辑会话接口返回格式无效')
+    }
+    return {
+      sessionId: payload.sessionId,
+      openUrl: payload.openUrl,
+      uncPath: payload.uncPath,
+      smbRoot: payload.smbRoot,
+      expiresAt: payload.expiresAt,
+    }
+  }
+
+  async heartbeatEditSession(sessionId: string): Promise<EditSessionControlResult> {
+    await this.request(`/edit-sessions/${encodeURIComponent(sessionId)}/heartbeat`, { method: 'POST' })
+    return { sessionId }
+  }
+
+  async closeEditSession(sessionId: string): Promise<EditSessionControlResult> {
+    await this.request(`/edit-sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' })
+    return { sessionId }
+  }
+
   private readUserResponse(body: unknown): UserAccount {
     const payload = isRecord(body) && 'data' in body ? body.data : body
     if (!isRecord(payload) || typeof payload.id !== 'string') throw new Error('账号接口返回格式无效')
@@ -218,7 +274,7 @@ export class ApiDataProvider implements DataProvider {
       headers['Content-Type'] = 'application/json'
     }
 
-    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    const token = getAccessToken()
     if (token) {
       headers.Authorization = `Bearer ${token}`
     }
@@ -231,7 +287,16 @@ export class ApiDataProvider implements DataProvider {
     })
 
     if (!response.ok) {
-      throw new Error(`数据接口请求失败：HTTP ${response.status}`)
+      let message = `数据接口请求失败：HTTP ${response.status}`
+      try {
+        const errorBody: unknown = await response.json()
+        if (isRecord(errorBody) && typeof errorBody.message === 'string' && errorBody.message.trim()) {
+          message = `数据接口请求失败：${errorBody.message}`
+        }
+      } catch {
+        // 非 JSON 错误响应使用默认 HTTP 错误信息。
+      }
+      throw new Error(message)
     }
 
     if (response.status === 204) {

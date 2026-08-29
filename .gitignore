@@ -10,6 +10,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+go/*.log
 
 # Go / Binary
 go/bin/
@@ -22,6 +23,7 @@ go/bin/
 
 # Storage / Temp
 go/storage/attachments/
+go/storage/cad-working/
 tools/exb2dxf/sample-output*
 tools/exb2dxf/test*
 tools/exb2dxf/plugin/*.obj
@@ -32,3 +34,6 @@ tools/exb2dxf/plugin/*.pch
 # Env
 .env
 .env.*.local
+
+# Third-party reference projects
+test/

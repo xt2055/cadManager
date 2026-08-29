@@ -47,13 +47,34 @@ function extractDrawingName(baseName: string, drawingNo: string): string {
   return normalizeDrawingDisplayName(suffix) || drawingNo
 }
 
-function drawingRootNo(drawingNo: string): string {
+export function drawingNumberRoot(drawingNo: string): string {
   const firstLevelSeparator = drawingNo.indexOf('-')
   return firstLevelSeparator > 0 ? drawingNo.slice(0, firstLevelSeparator) : drawingNo
 }
 
+export function isSameDrawingFamily(partNo: string, drawingNo: string): boolean {
+  const part = partNo.trim()
+  const drawing = drawingNo.trim()
+  if (!part || !drawing) return false
+  return drawingNumberRoot(part).toLowerCase() === drawingNumberRoot(drawing).toLowerCase()
+}
+
+// 只有已知总图完整编号与其首段简称等价，不能把同族零件号当成总图简称。
+export function isEquivalentAssemblyNo(candidateValue: string, assemblyValue: string, knownAssemblyNos: string[] = []): boolean {
+  const candidate = candidateValue.trim().toLowerCase()
+  const assembly = assemblyValue.trim().toLowerCase()
+  if (!candidate || !assembly) return false
+  if (candidate === assembly) return true
+  const knownAssembly = knownAssemblyNos
+    .map((value) => value.trim().toLowerCase())
+    .find((value) => value && value.includes('-') && (value === candidate || value === assembly))
+  if (!knownAssembly) return false
+  const shortNo = drawingNumberRoot(knownAssembly)
+  return candidate === shortNo && assembly === knownAssembly || assembly === shortNo && candidate === knownAssembly
+}
+
 function parseDrawingNumberPrefix(baseName: string): string | null {
-  const match = baseName.match(/^([A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9])(?=$|[\s_().（）【】\[\]]|[^\x00-\x7F])/)
+  const match = baseName.match(/^([A-Za-z0-9][A-Za-z0-9./-]*[A-Za-z0-9])(?=$|[\s_().（）【】\[\]]|[^\x00-\x7F])/)
   const drawingNo = match?.[1] ?? ''
   if (!drawingNo || !/\d/.test(drawingNo)) return null
   return drawingNo
@@ -67,7 +88,7 @@ export function directParentDrawingNo(no: string): string | null {
 export function parseDrawingNumber(noValue: string): ParsedDrawingFileName {
   const no = noValue.trim()
   if (!no) return invalidResult()
-  const rootNo = drawingRootNo(no)
+  const rootNo = drawingNumberRoot(no)
   const segments = no.slice(rootNo.length).split('-').filter(Boolean)
   return {
     no,
@@ -120,6 +141,12 @@ export function parseAgainstRoots(fileName: string, rootDrawingNos: string[]): P
   for (const rootNo of roots) {
     const parsed = parseDrawingFileName(fileName, rootNo)
     if (parsed.isStandard) return parsed
+
+    // 总图可能使用完整编号，零件文件名则只保留同族简称，例如 JG9063d-90-50-01。
+    const standaloneParsed = parseStandaloneDrawingFileName(fileName)
+    if (standaloneParsed.isStandard && (isEquivalentAssemblyNo(standaloneParsed.no, rootNo) || isSameDrawingFamily(standaloneParsed.no, rootNo))) {
+      return standaloneParsed
+    }
   }
   return invalidResult()
 }

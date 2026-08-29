@@ -11,8 +11,10 @@ import (
 
 	"cadguanliq/internal/auth"
 	"cadguanliq/internal/config"
+	"cadguanliq/internal/converter"
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
+	"cadguanliq/internal/smb"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -20,7 +22,15 @@ type SystemStatusResponse struct {
 	Service     ServiceStatusSnapshot  `json:"service"`
 	Database    DatabaseStatusSnapshot `json:"database"`
 	Storage     StorageStatusSnapshot  `json:"storage"`
+	SMB         smb.Status             `json:"smb"`
+	CAXA        CAXAStatusSnapshot     `json:"caxa"`
 	OnlineUsers OnlineUsersSnapshot    `json:"onlineUsers"`
+}
+
+type CAXAStatusSnapshot struct {
+	Available bool   `json:"available"`
+	Path      string `json:"path,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 type ServiceStatusSnapshot struct {
@@ -143,6 +153,8 @@ func SystemStatus(pool *pgxpool.Pool, cfg config.Config, authService *auth.Servi
 				FormattedDisk: formatBytes(diskTotal) + " / 剩余 " + formatBytes(diskFree),
 				BackupStatus:  "未配置",
 			},
+			SMB:  smb.Inspect(ctx, cfg.SMB),
+			CAXA: caxaStatus(cfg.CaxaBin),
 			OnlineUsers: OnlineUsersSnapshot{
 				Count: onlineCount,
 			},
@@ -150,6 +162,14 @@ func SystemStatus(pool *pgxpool.Pool, cfg config.Config, authService *auth.Servi
 
 		response.WriteData(writer, http.StatusOK, data)
 	}
+}
+
+func caxaStatus(configured string) CAXAStatusSnapshot {
+	path, err := converter.ResolveCaxaPath(configured)
+	if err != nil {
+		return CAXAStatusSnapshot{Error: err.Error()}
+	}
+	return CAXAStatusSnapshot{Available: true, Path: path}
 }
 
 func Heartbeat(authService *auth.Service) http.HandlerFunc {

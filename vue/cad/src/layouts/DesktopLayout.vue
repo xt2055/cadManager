@@ -65,6 +65,9 @@ onMounted(async () => {
 <style scoped>
 .desktop-layout {
   width: 100%;
+  max-width: 100vw;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .layout-expand-in {

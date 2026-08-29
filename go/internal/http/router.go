@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/audit"
@@ -11,10 +12,12 @@ import (
 	"cadguanliq/internal/converter"
 	"cadguanliq/internal/data"
 	"cadguanliq/internal/drawing"
+	"cadguanliq/internal/editing"
 	"cadguanliq/internal/http/handlers"
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/review"
 	"cadguanliq/internal/storage"
+	"cadguanliq/internal/versioning"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -33,20 +36,32 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	reviewRepository := review.NewPGRepository(pool)
 	mux.Handle("/api/review-flows", protectedUsers(handlers.ReviewFlows(reviewRepository)))
 	mux.Handle("/api/review-flows/", protectedUsers(handlers.ReviewFlowResource(reviewRepository)))
-	dataHandler := middleware.RequireAuth(authService)(handlers.DataDocument(data.NewDocumentRepository(pool)))
+	attachmentRepository := attachment.NewPGRepository(pool)
+	dataHandler := middleware.RequireAuth(authService)(handlers.DataDocument(data.NewDocumentRepository(pool), attachmentRepository))
 	mux.Handle("/api/data/document", dataHandler)
 	drawingRepository := drawing.NewPGRepository(pool)
 	drawingHandler := middleware.RequireAuth(authService)
 	mux.Handle("/api/drawings", drawingHandler(handlers.Drawings(drawingRepository)))
 	mux.Handle("/api/drawings/", drawingHandler(handlers.DrawingResource(drawingRepository)))
 	mux.Handle("/api/parts/", drawingHandler(handlers.PartResource(drawingRepository)))
-	attachmentRepository := attachment.NewPGRepository(pool)
 	attachmentStorage, storageErr := storage.NewLocalStorage(cfg.StorageRoot)
 	if storageErr != nil {
 		panic(storageErr)
 	}
 	convService := converter.NewService(attachmentRepository, attachmentStorage, cfg.Dwg2DxfBin, cfg.CaxaBin)
 	convService.Start(context.Background())
+	versionRepository := versioning.NewPGRepository(pool)
+	versionService := versioning.NewService(versionRepository, attachmentRepository, attachmentStorage)
+	versionWatcher := versioning.NewWatcher(attachmentRepository, attachmentStorage, versionService, cfg.SMB.LocalRoot, 10*time.Second)
+	versionWatcher.Start(context.Background())
+	editingService := editing.NewService(editing.NewPGRepository(pool), attachmentRepository, attachmentStorage, convService, cfg.SMB)
+	editingService.SetVersioning(versionService)
+	editingService.StartCleanup(context.Background())
+	mux.Handle("/api/edit-sessions/open", drawingHandler(handlers.EditSession(editingService)))
+	mux.Handle("/api/edit-tickets/exchange", drawingHandler(handlers.EditTicketExchange(editingService)))
+	mux.Handle("/api/edit-sessions/", drawingHandler(handlers.EditSessionResource(editingService)))
+	mux.Handle("/api/file-versions", drawingHandler(versioning.List(versionService)))
+	mux.Handle("/api/file-versions/", drawingHandler(versioning.Resource(versionService)))
 
 	mux.Handle("/api/attachments", drawingHandler(handlers.UploadAttachment(attachmentRepository, attachmentStorage, convService, cfg.MaxUploadBytes)))
 	mux.Handle("/api/attachments/", drawingHandler(handlers.AttachmentResource(attachmentRepository, attachmentStorage)))

@@ -21,8 +21,13 @@ export interface AttachmentResult {
 
 export interface DrawingFileIdentity {
   partNo: string
+  partNoSource?: 'titleBlock' | 'filename' | 'none'
   material?: string
   titleBlock?: Record<string, string>
+}
+
+export interface DrawingFileIdentifyOptions {
+  titleBlockOnly?: boolean
 }
 
 export interface ReidentifyDrawingFileResult {
@@ -40,6 +45,36 @@ export interface UserManagementInput {
   status?: UserStatus
 }
 
+export interface EditSessionOpenResult {
+  sessionId: string
+  openUrl: string
+  uncPath: string
+  smbRoot: string
+  expiresAt: string
+}
+
+export interface ActiveEditSessionInfo {
+  id: string
+  attachmentId: string
+  storageKey: string
+  fileName: string
+  drawingNo: string
+  partNo?: string
+  userId: string
+  userName: string
+  userAccount: string
+  uncPath: string
+  status: string
+  startedAt: string
+  lastSeenAt: string
+  isCurrent: boolean
+  canClose: boolean
+}
+
+export interface EditSessionControlResult {
+  sessionId: string
+}
+
 export interface DataProvider {
   load(): Promise<DataDocument>
   save(document: DataDocument): Promise<void>
@@ -48,10 +83,14 @@ export interface DataProvider {
   readAttachment(storageKey: string): Promise<Blob>
   exportBOM?(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
   scanDrawingDesigner?(drawingNo: string): Promise<string>
-  identifyDrawingFile?(file: Blob, name: string): Promise<DrawingFileIdentity>
+  identifyDrawingFile?(file: Blob, name: string, options?: DrawingFileIdentifyOptions): Promise<DrawingFileIdentity>
   identifyDrawingMaterial?(file: Blob, name: string): Promise<DrawingFileIdentity>
   reidentifyDrawingFile?(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
   listUsers?(): Promise<UserAccount[]>
   createUser?(input: UserManagementInput): Promise<UserAccount>
   updateUser?(userId: string, input: UserManagementInput): Promise<UserAccount>
+  listEditSessions?(drawingNo?: string): Promise<ActiveEditSessionInfo[]>
+  openEditSession?(storageKey: string): Promise<EditSessionOpenResult>
+  heartbeatEditSession?(sessionId: string): Promise<EditSessionControlResult>
+  closeEditSession?(sessionId: string): Promise<EditSessionControlResult>
 }

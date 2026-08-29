@@ -26,6 +26,24 @@ export interface SystemStatusData {
     formattedDisk: string
     backupStatus: string
   }
+  smb: {
+    enabled: boolean
+    serverRunning: boolean
+    shareName: string
+    localRoot: string
+    localRootExists: boolean
+    uncRoot: string
+    uncPathTemplate: string
+    protocolUrl: string
+    configuredShareExists: boolean
+    shares: Array<{ name: string; path: string; description: string }>
+    error?: string
+  }
+  caxa: {
+    available: boolean
+    path?: string
+    error?: string
+  }
   onlineUsers: {
     count: number
   }
@@ -128,6 +146,7 @@ export const useSystemStatusStore = defineStore('systemStatus', () => {
   return {
     status,
     isOnline,
+    loading,
     isHealthy,
     onlineCount,
     storageSummary,

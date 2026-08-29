@@ -65,10 +65,24 @@ func (storage *LocalStorage) Put(ctx context.Context, key string, reader io.Read
 	if closeErr != nil {
 		return ObjectInfo{}, fmt.Errorf("关闭附件临时文件失败: %w", closeErr)
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return ObjectInfo{}, fmt.Errorf("替换旧附件失败: %w", err)
+	backupPath := fmt.Sprintf("%s.%d.bak", path, time.Now().UnixNano())
+	hadOriginal := false
+	if err := os.Rename(path, backupPath); err != nil {
+		if !os.IsNotExist(err) {
+			return ObjectInfo{}, fmt.Errorf("备份旧附件失败: %w", err)
+		}
+	} else {
+		hadOriginal = true
 	}
+	defer func() {
+		if hadOriginal {
+			_ = os.Remove(backupPath)
+		}
+	}()
 	if err := os.Rename(temporaryPath, path); err != nil {
+		if hadOriginal {
+			_ = os.Rename(backupPath, path)
+		}
 		return ObjectInfo{}, fmt.Errorf("保存附件失败: %w", err)
 	}
 	return ObjectInfo{Key: key, Size: size, MimeType: mimeType, SHA256: fmt.Sprintf("%x", hash.Sum(nil)), ModTime: time.Now()}, nil

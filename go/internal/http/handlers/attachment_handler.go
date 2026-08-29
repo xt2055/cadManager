@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -85,6 +86,15 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 			}
 			key = existingKey
 		}
+		existingItem, existingErr := repository.Find(request.Context(), key)
+		if existingErr != nil && !errors.Is(existingErr, attachment.ErrNotFound) {
+			writeAttachmentError(writer, existingErr)
+			return
+		}
+		if existingErr == nil && (existingItem.DrawingNo != drawingNo || !samePartNo(existingItem.PartNo, partNo)) {
+			response.WriteError(writer, http.StatusConflict, "附件存储键已被其他图纸占用")
+			return
+		}
 		mimeType := request.FormValue("mimeType")
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
@@ -119,10 +129,26 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 			return
 		}
 		if maxBytes > 0 && object.Size > maxBytes {
-			_ = objectStorage.Delete(request.Context(), key)
+			if existingErr != nil {
+				_ = objectStorage.Delete(request.Context(), key)
+			}
 			response.WriteError(writer, http.StatusRequestEntityTooLarge, "附件超过大小限制")
 			return
 		}
+		if existingErr == nil {
+			if err := repository.UpdateContent(request.Context(), key, object.Size, object.MimeType, object.SHA256); err != nil {
+				writeAttachmentError(writer, err)
+				return
+			}
+			item, err := repository.Find(request.Context(), key)
+			if err != nil {
+				writeAttachmentError(writer, err)
+				return
+			}
+			response.WriteData(writer, http.StatusOK, item)
+			return
+		}
+
 		item, err := repository.Create(request.Context(), attachment.CreateInput{
 			DrawingNo:   drawingNo,
 			PartNo:      partNo,
@@ -133,19 +159,15 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 			Previewable: request.FormValue("previewable") != "false",
 		}, attachment.StorageObject{Key: object.Key, Size: object.Size, MimeType: object.MimeType, SHA256: object.SHA256}, user.ID)
 		if err != nil {
-			_ = objectStorage.Delete(request.Context(), key)
+			// 已存在的文件可能只是数据库元数据写入失败，不能因重试失败删除原文件。
+			if existingErr != nil {
+				_ = objectStorage.Delete(request.Context(), key)
+			}
 			writeAttachmentError(writer, err)
 			return
 		}
 
-		// 当前队列只处理 EXB -> DWG，DWG 文件无需再进入转换队列。
-		if convService != nil && (strings.EqualFold(filepathExt(name), ".exb") || strings.EqualFold(filepathExt(key), ".exb")) {
-			convService.PushJob(item, converter.PriorityNormal)
-		}
-		// 已废弃：旧逻辑会把 DWG 也加入队列，并继续生成 DXF，保留原条件供回溯。
-		// if convService != nil && (strings.EqualFold(filepathExt(name), ".exb") || strings.EqualFold(filepathExt(key), ".exb") || strings.EqualFold(filepathExt(name), ".dwg") || strings.EqualFold(filepathExt(key), ".dwg")) {
-		// 	convService.PushJob(item, converter.PriorityNormal)
-		// }
+		// 上传阶段只保存原始附件。DWG 转换属于预览/本地编辑按需操作，避免用户取消创建时产生后台转换副本。
 
 		response.WriteData(writer, http.StatusCreated, item)
 	}
@@ -224,6 +246,7 @@ func validAttachmentRole(role attachment.Role) bool {
 }
 
 func writeAttachmentError(writer http.ResponseWriter, err error) {
+	log.Printf("attachment request failed: %v", err)
 	switch {
 	case errors.Is(err, attachment.ErrNotFound):
 		response.WriteError(writer, http.StatusNotFound, "附件不存在")
@@ -232,6 +255,13 @@ func writeAttachmentError(writer http.ResponseWriter, err error) {
 	default:
 		response.WriteError(writer, http.StatusInternalServerError, "附件处理失败")
 	}
+}
+
+func samePartNo(left *string, right string) bool {
+	if left == nil {
+		return strings.TrimSpace(right) == ""
+	}
+	return strings.TrimSpace(*left) == strings.TrimSpace(right)
 }
 
 func firstNonEmpty(values ...string) string {

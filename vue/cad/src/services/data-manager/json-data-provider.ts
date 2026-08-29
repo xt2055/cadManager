@@ -171,4 +171,8 @@ export class JsonDataProvider implements DataProvider {
     await this.save(document)
     return user
   }
+
+  async openEditSession(): Promise<never> {
+    throw new Error('本地 JSON 存储模式不支持 SMB CAD 编辑，请切换到服务端存储模式')
+  }
 }

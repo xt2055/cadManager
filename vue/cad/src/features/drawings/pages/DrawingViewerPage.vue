@@ -98,7 +98,8 @@ async function loadTargetFile() {
       if (file.storageKey) {
         try {
           const token = getAccessToken()
-          const response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(file.storageKey)}`, {
+          const cacheBuster = Date.now()
+          const response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(file.storageKey)}&_t=${cacheBuster}`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
             credentials: 'include',
           })

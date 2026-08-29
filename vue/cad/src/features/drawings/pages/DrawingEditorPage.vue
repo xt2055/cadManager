@@ -10,6 +10,7 @@ import { useUiStore } from '@/stores/ui.store'
 import { windowService } from '@/services/tauri/window.service'
 import type { DrawingFile } from '@/types/domain.types'
 import { assertCadWorkerAssets, getCadWorkerUrls } from '../detail-tabs/preview/cad-worker-assets'
+import { findWipeoutMasks } from '../detail-tabs/preview/cad-entity-filters'
 
 defineOptions({
   name: 'DrawingEditorPage',
@@ -33,6 +34,8 @@ const cadOriginalError = ref('')
 const isReady = ref(false)
 const isSaving = ref(false)
 const savedVersion = ref('')
+let editorDocumentActivatedListener: ((payload: { doc: any }) => void) | null = null
+let editorWipeoutCleanupTimer: number | null = null
 
 async function prepareCadEditor() {
   const workerUrls = getCadWorkerUrls()
@@ -101,7 +104,8 @@ async function loadTargetFile() {
       try {
         const token = getAccessToken()
         const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
-        const response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(file.storageKey)}`, {
+        const cacheBuster = Date.now()
+        const response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(file.storageKey)}&_t=${cacheBuster}`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           credentials: 'include',
         })
@@ -136,6 +140,58 @@ async function loadTargetFile() {
       detail: { fileId: file.id, fileName: file.name },
     })
   }
+}
+
+async function removeEditorWipeoutMasks(doc: any = AcApDocManager.instance.curDocument) {
+  try {
+    const manager = AcApDocManager.instance
+    const wipeoutMasks = findWipeoutMasks(doc.database)
+    // 编辑模式由 AcApContext 监听数据库实体。不能用 removeEntity，
+    // 否则上下文会在后续批量渲染时再次把 WIPEOUT 加回场景。
+    for (const entity of wipeoutMasks) {
+      manager.curView.updateEntityVisibility(entity)
+    }
+    if (wipeoutMasks.length === 0) return
+    manager.curView.isDirty = true
+    manager.curView.isHtmlDirty = true
+    await manager.curView?.waitUntilIdle?.(60_000)
+  } catch (error) {
+    console.warn('在线 CAD 编辑器清理矩形填充失败', error)
+  }
+}
+
+function scheduleEditorWipeoutCleanup() {
+  if (editorWipeoutCleanupTimer) {
+    window.clearTimeout(editorWipeoutCleanupTimer)
+    editorWipeoutCleanupTimer = null
+  }
+
+  const delays = [0, 100, 300, 700, 1_500, 3_000, 6_000]
+  let index = 0
+  const run = () => {
+    void removeEditorWipeoutMasks().finally(() => {
+      index++
+      if (index < delays.length) {
+        editorWipeoutCleanupTimer = window.setTimeout(run, delays[index])
+      } else {
+        editorWipeoutCleanupTimer = null
+      }
+    })
+  }
+  editorWipeoutCleanupTimer = window.setTimeout(run, delays[0])
+}
+
+function bindEditorDocumentCleanup() {
+  const manager = AcApDocManager.instance
+  if (editorDocumentActivatedListener) {
+    manager.events.documentActivated.removeEventListener(editorDocumentActivatedListener)
+  }
+  editorDocumentActivatedListener = ({ doc }) => {
+    void removeEditorWipeoutMasks(doc)
+    scheduleEditorWipeoutCleanup()
+  }
+  manager.events.documentActivated.addEventListener(editorDocumentActivatedListener)
+  scheduleEditorWipeoutCleanup()
 }
 
 function goBack() {
@@ -278,6 +334,18 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (editorWipeoutCleanupTimer) {
+    window.clearTimeout(editorWipeoutCleanupTimer)
+    editorWipeoutCleanupTimer = null
+  }
+  try {
+    if (editorDocumentActivatedListener) {
+      AcApDocManager.instance.events.documentActivated.removeEventListener(editorDocumentActivatedListener)
+      editorDocumentActivatedListener = null
+    }
+  } catch {
+    // CAD 编辑器可能已经先于页面卸载销毁文档管理器。
+  }
   clearOriginalFile()
 })
 
@@ -329,6 +397,7 @@ watch([drawingId, fileId], () => {
           :mode="AcEdOpenMode.Write"
           :use-main-thread-draw="false"
           theme="dark"
+          @create="bindEditorDocumentCleanup"
         />
         <div v-else class="empty-prompt">
           <DemoIcon name="file-question" :size="48" />

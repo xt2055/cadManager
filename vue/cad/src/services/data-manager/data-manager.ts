@@ -1,7 +1,7 @@
 import { ApiDataProvider } from './api-data-provider'
 import { createEmptyDataDocument, normalizeDataDocument, type DataDocument } from './data.types'
 import type { DataProvider } from './data-provider'
-import type { AttachmentMetadata, AttachmentResult, DrawingFileIdentity, ReidentifyDrawingFileResult, UserManagementInput } from './data-provider'
+import type { AttachmentMetadata, AttachmentResult, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, ReidentifyDrawingFileResult, UserManagementInput } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import { JsonDataProvider } from './json-data-provider'
 import { readDebugMode } from '@/services/runtime-config.service'
@@ -14,12 +14,16 @@ export interface DataManager {
   readAttachment(storageKey: string): Promise<Blob>
   exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
   scanDrawingDesigner(drawingNo: string): Promise<string>
-  identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity>
+  identifyDrawingFile(file: Blob, name: string, options?: DrawingFileIdentifyOptions): Promise<DrawingFileIdentity>
   identifyDrawingMaterial(file: Blob, name: string): Promise<DrawingFileIdentity>
   reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
   listUsers(): Promise<UserAccount[]>
   createUser(input: UserManagementInput): Promise<UserAccount>
   updateUser(userId: string, input: UserManagementInput): Promise<UserAccount>
+  listEditSessions(drawingNo?: string): Promise<ActiveEditSessionInfo[]>
+  openEditSession(storageKey: string): Promise<EditSessionOpenResult>
+  heartbeatEditSession(sessionId: string): Promise<EditSessionControlResult>
+  closeEditSession(sessionId: string): Promise<EditSessionControlResult>
   resetProvider(): void
 }
 
@@ -81,12 +85,12 @@ export class DefaultDataManager implements DataManager {
     return provider.scanDrawingDesigner ? provider.scanDrawingDesigner(drawingNo) : ''
   }
 
-  async identifyDrawingFile(file: Blob, name: string): Promise<DrawingFileIdentity> {
+  async identifyDrawingFile(file: Blob, name: string, options?: DrawingFileIdentifyOptions): Promise<DrawingFileIdentity> {
     const provider = await this.getProvider()
     if (!provider.identifyDrawingFile) {
       throw new Error('当前存储模式不支持从图纸内容读取图号')
     }
-    return provider.identifyDrawingFile(file, name)
+    return provider.identifyDrawingFile(file, name, options)
   }
 
   async identifyDrawingMaterial(file: Blob, name: string): Promise<DrawingFileIdentity> {
@@ -121,6 +125,30 @@ export class DefaultDataManager implements DataManager {
     const provider = await this.getProvider()
     if (!provider.updateUser) throw new Error('当前存储模式不支持账号管理')
     return provider.updateUser(userId, input)
+  }
+
+  async listEditSessions(drawingNo?: string): Promise<ActiveEditSessionInfo[]> {
+    const provider = await this.getProvider()
+    if (!provider.listEditSessions) return []
+    return provider.listEditSessions(drawingNo)
+  }
+
+  async openEditSession(storageKey: string): Promise<EditSessionOpenResult> {
+    const provider = await this.getProvider()
+    if (!provider.openEditSession) throw new Error('当前存储模式不支持本地 CAD 编辑')
+    return provider.openEditSession(storageKey)
+  }
+
+  async heartbeatEditSession(sessionId: string): Promise<EditSessionControlResult> {
+    const provider = await this.getProvider()
+    if (!provider.heartbeatEditSession) throw new Error('当前存储模式不支持编辑会话保活')
+    return provider.heartbeatEditSession(sessionId)
+  }
+
+  async closeEditSession(sessionId: string): Promise<EditSessionControlResult> {
+    const provider = await this.getProvider()
+    if (!provider.closeEditSession) throw new Error('当前存储模式不支持关闭编辑会话')
+    return provider.closeEditSession(sessionId)
   }
 
   resetProvider(): void {

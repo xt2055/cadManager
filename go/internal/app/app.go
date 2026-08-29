@@ -5,10 +5,14 @@ import (
 	"log"
 	"net/http"
 
+	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/auth"
 	"cadguanliq/internal/config"
 	"cadguanliq/internal/data"
 	httpapi "cadguanliq/internal/http"
+	"cadguanliq/internal/smb"
+	"cadguanliq/internal/storage"
+	"cadguanliq/internal/versioning"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -17,6 +21,10 @@ func NewHandler(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service
 }
 
 func Run(cfg config.Config) error {
+	if err := smb.Ensure(context.Background(), cfg.SMB); err != nil {
+		return err
+	}
+	log.Printf("[SMB] 启动初始化完成，进入数据库和 HTTP 服务初始化")
 	pool, err := data.NewPool(context.Background(), cfg.Database)
 	if err != nil {
 		return err
@@ -26,6 +34,41 @@ func Run(cfg config.Config) error {
 	if err := authService.MigrateLegacyUsers(context.Background()); err != nil {
 		return err
 	}
+	// 增量字段尝试由应用补全（如果连接账号为表属主或有 DDL 权限；若无权限则跳过由管理员迁移脚本维护）
+	if _, migErr := pool.Exec(context.Background(), `
+		DO $$
+		BEGIN
+		    BEGIN
+		        ALTER TABLE attachments
+		            ADD COLUMN IF NOT EXISTS current_storage_key VARCHAR(500),
+		            ADD COLUMN IF NOT EXISTS current_name VARCHAR(255),
+		            ADD COLUMN IF NOT EXISTS current_mime_type VARCHAR(255),
+		            ADD COLUMN IF NOT EXISTS current_size_bytes BIGINT,
+		            ADD COLUMN IF NOT EXISTS current_sha256 CHAR(64);
+		    EXCEPTION
+		        WHEN insufficient_privilege THEN
+		            NULL;
+		    END;
+		END $$;
+		UPDATE attachments
+		SET current_storage_key = COALESCE(current_storage_key, storage_key),
+		    current_name = COALESCE(current_name, original_name),
+		    current_mime_type = COALESCE(current_mime_type, mime_type),
+		    current_size_bytes = COALESCE(current_size_bytes, size_bytes),
+		    current_sha256 = COALESCE(current_sha256, sha256)
+		WHERE current_storage_key IS NULL;
+	`); migErr != nil {
+		log.Printf("[DB Migration] 增量数据同步检查略过: %v", migErr)
+	} else {
+		log.Printf("[DB Migration] attachments 表增量字段迁移检查完成")
+	}
+	attachmentRepository := attachment.NewPGRepository(pool)
+	attachmentStorage, err := storage.NewLocalStorage(cfg.StorageRoot)
+	if err != nil {
+		return err
+	}
+	versionService := versioning.NewService(versioning.NewPGRepository(pool), attachmentRepository, attachmentStorage)
+	versionService.StartCleanup(context.Background())
 
 	log.Printf("cadguanliq backend listening on %s", cfg.Addr)
 	return http.ListenAndServe(cfg.Addr, NewHandler(cfg, pool, authService))

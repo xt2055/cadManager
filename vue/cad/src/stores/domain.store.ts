@@ -79,10 +79,12 @@ function createVersionStorageKey(sourceKey: string | undefined, fileName: string
   if (!sourceKey) return undefined
   const normalizedKey = sourceKey.replaceAll('\\', '/')
   const directory = normalizedKey.includes('/') ? normalizedKey.slice(0, normalizedKey.lastIndexOf('/')) : ''
-  const extension = fileName.match(/\.[^./]+$/)?.[0] || '.dxf'
-  const baseName = fileName.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '-') || 'drawing'
-  const uniqueName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${baseName}${extension}`
-  return directory ? `${directory}/${uniqueName}` : uniqueName
+  const extension = fileName.match(/\.[^./]+$/)?.[0] || '.dwg'
+  const baseName = fileName.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._\u4e00-\u9fa5-]+/g, '_') || 'drawing'
+  const dateTag = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const timeTag = new Date().toTimeString().slice(0, 8).replace(/:/g, '')
+  const uniqueName = `${baseName}_${dateTag}_${timeTag}${extension}`
+  return directory ? `${directory}/history/${baseName}/${uniqueName}` : `history/${baseName}/${uniqueName}`
 }
 
 function activityTime(): string {
@@ -514,7 +516,7 @@ export const useDomainStore = defineStore('domain', () => {
   ): Promise<void> {
     await initialize()
     if (drawings.value.some((item) => item.no === drawing.no)) {
-      throw new Error(`图纸编号已存在：${drawing.no}`)
+      throw new Error(`总图图号「${drawing.no}」已存在，请确认总图图号；项目号与总图图号是两个不同字段`)
     }
 
     const attachmentMap = new Map(attachments.map((item) => [item.id, item.content]))
@@ -581,6 +583,7 @@ export const useDomainStore = defineStore('domain', () => {
     newVendor?: string,
     newRemark?: string,
 	operator = authStore.currentUser?.displayName || '当前用户',
+    newProjectNo?: string,
   ): Promise<void> {
     await initialize()
     const sourceDrawing = drawings.value.find((item) => item.no === sourceNo)
@@ -618,7 +621,7 @@ export const useDomainStore = defineStore('domain', () => {
       ...JSON.parse(JSON.stringify(sourceDrawing)),
       no: newDrawingNo,
       name: newProjectName || `${sourceDrawing.name} (分叉)`,
-      project: newProjectName || sourceDrawing.project,
+      project: newProjectNo || sourceDrawing.project,
       vendor: newVendor ?? sourceDrawing.vendor,
       remark: newRemark ?? (sourceDrawing.remark ? `${sourceDrawing.remark} (分叉自 ${sourceNo})` : `分叉自 ${sourceNo}`),
       status: 'draft',
@@ -644,7 +647,7 @@ export const useDomainStore = defineStore('domain', () => {
         ...JSON.parse(JSON.stringify(part)),
         no: newPartNo,
         parentNo: newParentNo,
-        project: newProjectName || part.project,
+        project: newProjectNo || part.project,
         status: 'draft',
         ver: 'v1.0',
         forkedFrom: part.no,
