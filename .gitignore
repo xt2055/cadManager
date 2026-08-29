@@ -41,3 +41,4 @@ deploy/pack/
 deploy/*.exe
 deploy/packer.exe
 deploy/obj/
+deploy/*.zip
