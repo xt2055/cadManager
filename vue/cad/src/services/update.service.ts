@@ -1,4 +1,5 @@
 import { appConfig } from '@/app/app.config'
+import { getUpdateBaseUrl } from '@/services/server-address.service'
 
 export interface UpdateCheckResult {
   currentVersion: string
@@ -9,14 +10,16 @@ export interface UpdateCheckResult {
   downloadUrl?: string
   mandatory: boolean
   platform?: string
+  /** 本次检查使用的服务器基地址（用于解析相对下载地址） */
+  sourceBaseUrl: string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-export async function checkForUpdates(): Promise<UpdateCheckResult> {
-  const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+export async function checkForUpdates(serverBaseUrl?: string): Promise<UpdateCheckResult> {
+  const baseUrl = (serverBaseUrl?.trim() || getUpdateBaseUrl()).replace(/\/$/, '')
   const query = new URLSearchParams({
     current_version: appConfig.version,
     platform: 'windows-x86_64',
@@ -48,5 +51,13 @@ export async function checkForUpdates(): Promise<UpdateCheckResult> {
     ...(typeof payload.downloadUrl === 'string' ? { downloadUrl: payload.downloadUrl } : {}),
     mandatory: payload.mandatory === true,
     ...(typeof payload.platform === 'string' ? { platform: payload.platform } : {}),
+    sourceBaseUrl: baseUrl,
   }
+}
+
+/** 解析更新包下载地址：完整 URL 直接用，相对路径拼本次检查的服务器地址 */
+export function resolveUpdateDownloadUrl(result: UpdateCheckResult): string {
+  if (!result.downloadUrl) return ''
+  if (/^https?:\/\//i.test(result.downloadUrl)) return result.downloadUrl
+  return `${result.sourceBaseUrl}${result.downloadUrl}`
 }

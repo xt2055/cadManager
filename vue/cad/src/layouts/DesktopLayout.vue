@@ -38,15 +38,14 @@ onMounted(async () => {
 
 async function checkUpdateOnLaunch() {
   try {
-    const { checkForUpdates } = await import('@/services/update.service')
+    const { checkForUpdates, resolveUpdateDownloadUrl } = await import('@/services/update.service')
     const result = await checkForUpdates()
     if (!result.updateAvailable) return
     const notes = result.notes && result.notes !== '暂无更新说明' ? `\n${result.notes}` : ''
     uiStore.confirm(`发现新版本 ${result.latestVersion}`, `当前版本 ${result.currentVersion}，可更新到 ${result.latestVersion}。${notes}`, {
       confirmText: '前往下载',
       onConfirm: () => {
-        const url = result.downloadUrl
-        const target = url && url.startsWith('http') ? url : url ? `${(import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')}${url}` : ''
+        const target = resolveUpdateDownloadUrl(result)
         if (target) window.open(target, '_blank')
       },
     })

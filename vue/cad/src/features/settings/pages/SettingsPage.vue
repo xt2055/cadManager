@@ -5,7 +5,16 @@ import { appConfig } from '@/app/app.config'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { dataManager } from '@/services/data-manager'
 import type { ActiveEditSessionInfo } from '@/services/data-manager/data-provider'
-import { checkForUpdates, type UpdateCheckResult } from '@/services/update.service'
+import { checkForUpdates, resolveUpdateDownloadUrl, type UpdateCheckResult } from '@/services/update.service'
+import {
+  getSavedUpdateServer,
+  hasCustomUpdateServer,
+  normalizeServerInput,
+  probeServer,
+  saveUpdateServer,
+  clearUpdateServer,
+  type ProbeResult,
+} from '@/services/server-address.service'
 import { useThemeStore } from '@/stores/theme.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { ThemeMode, ThemeSkin } from '@/types/theme.types'
@@ -25,6 +34,10 @@ const systemStore = useSystemStatusStore()
 const checkingUpdate = ref(false)
 const updateResult = ref<UpdateCheckResult | null>(null)
 const updateError = ref('')
+const serverInput = ref(getSavedUpdateServer())
+const serverSaved = ref(hasCustomUpdateServer())
+const probing = ref(false)
+const probeResult = ref<ProbeResult | null>(null)
 const protocolRegistered = ref<boolean | null>(null)
 const activeSessions = ref<ActiveEditSessionInfo[]>([])
 const loadingSessions = ref(false)
@@ -185,7 +198,19 @@ async function handleCheckForUpdates() {
   checkingUpdate.value = true
   updateError.value = ''
   try {
-    updateResult.value = await checkForUpdates()
+    const custom = serverInput.value.trim()
+    if (custom) {
+      const normalized = normalizeServerInput(custom)
+      if (!normalized) {
+        updateError.value = '服务器地址格式无效（示例：192.168.1.50:8080）'
+        uiStore.toast(updateError.value, 'warn')
+        return
+      }
+      saveUpdateServer(normalized)
+      serverSaved.value = true
+      serverInput.value = normalized
+    }
+    updateResult.value = await checkForUpdates(custom || undefined)
     uiStore.toast(
       updateResult.value.updateAvailable ? `发现新版本 v${updateResult.value.latestVersion}` : '当前已是最新版本',
       updateResult.value.updateAvailable ? 'info' : 'ok',
@@ -197,6 +222,52 @@ async function handleCheckForUpdates() {
   } finally {
     checkingUpdate.value = false
   }
+}
+
+async function handleProbeServer() {
+  if (probing.value) return
+  const normalized = normalizeServerInput(serverInput.value)
+  if (!normalized) {
+    uiStore.toast('请输入有效的服务器地址（示例：192.168.1.50:8080）', 'warn')
+    return
+  }
+  serverInput.value = normalized
+  probing.value = true
+  probeResult.value = null
+  try {
+    probeResult.value = await probeServer(normalized)
+  } finally {
+    probing.value = false
+  }
+}
+
+function handleSaveServer() {
+  const normalized = normalizeServerInput(serverInput.value)
+  if (!normalized) {
+    uiStore.toast('地址格式无效（示例：192.168.1.50:8080）', 'warn')
+    return
+  }
+  serverInput.value = normalized
+  saveUpdateServer(normalized)
+  serverSaved.value = true
+  uiStore.toast('更新服务器地址已记住，下次启动将优先从该地址检查更新', 'ok')
+}
+
+function handleClearServer() {
+  clearUpdateServer()
+  serverSaved.value = false
+  serverInput.value = ''
+  probeResult.value = null
+  uiStore.toast('已恢复默认更新服务器地址', 'ok')
+}
+
+function handleDownloadUpdate() {
+  const url = updateResult.value ? resolveUpdateDownloadUrl(updateResult.value) : ''
+  if (!url) {
+    uiStore.toast('该更新未提供下载地址', 'warn')
+    return
+  }
+  window.open(url, '_blank')
 }
 </script>
 
@@ -315,7 +386,31 @@ async function handleCheckForUpdates() {
         <div class="section-title">
           <DemoIcon name="download" :size="17" />
           <h2>客户端更新</h2>
-          <span class="sub-hint">从 Go 更新服务获取最新版本信息</span>
+          <span class="sub-hint">内网服务器 IP 变化后，可输入新地址寻找更新（仅影响更新检查，不影响业务连接）</span>
+        </div>
+        <div class="update-server-row">
+          <input
+            v-model="serverInput"
+            class="update-server-input"
+            type="text"
+            placeholder="服务器地址（示例：192.168.1.50:8080）"
+            @keyup.enter="handleProbeServer"
+          />
+          <button class="btn sm" type="button" :disabled="probing" @click="handleProbeServer">
+            <DemoIcon :name="probing ? 'loader' : 'search'" :size="13" />
+            {{ probing ? '探测中…' : '测试连接' }}
+          </button>
+          <button class="btn sm" type="button" @click="handleSaveServer">
+            <DemoIcon name="save" :size="13" />记住地址
+          </button>
+          <button v-if="serverSaved" class="btn sm" type="button" @click="handleClearServer">恢复默认</button>
+        </div>
+        <div v-if="probeResult" class="update-probe-result" :class="{ 'update-probe-result--fail': !probeResult.reachable }">
+          <DemoIcon :name="probeResult.reachable ? 'check-circle-2' : 'alert-circle'" :size="14" />
+          <span v-if="probeResult.reachable">
+            服务器可达<template v-if="probeResult.version"> · 服务版本 v{{ probeResult.version }}</template>
+          </span>
+          <span v-else>连接失败：{{ probeResult.message || '地址不可达' }}</span>
         </div>
         <div class="update-panel">
           <div class="update-version">
@@ -343,6 +438,15 @@ async function handleCheckForUpdates() {
           <button class="btn primary update-button" type="button" :disabled="checkingUpdate" @click="handleCheckForUpdates">
             <DemoIcon :name="checkingUpdate ? 'loader' : 'refresh-cw'" :size="14" />
             {{ checkingUpdate ? '检查中…' : '检查更新' }}
+          </button>
+          <button
+            v-if="updateResult?.updateAvailable"
+            class="btn primary update-button"
+            type="button"
+            @click="handleDownloadUpdate"
+          >
+            <DemoIcon name="download" :size="14" />
+            下载 v{{ updateResult.latestVersion }}
           </button>
         </div>
       </section>
@@ -1166,7 +1270,48 @@ async function handleCheckForUpdates() {
     grid-template-columns: 1fr;
   }
 
-  .update-panel {
+.update-server-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.update-server-input {
+  flex: 1;
+  min-width: 220px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-1);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.update-server-input:focus {
+  border-color: var(--accent);
+}
+
+.update-probe-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(52, 199, 123, 0.1);
+  color: var(--ok, #34c77b);
+  font-size: 12px;
+}
+
+.update-probe-result--fail {
+  background: rgba(239, 91, 107, 0.1);
+  color: var(--danger);
+}
+
+.update-panel {
     grid-template-columns: 1fr auto;
   }
 
