@@ -37,3 +37,7 @@ tools/exb2dxf/plugin/*.pch
 
 # Third-party reference projects
 test/
+deploy/pack/
+deploy/*.exe
+deploy/packer.exe
+deploy/obj/
