@@ -7,12 +7,17 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const documentKey = "default"
+
+// ErrDocumentConflict 表示保存时的期望更新时间与数据库实际更新时间不一致，
+// 即业务数据已被其他窗口/会话修改，拒绝本次覆盖保存。
+var ErrDocumentConflict = errors.New("业务数据已被其他窗口修改，请刷新页面（Ctrl+F5）后重试")
 
 type DocumentRepository struct {
 	pool *pgxpool.Pool
@@ -53,59 +58,79 @@ func NewDocumentRepository(pool *pgxpool.Pool) *DocumentRepository {
 	return &DocumentRepository{pool: pool}
 }
 
-func (repository *DocumentRepository) Load(ctx context.Context) (map[string]any, error) {
+func (repository *DocumentRepository) Load(ctx context.Context) (map[string]any, time.Time, error) {
 	if repository == nil || repository.pool == nil {
-		return nil, errors.New("数据库连接未配置")
+		return nil, time.Time{}, errors.New("数据库连接未配置")
 	}
 
 	var raw []byte
+	var updatedAt time.Time
 	err := repository.pool.QueryRow(ctx, `
-		SELECT document
+		SELECT document, updated_at
 		FROM data_documents
-		WHERE document_key = $1`, documentKey).Scan(&raw)
+		WHERE document_key = $1`, documentKey).Scan(&raw, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return emptyDocument(), nil
+		return emptyDocument(), time.Time{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("读取业务数据文档失败: %w", err)
+		return nil, time.Time{}, fmt.Errorf("读取业务数据文档失败: %w", err)
 	}
 
 	var document map[string]any
 	if err := json.Unmarshal(raw, &document); err != nil {
-		return nil, fmt.Errorf("解析业务数据文档失败: %w", err)
+		return nil, time.Time{}, fmt.Errorf("解析业务数据文档失败: %w", err)
 	}
-	return document, nil
+	return document, updatedAt, nil
 }
 
-func (repository *DocumentRepository) Save(ctx context.Context, document map[string]any, userID string) error {
+func (repository *DocumentRepository) Save(ctx context.Context, document map[string]any, userID string, expectedUpdatedAt time.Time) (time.Time, error) {
 	if repository == nil || repository.pool == nil {
-		return errors.New("数据库连接未配置")
+		return time.Time{}, errors.New("数据库连接未配置")
 	}
 	raw, err := json.Marshal(document)
 	if err != nil {
-		return fmt.Errorf("编码业务数据文档失败: %w", err)
+		return time.Time{}, fmt.Errorf("编码业务数据文档失败: %w", err)
 	}
 	tx, err := repository.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("保存业务数据事务失败: %w", err)
+		return time.Time{}, fmt.Errorf("保存业务数据事务失败: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := syncCompatibilityRecords(ctx, tx, raw, userID); err != nil {
-		return err
+
+	// 乐观并发校验：持有行锁比较更新时间，旧内存快照不允许覆盖新数据。
+	if !expectedUpdatedAt.IsZero() {
+		var current time.Time
+		scanErr := tx.QueryRow(ctx, `
+			SELECT updated_at
+			FROM data_documents
+			WHERE document_key = $1
+			FOR UPDATE`, documentKey).Scan(&current)
+		if scanErr == nil && !current.Equal(expectedUpdatedAt) {
+			return time.Time{}, ErrDocumentConflict
+		}
+		if scanErr != nil && !errors.Is(scanErr, pgx.ErrNoRows) {
+			return time.Time{}, fmt.Errorf("并发校验业务数据失败: %w", scanErr)
+		}
 	}
-	_, err = tx.Exec(ctx, `
+
+	if err := syncCompatibilityRecords(ctx, tx, raw, userID); err != nil {
+		return time.Time{}, err
+	}
+	var savedUpdatedAt time.Time
+	err = tx.QueryRow(ctx, `
 		INSERT INTO data_documents (document_key, document)
 		VALUES ($1, $2::jsonb)
 		ON CONFLICT (document_key) DO UPDATE
 		SET document = EXCLUDED.document,
-		    updated_at = now()`, documentKey, raw)
+		    updated_at = now()
+		RETURNING updated_at`, documentKey, raw).Scan(&savedUpdatedAt)
 	if err != nil {
-		return fmt.Errorf("保存业务数据文档失败: %w", err)
+		return time.Time{}, fmt.Errorf("保存业务数据文档失败: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("提交业务数据事务失败: %w", err)
+		return time.Time{}, fmt.Errorf("提交业务数据事务失败: %w", err)
 	}
-	return nil
+	return savedUpdatedAt, nil
 }
 
 func syncCompatibilityRecords(ctx context.Context, tx pgx.Tx, raw []byte, userID string) error {

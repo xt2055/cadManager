@@ -59,14 +59,20 @@ export function isSameDrawingFamily(partNo: string, drawingNo: string): boolean 
   return drawingNumberRoot(part).toLowerCase() === drawingNumberRoot(drawing).toLowerCase()
 }
 
+// 图号比较键：标题栏真值可能含 /（如 JG9055e-50/32-00），文件名变体会丢失斜杠
+// （如 JG9055e-5032-00）；比较时统一去除斜杠并忽略大小写与空白。
+function drawingNoCompareKey(value: string): string {
+  return value.trim().toUpperCase().replace(/[\/\\\s]/g, '')
+}
+
 // 只有已知总图完整编号与其首段简称等价，不能把同族零件号当成总图简称。
 export function isEquivalentAssemblyNo(candidateValue: string, assemblyValue: string, knownAssemblyNos: string[] = []): boolean {
-  const candidate = candidateValue.trim().toLowerCase()
-  const assembly = assemblyValue.trim().toLowerCase()
+  const candidate = drawingNoCompareKey(candidateValue)
+  const assembly = drawingNoCompareKey(assemblyValue)
   if (!candidate || !assembly) return false
   if (candidate === assembly) return true
   const knownAssembly = knownAssemblyNos
-    .map((value) => value.trim().toLowerCase())
+    .map((value) => drawingNoCompareKey(value))
     .find((value) => value && value.includes('-') && (value === candidate || value === assembly))
   if (!knownAssembly) return false
   const shortNo = drawingNumberRoot(knownAssembly)

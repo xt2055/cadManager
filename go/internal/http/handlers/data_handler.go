@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/data"
@@ -17,7 +19,7 @@ func DataDocument(repository *data.DocumentRepository, attachmentRepository atta
 	return func(writer http.ResponseWriter, request *http.Request) {
 		switch request.Method {
 		case http.MethodGet:
-			document, err := repository.Load(request.Context())
+			document, updatedAt, err := repository.Load(request.Context())
 			if err != nil {
 				response.WriteError(writer, http.StatusInternalServerError, "业务数据读取失败")
 				return
@@ -27,6 +29,9 @@ func DataDocument(repository *data.DocumentRepository, attachmentRepository atta
 				return
 			}
 			delete(document, "users")
+			if !updatedAt.IsZero() {
+				writer.Header().Set("X-Document-UpdatedAt", updatedAt.UTC().Format(time.RFC3339Nano))
+			}
 			response.WriteData(writer, http.StatusOK, document)
 		case http.MethodPut:
 			user, ok := middleware.UserFromContext(request.Context())
@@ -39,10 +44,28 @@ func DataDocument(repository *data.DocumentRepository, attachmentRepository atta
 				response.WriteError(writer, http.StatusBadRequest, "业务数据文档格式无效")
 				return
 			}
-			if err := repository.Save(request.Context(), document, user.ID); err != nil {
+			var expectedUpdatedAt time.Time
+			if expected := strings.TrimSpace(request.Header.Get("X-Expected-UpdatedAt")); expected != "" {
+				parsed, parseErr := time.Parse(time.RFC3339Nano, expected)
+				if parseErr != nil {
+					response.WriteError(writer, http.StatusBadRequest, "并发校验时间戳无效，请刷新页面后重试")
+					return
+				}
+				expectedUpdatedAt = parsed
+			}
+			savedUpdatedAt, err := repository.Save(request.Context(), document, user.ID, expectedUpdatedAt)
+			if err != nil {
+				if errors.Is(err, data.ErrDocumentConflict) {
+					log.Printf("[数据同步] 拒绝过期保存: %v", err)
+					response.WriteError(writer, http.StatusConflict, err.Error())
+					return
+				}
 				log.Printf("[数据同步] 业务数据保存失败: %v", err)
 				response.WriteError(writer, http.StatusInternalServerError, "业务数据保存失败")
 				return
+			}
+			if !savedUpdatedAt.IsZero() {
+				writer.Header().Set("X-Document-UpdatedAt", savedUpdatedAt.UTC().Format(time.RFC3339Nano))
 			}
 			response.WriteData(writer, http.StatusOK, nil)
 		default:
@@ -74,6 +97,11 @@ func mergeStoredAttachments(request *http.Request, document map[string]any, repo
 			return err
 		}
 		for _, item := range items {
+			// 工艺文件与备料表有专属页签和数据源（drawing.craftFiles / materialFiles），
+			// 不合并进图纸文件清单，否则会以“其他文件”身份重复出现。
+			if item.Role == attachment.RoleCraft || item.Role == attachment.RoleMaterial {
+				continue
+			}
 			storedFile := storedAttachmentMap(item)
 			if item.PartNo != nil && strings.TrimSpace(*item.PartNo) != "" {
 				mergeFileIntoOwner(structure, *item.PartNo, storedFile, item.Role)

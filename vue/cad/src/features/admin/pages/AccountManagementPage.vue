@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
+
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import AdminTabs from '../components/AdminTabs.vue'
 import { useDomainStore } from '@/stores/domain.store'
@@ -8,6 +10,12 @@ defineOptions({ name: 'AccountManagementPage' })
 
 const domainStore = useDomainStore()
 const uiStore = useUiStore()
+
+// 进入页面即重拉一次账号列表：initialize 是一次性快照，
+// 初始化时机早于角色恢复或他人新建账号时，快照会漏掉最新数据。
+onMounted(() => {
+  void domainStore.refreshUsers()
+})
 
 async function toggleUser(index: number) {
   try {

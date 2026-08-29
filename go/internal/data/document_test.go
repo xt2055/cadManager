@@ -60,7 +60,7 @@ func TestSyncCompatibilityRecordsWithRealDocument(t *testing.T) {
 	defer pool.Close()
 
 	repository := NewDocumentRepository(pool)
-	document, err := repository.Load(ctx)
+	document, _, err := repository.Load(ctx)
 	if err != nil {
 		t.Fatalf("加载真实文档失败: %v", err)
 	}

@@ -4,7 +4,7 @@ import { computed, ref } from 'vue'
 import { dataManager } from '@/services/data-manager'
 import { readDocxAuthor } from '@/utils/docx-metadata'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
-import { directParentDrawingNo } from '@/utils/drawing-number-parser'
+import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-number-parser'
 import { useAuthStore } from '@/stores/auth.store'
 import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
 import type { DataDocument } from '@/services/data-manager'
@@ -248,7 +248,6 @@ export const useDomainStore = defineStore('domain', () => {
         hiddenList.value = document.hiddenList
         adminLogs.value = document.adminLogs
         await scanUnscannedCraftFiles()
-        await persist()
         await loadRemoteActivityLogs()
         initialized.value = true
       } catch (loadError: unknown) {
@@ -499,7 +498,7 @@ export const useDomainStore = defineStore('domain', () => {
         act: 'view',
         text: `查看图纸 ${currentDrawing.value.no}`,
       })
-      void persist()
+      // 纯浏览操作不持久化业务文档：全量保存会让旧页面内存覆盖数据库新数据。
     }
   }
 
@@ -591,13 +590,27 @@ export const useDomainStore = defineStore('domain', () => {
       throw new Error(`新图号已存在：${newDrawingNo}`)
     }
 
-    const sourceParts = structure.value.filter((part) => part.no.startsWith(`${sourceNo}-`) || part.parentNo === sourceNo)
+    // 按图号族提取源零件（含子件），排除借用件（借用件属于源项目，不随分叉复制）。
+    const sourceParts = structure.value.filter((part) =>
+      !part.borrowFrom && (part.no.startsWith(`${sourceNo}-`) || part.parentNo === sourceNo || isSameDrawingFamily(part.no, sourceNo)))
     const partNoMap = new Map<string, string>()
     const uploadedKeys: string[] = []
 
+    // 零件号映射：兼容前缀规则（JG-001-01）与族基座规则
+    // （总图 JG9055e-50/32-00 的零件为去斜杠变体 JG9055e-5032-01，子件 JG9055e-5032-01-1）。
+    const normSource = sourceNo.replace(/[/\\]/g, '')
+    const sourceFamily = normSource.slice(0, Math.max(normSource.lastIndexOf('-'), 0))
+    const newBase = newDrawingNo.replace(/[/\\]/g, '')
+    const newFamily = newBase.slice(0, Math.max(newBase.lastIndexOf('-'), 0))
+    const mapPartNo = (partNo: string): string => {
+      const normPart = partNo.replace(/[/\\]/g, '')
+      if (normPart.startsWith(`${normSource}-`)) return `${newDrawingNo}${normPart.slice(normSource.length)}`
+      if (normPart.startsWith(`${sourceFamily}-`) || normPart === sourceFamily) return `${newFamily}${normPart.slice(sourceFamily.length)}`
+      return `${newDrawingNo}-${partNo}`
+    }
+
     for (const part of sourceParts) {
-      const suffix = part.no.startsWith(`${sourceNo}-`) ? part.no.slice(sourceNo.length) : `-${part.no}`
-      const targetNo = `${newDrawingNo}${suffix}`
+      const targetNo = mapPartNo(part.no)
       if (structure.value.some((p) => p.no === targetNo)) {
         throw new Error(`分叉生成的零件图号已存在：${targetNo}`)
       }
@@ -667,6 +680,7 @@ export const useDomainStore = defineStore('domain', () => {
       part.craftFiles = (sourcePart.craftFiles ?? []).map((file) => cloneFile(file, newDrawingNo, part.no))
     })
 
+    // 分支记录与活动日志：随建档持久化一起落库。
     const branchRecord: Branch = {
       name: `${newDrawingNo} (${newProjectName || forkedDrawing.name})`,
       from: sourceNo,
@@ -685,28 +699,37 @@ export const useDomainStore = defineStore('domain', () => {
       detail: { sourceDrawingNo: sourceNo, newDrawingNo, partCount: forkedParts.length },
     })
 
+    // 克隆文件清单：源文件内容将逐个复制为新项目的附件。
+    const fileCopies = [
+      ...(sourceDrawing.files ?? []).map((source, index) => ({ source, target: forkedDrawing.files?.[index] })),
+      ...(sourceDrawing.otherFiles ?? []).map((source, index) => ({ source, target: forkedDrawing.otherFiles?.[index] })),
+      ...(sourceDrawing.materialFiles ?? []).map((source, index) => ({ source, target: forkedDrawing.materialFiles?.[index] })),
+      ...(sourceDrawing.craftFiles ?? []).map((source, index) => ({ source, target: forkedDrawing.craftFiles?.[index] })),
+      ...sourceParts.flatMap((sourcePart) => {
+        const targetPart = forkedParts.find((item) => item.forkedFrom === sourcePart.no)
+        if (!targetPart) return []
+        return [
+          ...(sourcePart.files ?? []).map((source, index) => ({ source, target: targetPart.files?.[index] })),
+          ...(sourcePart.otherFiles ?? []).map((source, index) => ({ source, target: targetPart.otherFiles?.[index] })),
+          ...(sourcePart.materialFiles ?? []).map((source, index) => ({ source, target: targetPart.materialFiles?.[index] })),
+          ...(sourcePart.craftFiles ?? []).map((source, index) => ({ source, target: targetPart.craftFiles?.[index] })),
+        ]
+      }),
+    ]
+
+    const drawingsSnapshot = JSON.parse(JSON.stringify(drawings.value))
+    const structureSnapshot = JSON.parse(JSON.stringify(structure.value))
+    const branchesSnapshot = JSON.parse(JSON.stringify(branches.value))
+    const logsSnapshot = JSON.parse(JSON.stringify(logs.value))
+
+    // 先落库建档：附件上传时 FolderForDrawing 需要能在 drawings 表查到新图号，
+    // 否则全新图号的上传会 404「附件不存在」。
     drawings.value.unshift(forkedDrawing)
     structure.value.push(...forkedParts)
     branches.value.unshift(branchRecord)
 
     try {
-      const fileCopies = [
-        ...(sourceDrawing.files ?? []).map((source, index) => ({ source, target: forkedDrawing.files?.[index] })),
-        ...(sourceDrawing.otherFiles ?? []).map((source, index) => ({ source, target: forkedDrawing.otherFiles?.[index] })),
-        ...(sourceDrawing.materialFiles ?? []).map((source, index) => ({ source, target: forkedDrawing.materialFiles?.[index] })),
-        ...(sourceDrawing.craftFiles ?? []).map((source, index) => ({ source, target: forkedDrawing.craftFiles?.[index] })),
-        ...sourceParts.flatMap((sourcePart) => {
-          const targetPart = forkedParts.find((item) => item.forkedFrom === sourcePart.no)
-          if (!targetPart) return []
-          return [
-            ...(sourcePart.files ?? []).map((source, index) => ({ source, target: targetPart.files?.[index] })),
-            ...(sourcePart.otherFiles ?? []).map((source, index) => ({ source, target: targetPart.otherFiles?.[index] })),
-            ...(sourcePart.materialFiles ?? []).map((source, index) => ({ source, target: targetPart.materialFiles?.[index] })),
-            ...(sourcePart.craftFiles ?? []).map((source, index) => ({ source, target: targetPart.craftFiles?.[index] })),
-          ]
-        }),
-      ]
-
+      await persist()
       for (const copy of fileCopies) {
         if (!copy.target || !copy.source.storageKey) continue
         const content = await dataManager.readAttachment(copy.source.storageKey)
@@ -715,13 +738,15 @@ export const useDomainStore = defineStore('domain', () => {
       }
       await persist()
     } catch (saveError) {
-      const idx = drawings.value.findIndex((item) => item.no === newDrawingNo)
-      if (idx >= 0) drawings.value.splice(idx, 1)
-      const partNos = new Set(forkedParts.map((p) => p.no))
-      structure.value = structure.value.filter((p) => !partNos.has(p.no))
-      branches.value = branches.value.filter((b) => b !== branchRecord)
-      logs.value = logs.value.filter((item) => item.id !== activityLog.id)
-      await persist().catch(() => undefined)
+      // 失败：整体恢复内存快照并重试回滚保存，避免半提交状态残留到数据库。
+      drawings.value = drawingsSnapshot
+      structure.value = structureSnapshot
+      branches.value = branchesSnapshot
+      logs.value = logsSnapshot
+      let rollbackSaved = false
+      for (let attempt = 0; attempt < 3 && !rollbackSaved; attempt += 1) {
+        rollbackSaved = await persist().then(() => true).catch(() => false)
+      }
       await Promise.all(uploadedKeys.map((key) => dataManager.deleteAttachment(key).catch(() => undefined)))
       throw saveError
     }
@@ -1728,6 +1753,15 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
+  async function refreshUsers(): Promise<void> {
+    if (!authStore.hasRole('admin')) return
+    try {
+      users.value = await dataManager.listUsers()
+    } catch (error) {
+      console.warn('刷新账号列表失败', error)
+    }
+  }
+
   async function createUser(
     account: string,
     displayName: string,
@@ -1861,6 +1895,7 @@ export const useDomainStore = defineStore('domain', () => {
     submitNodeReview,
     setReviewNodeStatus,
     updateStructurePart,
+    refreshUsers,
     createUser,
     resetUserPassword,
     toggleUser,

@@ -23,13 +23,22 @@ function unwrapResponseData(value: unknown): unknown {
 
 export class ApiDataProvider implements DataProvider {
   private readonly baseUrl: string
+  /** 最近一次读取/保存确认的文档更新时间，用于乐观并发校验（防止旧窗口覆盖新数据）。 */
+  private documentStamp = ''
 
   constructor(baseUrl = import.meta.env.VITE_API_BASE_URL || '/api') {
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 
   async load(): Promise<DataDocument> {
-    const response = await this.request<unknown>('/data/document', { method: 'GET' })
+    const response = await this.request<unknown>('/data/document', {
+      method: 'GET',
+      onResponse: (resolved) => {
+        if (!resolved.ok) return
+        const stamp = resolved.headers.get('X-Document-UpdatedAt')
+        if (stamp) this.documentStamp = stamp
+      },
+    })
     return normalizeDataDocument(response)
   }
 
@@ -39,6 +48,12 @@ export class ApiDataProvider implements DataProvider {
     await this.request('/data/document', {
       method: 'PUT',
       body: JSON.stringify(payload),
+      headers: this.documentStamp ? { 'X-Expected-UpdatedAt': this.documentStamp } : {},
+      onResponse: (resolved) => {
+        if (!resolved.ok) return
+        const stamp = resolved.headers.get('X-Document-UpdatedAt')
+        if (stamp) this.documentStamp = stamp
+      },
     })
   }
 
@@ -286,9 +301,10 @@ export class ApiDataProvider implements DataProvider {
     return payload as unknown as UserAccount
   }
 
-  private async request<T>(path: string, options: { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: string }): Promise<T> {
+  private async request<T>(path: string, options: { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: string; headers?: Record<string, string>; onResponse?: (response: Response) => void }): Promise<T> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
+      ...(options.headers || {}),
     }
 
     if (options.body) {
@@ -306,6 +322,8 @@ export class ApiDataProvider implements DataProvider {
       body: options.body,
       credentials: 'include',
     })
+
+    options.onResponse?.(response)
 
     if (!response.ok) {
       let message = `数据接口请求失败：HTTP ${response.status}`

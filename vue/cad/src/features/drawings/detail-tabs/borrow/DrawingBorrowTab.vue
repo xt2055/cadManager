@@ -60,8 +60,13 @@ const borrowedRows = computed<BorrowRow[]>(() => {
   const rows: BorrowRow[] = []
   const borrowedParts = domainStore.structure.filter((part) => {
     if (!belongsToCurrentProject(part, current)) return false
-    const sourceNo = rootDrawingNo(part.borrowFrom || part.no)
-    return Boolean(part.borrowFrom) || Boolean(sourceNo && sourceNo !== current)
+    if (part.borrowFrom) return true
+    // 文件已登记在当前项目图号名下的零件不属于借用；
+    // 即使图号族链条断开（父级零件缺失导致 rootNo 回退解析），也不能误报。
+    const registeredInProject = [...(part.files ?? []), ...(part.otherFiles ?? [])].some((file) => file.drawingNo === current)
+    if (registeredInProject) return false
+    const sourceNo = rootDrawingNo(part.no)
+    return Boolean(sourceNo && sourceNo !== current)
   })
   for (const part of borrowedParts) {
     const sourceNo = rootDrawingNo(part.borrowFrom || '')

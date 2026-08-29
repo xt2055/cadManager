@@ -317,6 +317,13 @@ function normalizeDrawings(value: unknown): Drawing[] {
 }
 
 function classifyDrawingPartFile(file: DrawingFile, drawingNo: string): DrawingFile | null {
+  // 只有 CAD 图纸文件参与零件分类；工艺卡片/备料表等文档的文件名常带其他项目图号，
+  // 若参与解析会凭空造出幽灵零件（parentNo 断链、图号体系错乱）。
+  if (!/\.(exb|dwg|dxf)$/i.test(file.name)) return null
+  // 已明确归属的文件不按文件名重分类：分叉继承的文件名带源项目图号，
+  // 按名解析会把它们错误迁移回源项目零件体系。
+  if (file.partNo) return null
+  if (file.role === 'assembly' && file.drawingNo === drawingNo) return null
   const currentProjectParsed = parseDrawingFileName(file.name, drawingNo)
   const standaloneParsed = parseStandaloneDrawingFileName(file.name)
   const parsed = currentProjectParsed.isStandard ? currentProjectParsed : standaloneParsed
