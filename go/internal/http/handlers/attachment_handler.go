@@ -17,9 +17,10 @@ import (
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
 	"cadguanliq/internal/storage"
+	"cadguanliq/internal/versioning"
 )
 
-func UploadAttachment(repository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service, maxBytes int64) http.HandlerFunc {
+func UploadAttachment(repository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service, versions *versioning.Service, maxBytes int64) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := middleware.UserFromContext(request.Context())
 		if !ok {
@@ -80,7 +81,10 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 		if existingKey := strings.TrimSpace(request.FormValue("storageKey")); existingKey != "" {
 			existingFolder := filepath.ToSlash(filepath.Dir(existingKey))
 			legacyFolder := filepath.ToSlash(folder)
-			if existingFolder != filepath.ToSlash(attachmentFolder) && !(role == attachment.RoleCraft && existingFolder == legacyFolder) {
+			// 版本替换会上传到「图号目录/history/历史图号/」之下，同样视为合法归属。
+			historyPrefix := filepath.ToSlash(attachmentFolder) + "/history/"
+			inHistory := strings.HasPrefix(existingFolder+"/", historyPrefix)
+			if existingFolder != filepath.ToSlash(attachmentFolder) && !inHistory && !(role == attachment.RoleCraft && existingFolder == legacyFolder) {
 				response.WriteError(writer, http.StatusBadRequest, "附件存储键与所属图号不匹配")
 				return
 			}
@@ -168,6 +172,13 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 		}
 
 		// 上传阶段只保存原始附件。DWG 转换属于预览/本地编辑按需操作，避免用户取消创建时产生后台转换副本。
+
+		// 登记初始版本（v1.0 基线），保证后续编辑版本可回退。
+		if versions != nil {
+			if err := versions.EnsureInitialVersion(request.Context(), item.StorageKey, user.ID); err != nil {
+				log.Printf("[版本] 登记初始版本失败 storageKey=%s: %v", item.StorageKey, err)
+			}
+		}
 
 		response.WriteData(writer, http.StatusCreated, item)
 	}

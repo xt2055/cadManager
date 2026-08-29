@@ -359,7 +359,7 @@ func (s *Service) ConvertToExb(ctx context.Context, att attachment.Attachment) (
 		}
 	}
 
-	if err := s.convertPathToExb(ctx, tempIn, tempExb); err != nil {
+	if err := s.runCaxaJob(ctx, tempIn, tempExb); err != nil {
 		return "", err
 	}
 
@@ -384,10 +384,21 @@ func (s *Service) ConvertPathToExb(ctx context.Context, inputPath, outputPath st
 	if err := s.ensureCaxaRunning(ctx); err != nil {
 		return err
 	}
-	return s.convertPathToExb(ctx, inputPath, outputPath)
+	return s.runCaxaJob(ctx, inputPath, outputPath)
 }
 
-func (s *Service) convertPathToExb(ctx context.Context, inputPath, outputPath string) error {
+// ConvertPathToDwg 将本地 DXF/DWG/EXB 文件转换为本地 DWG 文件。
+// 在线编辑器在浏览器内只能产出 DXF，保存时由后端通过 CAXA 调度转换为 DWG 归档。
+func (s *Service) ConvertPathToDwg(ctx context.Context, inputPath, outputPath string) error {
+	if err := s.ensureCaxaRunning(ctx); err != nil {
+		return err
+	}
+	return s.runCaxaJob(ctx, inputPath, outputPath)
+}
+
+// runCaxaJob 向 CAXA 调度器提交一条「输入路径|输出路径」任务并等待完成，
+// 输出格式由输出文件的扩展名决定（.exb/.dwg 等）。
+func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) error {
 	jobFile := filepath.Join(os.TempDir(), "caxa_exb_jobs.txt")
 	if err := waitForJobFileFree(jobFile, 10*time.Second); err != nil {
 		return err
@@ -410,10 +421,10 @@ func (s *Service) convertPathToExb(ctx context.Context, inputPath, outputPath st
 			if strings.TrimSpace(string(statusBytes)) == "OK" {
 				return nil
 			}
-			return errors.New("CAXA 转换为 EXB 失败")
+			return errors.New("CAXA 转换任务失败")
 		}
 	}
-	return errors.New("CAXA 转换为 EXB 超时")
+	return errors.New("CAXA 转换任务超时")
 }
 
 // EnsureDwg 确保 EXB 已转换为可供浏览器 CAD 引擎读取的 DWG，并返回实际存储键。

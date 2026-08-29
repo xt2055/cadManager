@@ -1,7 +1,7 @@
 import { ApiDataProvider } from './api-data-provider'
 import { createEmptyDataDocument, normalizeDataDocument, type DataDocument } from './data.types'
 import type { DataProvider } from './data-provider'
-import type { AttachmentMetadata, AttachmentResult, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, ReidentifyDrawingFileResult, UserManagementInput } from './data-provider'
+import type { AttachmentMetadata, AttachmentResult, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, UserManagementInput } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import { JsonDataProvider } from './json-data-provider'
 import { readDebugMode } from '@/services/runtime-config.service'
@@ -24,6 +24,9 @@ export interface DataManager {
   openEditSession(storageKey: string): Promise<EditSessionOpenResult>
   heartbeatEditSession(sessionId: string): Promise<EditSessionControlResult>
   closeEditSession(sessionId: string): Promise<EditSessionControlResult>
+  listFileVersions(storageKey: string): Promise<FileVersionInfo[]>
+  downloadFileVersion(versionId: string): Promise<Blob>
+  restoreFileVersion(versionId: string): Promise<void>
   resetProvider(): void
 }
 
@@ -149,6 +152,24 @@ export class DefaultDataManager implements DataManager {
     const provider = await this.getProvider()
     if (!provider.closeEditSession) throw new Error('当前存储模式不支持关闭编辑会话')
     return provider.closeEditSession(sessionId)
+  }
+
+  async listFileVersions(storageKey: string): Promise<FileVersionInfo[]> {
+    const provider = await this.getProvider()
+    if (!provider.listFileVersions) return []
+    return provider.listFileVersions(storageKey)
+  }
+
+  async downloadFileVersion(versionId: string): Promise<Blob> {
+    const provider = await this.getProvider()
+    if (!provider.downloadFileVersion) throw new Error('当前存储模式不支持下载版本文件')
+    return provider.downloadFileVersion(versionId)
+  }
+
+  async restoreFileVersion(versionId: string): Promise<void> {
+    const provider = await this.getProvider()
+    if (!provider.restoreFileVersion) throw new Error('当前存储模式不支持回退版本')
+    return provider.restoreFileVersion(versionId)
   }
 
   resetProvider(): void {

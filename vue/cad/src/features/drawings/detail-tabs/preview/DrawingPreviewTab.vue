@@ -116,6 +116,7 @@ const editingFileId = ref<string | null>(null)
 const activeSessionList = ref<ActiveEditSessionInfo[]>([])
 const myActiveSessions = ref<LocalActiveEditSession[]>([])
 const closingSessionIds = ref<Set<string>>(new Set())
+const closedSessions = ref<{ sessionId: string; fileName: string; savedAt: string }[]>([])
 const borrowReasonInput = ref('')
 
 // 获取除当前项目外的所有可选项目（支持名称、图号、厂商模糊过滤）
@@ -285,8 +286,10 @@ async function refreshActiveSessions() {
 }
 
 function getFileLockInfo(file: DrawingFile): ActiveEditSessionInfo | undefined {
-  if (!file.storageKey) return undefined
-  return activeSessionList.value.find((s) => s.storageKey === file.storageKey)
+  // 服务端会话记录的是原始存储键（EXB 上传场景），优先用原始键匹配。
+  const originalKey = file.rawStorageKey || file.storageKey
+  if (!originalKey) return undefined
+  return activeSessionList.value.find((s) => s.storageKey === originalKey || s.storageKey === file.storageKey)
 }
 
 function isFileLockedByOther(file: DrawingFile): boolean {
@@ -313,12 +316,23 @@ async function stopSession(session: ActiveEditSessionInfo | { sessionId: string 
   const targetId = 'id' in session ? session.id : session.sessionId
   if (!targetId || closingSessionIds.value.has(targetId)) return
 
+  const targetFileName = ('fileName' in session && session.fileName)
+    || myActiveSessions.value.find((s) => s.sessionId === targetId)?.fileName
+    || '当前文件'
+  if (!window.confirm(`确定要结束「${targetFileName}」的编辑吗？\n\n结束后端会等待图纸落盘并自动生成新版本，通常需要数秒，请耐心等待。`)) return
+
   closingSessionIds.value.add(targetId)
   try {
     await dataManager.closeEditSession(targetId)
     myActiveSessions.value = myActiveSessions.value.filter((s) => s.sessionId !== targetId)
     await refreshActiveSessions()
-    uiStore.toast('已结束协同编辑会话，文件占用已释放', 'ok')
+    // 后端已完成文件稳定等待与版本捕获，给用户明确的“结束成功”反馈。
+    const successRecord = { sessionId: targetId, fileName: targetFileName, savedAt: new Date().toLocaleTimeString() }
+    closedSessions.value = [...closedSessions.value, successRecord]
+    window.setTimeout(() => {
+      closedSessions.value = closedSessions.value.filter((item) => item.sessionId !== targetId)
+    }, 5000)
+    uiStore.toast('编辑已结束，图纸版本已保存', 'ok')
   } catch (error) {
     uiStore.toast(error instanceof Error ? error.message : '释放编辑会话失败', 'warn')
   } finally {
@@ -343,6 +357,32 @@ async function relaunchEditorForFile(file: DrawingFile) {
   const session = myActiveSessions.value.find((s) => s.fileId === file.id)
   if (session) {
     await relaunchEditor(session)
+    return
+  }
+  // 页面关闭后重开的恢复场景：服务端会话仍在占用中，重新认领（幂等）并呼出 CAD。
+  if (!file.storageKey) return
+  if (editingFileId.value) return
+  editingFileId.value = file.id
+  try {
+    const result = await dataManager.openEditSession(file.storageKey)
+    myActiveSessions.value = [
+      ...myActiveSessions.value.filter((s) => s.sessionId !== result.sessionId),
+      {
+        sessionId: result.sessionId,
+        fileId: file.id,
+        fileName: file.name,
+        uncPath: result.uncPath,
+        openUrl: result.openUrl,
+        startedAt: new Date().toLocaleTimeString(),
+      },
+    ]
+    await openCadEditSession(result)
+    await refreshActiveSessions()
+    uiStore.toast('已重新认领编辑会话并呼出本地 CAD', 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '重新认领编辑会话失败', 'warn')
+  } finally {
+    editingFileId.value = null
   }
 }
 
@@ -365,6 +405,12 @@ async function openEditor(file: DrawingFile) {
   const existingMySession = myActiveSessions.value.find((s) => s.fileId === file.id)
   if (existingMySession) {
     await relaunchEditor(existingMySession)
+    return
+  }
+  // 服务端仍保留自己的会话（例如关闭页面后重新打开）：重新认领并呼出 CAD，不新建占用。
+  const ownServerSession = activeSessionList.value.find((s) => s.isCurrent && (s.storageKey === file.rawStorageKey || s.storageKey === file.storageKey))
+  if (ownServerSession) {
+    await relaunchEditorForFile(file)
     return
   }
 
@@ -859,11 +905,29 @@ function closeReidentifyModal() {
             class="btn sm primary danger-tone"
             type="button"
             :disabled="closingSessionIds.has(session.sessionId)"
-            title="结束当前编辑并释放文件独占锁"
+            title="结束当前编辑：等待图纸落盘后生成新版本并释放文件锁"
             @click="stopSession(session)"
           >
-            <DemoIcon name="square" :size="12" />{{ closingSessionIds.has(session.sessionId) ? '释放中...' : '结束编辑' }}
+            <span v-if="closingSessionIds.has(session.sessionId)" class="local-edit-spinner" aria-hidden="true"></span>
+            <DemoIcon v-else name="square" :size="12" />
+            {{ closingSessionIds.has(session.sessionId) ? '正在结束，等待图纸落盘...' : '结束编辑' }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 结束成功反馈：后端完成版本捕获后短暂展示 -->
+    <div v-if="closedSessions.length > 0" class="collab-multi-container">
+      <div v-for="closed in closedSessions" :key="closed.sessionId" class="card collab-dock-card closed-ok">
+        <div class="dock-left">
+          <div class="dock-status-tag success">
+            <DemoIcon name="check-circle-2" :size="15" />
+            <strong>结束成功</strong>
+          </div>
+          <div class="dock-file-info">
+            <span class="file-name" :title="closed.fileName">{{ closed.fileName }}</span>
+            <span class="dock-time">{{ closed.savedAt }} · 图纸已落盘并生成新版本</span>
+          </div>
         </div>
       </div>
     </div>
@@ -906,8 +970,8 @@ function closeReidentifyModal() {
                   <span v-if="isFileEditingByMe(file)" class="badge-collab active">
                     <span class="pulse-dot"></span>我正在编辑
                   </span>
-                  <span v-else-if="getFileLockInfo(file)" class="badge-collab locked" :title="`由 ${getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount} 锁定`">
-                    <DemoIcon name="lock" :size="11" />{{ getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount }} 编辑中
+                  <span v-else-if="getFileLockInfo(file)" class="badge-collab locked" :title="`由 ${getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount} 占用${getFileLockInfo(file)?.online === false ? '（离线）' : ''}`">
+                    <DemoIcon name="lock" :size="11" />{{ getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount }} {{ getFileLockInfo(file)?.online === false ? '离线占用' : '编辑中' }}
                   </span>
                 </div>
               </td>
@@ -936,10 +1000,15 @@ function closeReidentifyModal() {
                   v-else-if="isFileLockedByOther(file)"
                   class="btn sm locked-btn"
                   type="button"
-                  disabled
-                  :title="`文件正由「${getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount}」独占编辑中`"
+                  :disabled="!getFileLockInfo(file)?.canClose || closingSessionIds.has(getFileLockInfo(file)!.id)"
+                  :title="getFileLockInfo(file)?.canClose
+                    ? `文件正由「${getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount}」占用，可强制释放（将尝试保存其改动并生成版本）`
+                    : `文件正由「${getFileLockInfo(file)?.userName || getFileLockInfo(file)?.userAccount}」独占编辑中`"
+                  @click="getFileLockInfo(file) && stopSession(getFileLockInfo(file)!)"
                 >
-                  <DemoIcon name="lock" :size="12" />已被占用
+                  <span v-if="getFileLockInfo(file)?.canClose && closingSessionIds.has(getFileLockInfo(file)!.id)" class="local-edit-spinner" aria-hidden="true"></span>
+                  <DemoIcon v-else name="lock" :size="12" />
+                  {{ getFileLockInfo(file)?.canClose ? (getFileLockInfo(file)?.online === false ? '强制释放(离线)' : '强制释放') : (getFileLockInfo(file)?.online === false ? '已被占用(离线)' : '已被占用') }}
                 </button>
                 <button
                   v-else
@@ -2353,6 +2422,20 @@ function closeReidentifyModal() {
   border-right-color: transparent;
   border-radius: 50%;
   animation: local-edit-spin 0.75s linear infinite;
+}
+
+.dock-status-tag.success {
+  color: var(--ok);
+}
+
+.dock-status-tag.success :deep(svg),
+.dock-status-tag.success strong {
+  color: var(--ok);
+}
+
+.closed-ok {
+  border-color: rgb(52 211 153 / 40%);
+  background: rgb(52 211 153 / 6%);
 }
 
 @keyframes local-edit-spin {

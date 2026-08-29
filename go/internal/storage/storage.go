@@ -65,27 +65,32 @@ func (storage *LocalStorage) Put(ctx context.Context, key string, reader io.Read
 	if closeErr != nil {
 		return ObjectInfo{}, fmt.Errorf("关闭附件临时文件失败: %w", closeErr)
 	}
-	backupPath := fmt.Sprintf("%s.%d.bak", path, time.Now().UnixNano())
-	hadOriginal := false
-	if err := os.Rename(path, backupPath); err != nil {
-		if !os.IsNotExist(err) {
-			return ObjectInfo{}, fmt.Errorf("备份旧附件失败: %w", err)
-		}
-	} else {
-		hadOriginal = true
-	}
-	defer func() {
-		if hadOriginal {
-			_ = os.Remove(backupPath)
-		}
-	}()
+	// 优先原子替换；若目标文件正被 CAD 预览/转换进程读取导致 rename 失败，
+	// 退化为覆盖写内容（占用方通常以共享只读方式打开，不影响写入）。
 	if err := os.Rename(temporaryPath, path); err != nil {
-		if hadOriginal {
-			_ = os.Rename(backupPath, path)
+		if replaceErr := replaceFileContents(temporaryPath, path); replaceErr != nil {
+			return ObjectInfo{}, fmt.Errorf("保存附件失败: %w", replaceErr)
 		}
-		return ObjectInfo{}, fmt.Errorf("保存附件失败: %w", err)
 	}
 	return ObjectInfo{Key: key, Size: size, MimeType: mimeType, SHA256: fmt.Sprintf("%x", hash.Sum(nil)), ModTime: time.Now()}, nil
+}
+
+func replaceFileContents(temporaryPath, path string) error {
+	source, err := os.Open(temporaryPath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	target, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(target, source)
+	closeErr := target.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func (storage *LocalStorage) Open(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error) {

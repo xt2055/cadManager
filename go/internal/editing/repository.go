@@ -39,13 +39,14 @@ func (repository *PGRepository) FindActiveByStorageKey(ctx context.Context, stor
 	var session Session
 	var userName string
 	var closedAt *time.Time
-	activeSince := now.Add(-5 * time.Minute)
+	// 占用与会话在线状态解耦：只要会话未关闭就一直占用，
+	// 用户关闭页面/退出软件后仍可重新认领自己的会话继续编辑。
 	err := repository.pool.QueryRow(ctx, `
 		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.user_id::text,
 		       COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at, s.closed_at
 		FROM edit_sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.storage_key = $1 AND s.status = 'active' AND s.last_seen_at >= $2
-		ORDER BY s.started_at DESC LIMIT 1`, storageKey, activeSince).Scan(
+		WHERE s.storage_key = $1 AND s.status = 'active'
+		ORDER BY s.started_at DESC LIMIT 1`, storageKey).Scan(
 		&session.ID, &session.AttachmentID, &session.StorageKey, &session.UserID, &userName,
 		&session.Status, &session.StartedAt, &session.LastSeenAt, &closedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -63,10 +64,11 @@ func (repository *PGRepository) ListActiveSessions(ctx context.Context, now time
 	if repository == nil || repository.pool == nil {
 		return nil, errors.New("数据库连接未配置")
 	}
-	activeSince := now.Add(-5 * time.Minute)
+	onlineSince := now.Add(-5 * time.Minute)
 	var rows pgx.Rows
 	var err error
 
+	// 列出所有未关闭的会话（含离线），Online 标记最近 5 分钟内有心跳的会话。
 	baseQuery := `
 		SELECT s.id::text, s.attachment_id::text, s.storage_key,
 		       COALESCE(a.current_name, a.original_name, ''),
@@ -75,21 +77,21 @@ func (repository *PGRepository) ListActiveSessions(ctx context.Context, now time
 		       s.user_id::text,
 		       COALESCE(u.display_name, u.account, ''),
 		       COALESCE(u.account, ''),
-		       s.status, s.started_at, s.last_seen_at
+		       s.status, s.started_at, s.last_seen_at, s.last_seen_at >= $1
 		FROM edit_sessions s
 		JOIN users u ON u.id = s.user_id
 		LEFT JOIN attachments a ON a.id = s.attachment_id
 		LEFT JOIN drawings d ON d.id = a.drawing_id
 		LEFT JOIN structure_parts p ON p.id = a.part_id
 		LEFT JOIN drawings parent ON parent.id = p.drawing_id
-		WHERE s.status = 'active' AND s.last_seen_at >= $1`
+		WHERE s.status = 'active'`
 
 	if strings.TrimSpace(drawingNo) != "" {
 		query := baseQuery + ` AND (d.drawing_no = $2 OR parent.drawing_no = $2) ORDER BY s.started_at DESC`
-		rows, err = repository.pool.Query(ctx, query, activeSince, strings.TrimSpace(drawingNo))
+		rows, err = repository.pool.Query(ctx, query, onlineSince, strings.TrimSpace(drawingNo))
 	} else {
 		query := baseQuery + ` ORDER BY s.started_at DESC`
-		rows, err = repository.pool.Query(ctx, query, activeSince)
+		rows, err = repository.pool.Query(ctx, query, onlineSince)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("查询活动编辑会话列表失败: %w", err)
@@ -103,7 +105,7 @@ func (repository *PGRepository) ListActiveSessions(ctx context.Context, now time
 			&item.ID, &item.AttachmentID, &item.StorageKey,
 			&item.FileName, &item.DrawingNo, &item.PartNo,
 			&item.UserID, &item.UserName, &item.UserAccount,
-			&item.Status, &item.StartedAt, &item.LastSeenAt,
+			&item.Status, &item.StartedAt, &item.LastSeenAt, &item.Online,
 		); err != nil {
 			return nil, fmt.Errorf("读取活动编辑会话行失败: %w", err)
 		}
@@ -115,14 +117,16 @@ func (repository *PGRepository) ListActiveSessions(ctx context.Context, now time
 	return list, nil
 }
 
+// ExpireStale 不再按心跳过期会话（占用与在线解耦，退出软件后会话保留、可重新认领）。
+// 仅自动关闭长期无人认领的遗留会话，避免垃圾数据堆积。
 func (repository *PGRepository) ExpireStale(ctx context.Context, now time.Time) error {
-	expiredBefore := now.Add(-5 * time.Minute)
+	abandonedBefore := now.Add(-7 * 24 * time.Hour)
 	_, err := repository.pool.Exec(ctx, `
 		UPDATE edit_sessions
-		SET status = 'expired', closed_at = $1
-		WHERE status = 'active' AND last_seen_at < $2`, now, expiredBefore)
+		SET status = 'closed', closed_at = $1, last_seen_at = $1
+		WHERE status = 'active' AND last_seen_at < $2`, now, abandonedBefore)
 	if err != nil {
-		return fmt.Errorf("清理过期编辑会话失败: %w", err)
+		return fmt.Errorf("清理遗留编辑会话失败: %w", err)
 	}
 	return nil
 }

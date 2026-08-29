@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/cadtext"
@@ -717,4 +718,85 @@ func filepathExt(value string) string {
 		return ""
 	}
 	return value[index:]
+}
+
+// ConvertDxfToDwg 接收在线编辑器产出的 DXF 内容，由后端通过 CAXA 调度转换为 DWG 后返回。
+// 在线编辑保存流程依赖此接口保持附件始终为 DWG 格式。
+func ConvertDxfToDwg(convService *converter.Service, maxBytes int64) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodPost {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if convService == nil {
+			response.WriteError(writer, http.StatusServiceUnavailable, "CAD 转换服务未启动")
+			return
+		}
+		if maxBytes > 0 {
+			request.Body = http.MaxBytesReader(writer, request.Body, maxBytes+1)
+		}
+		if err := request.ParseMultipartForm(32 << 20); err != nil {
+			response.WriteError(writer, http.StatusBadRequest, "DXF 上传请求格式无效")
+			return
+		}
+		file, header, err := request.FormFile("file")
+		if err != nil {
+			response.WriteError(writer, http.StatusBadRequest, "缺少 DXF 文件")
+			return
+		}
+		defer file.Close()
+		if !strings.EqualFold(filepath.Ext(header.Filename), ".dxf") {
+			response.WriteError(writer, http.StatusBadRequest, "在线编辑保存仅支持 DXF 内容")
+			return
+		}
+
+		content, readErr := io.ReadAll(file)
+		if readErr != nil {
+			var tooLargeError *http.MaxBytesError
+			if errors.As(readErr, &tooLargeError) {
+				response.WriteError(writer, http.StatusRequestEntityTooLarge, "DXF 文件超过大小限制")
+				return
+			}
+			response.WriteError(writer, http.StatusInternalServerError, "读取 DXF 文件失败")
+			return
+		}
+		normalized, normalizeErr := cadtext.NormalizeDxfForCaxa(content)
+		if normalizeErr != nil {
+			response.WriteError(writer, http.StatusUnprocessableEntity, normalizeErr.Error())
+			return
+		}
+
+		tempDir := os.TempDir()
+		nowNano := time.Now().UnixNano()
+		tempDxf := filepath.Join(tempDir, fmt.Sprintf("online_edit_%d.dxf", nowNano))
+		tempDwg := filepath.Join(tempDir, fmt.Sprintf("online_edit_%d.dwg", nowNano))
+		defer os.Remove(tempDxf)
+		defer os.Remove(tempDwg)
+		defer os.Remove(tempDwg + ".done")
+		if err := os.WriteFile(tempDxf, normalized, 0o644); err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "保存临时 DXF 失败")
+			return
+		}
+
+		if err := convService.ConvertPathToDwg(request.Context(), tempDxf, tempDwg); err != nil {
+			log.Printf("[在线编辑] DXF 转 DWG 失败: %v", err)
+			response.WriteError(writer, http.StatusUnprocessableEntity, "DXF 转换为 DWG 失败，请确认 CAXA 已正确安装")
+			return
+		}
+		dwgFile, err := os.Open(tempDwg)
+		if err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "读取转换结果失败")
+			return
+		}
+		defer dwgFile.Close()
+
+		writer.Header().Set("Content-Type", "application/acad")
+		writer.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(header.Filename)+".dwg")
+		writer.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		_, _ = io.Copy(writer, dwgFile)
+	}
 }

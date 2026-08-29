@@ -142,10 +142,11 @@ async function loadTargetFile() {
   }
 }
 
-async function removeEditorWipeoutMasks(doc: any = AcApDocManager.instance.curDocument) {
+async function removeEditorWipeoutMasks(doc?: any) {
   try {
     const manager = AcApDocManager.instance
-    const wipeoutMasks = findWipeoutMasks(doc.database)
+    const targetDoc = doc ?? manager.curDocument
+    const wipeoutMasks = findWipeoutMasks(targetDoc.database)
     // 编辑模式由 AcApContext 监听数据库实体。不能用 removeEntity，
     // 否则上下文会在后续批量渲染时再次把 WIPEOUT 加回场景。
     for (const entity of wipeoutMasks) {
@@ -276,6 +277,36 @@ async function exportAsExb() {
   }
 }
 
+async function convertDxfToDwgOnServer(dxfBlob: Blob, baseName: string): Promise<Blob> {
+  const formData = new FormData()
+  formData.append('file', dxfBlob, `${baseName}.dxf`)
+  const token = getAccessToken()
+  const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  const response = await fetch(`${baseUrl}/cad/convert-dwg`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/acad, */*',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    let message = `DXF 转换为 DWG 失败：HTTP ${response.status}`
+    try {
+      const errorBody: unknown = await response.json()
+      if (typeof errorBody === 'object' && errorBody !== null && 'message' in errorBody) {
+        const text = (errorBody as { message?: unknown }).message
+        if (typeof text === 'string' && text.trim()) message = text
+      }
+    } catch {
+      // 非 JSON 错误响应使用默认提示
+    }
+    throw new Error(message)
+  }
+  return response.blob()
+}
+
 async function saveAsNewVersion() {
   if (!targetFile.value || !currentDrawing.value || isSaving.value) return
 
@@ -289,10 +320,15 @@ async function saveAsNewVersion() {
   try {
     await AcApDocManager.instance.curView?.waitUntilIdle?.(60_000)
     const dxfContent = document.database.dxfOut(undefined, 6)
-    const blobPart: BlobPart = typeof dxfContent === 'string' ? dxfContent : new Uint8Array(dxfContent)
+    const dxfBlob = new Blob(
+      [typeof dxfContent === 'string' ? dxfContent : new Uint8Array(dxfContent)],
+      { type: 'application/dxf' },
+    )
     const baseName = targetFile.value.name.replace(/\.[^.]+$/, '') || 'drawing'
-    // 后端会将 DXF 统一转换为 CAXA 兼容的 ANSI_936/GB18030 编码。
-    const savedFile = new File([blobPart], `${baseName}.dxf`, { type: 'application/dxf' })
+    // 浏览器编辑器只能导出 DXF；由后端经 CAXA 统一转换为 DWG 后再保存版本，
+    // 保证图纸的当前文件与历史版本始终是可本地编辑/预览的 DWG。
+    const dwgBlob = await convertDxfToDwgOnServer(dxfBlob, baseName)
+    const savedFile = new File([dwgBlob], `${baseName}.dwg`, { type: 'application/acad' })
     const updatedFile = await domainStore.replaceDrawingFile(
       targetFile.value.partNo || targetFile.value.drawingNo || currentDrawing.value.no,
       targetFile.value.id,

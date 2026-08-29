@@ -16,6 +16,7 @@ type Version struct {
 	MimeType         string     `json:"mimeType"`
 	SHA256           string     `json:"sha256"`
 	CreatedBy        string     `json:"createdBy,omitempty"`
+	CreatedByName    string     `json:"createdByName,omitempty"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
 	IsPinned         bool       `json:"isPinned"`
@@ -41,8 +42,10 @@ type CreateInput struct {
 
 type Repository interface {
 	Create(ctx context.Context, input CreateInput, storageKey string) (Version, error)
+	GetByID(ctx context.Context, versionID string) (Version, error)
 	ListByAttachment(ctx context.Context, attachmentID string) ([]Version, error)
 	LatestByAttachment(ctx context.Context, attachmentID string) (Version, error)
+	PromoteInitial(ctx context.Context, versionID string) error
 	Retain(ctx context.Context, versionID, userID string) (Version, error)
 	Release(ctx context.Context, versionID, userID string) (Version, error)
 	ListExpired(ctx context.Context, now time.Time) ([]Version, error)

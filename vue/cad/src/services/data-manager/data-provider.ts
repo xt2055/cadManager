@@ -69,6 +69,21 @@ export interface ActiveEditSessionInfo {
   lastSeenAt: string
   isCurrent: boolean
   canClose: boolean
+  online?: boolean
+}
+
+export interface FileVersionInfo {
+  id: string
+  attachmentId: string
+  storageKey: string
+  version: string
+  versionKind: 'initial' | 'working' | 'release' | string
+  size: number
+  mimeType?: string
+  sha256?: string
+  createdByName?: string
+  createdAt: string
+  isCurrentRelease?: boolean
 }
 
 export interface EditSessionControlResult {
@@ -93,4 +108,7 @@ export interface DataProvider {
   openEditSession?(storageKey: string): Promise<EditSessionOpenResult>
   heartbeatEditSession?(sessionId: string): Promise<EditSessionControlResult>
   closeEditSession?(sessionId: string): Promise<EditSessionControlResult>
+  listFileVersions?(storageKey: string): Promise<FileVersionInfo[]>
+  downloadFileVersion?(versionId: string): Promise<Blob>
+  restoreFileVersion?(versionId: string): Promise<void>
 }

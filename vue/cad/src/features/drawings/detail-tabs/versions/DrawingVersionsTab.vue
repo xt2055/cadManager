@@ -1,13 +1,20 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { dataManager } from '@/services/data-manager'
+import type { FileVersionInfo } from '@/services/data-manager/data-provider'
+import type { DrawingFile } from '@/types/domain.types'
 import { useDomainStore } from '@/stores/domain.store'
+import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'DrawingVersionsTab' })
 
 const domainStore = useDomainStore()
+const authStore = useAuthStore()
 const uiStore = useUiStore()
+
+const isAdmin = computed(() => authStore.hasRole('admin'))
 
 const currentNo = computed(() => domainStore.currentDrawing?.no || '')
 const currentBranches = computed(() => {
@@ -15,19 +22,164 @@ const currentBranches = computed(() => {
   if (!no) return domainStore.branches
   return domainStore.branches.filter((item) => item.from === no || item.name.includes(no))
 })
+
+const cadFiles = computed<DrawingFile[]>(() => {
+  const target = domainStore.currentDrawing
+  if (!target) return []
+  return (target.files || []).filter((file) => /\.(exb|dwg|dxf)$/i.test(file.name))
+})
+
+const selectedStorageKey = ref('')
+const versions = ref<FileVersionInfo[]>([])
+const loading = ref(false)
+const busyVersionId = ref('')
+
+const selectedFile = computed(() => cadFiles.value.find((file) => (file.currentStorageKey || file.storageKey) === selectedStorageKey.value))
+
+watch(cadFiles, (files) => {
+  const keys = new Set(files.map((file) => file.currentStorageKey || file.storageKey || ''))
+  if (!keys.has(selectedStorageKey.value)) {
+    selectedStorageKey.value = files[0]?.currentStorageKey || files[0]?.storageKey || ''
+  }
+}, { immediate: true })
+
+watch(selectedStorageKey, () => { void loadVersions() }, { immediate: true })
+
+async function loadVersions() {
+  const key = selectedStorageKey.value
+  if (!key) {
+    versions.value = []
+    return
+  }
+  loading.value = true
+  try {
+    versions.value = await dataManager.listFileVersions(key)
+  } catch (error) {
+    console.warn('加载版本列表失败', error)
+    versions.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
+function formatSize(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`
+  if (size >= 1024) return `${(size / 1024).toFixed(0)} KB`
+  return `${size} B`
+}
+
+function formatTime(iso: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function kindLabel(kind: string): string {
+  if (kind === 'release') return '正式版本'
+  if (kind === 'working') return '工作版本'
+  if (kind === 'initial') return '初始版本'
+  return kind
+}
+
+async function downloadVersion(version: FileVersionInfo) {
+  if (busyVersionId.value) return
+  busyVersionId.value = version.id
+  try {
+    const blob = await dataManager.downloadFileVersion(version.id)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = version.storageKey.split('/').pop() || `${version.version}.dwg`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    uiStore.toast(`版本 ${version.version} 已下载`, 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '下载版本文件失败', 'warn')
+  } finally {
+    busyVersionId.value = ''
+  }
+}
+
+async function restoreVersion(version: FileVersionInfo) {
+  if (busyVersionId.value || !selectedFile.value) return
+  const confirmed = window.confirm(
+    `确定要将「${selectedFile.value.name}」回退到版本 ${version.version} 吗？\n\n` +
+    '系统将以该版本内容生成一个新的工作版本并设为当前内容；\n历史版本原样保留，可随时再次回退。',
+  )
+  if (!confirmed) return
+  busyVersionId.value = version.id
+  try {
+    await dataManager.restoreFileVersion(version.id)
+    uiStore.toast(`已回退到 ${version.version}，当前内容已更新`, 'ok')
+    await loadVersions()
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '回退版本失败', 'warn')
+  } finally {
+    busyVersionId.value = ''
+  }
+}
 </script>
 
 <template>
   <div class="ver-grid">
     <div class="card">
-      <div class="card-title"><DemoIcon name="history" :size="16" />版本时间线<span class="hint">所有版本永久保留 · 回退不删除任何版本</span></div>
-      <div v-if="domainStore.versions.length" class="timeline">
-        <div v-for="version in domainStore.versions" :key="version.v" class="tl-item" :class="{ cur: version.cur }">
-          <div class="tl-dot"></div><div class="tl-head"><span class="v">{{ version.v }}</span><span v-if="version.cur" class="tag ok">当前版本</span></div><div class="tl-body">{{ version.note }}</div><div class="tl-meta">创建/维护：{{ version.by }} · {{ version.date }}</div>
+      <div class="card-title">
+        <DemoIcon name="history" :size="16" />版本时间线
+        <span class="hint">所有版本永久保留 · 回退不删除任何版本</span>
+      </div>
+
+      <div v-if="cadFiles.length > 1" class="file-picker">
+        <label class="picker-label" for="version-file-select">选择文件</label>
+        <select id="version-file-select" v-model="selectedStorageKey" class="inp picker-select">
+          <option v-for="file in cadFiles" :key="file.id" :value="file.currentStorageKey || file.storageKey">
+            {{ file.name }}
+          </option>
+        </select>
+      </div>
+      <div v-else-if="cadFiles.length === 1 && cadFiles[0]" class="file-picker single">
+        <DemoIcon name="file" :size="14" />
+        <span class="picker-name">{{ cadFiles[0].name }}</span>
+      </div>
+
+      <div v-if="loading" class="empty"><div class="t">正在加载版本记录...</div></div>
+      <div v-else-if="!selectedStorageKey" class="empty"><DemoIcon name="history" :size="34" /><div class="t">当前图纸暂无 CAD 文件</div></div>
+      <div v-else-if="versions.length" class="timeline">
+        <div
+          v-for="version in versions"
+          :key="version.id"
+          class="tl-item"
+          :class="{ cur: version.isCurrentRelease || version.versionKind === 'release' }"
+        >
+          <div class="tl-dot"></div>
+          <div class="tl-head">
+            <span class="v">{{ version.version }}</span>
+            <span class="tag" :class="version.versionKind === 'release' ? 'ok' : 'mute'">{{ kindLabel(version.versionKind) }}</span>
+            <span v-if="version.versionKind === 'release'" class="tag ok">当前正式</span>
+            <span class="tl-size">{{ formatSize(version.size) }}</span>
+          </div>
+          <div class="tl-meta">
+            提交：{{ version.createdByName || '未知' }} · {{ formatTime(version.createdAt) }}
+          </div>
+          <div class="tl-actions">
+            <button class="btn sm" type="button" :disabled="busyVersionId === version.id" @click="downloadVersion(version)">
+              <DemoIcon name="download" :size="13" />下载
+            </button>
+            <button
+              v-if="isAdmin && version.versionKind !== 'release'"
+              class="btn sm primary"
+              type="button"
+              :disabled="busyVersionId === version.id"
+              title="以该版本内容生成新版本并设为当前内容，历史版本保留"
+              @click="restoreVersion(version)"
+            >
+              <DemoIcon name="undo-2" :size="13" />{{ busyVersionId === version.id ? '回退中...' : '回退到此版本' }}
+            </button>
+          </div>
         </div>
       </div>
-      <div v-else class="empty"><DemoIcon name="history" :size="34" /><div class="t">暂无版本记录</div></div>
-      </div>
+      <div v-else class="empty"><DemoIcon name="history" :size="34" /><div class="t">该文件暂无版本记录</div></div>
+    </div>
     <div>
       <div class="card branch-panel">
         <div class="card-title"><DemoIcon name="git-branch" :size="16" />分叉 / 分支<span class="hint">源图与衍生图独立维护 · 可追溯分叉人</span></div>
@@ -39,7 +191,7 @@ const currentBranches = computed(() => {
         </div>
         <div v-else class="empty"><DemoIcon name="git-branch" :size="34" /><div class="t">当前图纸暂无衍生分叉分支</div></div>
       </div>
-      <div class="note version-note"><DemoIcon name="shield-check" :size="14" /><div>分叉操作会自动完整复制图纸元标签、层级结构和关联附件文件，生成独立草稿图号。</div></div>
+      <div class="note version-note"><DemoIcon name="shield-check" :size="14" /><div>本地编辑保存与在线编辑保存都会自动生成工作版本；仅管理员可执行回退，普通用户可浏览与下载任意版本。</div></div>
     </div>
   </div>
 </template>
@@ -55,8 +207,14 @@ const currentBranches = computed(() => {
 html[data-skin='tech'] .tl-item.cur .tl-dot { box-shadow: 0 0 12px var(--glow); }
 .tl-head { display: flex; align-items: center; gap: 10px; }
 .tl-head .v { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; }
-.tl-body { margin-top: 5px; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.tl-size { margin-left: auto; color: var(--text-3); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 .tl-meta { margin-top: 4px; color: var(--text-3); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.tl-actions { display: flex; gap: 8px; margin-top: 8px; }
+.file-picker { display: flex; align-items: center; gap: 10px; margin: 10px 20px 0; }
+.file-picker.single { color: var(--text-2); font-size: 12.5px; }
+.picker-name { font-family: 'JetBrains Mono', monospace; }
+.picker-label { color: var(--text-2); font-size: 12.5px; flex: none; }
+.picker-select { flex: 1; }
 .branch-panel { margin-bottom: 14px; }
 .branch-list { padding: 6px 14px 14px; }
 .branch-card { margin-bottom: 11px; padding: 15px 17px; }

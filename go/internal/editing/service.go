@@ -111,10 +111,37 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	if err := service.repository.ExpireStale(ctx, now); err != nil {
 		return OpenResult{}, err
 	}
-	if _, err := service.repository.FindActiveByStorageKey(ctx, item.StorageKey, now); err != nil && !errors.Is(err, ErrSessionNotFound) {
-		return OpenResult{}, err
-	} else if err == nil {
-		return OpenResult{}, ErrFileBusy
+	existing, findErr := service.repository.FindActiveByStorageKey(ctx, item.StorageKey, now)
+	if findErr != nil && !errors.Is(findErr, ErrSessionNotFound) {
+		return OpenResult{}, findErr
+	}
+	if findErr == nil {
+		// 同一文件已有活动会话：本人则认领恢复（重新同步工作文件并签发打开票据），
+		// 其他人则提示占用。退出软件后重新打开即可继续编辑，无需重新占用。
+		if existing.UserID != user.ID {
+			return OpenResult{}, ErrFileBusy
+		}
+		if err := service.syncToWorkDirectory(ctx, actualStorageKey); err != nil {
+			return OpenResult{}, fmt.Errorf("准备 SMB 工作文件失败: %w", err)
+		}
+		openTicket, ticketErr := randomID()
+		if ticketErr != nil {
+			return OpenResult{}, fmt.Errorf("创建打开票据失败: %w", ticketErr)
+		}
+		expiresAt := now.Add(60 * time.Second)
+		if err := service.repository.CreateTicket(ctx, openTicket, existing.ID, user.ID, expiresAt); err != nil {
+			return OpenResult{}, err
+		}
+		if err := service.repository.Heartbeat(ctx, user.ID, existing.ID, now); err != nil {
+			return OpenResult{}, err
+		}
+		return OpenResult{
+			SessionID: existing.ID,
+			OpenURL:   "cadguanliq://open?ticket=" + openTicket,
+			UNCPath:   service.uncPath(actualStorageKey),
+			SMBRoot:   service.smbRoot(),
+			ExpiresAt: expiresAt,
+		}, nil
 	}
 	if err := service.syncToWorkDirectory(ctx, actualStorageKey); err != nil {
 		return OpenResult{}, fmt.Errorf("准备 SMB 工作文件失败: %w", err)
@@ -235,7 +262,9 @@ func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID
 		return errors.New("编辑会话数据库未配置")
 	}
 
-	// 结束编辑时主动从工作区提取最新改动并捕获版本
+	// 结束编辑时主动从工作区提取最新改动并捕获版本。
+	// CAD 编辑器保存是异步落盘的：若用户保存后立即结束会话，
+	// 工作文件可能仍在写入，必须等待文件稳定后再捕获，否则会回写旧内容或损坏内容。
 	if service.versions != nil {
 		activeList, err := service.repository.ListActiveSessions(ctx, time.Now().UTC(), "")
 		if err == nil {
@@ -247,10 +276,15 @@ func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID
 						actualKey = strings.TrimSuffix(actualKey, ext) + ".dwg"
 					}
 					if path, pathErr := service.localPath(actualKey); pathErr == nil {
-						if _, _, capErr := service.versions.CapturePath(ctx, s.StorageKey, path, user.ID); capErr != nil {
+						if waitErr := waitForFileStable(path, 15*time.Second); waitErr != nil {
+							log.Printf("[编辑关闭] 等待工作文件稳定失败 key=%s err=%v", s.StorageKey, waitErr)
+						}
+						if _, changed, capErr := service.captureWithRetry(ctx, s.StorageKey, path, user.ID); capErr != nil {
 							log.Printf("[编辑关闭] 捕获版本失败 key=%s err=%v", s.StorageKey, capErr)
-						} else {
+						} else if changed {
 							log.Printf("[编辑关闭] 已生成新版本并回写当前图纸 key=%s", s.StorageKey)
+						} else {
+							log.Printf("[编辑关闭] 工作文件无改动，未生成新版本 key=%s", s.StorageKey)
 						}
 					}
 					break
@@ -261,6 +295,56 @@ func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID
 
 	isAdminUser := isAdmin(user.Roles)
 	return service.repository.Close(ctx, user.ID, sessionID, isAdminUser, time.Now().UTC())
+}
+
+// captureWithRetry 捕获工作文件版本；文件可能被 CAD 进程短暂占用，失败后小间隔重试。
+func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return versioning.Version{}, false, ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+		version, created, err := service.versions.CapturePath(ctx, sourceKey, sourcePath, userID)
+		if err == nil {
+			return version, created, nil
+		}
+		lastErr = err
+		log.Printf("[编辑关闭] 捕获版本第 %d 次失败 key=%s: %v", attempt+1, sourceKey, err)
+	}
+	return versioning.Version{}, false, lastErr
+}
+
+// waitForFileStable 轮询文件大小与修改时间，连续两次采样一致视为写入完成。
+func waitForFileStable(path string, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(700 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastSize int64
+	var lastMod time.Time
+	first := true
+	for {
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("查看工作文件状态失败: %w", err)
+		}
+		if !first && info.Size() == lastSize && info.ModTime().Equal(lastMod) {
+			return nil
+		}
+		lastSize = info.Size()
+		lastMod = info.ModTime()
+		first = false
+		select {
+		case <-deadline.C:
+			return errors.New("等待工作文件写入稳定超时")
+		case <-ticker.C:
+		}
+	}
 }
 
 func (service *Service) StartCleanup(ctx context.Context) {

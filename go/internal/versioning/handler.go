@@ -2,7 +2,10 @@ package versioning
 
 import (
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 
 	"cadguanliq/internal/auth"
@@ -23,16 +26,39 @@ func Resource(service *Service) http.HandlerFunc {
 			return
 		}
 		versionID, operation := parts[0], parts[1]
-		if request.Method != http.MethodPost || (operation != "retain" && operation != "release") {
+
+		// 所有用户都可以下载版本文件
+		if operation == "content" {
+			if request.Method != http.MethodGet {
+				response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			reader, version, err := service.OpenVersionContent(request.Context(), versionID)
+			if err != nil {
+				writeVersionError(writer, err)
+				return
+			}
+			defer reader.Close()
+			fileName := filepath.Base(version.StorageKey)
+			writer.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(fileName))
+			writer.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = io.Copy(writer, reader)
+			return
+		}
+
+		if request.Method != http.MethodPost || (operation != "retain" && operation != "release" && operation != "restore") {
 			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		var item Version
 		var err error
-		if operation == "retain" {
+		switch operation {
+		case "retain":
 			item, err = service.Retain(request.Context(), user, versionID)
-		} else {
+		case "release":
 			item, err = service.Release(request.Context(), user, versionID)
+		default:
+			item, err = service.Restore(request.Context(), user, versionID)
 		}
 		if err != nil {
 			writeVersionError(writer, err)
@@ -49,11 +75,18 @@ func List(service *Service) http.HandlerFunc {
 			return
 		}
 		attachmentID := strings.TrimSpace(request.URL.Query().Get("attachmentId"))
-		if attachmentID == "" {
-			response.WriteError(writer, http.StatusBadRequest, "缺少附件 ID")
+		storageKey := strings.TrimSpace(request.URL.Query().Get("storageKey"))
+		if attachmentID == "" && storageKey == "" {
+			response.WriteError(writer, http.StatusBadRequest, "缺少附件 ID 或存储键")
 			return
 		}
-		items, err := service.List(request.Context(), strings.Trim(attachmentID, "/"))
+		var items []Version
+		var err error
+		if storageKey != "" {
+			items, err = service.ListByStorageKey(request.Context(), storageKey)
+		} else {
+			items, err = service.List(request.Context(), strings.Trim(attachmentID, "/"))
+		}
 		if err != nil {
 			writeVersionError(writer, err)
 			return

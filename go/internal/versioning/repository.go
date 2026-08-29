@@ -33,8 +33,24 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateInput, s
 	return repository.find(ctx, id)
 }
 
+func (repository *PGRepository) GetByID(ctx context.Context, versionID string) (Version, error) {
+	return repository.find(ctx, versionID)
+}
+
+// PromoteInitial 将登记的初始版本标记为当前正式版本（不过期、置顶）。
+func (repository *PGRepository) PromoteInitial(ctx context.Context, versionID string) error {
+	_, err := repository.pool.Exec(ctx, `
+		UPDATE file_versions
+		SET version_kind = 'release', is_pinned = true, expires_at = NULL, is_current_release = true
+		WHERE id = $1::uuid AND deleted_at IS NULL`, versionID)
+	if err != nil {
+		return fmt.Errorf("登记初始正式版本失败: %w", err)
+	}
+	return nil
+}
+
 func (repository *PGRepository) ListByAttachment(ctx context.Context, attachmentID string) ([]Version, error) {
-	rows, err := repository.pool.Query(ctx, versionSelect+` WHERE attachment_id = $1::uuid ORDER BY created_at DESC`, attachmentID)
+	rows, err := repository.pool.Query(ctx, versionSelect+` WHERE v.attachment_id = $1::uuid ORDER BY v.created_at DESC`, attachmentID)
 	if err != nil {
 		return nil, fmt.Errorf("查询文件版本失败: %w", err)
 	}
@@ -91,9 +107,9 @@ func (repository *PGRepository) Release(ctx context.Context, versionID, userID s
 
 func (repository *PGRepository) ListExpired(ctx context.Context, now time.Time) ([]Version, error) {
 	rows, err := repository.pool.Query(ctx, versionSelect+`
-		WHERE version_kind = 'working' AND is_pinned = false AND deleted_at IS NULL
-		  AND expires_at IS NOT NULL AND expires_at < $1
-		ORDER BY expires_at`, now)
+		WHERE v.version_kind = 'working' AND v.is_pinned = false AND v.deleted_at IS NULL
+		  AND v.expires_at IS NOT NULL AND v.expires_at < $1
+		ORDER BY v.expires_at`, now)
 	if err != nil {
 		return nil, fmt.Errorf("查询过期文件版本失败: %w", err)
 	}
@@ -121,10 +137,10 @@ func (repository *PGRepository) MarkDeleted(ctx context.Context, versionID strin
 }
 
 func (repository *PGRepository) find(ctx context.Context, versionID string, attachmentID ...string) (Version, error) {
-	query := versionSelect + ` WHERE id = $1::uuid`
+	query := versionSelect + ` WHERE v.id = $1::uuid`
 	args := []any{versionID}
 	if versionID == "" {
-		query = versionSelect + ` WHERE attachment_id = $1::uuid AND deleted_at IS NULL ORDER BY (version_kind = 'working') DESC, created_at DESC LIMIT 1`
+		query = versionSelect + ` WHERE v.attachment_id = $1::uuid AND v.deleted_at IS NULL ORDER BY (v.version_kind = 'working') DESC, v.created_at DESC LIMIT 1`
 		args = []any{attachmentID[0]}
 	}
 	row := repository.pool.QueryRow(ctx, query, args...)
@@ -153,11 +169,13 @@ func (repository *PGRepository) updateProtection(ctx context.Context, versionID,
 }
 
 const versionSelect = `
-	SELECT id::text, attachment_id::text, storage_key, source_storage_key, version, version_kind,
-	       size_bytes, mime_type, sha256, COALESCE(created_by::text, ''), created_at, expires_at,
-		       is_pinned, COALESCE(pinned_by::text, ''), pinned_at, COALESCE(released_by::text, ''),
-		       released_at, is_current_release, deleted_at
-	FROM file_versions`
+	SELECT v.id::text, v.attachment_id::text, v.storage_key, v.source_storage_key, v.version, v.version_kind,
+	       v.size_bytes, v.mime_type, v.sha256, COALESCE(v.created_by::text, ''),
+	       COALESCE(cu.display_name, cu.account, ''), v.created_at, v.expires_at,
+	       v.is_pinned, COALESCE(v.pinned_by::text, ''), v.pinned_at, COALESCE(v.released_by::text, ''),
+	       v.released_at, v.is_current_release, v.deleted_at
+	FROM file_versions v
+	LEFT JOIN users cu ON cu.id = v.created_by`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -166,7 +184,8 @@ type rowScanner interface {
 func scanVersion(row rowScanner) (Version, error) {
 	var item Version
 	err := row.Scan(&item.ID, &item.AttachmentID, &item.StorageKey, &item.SourceStorageKey, &item.Version,
-		&item.VersionKind, &item.Size, &item.MimeType, &item.SHA256, &item.CreatedBy, &item.CreatedAt,
-		&item.ExpiresAt, &item.IsPinned, &item.PinnedBy, &item.PinnedAt, &item.ReleasedBy, &item.ReleasedAt, &item.IsCurrentRelease, &item.DeletedAt)
+		&item.VersionKind, &item.Size, &item.MimeType, &item.SHA256, &item.CreatedBy, &item.CreatedByName,
+		&item.CreatedAt, &item.ExpiresAt, &item.IsPinned, &item.PinnedBy, &item.PinnedAt, &item.ReleasedBy,
+		&item.ReleasedAt, &item.IsCurrentRelease, &item.DeletedAt)
 	return item, err
 }

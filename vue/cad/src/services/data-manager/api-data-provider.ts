@@ -1,5 +1,5 @@
 import { normalizeDataDocument, type DataDocument } from './data.types'
-import type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, ReidentifyDrawingFileResult } from './data-provider'
+import type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import type { UserManagementInput } from './data-provider'
 
@@ -257,6 +257,27 @@ export class ApiDataProvider implements DataProvider {
   async closeEditSession(sessionId: string): Promise<EditSessionControlResult> {
     await this.request(`/edit-sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' })
     return { sessionId }
+  }
+
+  async listFileVersions(storageKey: string): Promise<FileVersionInfo[]> {
+    const body = await this.request<unknown>(`/file-versions?storageKey=${encodeURIComponent(storageKey)}`, { method: 'GET' })
+    const payload = isRecord(body) && 'data' in body ? body.data : body
+    if (!Array.isArray(payload)) return []
+    return payload as FileVersionInfo[]
+  }
+
+  async downloadFileVersion(versionId: string): Promise<Blob> {
+    const token = getAccessToken()
+    const response = await fetch(`${this.baseUrl}/file-versions/${encodeURIComponent(versionId)}/content`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'include',
+    })
+    if (!response.ok) throw new Error(`下载版本文件失败：HTTP ${response.status}`)
+    return await response.blob()
+  }
+
+  async restoreFileVersion(versionId: string): Promise<void> {
+    await this.request(`/file-versions/${encodeURIComponent(versionId)}/restore`, { method: 'POST' })
   }
 
   private readUserResponse(body: unknown): UserAccount {

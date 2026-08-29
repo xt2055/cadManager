@@ -34,6 +34,7 @@ type ActiveSessionInfo struct {
 	LastSeenAt   time.Time `json:"lastSeenAt"`
 	IsCurrent    bool      `json:"isCurrent"`
 	CanClose     bool      `json:"canClose"`
+	Online       bool      `json:"online"`
 }
 
 type OpenResult struct {
