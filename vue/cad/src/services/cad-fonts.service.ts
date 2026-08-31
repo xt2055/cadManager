@@ -23,7 +23,8 @@ async function probeEmbedded(): Promise<boolean> {
     if (!resp.ok) return false
     const text = await resp.text()
     const trimmed = text.trimStart()
-    return trimmed.startsWith('{') && trimmed.includes('"')
+    // fonts.json 实际为 JSON 数组（[{file, name: [...]}]），对象/数组均可接受
+    return (trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.includes('"')
   } catch {
     return false
   }
