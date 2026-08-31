@@ -23,8 +23,6 @@ const formProjectNo = ref('')
 const formDrawingNo = ref('')
 const formRemark = ref('')
 const formCategoryId = ref('')
-const newCategoryName = ref('')
-const creatingCategory = ref(false)
 const isIdentifyingAssembly = ref(false)
 const assemblyIdentifyMessage = ref('')
 let assemblyIdentifySequence = 0
@@ -43,27 +41,6 @@ function onForkSourceChange() {
   formDrawingNo.value = source.no
   formRemark.value = `分叉自 ${source.no} · 继承图纸、备料与工艺文件及零件结构`
   formCategoryId.value = source.categoryId ?? ''
-}
-
-async function handleQuickCreateCategory() {
-  const name = newCategoryName.value.trim()
-  if (!name) {
-    uiStore.toast('请输入分类名称', 'warn')
-    return
-  }
-  if (creatingCategory.value) return
-  creatingCategory.value = true
-  try {
-    // 快捷新建始终创建父分类；子分类在「分类管理」页维护
-    const category = await domainStore.addCategory(name)
-    formCategoryId.value = category.id
-    newCategoryName.value = ''
-    uiStore.toast(`分类「${category.name}」已创建`, 'ok')
-  } catch (error) {
-    uiStore.toast(error instanceof Error ? error.message : '创建分类失败', 'warn')
-  } finally {
-    creatingCategory.value = false
-  }
 }
 
 interface UploadedAssembly {
@@ -913,16 +890,6 @@ async function performCreate() {
 .form-item.required label::after {
   content: ' *';
   color: var(--danger);
-}
-
-.category-quick-create {
-  display: flex;
-  gap: 8px;
-}
-
-.category-quick-create .inp {
-  flex: 1;
-  min-width: 0;
 }
 
 .form-item:last-child {

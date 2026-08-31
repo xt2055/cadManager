@@ -1,11 +1,12 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import CategoryTreeNodes from '@/components/common/CategoryTreeNodes.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import type { CategoryTreeNode, DrawingStatus } from '@/types/domain.types'
+import type { DrawingStatus } from '@/types/domain.types'
 
 defineOptions({
   name: 'DrawingLibraryPage',
@@ -64,10 +65,11 @@ const activeCategoryBreadcrumbs = computed(() => {
   if (selectedCategoryId.value === '__none__') {
     return [{ id: '__none__', name: '未分类图纸' }]
   }
-  const path = domainStore.getCategoryPath(selectedCategoryId.value)
   let curr = domainStore.categories.find((c) => c.id === selectedCategoryId.value)
   const items: Array<{ id: string; name: string }> = []
-  while (curr) {
+  const visited = new Set<string>()
+  while (curr && !visited.has(curr.id)) {
+    visited.add(curr.id)
     items.unshift({ id: curr.id, name: curr.name })
     curr = curr.parentId ? domainStore.categories.find((c) => c.id === curr!.parentId) : undefined
   }
@@ -78,25 +80,19 @@ const unclassifiedCount = computed(() => {
   return domainStore.drawings.filter((d) => !d.categoryId).length
 })
 
-function isCategoryExpanded(id: string): boolean {
-  if (categoryTreeSearch.value.trim()) return true
-  return expandedCategoryKeys.value.has(id)
-}
-
-function toggleCategoryExpand(id: string, e?: Event) {
-  e?.stopPropagation()
-  const next = new Set(expandedCategoryKeys.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  expandedCategoryKeys.value = next
-}
-
 function selectCategory(id: string) {
   selectedCategoryId.value = id
 }
 
 function clearCategoryFilter() {
   selectedCategoryId.value = ''
+}
+
+function toggleCategoryExpand(id: string) {
+  const next = new Set(expandedCategoryKeys.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedCategoryKeys.value = next
 }
 
 function partsForDrawing(drawingNo: string) {
@@ -211,48 +207,16 @@ function goCategoryAdmin() {
               <button class="btn sm" type="button" @click="goCategoryAdmin">去创建</button>
             </div>
 
-            <template v-for="node in domainStore.categoryTree" :key="node.category.id">
-              <div class="tree-nav-node">
-                <div
-                  class="nav-node-row"
-                  :class="{ active: selectedCategoryId === node.category.id }"
-                  @click="selectCategory(node.category.id)"
-                >
-                  <button
-                    v-if="node.children?.length"
-                    class="node-toggle-btn"
-                    type="button"
-                    @click="toggleCategoryExpand(node.category.id, $event)"
-                  >
-                    <DemoIcon name="chevron-right" :size="12" :class="{ rotate: isCategoryExpanded(node.category.id) }" />
-                  </button>
-                  <span v-else class="node-toggle-placeholder"></span>
-
-                  <DemoIcon
-                    :name="node.children?.length ? (isCategoryExpanded(node.category.id) ? 'folder-open' : 'folder') : 'folder'"
-                    :size="15"
-                    class="folder-ico"
-                  />
-                  <span class="node-text" :title="node.category.name">{{ node.category.name }}</span>
-                  <span class="node-num" :title="`直属 ${node.directCount} / 累计 ${node.totalCount}`">
-                    {{ node.totalCount }}
-                  </span>
-                </div>
-
-                <!-- 递归展开子孙 -->
-                <div v-if="node.children?.length && isCategoryExpanded(node.category.id)" class="nav-sub-tree">
-                  <component
-                    :is="'LibCategorySubTree'"
-                    :nodes="node.children"
-                    :selected-id="selectedCategoryId"
-                    :expanded-keys="expandedCategoryKeys"
-                    :search-query="categoryTreeSearch"
-                    @select="selectCategory"
-                    @toggle-expand="toggleCategoryExpand"
-                  />
-                </div>
-              </div>
-            </template>
+            <!-- 递归树节点 -->
+            <CategoryTreeNodes
+              :nodes="domainStore.categoryTree"
+              :selected-id="selectedCategoryId"
+              :expanded-keys="expandedCategoryKeys"
+              :search-query="categoryTreeSearch"
+              variant="nav"
+              @select="selectCategory"
+              @toggle-expand="toggleCategoryExpand"
+            />
           </div>
 
           <!-- 底部快捷配置入口 -->
@@ -467,81 +431,6 @@ function goCategoryAdmin() {
   </div>
 </template>
 
-<script lang="ts">
-import { defineComponent, type PropType } from 'vue'
-
-const LibCategorySubTree = defineComponent({
-  name: 'LibCategorySubTree',
-  components: { DemoIcon },
-  props: {
-    nodes: {
-      type: Array as PropType<CategoryTreeNode[]>,
-      required: true,
-    },
-    selectedId: {
-      type: String,
-      default: '',
-    },
-    expandedKeys: {
-      type: Object as PropType<Set<string>>,
-      required: true,
-    },
-    searchQuery: {
-      type: String,
-      default: '',
-    },
-  },
-  emits: ['select', 'toggle-expand'],
-  template: `
-    <div class="sub-nav-nodes">
-      <div v-for="node in nodes" :key="node.category.id" class="tree-nav-node">
-        <div
-          class="nav-node-row"
-          :class="{ active: selectedId === node.category.id }"
-          :style="{ paddingLeft: (node.level * 14 + 6) + 'px' }"
-          @click="$emit('select', node.category.id)"
-        >
-          <button
-            v-if="node.children?.length"
-            class="node-toggle-btn"
-            type="button"
-            @click="$emit('toggle-expand', node.category.id, $event)"
-          >
-            <DemoIcon name="chevron-right" :size="12" :class="{ rotate: searchQuery.trim() || expandedKeys.has(node.category.id) }" />
-          </button>
-          <span v-else class="node-toggle-placeholder"></span>
-
-          <DemoIcon
-            :name="node.children?.length ? ((searchQuery.trim() || expandedKeys.has(node.category.id)) ? 'folder-open' : 'folder') : 'tag'"
-            :size="14"
-            class="folder-ico"
-          />
-          <span class="node-text" :title="node.category.name">{{ node.category.name }}</span>
-          <span class="node-num">{{ node.totalCount }}</span>
-        </div>
-
-        <div v-if="node.children?.length && (searchQuery.trim() || expandedKeys.has(node.category.id))" class="nav-sub-tree">
-          <LibCategorySubTree
-            :nodes="node.children"
-            :selected-id="selectedId"
-            :expanded-keys="expandedKeys"
-            :search-query="searchQuery"
-            @select="(id) => $emit('select', id)"
-            @toggle-expand="(id, e) => $emit('toggle-expand', id, e)"
-          />
-        </div>
-      </div>
-    </div>
-  `,
-})
-
-export default {
-  components: {
-    LibCategorySubTree,
-  },
-}
-</script>
-
 <style scoped>
 .library-page-pro {
   display: flex;
@@ -695,66 +584,14 @@ export default {
   padding-right: 6px;
 }
 
-.nav-node-row {
+.empty-cat-tip {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  color: var(--text-2);
+  gap: 8px;
+  padding: 20px 0;
+  color: var(--text-3);
   font-size: 12.5px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.nav-node-row:hover {
-  background: var(--hover);
-  color: var(--text-1);
-}
-
-.nav-node-row.active {
-  background: var(--active);
-  color: var(--accent);
-  font-weight: 500;
-}
-
-.node-toggle-btn {
-  border: none;
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  padding: 1px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-}
-
-.node-toggle-btn .rotate {
-  transform: rotate(90deg);
-}
-
-.node-toggle-placeholder {
-  width: 14px;
-}
-
-.folder-ico {
-  color: var(--accent);
-  flex-shrink: 0;
-}
-
-.node-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.node-num {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  color: var(--text-3);
 }
 
 .cat-sidebar-footer {

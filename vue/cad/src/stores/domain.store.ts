@@ -544,8 +544,10 @@ export const useDomainStore = defineStore('domain', () => {
   function getCategoryPath(id?: string): string[] {
     if (!id) return []
     const path: string[] = []
+    const visited = new Set<string>()
     let curr: DrawingCategory | undefined = categories.value.find((c) => c.id === id)
-    while (curr) {
+    while (curr && !visited.has(curr.id)) {
+      visited.add(curr.id)
       path.unshift(curr.name)
       curr = curr.parentId ? categories.value.find((c) => c.id === curr!.parentId) : undefined
     }
@@ -558,11 +560,14 @@ export const useDomainStore = defineStore('domain', () => {
 
   function getDescendantCategoryIds(id: string): string[] {
     const results: string[] = [id]
+    const visited = new Set<string>([id])
     const queue = [id]
     while (queue.length) {
       const current = queue.shift()!
       const directChildren = categories.value.filter((c) => c.parentId === current)
       for (const child of directChildren) {
+        if (visited.has(child.id)) continue
+        visited.add(child.id)
         results.push(child.id)
         queue.push(child.id)
       }

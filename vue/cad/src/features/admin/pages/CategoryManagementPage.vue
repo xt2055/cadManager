@@ -2,10 +2,11 @@
 import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import CategoryTreeNodes from '@/components/common/CategoryTreeNodes.vue'
 import CategoryTreeSelect from '@/components/common/CategoryTreeSelect.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import type { CategoryTreeNode, Drawing } from '@/types/domain.types'
+import type { Drawing } from '@/types/domain.types'
 
 defineOptions({ name: 'CategoryManagementPage' })
 
@@ -59,21 +60,6 @@ const currentCategoryDrawings = computed(() => {
       domainStore.getCategoryFullPath(d.categoryId).toLowerCase().includes(q)
     )
   })
-})
-
-const selectedNode = computed<CategoryTreeNode | null>(() => {
-  if (!selectedNodeId.value || selectedNodeId.value === '__none__') return null
-  function find(nodes: CategoryTreeNode[]): CategoryTreeNode | null {
-    for (const n of nodes) {
-      if (n.category.id === selectedNodeId.value) return n
-      if (n.children?.length) {
-        const found = find(n.children)
-        if (found) return found
-      }
-    }
-    return null
-  }
-  return find(tree.value)
 })
 
 const isAllSelected = computed(() => {
@@ -320,81 +306,19 @@ onMounted(() => {
             </button>
           </div>
 
-          <template v-for="node in tree" :key="node.category.id">
-            <div class="tree-item-block">
-              <div
-                class="tree-node-row"
-                :class="{ active: selectedNodeId === node.category.id }"
-                @click="selectNode(node.category.id)"
-              >
-                <button
-                  v-if="node.children?.length"
-                  class="expand-toggle-btn"
-                  type="button"
-                  @click="toggleTreeExpand(node.category.id, $event)"
-                >
-                  <DemoIcon name="chevron-right" :size="12" :class="{ rotate: isTreeExpanded(node.category.id) }" />
-                </button>
-                <span v-else class="expand-placeholder"></span>
-
-                <DemoIcon
-                  :name="node.children?.length ? (isTreeExpanded(node.category.id) ? 'folder-open' : 'folder') : 'folder'"
-                  :size="15"
-                  class="node-folder-ico"
-                />
-
-                <span class="node-title-text" :title="node.category.name">{{ node.category.name }}</span>
-
-                <span class="node-count-badge" :title="`直属 ${node.directCount} / 包含子级共 ${node.totalCount}`">
-                  {{ node.totalCount }}
-                </span>
-
-                <!-- 悬浮动作按钮组 -->
-                <div class="node-hover-actions" @click.stop>
-                  <button
-                    class="node-act-btn"
-                    type="button"
-                    title="在此分类下增加子分类"
-                    @click="openCreateModal(node.category.id)"
-                  >
-                    <DemoIcon name="plus" :size="12" />
-                  </button>
-                  <button
-                    class="node-act-btn"
-                    type="button"
-                    title="重命名分类"
-                    @click="openEditModal(node.category.id, node.category.name, node.category.parentId)"
-                  >
-                    <DemoIcon name="pencil" :size="12" />
-                  </button>
-                  <button
-                    class="node-act-btn danger"
-                    type="button"
-                    title="删除分类"
-                    @click="handleDeleteCategory(node.category.id, node.category.name)"
-                  >
-                    <DemoIcon name="trash-2" :size="12" />
-                  </button>
-                </div>
-              </div>
-
-              <!-- 递归渲染子分类 -->
-              <div v-if="node.children?.length && isTreeExpanded(node.category.id)" class="tree-sub-branch">
-                <component
-                  :is="'AdminCategorySubTree'"
-                  :nodes="node.children"
-                  :selected-id="selectedNodeId"
-                  :expanded-keys="expandedTreeKeys"
-                  :search-query="treeSearch"
-                  @select="selectNode"
-                  @toggle-expand="toggleTreeExpand"
-                  @create-child="openCreateModal"
-                  @edit="openEditModal"
-                  @delete="handleDeleteCategory"
-                />
-              </div>
-            </div>
-          </template>
+          <!-- 递归树节点 -->
+          <CategoryTreeNodes
+            :nodes="tree"
+            :selected-id="selectedNodeId"
+            :expanded-keys="expandedTreeKeys"
+            :search-query="treeSearch"
+            variant="admin"
+            @select="selectNode"
+            @toggle-expand="toggleTreeExpand"
+            @create-child="openCreateModal"
+            @edit="openEditModal"
+            @remove="handleDeleteCategory"
+          />
         </div>
       </section>
 
@@ -566,113 +490,6 @@ onMounted(() => {
     </div>
   </div>
 </template>
-
-<script lang="ts">
-import { defineComponent, type PropType } from 'vue'
-
-const AdminCategorySubTree = defineComponent({
-  name: 'AdminCategorySubTree',
-  components: { DemoIcon },
-  props: {
-    nodes: {
-      type: Array as PropType<CategoryTreeNode[]>,
-      required: true,
-    },
-    selectedId: {
-      type: String,
-      default: '',
-    },
-    expandedKeys: {
-      type: Object as PropType<Set<string>>,
-      required: true,
-    },
-    searchQuery: {
-      type: String,
-      default: '',
-    },
-  },
-  emits: ['select', 'toggle-expand', 'create-child', 'edit', 'delete'],
-  template: `
-    <div class="tree-sub-nodes">
-      <div v-for="node in nodes" :key="node.category.id" class="tree-item-block">
-        <div
-          class="tree-node-row"
-          :class="{ active: selectedId === node.category.id }"
-          :style="{ paddingLeft: (node.level * 16 + 6) + 'px' }"
-          @click="$emit('select', node.category.id)"
-        >
-          <button
-            v-if="node.children?.length"
-            class="expand-toggle-btn"
-            type="button"
-            @click="$emit('toggle-expand', node.category.id, $event)"
-          >
-            <DemoIcon name="chevron-right" :size="12" :class="{ rotate: searchQuery.trim() || expandedKeys.has(node.category.id) }" />
-          </button>
-          <span v-else class="expand-placeholder"></span>
-
-          <DemoIcon
-            :name="node.children?.length ? ((searchQuery.trim() || expandedKeys.has(node.category.id)) ? 'folder-open' : 'folder') : 'folder'"
-            :size="15"
-            class="node-folder-ico"
-          />
-
-          <span class="node-title-text" :title="node.category.name">{{ node.category.name }}</span>
-
-          <span class="node-count-badge">{{ node.totalCount }}</span>
-
-          <div class="node-hover-actions" @click.stop>
-            <button
-              class="node-act-btn"
-              type="button"
-              title="在此分类下增加子分类"
-              @click="$emit('create-child', node.category.id)"
-            >
-              <DemoIcon name="plus" :size="12" />
-            </button>
-            <button
-              class="node-act-btn"
-              type="button"
-              title="重命名分类"
-              @click="$emit('edit', node.category.id, node.category.name, node.category.parentId)"
-            >
-              <DemoIcon name="pencil" :size="12" />
-            </button>
-            <button
-              class="node-act-btn danger"
-              type="button"
-              title="删除分类"
-              @click="$emit('delete', node.category.id, node.category.name)"
-            >
-              <DemoIcon name="trash-2" :size="12" />
-            </button>
-          </div>
-        </div>
-
-        <div v-if="node.children?.length && (searchQuery.trim() || expandedKeys.has(node.category.id))" class="tree-sub-branch">
-          <AdminCategorySubTree
-            :nodes="node.children"
-            :selected-id="selectedId"
-            :expanded-keys="expandedKeys"
-            :search-query="searchQuery"
-            @select="(id) => $emit('select', id)"
-            @toggle-expand="(id, e) => $emit('toggle-expand', id, e)"
-            @create-child="(pid) => $emit('create-child', pid)"
-            @edit="(id, n, pid) => $emit('edit', id, n, pid)"
-            @delete="(id, n) => $emit('delete', id, n)"
-          />
-        </div>
-      </div>
-    </div>
-  `,
-})
-
-export default {
-  components: {
-    AdminCategorySubTree,
-  },
-}
-</script>
 
 <style scoped>
 .category-admin-workbench {

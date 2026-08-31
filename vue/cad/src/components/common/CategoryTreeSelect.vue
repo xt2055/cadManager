@@ -2,9 +2,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import CategoryTreeNodes from '@/components/common/CategoryTreeNodes.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import type { CategoryTreeNode } from '@/types/domain.types'
 
 defineOptions({ name: 'CategoryTreeSelect' })
 
@@ -27,7 +27,6 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
-  (e: 'change', value: string, node?: CategoryTreeNode): void
 }>()
 
 const domainStore = useDomainStore()
@@ -66,27 +65,22 @@ const selectedCategoryName = computed(() => {
 interface FlatCategoryItem {
   id: string
   name: string
-  parentId?: string
   fullPath: string
-  path: string[]
-  level: number
 }
 
 const flatCategories = computed<FlatCategoryItem[]>(() => {
   const result: FlatCategoryItem[] = []
-  function traverse(nodes: CategoryTreeNode[]) {
+  const visited = new Set<string>()
+  function traverse(nodes: typeof tree.value) {
     for (const node of nodes) {
+      if (visited.has(node.category.id)) continue
+      visited.add(node.category.id)
       result.push({
         id: node.category.id,
         name: node.category.name,
-        parentId: node.category.parentId,
         fullPath: node.fullPath,
-        path: node.path,
-        level: node.level,
       })
-      if (node.children?.length) {
-        traverse(node.children)
-      }
+      if (node.children?.length) traverse(node.children)
     }
   }
   traverse(tree.value)
@@ -96,9 +90,9 @@ const flatCategories = computed<FlatCategoryItem[]>(() => {
 const searchResults = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   if (!q) return []
-  return flatCategories.value.filter((item) => {
-    return item.name.toLowerCase().includes(q) || item.fullPath.toLowerCase().includes(q)
-  })
+  return flatCategories.value.filter(
+    (item) => item.name.toLowerCase().includes(q) || item.fullPath.toLowerCase().includes(q),
+  )
 })
 
 function toggleDropdown() {
@@ -107,31 +101,22 @@ function toggleDropdown() {
   if (isOpen.value) {
     searchQuery.value = ''
     quickCreateMode.value = false
-    // 默认展开所有祖先
-    if (props.modelValue) {
-      expandToNode(props.modelValue)
-    }
-    nextTick(() => {
-      searchInputRef.value?.focus()
-    })
+    if (props.modelValue) expandToNode(props.modelValue)
+    nextTick(() => searchInputRef.value?.focus())
   }
 }
 
 function expandToNode(targetId: string) {
+  const visited = new Set<string>()
   let curr = domainStore.categories.find((c) => c.id === targetId)
-  while (curr?.parentId) {
+  while (curr?.parentId && !visited.has(curr.id)) {
+    visited.add(curr.id)
     expandedKeys.value.add(curr.parentId)
     curr = domainStore.categories.find((c) => c.id === curr!.parentId)
   }
 }
 
-function isExpanded(id: string): boolean {
-  if (searchQuery.value.trim()) return true
-  return expandedKeys.value.has(id)
-}
-
-function toggleExpand(id: string, e?: Event) {
-  e?.stopPropagation()
+function toggleExpand(id: string) {
   const next = new Set(expandedKeys.value)
   if (next.has(id)) next.delete(id)
   else next.add(id)
@@ -140,14 +125,12 @@ function toggleExpand(id: string, e?: Event) {
 
 function selectNode(id: string) {
   emit('update:modelValue', id)
-  emit('change', id)
   isOpen.value = false
 }
 
-function clearSelection(e: Event) {
-  e.stopPropagation()
+function clearSelection(e?: Event) {
+  e?.stopPropagation()
   emit('update:modelValue', '')
-  emit('change', '')
 }
 
 function startQuickCreate(parentId?: string, e?: Event) {
@@ -169,7 +152,7 @@ async function submitQuickCreate() {
     const created = await domainStore.addCategory(name, quickCreateParentId.value)
     uiStore.toast(`分类「${created.name}」已创建`, 'ok')
     if (quickCreateParentId.value) {
-      expandedKeys.value.add(quickCreateParentId.value)
+      expandedKeys.value = new Set([...expandedKeys.value, quickCreateParentId.value])
     }
     selectNode(created.id)
     quickCreateMode.value = false
@@ -199,13 +182,8 @@ watch(
   { immediate: true },
 )
 
-onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-})
+onMounted(() => document.addEventListener('click', handleClickOutside))
+onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 </script>
 
 <template>
@@ -214,7 +192,7 @@ onUnmounted(() => {
     <div class="tree-select-trigger" @click="toggleDropdown">
       <div v-if="modelValue" class="selected-view">
         <span class="category-badge">
-          <DemoIcon name="folder" :size="13" class="badge-icon" />
+          <DemoIcon name="folder" :size="13" />
           <span class="badge-name">{{ selectedCategoryName }}</span>
         </span>
         <span v-if="selectedPath.length > 1" class="path-hint" :title="selectedFullPath">
@@ -257,11 +235,9 @@ onUnmounted(() => {
 
         <!-- 快捷新建区域 -->
         <div v-if="allowQuickCreate" class="quick-create-bar" @click.stop>
-          <template v-if="!quickCreateMode">
-            <button class="btn-text-action" type="button" @click="startQuickCreate(undefined)">
-              <DemoIcon name="plus" :size="13" />新建根分类
-            </button>
-          </template>
+          <button v-if="!quickCreateMode" class="btn-text-action" type="button" @click="startQuickCreate(undefined)">
+            <DemoIcon name="plus" :size="13" />新建根分类
+          </button>
           <div v-else class="quick-create-form">
             <div class="create-parent-tip">
               {{ quickCreateParentId ? `新建「${domainStore.categoryName(quickCreateParentId)}」的子分类:` : '新建根分类:' }}
@@ -291,7 +267,7 @@ onUnmounted(() => {
               :class="{ active: item.id === modelValue }"
               @click="selectNode(item.id)"
             >
-              <DemoIcon name="folder" :size="14" class="item-icon" />
+              <DemoIcon name="folder" :size="14" />
               <div class="result-texts">
                 <span class="result-name">{{ item.name }}</span>
                 <span class="result-path">{{ item.fullPath }}</span>
@@ -303,12 +279,8 @@ onUnmounted(() => {
           <!-- 树形层级模式 -->
           <div v-else class="tree-nodes">
             <!-- 根级别未分类选项 -->
-            <div
-              class="tree-node-row special-none"
-              :class="{ active: !modelValue }"
-              @click="clearSelection($event); isOpen = false"
-            >
-              <span class="node-indent" style="width: 8px;"></span>
+            <div class="tree-node-row special-none" :class="{ active: !modelValue }" @click="clearSelection(); isOpen = false">
+              <span class="node-indent"></span>
               <DemoIcon name="circle-slash" :size="14" class="node-icon muted" />
               <span class="node-label muted">未分类</span>
               <DemoIcon v-if="!modelValue" name="check" :size="14" class="check-icon" />
@@ -317,167 +289,23 @@ onUnmounted(() => {
             <div v-if="!tree.length" class="empty-tip">暂无分类，请在上方新建</div>
 
             <!-- 递归渲染树节点 -->
-            <template v-for="node in tree" :key="node.category.id">
-              <div class="tree-node-item">
-                <div
-                  class="tree-node-row"
-                  :class="{ active: node.category.id === modelValue }"
-                  @click="selectNode(node.category.id)"
-                >
-                  <!-- 缩进垫片 -->
-                  <span class="node-indent" :style="{ width: `${node.level * 18 + 8}px` }"></span>
-
-                  <!-- 折叠箭头 -->
-                  <button
-                    v-if="node.children?.length"
-                    class="node-expand-btn"
-                    type="button"
-                    @click="toggleExpand(node.category.id, $event)"
-                  >
-                    <DemoIcon name="chevron-right" :size="12" :class="{ rotate: isExpanded(node.category.id) }" />
-                  </button>
-                  <span v-else class="node-expand-placeholder"></span>
-
-                  <!-- 图标与名称 -->
-                  <DemoIcon
-                    :name="node.children?.length ? (isExpanded(node.category.id) ? 'folder-open' : 'folder') : 'tag'"
-                    :size="14"
-                    class="node-icon"
-                  />
-                  <span class="node-label">{{ node.category.name }}</span>
-
-                  <span class="node-count" :title="`直属 ${node.directCount} / 累计 ${node.totalCount}`">
-                    {{ node.totalCount }}
-                  </span>
-
-                  <!-- 行内快速加子分类 -->
-                  <button
-                    v-if="allowQuickCreate"
-                    class="inline-add-btn"
-                    type="button"
-                    title="在此分类下新建子分类"
-                    @click="startQuickCreate(node.category.id, $event)"
-                  >
-                    <DemoIcon name="plus" :size="12" />
-                  </button>
-
-                  <DemoIcon v-if="node.category.id === modelValue" name="check" :size="14" class="check-icon" />
-                </div>
-
-                <!-- 子节点递归展开 -->
-                <div v-if="node.children?.length && isExpanded(node.category.id)" class="tree-node-children">
-                  <component
-                    :is="'CategoryTreeSelectSubNodes'"
-                    :nodes="node.children"
-                    :model-value="modelValue"
-                    :expanded-keys="expandedKeys"
-                    :allow-quick-create="allowQuickCreate"
-                    @select="selectNode"
-                    @toggle-expand="toggleExpand"
-                    @quick-create="startQuickCreate"
-                  />
-                </div>
-              </div>
-            </template>
+            <CategoryTreeNodes
+              :nodes="tree"
+              :selected-id="modelValue"
+              :expanded-keys="expandedKeys"
+              :search-query="searchQuery"
+              variant="select"
+              :allow-quick-create="allowQuickCreate"
+              @select="selectNode"
+              @toggle-expand="toggleExpand"
+              @quick-create="(parentId: string, e?: Event) => startQuickCreate(parentId, e)"
+            />
           </div>
         </div>
       </div>
     </transition>
   </div>
 </template>
-
-<script lang="ts">
-// 递归子组件定义
-import { defineComponent, type PropType } from 'vue'
-
-const CategoryTreeSelectSubNodes = defineComponent({
-  name: 'CategoryTreeSelectSubNodes',
-  components: { DemoIcon },
-  props: {
-    nodes: {
-      type: Array as PropType<CategoryTreeNode[]>,
-      required: true,
-    },
-    modelValue: {
-      type: String,
-      default: '',
-    },
-    expandedKeys: {
-      type: Object as PropType<Set<string>>,
-      required: true,
-    },
-    allowQuickCreate: {
-      type: Boolean,
-      default: true,
-    },
-  },
-  emits: ['select', 'toggle-expand', 'quick-create'],
-  template: `
-    <div class="sub-nodes">
-      <div v-for="node in nodes" :key="node.category.id" class="tree-node-item">
-        <div
-          class="tree-node-row"
-          :class="{ active: node.category.id === modelValue }"
-          @click="$emit('select', node.category.id)"
-        >
-          <span class="node-indent" :style="{ width: (node.level * 18 + 8) + 'px' }"></span>
-
-          <button
-            v-if="node.children?.length"
-            class="node-expand-btn"
-            type="button"
-            @click="$emit('toggle-expand', node.category.id, $event)"
-          >
-            <DemoIcon name="chevron-right" :size="12" :class="{ rotate: expandedKeys.has(node.category.id) }" />
-          </button>
-          <span v-else class="node-expand-placeholder"></span>
-
-          <DemoIcon
-            :name="node.children?.length ? (expandedKeys.has(node.category.id) ? 'folder-open' : 'folder') : 'tag'"
-            :size="14"
-            class="node-icon"
-          />
-          <span class="node-label">{{ node.category.name }}</span>
-
-          <span class="node-count" :title="'直属 ' + node.directCount + ' / 累计 ' + node.totalCount">
-            {{ node.totalCount }}
-          </span>
-
-          <button
-            v-if="allowQuickCreate"
-            class="inline-add-btn"
-            type="button"
-            title="在此分类下新建子分类"
-            @click="$emit('quick-create', node.category.id, $event)"
-          >
-            <DemoIcon name="plus" :size="12" />
-          </button>
-
-          <DemoIcon v-if="node.category.id === modelValue" name="check" :size="14" class="check-icon" />
-        </div>
-
-        <div v-if="node.children?.length && expandedKeys.has(node.category.id)" class="tree-node-children">
-          <CategoryTreeSelectSubNodes
-            :nodes="node.children"
-            :model-value="modelValue"
-            :expanded-keys="expandedKeys"
-            :allow-quick-create="allowQuickCreate"
-            @select="(id) => $emit('select', id)"
-            @toggle-expand="(id, e) => $emit('toggle-expand', id, e)"
-            @quick-create="(id, e) => $emit('quick-create', id, e)"
-          />
-        </div>
-      </div>
-    </div>
-  `,
-})
-
-export default {
-  components: {
-    CategoryTreeSelectSubNodes,
-  },
-}
-</script>
 
 <style scoped>
 .tree-select {
@@ -697,7 +525,6 @@ export default {
   cursor: pointer;
   color: var(--text-2);
   transition: background 0.15s, color 0.15s;
-  position: relative;
 }
 
 .tree-node-row:hover {
@@ -712,41 +539,8 @@ export default {
 }
 
 .node-indent {
+  width: 8px;
   flex-shrink: 0;
-}
-
-.node-expand-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  border-radius: 3px;
-  flex-shrink: 0;
-  transition: color 0.15s;
-}
-
-.node-expand-btn:hover {
-  color: var(--text-1);
-  background: var(--hover);
-}
-
-.node-expand-btn .rotate {
-  transform: rotate(90deg);
-}
-
-.node-expand-placeholder {
-  width: 18px;
-  flex-shrink: 0;
-}
-
-.node-icon {
-  flex-shrink: 0;
-  color: var(--accent);
 }
 
 .node-icon.muted {
@@ -763,38 +557,6 @@ export default {
 
 .node-label.muted {
   color: var(--text-3);
-}
-
-.node-count {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  color: var(--text-3);
-  background: var(--panel-2);
-  padding: 1px 6px;
-  border-radius: 10px;
-}
-
-.inline-add-btn {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  border-radius: 4px;
-  margin-left: 4px;
-}
-
-.tree-node-row:hover .inline-add-btn {
-  display: inline-flex;
-}
-
-.inline-add-btn:hover {
-  color: var(--accent);
-  background: var(--active);
 }
 
 .check-icon {
