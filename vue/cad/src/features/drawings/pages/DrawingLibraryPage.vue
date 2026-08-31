@@ -16,6 +16,7 @@ const domainStore = useDomainStore()
 const uiStore = useUiStore()
 const query = ref('')
 const status = ref<DrawingStatus | ''>('')
+const categoryFilter = ref('')
 const menuFor = ref<string | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
 
@@ -25,9 +26,21 @@ const rows = computed(() => {
     const parts = partsForDrawing(drawing.no)
     const matchesQuery = !q || [drawing.no, drawing.name, drawing.vendor, drawing.project, ...parts.flatMap((part) => [part.no, part.name])].join(' ').toLowerCase().includes(q)
     const matchesStatus = !status.value || drawing.status === status.value
-    return matchesQuery && matchesStatus
+    const matchesCategory = !categoryFilter.value || matchesCategoryFilter(drawing, categoryFilter.value)
+    return matchesQuery && matchesStatus && matchesCategory
   })
 })
+
+function matchesCategoryFilter(drawing: { categoryId?: string }, value: string): boolean {
+  if (value === '__none__') return !drawing.categoryId
+  if (drawing.categoryId === value) return true
+  // 选父分类时，包含其子分类下的图纸
+  return domainStore.categories.some((item) => item.id === drawing.categoryId && item.parentId === value)
+}
+
+function categoryLabel(drawing: { categoryId?: string }): string {
+  return domainStore.categoryName(drawing.categoryId) || '未分类'
+}
 
 function partsForDrawing(drawingNo: string) {
   return domainStore.structure
@@ -64,6 +77,10 @@ function menuAction(action: string, no: string) {
   if (action === 'detail') openDetail(no)
   if (action === 'hide') uiStore.toast('图纸已隐藏：用户不可见，管理员可随时恢复，历史完整保留', 'warn')
 }
+
+function goCategoryAdmin() {
+  router.push({ name: 'admin-categories' })
+}
 </script>
 
 <template>
@@ -82,6 +99,19 @@ function menuAction(action: string, no: string) {
         <option v-for="(item, key) in STATUS" :key="key" :value="key">{{ item.t }}</option>
       </select>
 
+      <select v-model="categoryFilter" class="inp filter-select">
+        <option value="">全部分类</option>
+        <option value="__none__">未分类</option>
+        <optgroup v-for="group in domainStore.categoryTree" :key="group.category.id" :label="group.category.name">
+          <option :value="group.category.id">{{ group.category.name }}（全部）</option>
+          <option v-for="child in group.children" :key="child.id" :value="child.id">　{{ child.name }}</option>
+        </optgroup>
+      </select>
+
+      <button class="btn" type="button" title="管理图纸分类" @click="goCategoryAdmin">
+        <DemoIcon name="folder-tree" :size="14" />分类管理
+      </button>
+
       <button class="btn primary" type="button" @click="createDrawing">
         <DemoIcon name="plus" :size="14" />创建图纸
       </button>
@@ -93,6 +123,7 @@ function menuAction(action: string, no: string) {
           <tr>
              <th class="project-no-header">项目图号</th>
              <th>名称</th>
+             <th>分类</th>
              <th>厂商</th>
             <th>状态</th>
             <th>版本</th>
@@ -111,11 +142,12 @@ function menuAction(action: string, no: string) {
                </span>
                <button class="link project-no-link" type="button" @click="openDetail(drawing.no)">{{ drawing.no }}</button>
              </td>
-             <td class="drawing-name">
-               {{ drawing.name }}
-               <span v-if="drawing.borrowFrom" class="tag plain borrow-tag">借用·{{ drawing.borrowFrom }}</span>
-             </td>
-             <td>{{ drawing.vendor }}</td>
+              <td class="drawing-name">
+                {{ drawing.name }}
+                <span v-if="drawing.borrowFrom" class="tag plain borrow-tag">借用·{{ drawing.borrowFrom }}</span>
+              </td>
+              <td><span class="tag plain category-tag">{{ categoryLabel(drawing) }}</span></td>
+              <td>{{ drawing.vendor }}</td>
             <td><span class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span></td>
             <td class="num">{{ drawing.ver }}</td>
             <td class="num updated">{{ drawing.updated }}</td>
@@ -132,7 +164,7 @@ function menuAction(action: string, no: string) {
              </td>
            </tr>
            <tr v-if="isExpanded(drawing.no)" class="parts-row">
-             <td colspan="7">
+             <td colspan="8">
                <div class="parts-panel">
                  <button v-for="part in partsForDrawing(drawing.no)" :key="part.no" class="part-link" type="button" @click="openDetail(part.no)">
                    <DemoIcon name="file" :size="13" />
@@ -146,7 +178,7 @@ function menuAction(action: string, no: string) {
            </tr>
            </template>
            <tr v-if="!rows.length">
-             <td colspan="7">
+             <td colspan="8">
               <div class="empty"><DemoIcon name="search-x" :size="34" /><div class="t">{{ domainStore.drawings.length ? '没有匹配的图纸，试试更换关键词' : '暂无图纸，请先创建或导入图纸' }}</div></div>
             </td>
           </tr>
@@ -328,6 +360,11 @@ function menuAction(action: string, no: string) {
   margin-left: 4px;
   padding: 1px 7px;
   font-size: 9.5px;
+}
+
+.category-tag {
+  color: var(--text-2);
+  background: var(--hover);
 }
 
 .updated {

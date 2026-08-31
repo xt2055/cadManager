@@ -19,6 +19,7 @@ const items = [
   { name: RouteName.AdminReviewFlows, label: '审核流程', icon: 'workflow' },
   { name: RouteName.AdminDrawingControl, label: '图纸管控', icon: 'folder-lock' },
   { name: RouteName.AdminLogs, label: '操作日志', icon: 'scroll-text' },
+  { name: RouteName.AdminCategories, label: '图纸分类', icon: 'folder-tree' },
   { name: RouteName.AdminSystemLogs, label: '系统日志', icon: 'file-terminal' },
   { name: RouteName.AdminUpdates, label: '更新管理', icon: 'rocket' },
 ] as const

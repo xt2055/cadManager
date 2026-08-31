@@ -16,6 +16,7 @@ import type {
   ReviewCase,
   ReviewFlow,
   ReviewNode,
+  DrawingCategory,
   StructurePart,
   PartManufacturingType,
   UserAccount,
@@ -26,6 +27,7 @@ import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, par
 
 export interface DataDocument {
   version: 2
+  categories: DrawingCategory[]
   drawings: Drawing[]
   structure: StructurePart[]
   versions: DrawingVersion[]
@@ -46,6 +48,7 @@ export interface DataDocument {
 export function createEmptyDataDocument(): DataDocument {
   return {
     version: 2,
+    categories: [],
     drawings: [],
     structure: [],
     versions: [],
@@ -613,6 +616,12 @@ export function normalizeDataDocument(value: unknown): DataDocument {
 
   return {
     version: 2,
+    categories: readArray<DrawingCategory>(source.categories).map((item) => ({
+      id: isRecord(item) ? asString(item.id) : '',
+      name: isRecord(item) ? asString(item.name) : '',
+      ...(isRecord(item) && asString(item.parentId) ? { parentId: asString(item.parentId) } : {}),
+      ...(isRecord(item) && asString(item.createdAt) ? { createdAt: asString(item.createdAt) } : {}),
+    })).filter((item) => item.id && item.name),
     drawings: cleanDrawings,
     structure: recoveredStructure,
     versions: readArray<DrawingVersion>(source.versions),

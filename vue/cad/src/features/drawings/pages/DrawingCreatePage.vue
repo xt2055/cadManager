@@ -21,6 +21,9 @@ const formProject = ref('')
 const formProjectNo = ref('')
 const formDrawingNo = ref('')
 const formRemark = ref('')
+const formCategoryId = ref('')
+const newCategoryName = ref('')
+const creatingCategory = ref(false)
 const isIdentifyingAssembly = ref(false)
 const assemblyIdentifyMessage = ref('')
 let assemblyIdentifySequence = 0
@@ -38,6 +41,28 @@ function onForkSourceChange() {
   formProjectNo.value = source.project || ''
   formDrawingNo.value = source.no
   formRemark.value = `分叉自 ${source.no} · 继承图纸、备料与工艺文件及零件结构`
+  formCategoryId.value = source.categoryId ?? ''
+}
+
+async function handleQuickCreateCategory() {
+  const name = newCategoryName.value.trim()
+  if (!name) {
+    uiStore.toast('请输入分类名称', 'warn')
+    return
+  }
+  if (creatingCategory.value) return
+  creatingCategory.value = true
+  try {
+    // 快捷新建始终创建父分类；子分类在「分类管理」页维护
+    const category = await domainStore.addCategory(name)
+    formCategoryId.value = category.id
+    newCategoryName.value = ''
+    uiStore.toast(`分类「${category.name}」已创建`, 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '创建分类失败', 'warn')
+  } finally {
+    creatingCategory.value = false
+  }
 }
 
 interface UploadedAssembly {
@@ -295,6 +320,7 @@ async function performCreate() {
      by: '当前用户',
     borrow: 0,
     hasFile: Boolean(assemblyFile.value),
+    ...(formCategoryId.value ? { categoryId: formCategoryId.value } : {}),
     signers: {},
   }
 
@@ -564,6 +590,27 @@ async function performCreate() {
                 class="inp"
                 placeholder="填写项目背景、技术交底要求或交付期限等"
               />
+            </div>
+            <div class="form-item">
+              <label for="create-category">图纸分类</label>
+              <select id="create-category" v-model="formCategoryId" class="inp">
+                <option value="">未分类</option>
+                <optgroup v-for="group in domainStore.categoryTree" :key="group.category.id" :label="group.category.name">
+                  <option :value="group.category.id">{{ group.category.name }}</option>
+                  <option v-for="child in group.children" :key="child.id" :value="child.id">　{{ child.name }}</option>
+                </optgroup>
+              </select>
+              <div class="category-quick-create">
+                <input
+                  v-model="newCategoryName"
+                  class="inp"
+                  placeholder="输入名称快速新建分类"
+                  @keyup.enter="handleQuickCreateCategory"
+                />
+                <button class="btn sm" type="button" :disabled="creatingCategory" @click="handleQuickCreateCategory">
+                  <DemoIcon name="plus" :size="13" />新建
+                </button>
+              </div>
             </div>
           </div>
         </section>
@@ -878,6 +925,16 @@ async function performCreate() {
 .form-item.required label::after {
   content: ' *';
   color: var(--danger);
+}
+
+.category-quick-create {
+  display: flex;
+  gap: 8px;
+}
+
+.category-quick-create .inp {
+  flex: 1;
+  min-width: 0;
 }
 
 .form-item:last-child {

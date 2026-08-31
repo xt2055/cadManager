@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/cadtext"
@@ -240,7 +243,7 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 		outFile.Close()
 
 		jobFile := filepath.Join(tempDir, "caxa_exb_jobs.txt")
-		if err := waitForJobFileFree(jobFile, 5*time.Second); err != nil {
+		if err := waitForJobFileFree(jobFile, 15*time.Second); err != nil {
 			return err
 		}
 		line := fmt.Sprintf("%s|%s\n", tempExb, tempDwg)
@@ -250,7 +253,7 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 
 		doneFile := tempDwg + ".done"
 		success := false
-		for i := 0; i < 30; i++ {
+		for i := 0; i < 120; i++ {
 			time.Sleep(500 * time.Millisecond)
 			if _, err := os.Stat(doneFile); err == nil {
 				statusBytes, _ := os.ReadFile(doneFile)
@@ -400,7 +403,7 @@ func (s *Service) ConvertPathToDwg(ctx context.Context, inputPath, outputPath st
 // 输出格式由输出文件的扩展名决定（.exb/.dwg 等）。
 func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) error {
 	jobFile := filepath.Join(os.TempDir(), "caxa_exb_jobs.txt")
-	if err := waitForJobFileFree(jobFile, 10*time.Second); err != nil {
+	if err := waitForJobFileFree(jobFile, 30*time.Second); err != nil {
 		return err
 	}
 	line := fmt.Sprintf("%s|%s\n", inputPath, outputPath)
@@ -409,7 +412,7 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 	}
 
 	doneFile := outputPath + ".done"
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 180; i++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -570,16 +573,46 @@ func ResolveCaxaPath(configured string) (string, error) {
 	if path, err := exec.LookPath("CDRAFT_M.exe"); err == nil {
 		return path, nil
 	}
+	if path := scanCaxaInstalls(); path != "" {
+		return path, nil
+	}
+	return "", errors.New("找不到 CAXA CAD，请设置 CAD_CAXA_BIN")
+}
+
+// scanCaxaInstalls searches Program Files for any CAXA CAD installation
+// (e.g. CAXA\CAXA CAD\2022\Bin64\CDRAFT_M.exe, any version) and returns the
+// newest one found.
+func scanCaxaInstalls() string {
+	var best string
 	for _, root := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramW6432"), os.Getenv("ProgramFiles(x86)")} {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
-		path := filepath.Join(root, "CAXA", "CAXA CAD", "2022", "Bin64", "CDRAFT_M.exe")
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
+		caxaRoot := filepath.Join(root, "CAXA")
+		for depth := 1; depth <= 3; depth++ {
+			pattern := filepath.Join(caxaRoot, strings.Repeat(`*\`, depth)+"Bin64", "CDRAFT_M.exe")
+			matches, _ := filepath.Glob(pattern)
+			for _, match := range matches {
+				if best == "" || slices.Compare(numericSegments(best), numericSegments(match)) < 0 {
+					best = match
+				}
+			}
 		}
 	}
-	return "", errors.New("找不到 CAXA CAD，请设置 CAD_CAXA_BIN")
+	return best
+}
+
+// numericSegments extracts the digit runs from a path so install versions can
+// be compared numerically (e.g. "...\CAXA CAD\2022\Bin64" -> [2022, 64]).
+func numericSegments(path string) []int {
+	fields := strings.FieldsFunc(path, func(r rune) bool { return !unicode.IsDigit(r) })
+	segs := make([]int, 0, len(fields))
+	for _, field := range fields {
+		if n, err := strconv.Atoi(field); err == nil {
+			segs = append(segs, n)
+		}
+	}
+	return segs
 }
 
 func candidatePaths(configured string) []string {

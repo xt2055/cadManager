@@ -3,6 +3,8 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"cadguanliq/internal/attachment"
@@ -92,6 +94,15 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/system/updates/", adminGuard(handlers.UpdateResource(updateStore, cfg.UpdatesDir)))
 	mux.HandleFunc("/api/updates/latest", handlers.UpdateLatest(updateStore, cfg))
 	mux.Handle("/api/updates/", protectedUsers(handlers.UpdateDownload(updateStore, cfg.UpdatesDir)))
+
+	// CAD 字体资源（SHX/WOFF，前端 viewer 渲染文字用）：免鉴权，目录锚定 exe 所在目录
+	const fontsPrefix = "/cad-data/fonts/"
+	if exePath, err := os.Executable(); err == nil {
+		fontDir := filepath.Join(filepath.Dir(exePath), "cad-data", "fonts")
+		if _, err := os.Stat(fontDir); err == nil {
+			mux.Handle(fontsPrefix, http.StripPrefix(fontsPrefix, http.FileServer(http.Dir(fontDir))))
+		}
+	}
 
 	var handler http.Handler = mux
 	handler = middleware.Recovery(handler)

@@ -20,6 +20,7 @@ import type {
   CompletedReview,
   CraftFile,
   Drawing,
+  DrawingCategory,
   DrawingFile,
   DrawingSigners,
   DrawingVersion,
@@ -93,6 +94,7 @@ function activityTime(): string {
 export const useDomainStore = defineStore('domain', () => {
 	const authStore = useAuthStore()
   const drawings = ref<Drawing[]>([])
+  const categories = ref<DrawingCategory[]>([])
   const structure = ref<StructurePart[]>([])
   const versions = ref<DrawingVersion[]>([])
   const branches = ref<Branch[]>([])
@@ -184,6 +186,7 @@ export const useDomainStore = defineStore('domain', () => {
   function toDocument(): DataDocument {
     return {
       version: 2,
+      categories: categories.value,
       drawings: drawings.value,
       structure: structure.value,
       versions: versions.value,
@@ -230,6 +233,7 @@ export const useDomainStore = defineStore('domain', () => {
       try {
         const document = await dataManager.load()
         drawings.value = document.drawings
+        categories.value = document.categories ?? []
         structure.value = document.structure
         versions.value = document.versions
         branches.value = document.branches
@@ -505,6 +509,85 @@ export const useDomainStore = defineStore('domain', () => {
   function clearCurrentDrawing() {
     currentDrawing.value = null
     selectedStructureIndex.value = 0
+  }
+
+  // ---------- 图纸分类（两级：父分类 + 子分类，随业务文档整体保存） ----------
+
+  const categoryTree = computed(() => {
+    const roots = categories.value.filter((item) => !item.parentId || !categories.value.some((parent) => parent.id === item.parentId))
+    return roots.map((root) => ({
+      category: root,
+      children: categories.value.filter((item) => item.parentId === root.id),
+    }))
+  })
+
+  function categoryName(id?: string): string {
+    if (!id) return ''
+    return categories.value.find((item) => item.id === id)?.name ?? ''
+  }
+
+  function countDrawingsInCategory(categoryId: string): number {
+    return drawings.value.filter((drawing) => drawing.categoryId === categoryId).length
+  }
+
+  async function addCategory(name: string, parentId?: string): Promise<DrawingCategory> {
+    await initialize()
+    const trimmed = name.trim()
+    if (!trimmed) throw new Error('分类名称不能为空')
+    if (parentId && !categories.value.some((item) => item.id === parentId)) {
+      throw new Error('所选父分类不存在，请刷新后重试')
+    }
+    const duplicated = categories.value.some((item) => item.name === trimmed && (item.parentId ?? '') === (parentId ?? ''))
+    if (duplicated) throw new Error(`同级分类中已存在「${trimmed}」`)
+    const category: DrawingCategory = {
+      id: createId('cat'),
+      name: trimmed,
+      ...(parentId ? { parentId } : {}),
+      createdAt: nowLabel(),
+    }
+    categories.value.push(category)
+    await persist()
+    return category
+  }
+
+  async function renameCategory(id: string, name: string): Promise<void> {
+    await initialize()
+    const category = categories.value.find((item) => item.id === id)
+    if (!category) throw new Error('分类不存在或已被删除')
+    const trimmed = name.trim()
+    if (!trimmed) throw new Error('分类名称不能为空')
+    const duplicated = categories.value.some((item) => item.id !== id && item.name === trimmed && (item.parentId ?? '') === (category.parentId ?? ''))
+    if (duplicated) throw new Error(`同级分类中已存在「${trimmed}」`)
+    category.name = trimmed
+    await persist()
+  }
+
+  async function deleteCategory(id: string): Promise<void> {
+    await initialize()
+    const category = categories.value.find((item) => item.id === id)
+    if (!category) throw new Error('分类不存在或已被删除')
+    const children = categories.value.filter((item) => item.parentId === id)
+    if (children.length) {
+      throw new Error(`分类「${category.name}」下还有 ${children.length} 个子分类，请先删除或移出子分类`)
+    }
+    const usedBy = countDrawingsInCategory(id)
+    if (usedBy > 0) {
+      throw new Error(`分类「${category.name}」下还有 ${usedBy} 张图纸，请先移动这些图纸再删除`)
+    }
+    categories.value = categories.value.filter((item) => item.id !== id)
+    await persist()
+  }
+
+  async function setDrawingCategory(drawingNo: string, categoryId: string): Promise<void> {
+    await initialize()
+    const drawing = drawings.value.find((item) => item.no === drawingNo)
+    if (!drawing) throw new Error(`图纸 ${drawingNo} 不存在`)
+    if (categoryId && !categories.value.some((item) => item.id === categoryId)) {
+      throw new Error('目标分类不存在，请刷新后重试')
+    }
+    drawing.categoryId = categoryId || undefined
+    drawing.updated = nowLabel()
+    await persist()
   }
 
   async function addDrawing(
@@ -1841,6 +1924,8 @@ export const useDomainStore = defineStore('domain', () => {
 
   return {
     drawings,
+    categories,
+    categoryTree,
     structure,
     versions,
     branches,
@@ -1873,6 +1958,12 @@ export const useDomainStore = defineStore('domain', () => {
     clearCurrentDrawing,
     getReviewCase,
     addDrawing,
+    addCategory,
+    renameCategory,
+    deleteCategory,
+    setDrawingCategory,
+    categoryName,
+    countDrawingsInCategory,
     forkDrawing,
     createPartWithFile,
     borrowPartToProject,

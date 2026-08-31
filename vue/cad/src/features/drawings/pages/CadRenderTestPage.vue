@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { assertCadWorkerAssets, getCadWorkerUrls } from '../detail-tabs/preview/cad-worker-assets'
 import { findWipeoutMasks } from '../detail-tabs/preview/cad-entity-filters'
+import { resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
 
 const router = useRouter()
 const containerRef = ref<HTMLDivElement | null>(null)
@@ -68,7 +69,7 @@ async function openSelectedFile() {
     manager = AcApDocManager.createInstance({
       container,
       autoResize: true,
-      baseUrl: 'https://cdn.jsdelivr.net/gh/mlightcad/cad-data@main/',
+      baseUrl: await resolveCadFontsBaseUrl(),
       useMainThreadDraw: renderMode.value === 'main',
       webworkerFileUrls: workerUrls,
       checkWorkersOnInit: true,

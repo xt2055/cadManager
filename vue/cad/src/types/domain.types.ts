@@ -93,6 +93,13 @@ export interface CraftFile {
   scanned: boolean
 }
 
+export interface DrawingCategory {
+  id: string
+  name: string
+  parentId?: string
+  createdAt?: string
+}
+
 export interface Drawing {
   no: string
   name: string
@@ -113,6 +120,7 @@ export interface Drawing {
   hasFile: boolean
   borrowFrom?: string
   forkedFrom?: string
+  categoryId?: string
   signers?: Partial<DrawingSigners>
   remark?: string
   files?: DrawingFile[]

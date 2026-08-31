@@ -2,6 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { assertCadWorkerAssets, getCadWorkerUrls } from './cad-worker-assets'
 import { findWipeoutMasks } from './cad-entity-filters'
+import { resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
 
 interface Props {
   dxfUrl?: string | null
@@ -108,7 +109,7 @@ async function loadViewer(url: string) {
     manager = AcApDocManager.createInstance({
       container: containerRef.value,
       autoResize: true,
-      baseUrl: 'https://cdn.jsdelivr.net/gh/mlightcad/cad-data@main/',
+      baseUrl: await resolveCadFontsBaseUrl(),
       // 与官方示例保持一致，使用 Worker 绘制复杂标注块。
       useMainThreadDraw: false,
       webworkerFileUrls: {

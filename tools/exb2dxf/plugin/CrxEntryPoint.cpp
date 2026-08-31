@@ -19,7 +19,40 @@ std::wstring getTempDirectory() {
     return std::wstring(tempDir);
 }
 
-// 自动检测并关闭 CAXA 阻塞弹窗（如“指定形文件”、“字体替换”、“代理信息”等）
+// 识别常见的阻塞弹窗关键字（标题或正文）
+static bool containsBlockerKeyword(const std::wstring& text) {
+    static const wchar_t* keywords[] = {
+        L"\x5f62\x6587\x4ef6",          // 形文件
+        L"\x5b57\x4f53",                // 字体
+        L"\x6062\x590d",                // 恢复
+        L"\x672a\x4fdd\x5b58",          // 未保存
+        L"Shape", L"Font", L"Recover", L"Recovery", L"Proxy",
+        L"\x4ee3\x7406",                // 代理
+        L"\x672a\x627e\x5230",          // 未找到
+        L"\x7f3a\x5c11",                // 缺少
+    };
+    for (const wchar_t* kw : keywords) {
+        if (text.find(kw) != std::wstring::npos) return true;
+    }
+    return false;
+}
+
+struct BlockerScanContext {
+    bool found;
+};
+
+// 扫描对话框子控件文本（部分弹窗标题是通用标题，关键字只出现在正文里）
+static BOOL CALLBACK CheckChildTextProc(HWND hwnd, LPARAM lParam) {
+    wchar_t text[512] = {};
+    GetWindowTextW(hwnd, text, 511);
+    if (containsBlockerKeyword(text)) {
+        reinterpret_cast<BlockerScanContext*>(lParam)->found = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// 自动检测并关闭 CAXA 阻塞弹窗（如“恢复未保存文件”、“指定形文件”、“字体替换”、“代理信息”等）
 static BOOL CALLBACK DismissBlockerDialogsProc(HWND hwnd, LPARAM lParam) {
     if (!IsWindowVisible(hwnd)) return TRUE;
 
@@ -38,32 +71,30 @@ static BOOL CALLBACK DismissBlockerDialogsProc(HWND hwnd, LPARAM lParam) {
         GetWindowTextW(hwnd, title, 511);
         std::wstring titleStr(title);
 
-        // 识别常见的阻塞弹窗关键字
-        if (titleStr.find(L"\x5f62\x6587\x4ef6") != std::wstring::npos || // 形文件
-            titleStr.find(L"\x5b57\x4f53") != std::wstring::npos ||     // 字体
-            titleStr.find(L"Shape") != std::wstring::npos ||
-            titleStr.find(L"Font") != std::wstring::npos ||
-            titleStr.find(L"\x4ee3\x7406") != std::wstring::npos ||     // 代理
-            titleStr.find(L"Proxy") != std::wstring::npos ||
-            titleStr.find(L"\x672a\x627e\x5230") != std::wstring::npos || // 未找到
-            titleStr.find(L"\x7f3a\x5c11") != std::wstring::npos) {       // 缺少
-
-            const std::wstring logPath = getTempDirectory() + L"caxa_worker_log.txt";
-            FILE* fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
-            if (fp) {
-                fwprintf(fp, L"[AutoDismiss] Found blocking dialog '%ls', sending IDCANCEL/ESC\n", title);
-                fclose(fp);
-            }
-
-            // 优先点“取消”或“忽略”，跳过缺失形文件继续执行
-            HWND btnCancel = GetDlgItem(hwnd, IDCANCEL);
-            if (btnCancel && IsWindowEnabled(btnCancel)) {
-                SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), (LPARAM)btnCancel);
-            } else {
-                SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
-            }
-            PostMessage(hwnd, WM_CLOSE, 0, 0);
+        // 标题或正文命中关键字都视为阻塞弹窗
+        BlockerScanContext ctx = {false};
+        if (containsBlockerKeyword(titleStr)) {
+            ctx.found = true;
+        } else {
+            EnumChildWindows(hwnd, CheckChildTextProc, reinterpret_cast<LPARAM>(&ctx));
         }
+        if (!ctx.found) return TRUE;
+
+        const std::wstring logPath = getTempDirectory() + L"caxa_worker_log.txt";
+        FILE* fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
+        if (fp) {
+            fwprintf(fp, L"[AutoDismiss] Found blocking dialog '%ls', sending IDCANCEL/ESC\n", title);
+            fclose(fp);
+        }
+
+        // 优先点“取消”或“忽略”，跳过恢复文档/缺失形文件继续执行
+        HWND btnCancel = GetDlgItem(hwnd, IDCANCEL);
+        if (btnCancel && IsWindowEnabled(btnCancel)) {
+            SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), (LPARAM)btnCancel);
+        } else {
+            SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+        }
+        PostMessage(hwnd, WM_CLOSE, 0, 0);
     }
     return TRUE;
 }
@@ -132,12 +163,21 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
 
 UINT_PTR g_timerId = 0;
 UINT_PTR g_dialogKillerTimerId = 0;
+volatile LONG g_jobBusy = 0;
 
 VOID CALLBACK DialogKillerTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     autoDismissModalDialogs();
 }
 
 VOID CALLBACK MainThreadTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    // 防重入：转换阻塞期间（模态循环会继续分发 WM_TIMER）不再取新任务
+    if (InterlockedCompareExchange(&g_jobBusy, 1, 0) != 0) {
+        return;
+    }
+    struct JobBusyGuard {
+        ~JobBusyGuard() { InterlockedExchange(&g_jobBusy, 0); }
+    } jobBusyGuard;
+
     const std::wstring jobFilePath = getTempDirectory() + L"caxa_exb_jobs.txt";
     const std::wstring logPath = getTempDirectory() + L"caxa_worker_log.txt";
 
