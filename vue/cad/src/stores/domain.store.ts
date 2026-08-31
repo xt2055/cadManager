@@ -17,6 +17,7 @@ import type {
   BomItem,
   Branch,
   BorrowRecord,
+  CategoryTreeNode,
   CompletedReview,
   CraftFile,
   Drawing,
@@ -511,23 +512,75 @@ export const useDomainStore = defineStore('domain', () => {
     selectedStructureIndex.value = 0
   }
 
-  // ---------- 图纸分类（两级：父分类 + 子分类，随业务文档整体保存） ----------
+  // ---------- 图纸分类（无限层级多叉树，支持路径计算、子孙穿透与拖拽调序） ----------
 
-  const categoryTree = computed(() => {
-    const roots = categories.value.filter((item) => !item.parentId || !categories.value.some((parent) => parent.id === item.parentId))
-    return roots.map((root) => ({
-      category: root,
-      children: categories.value.filter((item) => item.parentId === root.id),
-    }))
+  const categoryTree = computed<CategoryTreeNode[]>(() => {
+    function buildSubTree(parentId: string | undefined, currentPath: string[], currentPathIds: string[], level: number): CategoryTreeNode[] {
+      const direct = categories.value
+        .filter((cat) => (cat.parentId ?? undefined) === parentId)
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name, 'zh-CN'))
+
+      return direct.map((cat) => {
+        const nextPath = [...currentPath, cat.name]
+        const nextPathIds = [...currentPathIds, cat.id]
+        const children = buildSubTree(cat.id, nextPath, nextPathIds, level + 1)
+        const directCount = drawings.value.filter((d) => d.categoryId === cat.id).length
+        const totalCount = directCount + children.reduce((sum, child) => sum + child.totalCount, 0)
+        return {
+          category: cat,
+          children,
+          level,
+          path: nextPath,
+          pathIds: nextPathIds,
+          fullPath: nextPath.join(' > '),
+          directCount,
+          totalCount,
+        }
+      })
+    }
+    return buildSubTree(undefined, [], [], 0)
   })
+
+  function getCategoryPath(id?: string): string[] {
+    if (!id) return []
+    const path: string[] = []
+    let curr: DrawingCategory | undefined = categories.value.find((c) => c.id === id)
+    while (curr) {
+      path.unshift(curr.name)
+      curr = curr.parentId ? categories.value.find((c) => c.id === curr!.parentId) : undefined
+    }
+    return path
+  }
+
+  function getCategoryFullPath(id?: string): string {
+    return getCategoryPath(id).join(' > ')
+  }
+
+  function getDescendantCategoryIds(id: string): string[] {
+    const results: string[] = [id]
+    const queue = [id]
+    while (queue.length) {
+      const current = queue.shift()!
+      const directChildren = categories.value.filter((c) => c.parentId === current)
+      for (const child of directChildren) {
+        results.push(child.id)
+        queue.push(child.id)
+      }
+    }
+    return results
+  }
 
   function categoryName(id?: string): string {
     if (!id) return ''
     return categories.value.find((item) => item.id === id)?.name ?? ''
   }
 
-  function countDrawingsInCategory(categoryId: string): number {
-    return drawings.value.filter((drawing) => drawing.categoryId === categoryId).length
+  function countDrawingsInCategory(categoryId: string, includeDescendants = false): number {
+    if (!includeDescendants) {
+      return drawings.value.filter((drawing) => drawing.categoryId === categoryId).length
+    }
+    const allIds = new Set(getDescendantCategoryIds(categoryId))
+    return drawings.value.filter((drawing) => drawing.categoryId && allIds.has(drawing.categoryId)).length
   }
 
   async function addCategory(name: string, parentId?: string): Promise<DrawingCategory> {
@@ -539,10 +592,15 @@ export const useDomainStore = defineStore('domain', () => {
     }
     const duplicated = categories.value.some((item) => item.name === trimmed && (item.parentId ?? '') === (parentId ?? ''))
     if (duplicated) throw new Error(`同级分类中已存在「${trimmed}」`)
+
+    const siblings = categories.value.filter((c) => (c.parentId ?? '') === (parentId ?? ''))
+    const maxSort = siblings.reduce((max, c) => Math.max(max, c.sortOrder ?? 0), 0)
+
     const category: DrawingCategory = {
       id: createId('cat'),
       name: trimmed,
       ...(parentId ? { parentId } : {}),
+      sortOrder: maxSort + 1,
       createdAt: nowLabel(),
     }
     categories.value.push(category)
@@ -559,6 +617,24 @@ export const useDomainStore = defineStore('domain', () => {
     const duplicated = categories.value.some((item) => item.id !== id && item.name === trimmed && (item.parentId ?? '') === (category.parentId ?? ''))
     if (duplicated) throw new Error(`同级分类中已存在「${trimmed}」`)
     category.name = trimmed
+    await persist()
+  }
+
+  async function moveCategory(id: string, newParentId: string | undefined, newSortOrder?: number): Promise<void> {
+    await initialize()
+    const category = categories.value.find((item) => item.id === id)
+    if (!category) throw new Error('分类不存在')
+    if (newParentId === id) throw new Error('分类不能将其自身作为父分类')
+    if (newParentId) {
+      const descendants = getDescendantCategoryIds(id)
+      if (descendants.includes(newParentId)) {
+        throw new Error('不能将分类移动到其子孙分类下')
+      }
+    }
+    category.parentId = newParentId || undefined
+    if (typeof newSortOrder === 'number') {
+      category.sortOrder = newSortOrder
+    }
     await persist()
   }
 
@@ -588,6 +664,27 @@ export const useDomainStore = defineStore('domain', () => {
     drawing.categoryId = categoryId || undefined
     drawing.updated = nowLabel()
     await persist()
+  }
+
+  async function batchSetDrawingCategory(drawingNos: string[], categoryId: string): Promise<void> {
+    await initialize()
+    if (categoryId && !categories.value.some((item) => item.id === categoryId)) {
+      throw new Error('目标分类不存在，请刷新后重试')
+    }
+    const targetCat = categoryId || undefined
+    const now = nowLabel()
+    let changed = 0
+    for (const no of drawingNos) {
+      const drawing = drawings.value.find((item) => item.no === no)
+      if (drawing && drawing.categoryId !== targetCat) {
+        drawing.categoryId = targetCat
+        drawing.updated = now
+        changed++
+      }
+    }
+    if (changed > 0) {
+      await persist()
+    }
   }
 
   async function addDrawing(
@@ -1960,9 +2057,14 @@ export const useDomainStore = defineStore('domain', () => {
     addDrawing,
     addCategory,
     renameCategory,
+    moveCategory,
     deleteCategory,
     setDrawingCategory,
+    batchSetDrawingCategory,
     categoryName,
+    getCategoryPath,
+    getCategoryFullPath,
+    getDescendantCategoryIds,
     countDrawingsInCategory,
     forkDrawing,
     createPartWithFile,

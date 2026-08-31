@@ -76,6 +76,10 @@ function openParentDrawing() {
           <span>创建人 <b>{{ ('createdBy' in (drawing || {}) && (drawing as any).createdBy) ? (drawing as any).createdBy : ('by' in (drawing || {})) ? (drawing as any).by : '待定' }}</b></span>
           <span>更新时间 <b>{{ ('updated' in (drawing || {})) ? (drawing as any).updated : '刚刚' }}</b></span>
           <span v-if="'forkedFrom' in (drawing || {}) && (drawing as any).forkedFrom" class="tag plain">分叉自·{{ (drawing as any).forkedFrom }}</span>
+          <span v-if="'categoryId' in (drawing || {}) && (drawing as any).categoryId" class="cat-path-badge" :title="`分类路径: ${domainStore.getCategoryFullPath((drawing as any).categoryId)}`">
+            <DemoIcon name="folder" :size="12" />
+            <b>{{ domainStore.getCategoryFullPath((drawing as any).categoryId) }}</b>
+          </span>
           <button v-if="isPart && parentDrawing" class="parent-link" type="button" @click="openParentDrawing">
             所属总图 <b>{{ parentDrawing.name }}</b><DemoIcon name="arrow-up-right" :size="12" />
           </button>
@@ -107,6 +111,23 @@ function openParentDrawing() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cat-path-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 4px;
+  color: var(--accent-light, #93c5fd);
+  font-size: 11.5px;
+}
+
+.cat-path-badge b {
+  font-weight: 500;
+  color: var(--text-1, #f3f4f6);
 }
 
 @media (max-width: 760px) {

@@ -97,7 +97,19 @@ export interface DrawingCategory {
   id: string
   name: string
   parentId?: string
+  sortOrder?: number
   createdAt?: string
+}
+
+export interface CategoryTreeNode {
+  category: DrawingCategory
+  children: CategoryTreeNode[]
+  level: number
+  path: string[]
+  pathIds: string[]
+  fullPath: string
+  directCount: number
+  totalCount: number
 }
 
 export interface Drawing {

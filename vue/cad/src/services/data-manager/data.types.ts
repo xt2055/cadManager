@@ -620,6 +620,7 @@ export function normalizeDataDocument(value: unknown): DataDocument {
       id: isRecord(item) ? asString(item.id) : '',
       name: isRecord(item) ? asString(item.name) : '',
       ...(isRecord(item) && asString(item.parentId) ? { parentId: asString(item.parentId) } : {}),
+      ...(isRecord(item) && typeof item.sortOrder === 'number' ? { sortOrder: item.sortOrder } : {}),
       ...(isRecord(item) && asString(item.createdAt) ? { createdAt: asString(item.createdAt) } : {}),
     })).filter((item) => item.id && item.name),
     drawings: cleanDrawings,

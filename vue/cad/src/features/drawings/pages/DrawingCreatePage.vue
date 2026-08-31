@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import CategoryTreeSelect from '@/components/common/CategoryTreeSelect.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import { dataManager } from '@/services/data-manager'
@@ -592,25 +593,12 @@ async function performCreate() {
               />
             </div>
             <div class="form-item">
-              <label for="create-category">图纸分类</label>
-              <select id="create-category" v-model="formCategoryId" class="inp">
-                <option value="">未分类</option>
-                <optgroup v-for="group in domainStore.categoryTree" :key="group.category.id" :label="group.category.name">
-                  <option :value="group.category.id">{{ group.category.name }}</option>
-                  <option v-for="child in group.children" :key="child.id" :value="child.id">　{{ child.name }}</option>
-                </optgroup>
-              </select>
-              <div class="category-quick-create">
-                <input
-                  v-model="newCategoryName"
-                  class="inp"
-                  placeholder="输入名称快速新建分类"
-                  @keyup.enter="handleQuickCreateCategory"
-                />
-                <button class="btn sm" type="button" :disabled="creatingCategory" @click="handleQuickCreateCategory">
-                  <DemoIcon name="plus" :size="13" />新建
-                </button>
-              </div>
+              <label for="create-category">图纸分类归属</label>
+              <CategoryTreeSelect
+                v-model="formCategoryId"
+                placeholder="请选择或快捷新建分类（如 油缸 / 耳环安装 / 焊接工艺）"
+                :allow-quick-create="true"
+              />
             </div>
           </div>
         </section>
