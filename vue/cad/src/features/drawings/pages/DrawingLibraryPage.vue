@@ -567,9 +567,9 @@ export default {
   padding: 14px;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
-  background: var(--bg-card, #1f232b);
-  border: 1px solid var(--line, #2d3340);
-  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 12px);
 }
 
 .lib-category-sidebar.collapsed {
@@ -590,16 +590,16 @@ export default {
   gap: 8px;
   font-weight: 600;
   font-size: 13.5px;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
   cursor: pointer;
 }
 
 .title-icon {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
 }
 
 .collapse-toggle-btn {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .cat-tree-search-wrap {
@@ -607,8 +607,8 @@ export default {
   align-items: center;
   gap: 6px;
   padding: 5px 8px;
-  background: var(--bg-1, #16181e);
-  border: 1px solid var(--line, #2d3340);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
   margin-bottom: 10px;
 }
@@ -618,7 +618,7 @@ export default {
   min-width: 0;
   border: none;
   background: transparent;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
   font-size: 12px;
   outline: none;
 }
@@ -626,7 +626,7 @@ export default {
 .clear-ico-btn {
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
   padding: 0;
 }
@@ -643,25 +643,25 @@ export default {
   gap: 8px;
   padding: 6px 10px;
   border-radius: 6px;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
   font-size: 12.5px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .quick-nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-1, #f3f4f6);
+  background: var(--hover);
+  color: var(--text-1);
 }
 
 .quick-nav-item.active {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent-light, #93c5fd);
+  background: var(--active);
+  color: var(--accent);
   font-weight: 500;
 }
 
 .warning-ico {
-  color: var(--warn, #f59e0b);
+  color: var(--warn);
 }
 
 .nav-label {
@@ -673,18 +673,18 @@ export default {
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text-3, #6b7280);
+  background: var(--panel-2);
+  color: var(--text-3);
 }
 
 .nav-badge.highlight {
-  background: rgba(245, 158, 11, 0.2);
-  color: #f59e0b;
+  background: var(--active);
+  color: var(--warn);
 }
 
 .cat-sidebar-divider {
   height: 1px;
-  background: var(--line, #2d3340);
+  background: var(--line);
   margin: 10px 0;
 }
 
@@ -701,27 +701,27 @@ export default {
   gap: 6px;
   padding: 5px 8px;
   border-radius: 6px;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
   font-size: 12.5px;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .nav-node-row:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-1, #f3f4f6);
+  background: var(--hover);
+  color: var(--text-1);
 }
 
 .nav-node-row.active {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent-light, #93c5fd);
+  background: var(--active);
+  color: var(--accent);
   font-weight: 500;
 }
 
 .node-toggle-btn {
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
   padding: 1px;
   display: inline-flex;
@@ -739,7 +739,7 @@ export default {
 }
 
 .folder-ico {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
   flex-shrink: 0;
 }
 
@@ -754,13 +754,13 @@ export default {
 .node-num {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .cat-sidebar-footer {
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid var(--line, #2d3340);
+  border-top: 1px solid var(--line);
 }
 
 .btn-manage-link {
@@ -770,9 +770,9 @@ export default {
   gap: 6px;
   width: 100%;
   padding: 6px;
-  border: 1px dashed var(--line, #2d3340);
+  border: 1px dashed var(--line);
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   border-radius: 6px;
   font-size: 12px;
   cursor: pointer;
@@ -780,9 +780,9 @@ export default {
 }
 
 .btn-manage-link:hover {
-  border-color: var(--accent, #3b82f6);
-  color: var(--accent, #3b82f6);
-  background: rgba(59, 130, 246, 0.05);
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--hover);
 }
 
 /* 右侧主工作区 */
@@ -811,12 +811,12 @@ export default {
 .lib-main-title {
   font-size: 18px;
   font-weight: 600;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
   margin: 0;
 }
 
 .lib-count-tag {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   font-size: 12px;
 }
 
@@ -831,9 +831,9 @@ export default {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: var(--bg-card, #1f232b);
-  border: 1px solid var(--line, #2d3340);
-  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 8px);
   min-width: 260px;
 }
 
@@ -841,7 +841,7 @@ export default {
   border: none;
   background: transparent;
   outline: none;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
   font-size: 12.5px;
   width: 100%;
 }
@@ -849,7 +849,7 @@ export default {
 .clear-search-x {
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
   padding: 2px;
 }
@@ -860,9 +860,9 @@ export default {
   align-items: center;
   justify-content: space-between;
   padding: 8px 14px;
-  background: rgba(59, 130, 246, 0.08);
-  border: 1px solid rgba(59, 130, 246, 0.2);
-  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius, 8px);
 }
 
 .banner-left {
@@ -874,12 +874,12 @@ export default {
 }
 
 .filter-icon {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
   flex-shrink: 0;
 }
 
 .filter-label {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   font-size: 12px;
   flex-shrink: 0;
 }
@@ -896,7 +896,7 @@ export default {
 .crumb-btn {
   border: none;
   background: transparent;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 4px;
@@ -904,16 +904,16 @@ export default {
 }
 
 .crumb-btn:hover {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
 }
 
 .crumb-btn.current {
-  color: var(--accent-light, #93c5fd);
+  color: var(--accent);
   font-weight: 600;
 }
 
 .crumb-sep {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   font-size: 11px;
 }
 
@@ -923,7 +923,7 @@ export default {
   gap: 4px;
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   font-size: 11.5px;
   cursor: pointer;
   padding: 2px 6px;
@@ -931,15 +931,15 @@ export default {
 }
 
 .btn-clear-cat:hover {
-  color: var(--text-1, #f3f4f6);
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-1);
+  background: var(--hover);
 }
 
 /* 表格区域 */
 .library-card {
   padding: 0;
   overflow: hidden;
-  border-radius: 10px;
+  border-radius: var(--radius, 10px);
 }
 
 .pro-table {
@@ -951,21 +951,21 @@ export default {
 .pro-table th {
   padding: 10px 14px;
   text-align: left;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   font-weight: 500;
   font-size: 12px;
-  border-bottom: 1px solid var(--line, #2d3340);
-  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
 }
 
 .pro-table td {
   padding: 10px 14px;
-  border-bottom: 1px solid var(--line, #2d3340);
+  border-bottom: 1px solid var(--line);
   vertical-align: middle;
 }
 
 .drawing-row:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--hover);
 }
 
 .project-no-cell {
@@ -978,7 +978,7 @@ export default {
 .project-no-link {
   font-family: 'JetBrains Mono', monospace;
   font-weight: 600;
-  color: var(--accent-light, #93c5fd);
+  color: var(--accent);
 }
 
 .drawing-main-title {
@@ -990,7 +990,7 @@ export default {
 
 .drawing-sub-remark {
   font-size: 11px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1003,10 +1003,10 @@ export default {
   align-items: center;
   gap: 5px;
   padding: 3px 8px;
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.25);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
   border-radius: 6px;
-  color: var(--accent-light, #93c5fd);
+  color: var(--accent);
   font-size: 11.5px;
   cursor: pointer;
   max-width: 240px;
@@ -1014,8 +1014,8 @@ export default {
 }
 
 .category-breadcrumb-tag:hover {
-  background: rgba(59, 130, 246, 0.22);
-  border-color: var(--accent, #3b82f6);
+  background: var(--active);
+  border-color: var(--accent-2, var(--accent));
 }
 
 .cat-tag-text {
@@ -1029,19 +1029,19 @@ export default {
 }
 
 .unclassified-tag:hover {
-  border-color: var(--text-2, #9ca3af);
+  border-color: var(--text-2);
 }
 
 .borrow-tag {
   font-size: 10.5px;
-  color: #f59e0b;
-  border-color: rgba(245, 158, 11, 0.3);
-  background: rgba(245, 158, 11, 0.1);
+  color: var(--warn);
+  border-color: var(--warn);
+  background: rgb(251 191 36 / 9%);
 }
 
 /* 零件抽屉 */
 .parts-row {
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--panel-2);
 }
 
 .parts-panel {
@@ -1054,7 +1054,7 @@ export default {
   gap: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
   margin-bottom: 10px;
 }
 
@@ -1069,18 +1069,18 @@ export default {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: var(--bg-1, #16181e);
-  border: 1px solid var(--line, #2d3340);
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
   cursor: pointer;
   text-align: left;
   transition: all 0.15s;
 }
 
 .part-link-card:hover {
-  border-color: var(--accent, #3b82f6);
-  background: rgba(59, 130, 246, 0.05);
+  border-color: var(--accent);
+  background: var(--hover);
 }
 
 .part-card-body {
@@ -1099,7 +1099,7 @@ export default {
 
 .part-card-no {
   font-size: 10.5px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .empty-state-box {
@@ -1112,18 +1112,18 @@ export default {
 }
 
 .empty-ico {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .empty-title {
   font-size: 14px;
   font-weight: 500;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
 }
 
 .empty-desc {
   font-size: 12px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   margin-bottom: 6px;
 }
 </style>

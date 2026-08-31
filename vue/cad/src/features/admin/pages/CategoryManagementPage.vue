@@ -690,9 +690,9 @@ export default {
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
-  background: var(--bg-card, #1f232b);
-  border: 1px solid var(--line, #2d3340);
-  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 10px);
 }
 
 .top-left {
@@ -708,20 +708,20 @@ export default {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent, #3b82f6);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .header-texts h1 {
   font-size: 16px;
   font-weight: 600;
   margin: 0;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
 }
 
 .header-texts p {
   font-size: 12px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   margin: 2px 0 0;
 }
 
@@ -735,8 +735,8 @@ export default {
   flex-direction: column;
   align-items: center;
   padding: 6px 14px;
-  background: var(--bg-1, #16181e);
-  border: 1px solid var(--line, #2d3340);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
 }
 
@@ -744,21 +744,21 @@ export default {
   font-family: 'JetBrains Mono', monospace;
   font-size: 16px;
   font-weight: 700;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
 }
 
 .stat-label {
   font-size: 11px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .stat-pill.warning.highlight {
-  border-color: rgba(245, 158, 11, 0.4);
-  background: rgba(245, 158, 11, 0.1);
+  border-color: var(--warn);
+  background: rgb(251 191 36 / 9%);
 }
 
 .stat-pill.warning.highlight .stat-num {
-  color: #f59e0b;
+  color: var(--warn);
 }
 
 /* 工作台双栏布局 */
@@ -776,7 +776,7 @@ export default {
   display: flex;
   flex-direction: column;
   padding: 14px;
-  border-radius: 10px;
+  border-radius: var(--radius, 10px);
 }
 
 .panel-head {
@@ -792,7 +792,7 @@ export default {
   gap: 6px;
   font-weight: 600;
   font-size: 13.5px;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
 }
 
 .tree-filter-box {
@@ -800,8 +800,8 @@ export default {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  background: var(--bg-1, #16181e);
-  border: 1px solid var(--line, #2d3340);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
   margin-bottom: 10px;
 }
@@ -812,7 +812,7 @@ export default {
   background: transparent;
   outline: none;
   font-size: 12px;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
 }
 
 .tree-special-nodes {
@@ -827,24 +827,24 @@ export default {
   gap: 8px;
   padding: 7px 10px;
   border-radius: 6px;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
   font-size: 12.5px;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .special-row:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hover);
 }
 
 .special-row.active {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent-light, #93c5fd);
+  background: var(--active);
+  color: var(--accent);
   font-weight: 500;
 }
 
 .spec-ico.warn {
-  color: #f59e0b;
+  color: var(--warn);
 }
 
 .spec-label {
@@ -856,18 +856,18 @@ export default {
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text-3, #6b7280);
+  background: var(--panel-2);
+  color: var(--text-3);
 }
 
 .spec-badge.warn {
-  background: rgba(245, 158, 11, 0.2);
-  color: #f59e0b;
+  background: var(--active);
+  color: var(--warn);
 }
 
 .tree-divider {
   height: 1px;
-  background: var(--line, #2d3340);
+  background: var(--line);
   margin: 10px 0;
 }
 
@@ -884,7 +884,7 @@ export default {
   gap: 6px;
   padding: 6px 8px;
   border-radius: 6px;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
   font-size: 12.5px;
   cursor: pointer;
   transition: all 0.15s;
@@ -892,20 +892,20 @@ export default {
 }
 
 .tree-node-row:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-1, #f3f4f6);
+  background: var(--hover);
+  color: var(--text-1);
 }
 
 .tree-node-row.active {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent-light, #93c5fd);
+  background: var(--active);
+  color: var(--accent);
   font-weight: 500;
 }
 
 .expand-toggle-btn {
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
   padding: 1px;
   display: inline-flex;
@@ -923,7 +923,7 @@ export default {
 }
 
 .node-folder-ico {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
   flex-shrink: 0;
 }
 
@@ -938,7 +938,7 @@ export default {
 .node-count-badge {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .node-hover-actions {
@@ -955,7 +955,7 @@ export default {
 .node-act-btn {
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
   padding: 3px;
   border-radius: 4px;
@@ -965,13 +965,13 @@ export default {
 }
 
 .node-act-btn:hover {
-  color: var(--text-1, #f3f4f6);
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-1);
+  background: var(--hover);
 }
 
 .node-act-btn.danger:hover {
-  color: var(--danger, #ef4444);
-  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+  background: var(--hover);
 }
 
 /* 右栏：图纸工作区 */
@@ -981,7 +981,7 @@ export default {
   display: flex;
   flex-direction: column;
   padding: 16px;
-  border-radius: 10px;
+  border-radius: var(--radius, 10px);
 }
 
 .drawings-panel-head {
@@ -999,22 +999,22 @@ export default {
 }
 
 .scope-ico {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
 }
 
 .scope-name {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
 }
 
 .scope-desc {
   font-size: 12px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .selected-badge {
-  color: var(--accent-light, #93c5fd);
+  color: var(--accent);
   font-weight: 500;
 }
 
@@ -1041,8 +1041,8 @@ export default {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: var(--bg-1, #16181e);
-  border: 1px solid var(--line, #2d3340);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
   width: 280px;
 }
@@ -1052,7 +1052,7 @@ export default {
   background: transparent;
   outline: none;
   font-size: 12px;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
   width: 100%;
 }
 
@@ -1065,8 +1065,8 @@ export default {
 .drawings-table-container {
   flex: 1;
   overflow-y: auto;
-  border: 1px solid var(--line, #2d3340);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 8px);
 }
 
 .workbench-tbl {
@@ -1078,29 +1078,29 @@ export default {
 .workbench-tbl th {
   padding: 8px 12px;
   text-align: left;
-  background: rgba(0, 0, 0, 0.2);
-  color: var(--text-3, #6b7280);
+  background: var(--panel-2);
+  color: var(--text-3);
   font-weight: 500;
-  border-bottom: 1px solid var(--line, #2d3340);
+  border-bottom: 1px solid var(--line);
 }
 
 .workbench-tbl td {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--line, #2d3340);
+  border-bottom: 1px solid var(--line);
   vertical-align: middle;
 }
 
 .workbench-tbl tr.row-checked {
-  background: rgba(59, 130, 246, 0.08);
+  background: var(--active);
 }
 
 .tag-path {
   display: inline-block;
   padding: 2px 8px;
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(59, 130, 246, 0.2);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  color: var(--accent-light, #93c5fd);
+  color: var(--accent);
   font-size: 11.5px;
   max-width: 240px;
   overflow: hidden;
@@ -1109,8 +1109,8 @@ export default {
 }
 
 .warn-tag {
-  color: #f59e0b;
-  border-color: rgba(245, 158, 11, 0.3);
+  color: var(--warn);
+  border-color: var(--warn);
 }
 
 .inline-move-wrap {
@@ -1125,7 +1125,7 @@ export default {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 /* 模态弹窗 */
@@ -1142,10 +1142,10 @@ export default {
 
 .modal-card {
   width: 440px;
-  background: var(--bg-card, #1f232b);
-  border: 1px solid var(--line, #2d3340);
-  border-radius: 12px;
-  box-shadow: 0 20px 30px rgba(0, 0, 0, 0.5);
+  background: var(--panel);
+  border: 1px solid var(--line-strong, var(--line));
+  border-radius: var(--radius, 12px);
+  box-shadow: var(--shadow);
   overflow: hidden;
 }
 
@@ -1154,13 +1154,13 @@ export default {
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
-  border-bottom: 1px solid var(--line, #2d3340);
+  border-bottom: 1px solid var(--line);
 }
 
 .modal-head h3 {
   font-size: 15px;
   margin: 0;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
 }
 
 .modal-body {
@@ -1178,7 +1178,7 @@ export default {
 
 .form-group label {
   font-size: 12px;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
 }
 
 .parent-display {
@@ -1186,15 +1186,15 @@ export default {
   align-items: center;
   gap: 6px;
   padding: 7px 10px;
-  background: var(--bg-1, #16181e);
-  border: 1px solid var(--line, #2d3340);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
   font-size: 12.5px;
 }
 
 .parent-ico {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
 }
 
 .modal-inp {
@@ -1206,11 +1206,11 @@ export default {
   justify-content: flex-end;
   gap: 10px;
   padding: 12px 18px;
-  background: var(--bg-1, #16181e);
-  border-top: 1px solid var(--line, #2d3340);
+  background: var(--panel-2);
+  border-top: 1px solid var(--line);
 }
 
 .required {
-  color: var(--danger, #ef4444);
+  color: var(--danger);
 }
 </style>

@@ -126,7 +126,6 @@ function expandToNode(targetId: string) {
 }
 
 function isExpanded(id: string): boolean {
-  // 搜索时全展开
   if (searchQuery.value.trim()) return true
   return expandedKeys.value.has(id)
 }
@@ -319,10 +318,7 @@ onUnmounted(() => {
 
             <!-- 递归渲染树节点 -->
             <template v-for="node in tree" :key="node.category.id">
-              <div
-                class="tree-node-item"
-                :style="{ '--indent-level': node.level }"
-              >
+              <div class="tree-node-item">
                 <div
                   class="tree-node-row"
                   :class="{ active: node.category.id === modelValue }"
@@ -503,20 +499,21 @@ export default {
   justify-content: space-between;
   min-height: 36px;
   padding: 4px 10px;
-  background: var(--bg-1, #1a1d24);
-  border: 1px solid var(--line, #2d3340);
-  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 8px);
+  color: var(--text-1);
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.25s, box-shadow 0.25s;
 }
 
 .tree-select-trigger:hover {
-  border-color: var(--accent, #3b82f6);
+  border-color: var(--accent);
 }
 
 .tree-select.open .tree-select-trigger {
-  border-color: var(--accent, #3b82f6);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .selected-view {
@@ -533,12 +530,12 @@ export default {
   align-items: center;
   gap: 5px;
   padding: 2px 8px;
-  background: rgba(59, 130, 246, 0.15);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
   border-radius: 6px;
-  color: var(--accent-light, #93c5fd);
+  color: var(--accent);
   font-weight: 500;
-  font-size: 12.5px;
+  font-size: 12px;
   max-width: 100%;
 }
 
@@ -549,7 +546,7 @@ export default {
 }
 
 .path-hint {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   font-size: 11.5px;
   white-space: nowrap;
   overflow: hidden;
@@ -557,7 +554,7 @@ export default {
 }
 
 .placeholder {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .trigger-actions {
@@ -565,7 +562,7 @@ export default {
   align-items: center;
   gap: 6px;
   margin-left: 8px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .clear-btn {
@@ -576,17 +573,17 @@ export default {
   border-radius: 4px;
   background: transparent;
   border: none;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
 }
 
 .clear-btn:hover {
-  color: var(--text-1, #f3f4f6);
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-1);
+  background: var(--hover);
 }
 
 .arrow-icon {
-  transition: transform 0.2s ease;
+  transition: transform 0.25s ease;
 }
 
 .arrow-icon.rotate {
@@ -600,10 +597,10 @@ export default {
   left: 0;
   right: 0;
   z-index: 1050;
-  background: var(--bg-card, #1f232b);
-  border: 1px solid var(--line, #2d3340);
-  border-radius: 10px;
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+  background: var(--panel);
+  border: 1px solid var(--line-strong, var(--line));
+  border-radius: var(--radius, 10px);
+  box-shadow: var(--shadow);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -615,12 +612,12 @@ export default {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--line, #2d3340);
-  background: var(--bg-2, #16181e);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
 }
 
 .search-icon {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   flex-shrink: 0;
 }
 
@@ -629,22 +626,22 @@ export default {
   background: transparent;
   border: none;
   outline: none;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
   font-size: 12.5px;
 }
 
 .clear-search-btn {
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
   padding: 2px;
 }
 
 .quick-create-bar {
   padding: 6px 12px;
-  background: rgba(59, 130, 246, 0.08);
-  border-bottom: 1px solid var(--line, #2d3340);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--line);
 }
 
 .btn-text-action {
@@ -653,7 +650,7 @@ export default {
   gap: 6px;
   background: transparent;
   border: none;
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -662,7 +659,7 @@ export default {
 }
 
 .btn-text-action:hover {
-  background: rgba(59, 130, 246, 0.15);
+  background: var(--hover);
 }
 
 .quick-create-form {
@@ -673,7 +670,7 @@ export default {
 
 .create-parent-tip {
   font-size: 11px;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
 }
 
 .create-input-row {
@@ -698,19 +695,19 @@ export default {
   gap: 6px;
   padding: 6px 12px 6px 4px;
   cursor: pointer;
-  color: var(--text-2, #9ca3af);
+  color: var(--text-2);
   transition: background 0.15s, color 0.15s;
   position: relative;
 }
 
 .tree-node-row:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-1, #f3f4f6);
+  background: var(--hover);
+  color: var(--text-1);
 }
 
 .tree-node-row.active {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent-light, #93c5fd);
+  background: var(--active);
+  color: var(--accent);
   font-weight: 500;
 }
 
@@ -726,7 +723,7 @@ export default {
   height: 18px;
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
   border-radius: 3px;
   flex-shrink: 0;
@@ -734,8 +731,8 @@ export default {
 }
 
 .node-expand-btn:hover {
-  color: var(--text-1, #f3f4f6);
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-1);
+  background: var(--hover);
 }
 
 .node-expand-btn .rotate {
@@ -749,11 +746,11 @@ export default {
 
 .node-icon {
   flex-shrink: 0;
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
 }
 
 .node-icon.muted {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .node-label {
@@ -765,14 +762,14 @@ export default {
 }
 
 .node-label.muted {
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
 }
 
 .node-count {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: var(--text-3, #6b7280);
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-3);
+  background: var(--panel-2);
   padding: 1px 6px;
   border-radius: 10px;
 }
@@ -785,7 +782,7 @@ export default {
   height: 20px;
   border: none;
   background: transparent;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   cursor: pointer;
   border-radius: 4px;
   margin-left: 4px;
@@ -796,12 +793,12 @@ export default {
 }
 
 .inline-add-btn:hover {
-  color: var(--accent, #3b82f6);
-  background: rgba(59, 130, 246, 0.2);
+  color: var(--accent);
+  background: var(--active);
 }
 
 .check-icon {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
   margin-left: 4px;
   flex-shrink: 0;
 }
@@ -817,12 +814,12 @@ export default {
 }
 
 .search-result-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hover);
 }
 
 .search-result-item.active {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent-light, #93c5fd);
+  background: var(--active);
+  color: var(--accent);
 }
 
 .result-texts {
@@ -836,12 +833,12 @@ export default {
 .result-name {
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
 }
 
 .result-path {
   font-size: 11px;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -850,7 +847,7 @@ export default {
 .empty-tip {
   padding: 24px;
   text-align: center;
-  color: var(--text-3, #6b7280);
+  color: var(--text-3);
   font-size: 12.5px;
 }
 

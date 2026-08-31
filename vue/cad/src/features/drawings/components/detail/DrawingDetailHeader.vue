@@ -118,16 +118,16 @@ function openParentDrawing() {
   align-items: center;
   gap: 4px;
   padding: 1px 7px;
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(59, 130, 246, 0.25);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  color: var(--accent-light, #93c5fd);
+  color: var(--accent);
   font-size: 11.5px;
 }
 
 .cat-path-badge b {
   font-weight: 500;
-  color: var(--text-1, #f3f4f6);
+  color: var(--text-1);
 }
 
 @media (max-width: 760px) {
