@@ -21,7 +21,11 @@ var nodeNameToSignerRole = map[string]string{
 	"主管批准": "批准",
 }
 
-const timeLayout = "2006-01-02 15:04"
+// pgTimeLayout PostgreSQL to_char 模板（纯数字会被 to_char 当字面量，不能用 Go 参考时间格式）。
+const pgTimeLayout = "YYYY-MM-DD HH24:MI"
+
+// goTimeLayout Go time.Format 布局，用于程序内格式化时间字符串。
+const goTimeLayout = "2006-01-02 15:04"
 
 type PGRepository struct {
 	pool *pgxpool.Pool
@@ -271,7 +275,7 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 		rows, err := tx.Query(ctx, `
 			SELECT name, COALESCE(assigned_user_id::text, ''), assigned_name, status, opinion, required, node_order,
 			       COALESCE(to_char(reviewed_at, $2), '')
-			FROM review_case_nodes WHERE review_case_id = $1::uuid ORDER BY node_order`, prevCaseID, timeLayout)
+			FROM review_case_nodes WHERE review_case_id = $1::uuid ORDER BY node_order`, prevCaseID, pgTimeLayout)
 		if err != nil {
 			return ReviewCase{}, fmt.Errorf("读取历史审核节点失败: %w", err)
 		}
@@ -338,7 +342,7 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 			if nodes[index].Name == "设计自检" || nodeNameToSignerRole[nodes[index].Name] == "设计" {
 				nodes[index].Status = "pass"
 				nodes[index].Opinion = "设计完成并自检通过，发起审核流转。"
-				nodes[index].ReviewedAt = time.Now().Format(timeLayout)
+				nodes[index].ReviewedAt = time.Now().Format(goTimeLayout)
 				break
 			}
 		}
@@ -398,7 +402,7 @@ func (repository *PGRepository) ListCases(ctx context.Context) ([]ReviewCase, er
 		JOIN drawings d ON d.id = c.drawing_id
 		LEFT JOIN review_flows f ON f.id = c.flow_id
 		LEFT JOIN users u ON u.id = c.initiator_id
-		ORDER BY c.started_at DESC`, timeLayout)
+		ORDER BY c.started_at DESC`, pgTimeLayout)
 	if err != nil {
 		return nil, fmt.Errorf("查询审核案例失败: %w", err)
 	}
@@ -570,7 +574,7 @@ func (repository *PGRepository) CompletedActions(ctx context.Context) ([]Complet
 		LEFT JOIN users initiator ON initiator.id = c.initiator_id
 		LEFT JOIN users actor ON actor.id = a.actor_id
 		WHERE a.action IN ('pass', 'reject')
-		ORDER BY a.created_at DESC`, timeLayout)
+		ORDER BY a.created_at DESC`, pgTimeLayout)
 	if err != nil {
 		return nil, fmt.Errorf("查询已办审核失败: %w", err)
 	}
@@ -603,7 +607,7 @@ func (repository *PGRepository) caseByID(ctx context.Context, caseID string) (Re
 		JOIN drawings d ON d.id = c.drawing_id
 		LEFT JOIN review_flows f ON f.id = c.flow_id
 		LEFT JOIN users u ON u.id = c.initiator_id
-		WHERE c.id = $2::uuid`, timeLayout, caseID).
+		WHERE c.id = $2::uuid`, pgTimeLayout, caseID).
 		Scan(&item.ID, &item.DrawingNo, &item.DrawingName, &item.FlowName, &item.Status, &item.Initiator, &item.StartedAt, &item.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReviewCase{}, ErrCaseNotFound
@@ -619,7 +623,7 @@ func (repository *PGRepository) caseNodes(ctx context.Context, caseID string) ([
 	rows, err := repository.pool.Query(ctx, `
 		SELECT name, COALESCE(assigned_user_id::text, ''), assigned_name, status, opinion, required, node_order,
 		       COALESCE(to_char(reviewed_at, $2), '')
-		FROM review_case_nodes WHERE review_case_id = $1::uuid ORDER BY node_order`, caseID, timeLayout)
+		FROM review_case_nodes WHERE review_case_id = $1::uuid ORDER BY node_order`, caseID, pgTimeLayout)
 	if err != nil {
 		return nil, fmt.Errorf("查询审核节点失败: %w", err)
 	}

@@ -417,14 +417,6 @@ const canEditFiles = computed(() => {
   const creator = (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
   return creator || admin
 })
-const editDenyReason = computed(() => {
-  const item = currentItem.value
-  if (!item) return ''
-  if (item.status === 'archived') return '图纸已存档（只读保护），如需修改请联系管理员解除存档'
-  if (item.status === 'reviewing') return '审核中的图纸仅当前节点责任人可编辑，其他用户请使用「本地查看」'
-  return '仅创建者或管理员可以编辑图纸，其他用户请使用「本地查看」'
-})
-
 // 心跳新鲜度：30s 一次心跳，90s 内有成功记录视为保护生效中。
 function isHeartbeatFresh(session: LocalActiveEditSession): boolean {
   return Boolean(session.lastHeartbeatAt && Date.now() - session.lastHeartbeatAt < 90_000)
@@ -1178,16 +1170,16 @@ function closeReidentifyModal() {
                   <DemoIcon v-else name="eye" :size="13" />本地查看
                 </button>
                 <button
+                  v-if="canEditFiles"
                   class="btn sm"
                   type="button"
-                  :disabled="!canEditFiles"
-                  :title="canEditFiles ? '使用网页 CAD 编辑器打开并编辑文件' : editDenyReason"
+                  title="使用网页 CAD 编辑器打开并编辑文件"
                   @click="openOnlineEditor(file)"
                 >
                   <img class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />在线编辑
                 </button>
 
-                <!-- 本地 CAD 编辑按钮三种状态：编辑中（绿色高亮）、被他人锁定（禁用锁止）、正常空闲 -->
+                <!-- 本地 CAD 编辑按钮三种状态：编辑中（绿色高亮）、被他人锁定（禁用锁止）、正常空闲；无权限直接隐藏 -->
                 <button
                   v-if="isFileEditingByMe(file)"
                   class="btn sm success-btn"
@@ -1197,9 +1189,8 @@ function closeReidentifyModal() {
                 >
                   <span class="pulse-dot"></span>编辑中
                 </button>
-                <template v-else-if="!isFileLockedByOther(file)">
+                <template v-else-if="canEditFiles && !isFileLockedByOther(file)">
                   <button
-                    v-if="canEditFiles"
                     class="btn sm"
                     type="button"
                     :disabled="Boolean(editingFileId)"
@@ -1209,18 +1200,9 @@ function closeReidentifyModal() {
                     <span v-if="editingFileId === file.id" class="local-edit-spinner" aria-hidden="true"></span>
                     <img v-else class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />{{ editingFileId === file.id ? '启动中...' : '本地编辑' }}
                   </button>
-                  <button
-                    v-else
-                    class="btn sm muted-btn"
-                    type="button"
-                    :title="editDenyReason"
-                    disabled
-                  >
-                    <DemoIcon name="lock" :size="12" />本地编辑
-                  </button>
                 </template>
                 <button
-                  v-else
+                  v-else-if="isFileLockedByOther(file)"
                   class="btn sm locked-btn"
                   type="button"
                   :disabled="!getFileLockInfo(file)?.canClose || closingSessionIds.has(getFileLockInfo(file)!.id)"
@@ -1235,10 +1217,10 @@ function closeReidentifyModal() {
                 </button>
 
                 <button
+                  v-if="canEditFiles"
                   class="btn sm"
                   type="button"
-                  :disabled="!canEditFiles"
-                  :title="canEditFiles ? '替换当前图纸文件并生成新版本' : editDenyReason"
+                  title="替换当前图纸文件并生成新版本"
                   @click="triggerReplace(file)"
                 >
                   <DemoIcon name="refresh-cw" :size="13" />替换
@@ -1248,10 +1230,10 @@ function closeReidentifyModal() {
                   <span v-if="isHistoryUnread(file)" class="hist-count">{{ file.history?.length }}</span>
                 </button>
                 <button
+                  v-if="canEditFiles"
                   class="btn sm danger"
                   type="button"
-                  :disabled="!canEditFiles"
-                  :title="canEditFiles ? '删除文件' : editDenyReason"
+                  title="删除文件"
                   @click="handleDeleteFile(file)"
                 >
                   <DemoIcon name="trash-2" :size="13" />删除
@@ -2608,11 +2590,6 @@ function closeReidentifyModal() {
   color: var(--ok, #16a34a) !important;
   border-color: rgba(34, 197, 94, 0.35) !important;
   font-weight: 600;
-}
-
-.muted-btn {
-  opacity: 0.55;
-  cursor: not-allowed !important;
 }
 
 .dock-time .hb-ok {

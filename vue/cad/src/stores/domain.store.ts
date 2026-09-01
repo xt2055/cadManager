@@ -293,6 +293,21 @@ export const useDomainStore = defineStore('domain', () => {
         opinion: item.opinion,
         ver: item.ver,
       }))
+      // 后端案例状态是权威：同步图纸文档状态，避免驳回/发布后前端仍停留在旧状态。
+      // rejected → draft（等发起人重新发起）、published → published、reviewing → reviewing。
+      const statusByDrawing = new Map<string, 'reviewing' | 'draft' | 'published'>()
+      for (const item of reviewCases.value) {
+        statusByDrawing.set(item.drawingNo, item.status === 'reviewing' ? 'reviewing' : item.status === 'published' ? 'published' : 'draft')
+      }
+      let statusChanged = false
+      for (const [drawingNo, status] of statusByDrawing) {
+        const target = findDrawingOrPart(drawingNo)
+        if (target && target.status !== status && target.status !== 'archived') {
+          target.status = status
+          statusChanged = true
+        }
+      }
+      if (statusChanged) await persist()
     } catch (loadError) {
       // 审核服务不可用时保留文档内数据，避免整个工作台不可用。
       console.warn('加载审核数据失败', loadError)
