@@ -86,9 +86,6 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	if service.repository == nil {
 		return OpenResult{}, errors.New("编辑会话数据库未配置")
 	}
-	if !canEdit(user.Roles) {
-		return OpenResult{}, errors.New("当前账号没有 CAD 编辑权限")
-	}
 	item, err := service.attachments.Find(ctx, storageKey)
 	if err != nil {
 		return OpenResult{}, err
@@ -96,9 +93,10 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	if !isCADFile(item.Name) {
 		return OpenResult{}, errors.New("当前附件不是可直接编辑的 CAD 文件")
 	}
-	// 图纸生命周期 × 身份强校验：审核中仅当前节点责任人可编辑；存档仅管理员经解除存档后编辑；
+	// 图纸生命周期 × 身份统一授权：角色门禁并入状态矩阵——
+	// 审核中当前节点责任人可编辑（即使无 designer 角色）；存档仅管理员经解除存档后编辑；
 	// 草稿/生产仅创建者或管理员可编辑。其他用户一律走「本地查看（只读）」。
-	if err := service.checkEditPermission(ctx, user, item.DrawingNo); err != nil {
+	if err := service.authorizeEdit(ctx, user, item.DrawingNo); err != nil {
 		return OpenResult{}, err
 	}
 
@@ -206,12 +204,28 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	}, nil
 }
 
-// checkEditPermission 图纸生命周期 × 身份的编辑权限矩阵（后端强校验）。
-func (service *Service) checkEditPermission(ctx context.Context, user auth.AuthUser, drawingNo string) error {
-	if service.drawings == nil || strings.TrimSpace(drawingNo) == "" {
-		// 未装配策略或非图纸附件：保持旧行为（仅角色校验）。
-		return nil
+// authorizeEdit 图纸生命周期 × 身份的编辑授权矩阵（后端强校验，角色门禁并入矩阵）：
+// 草稿/生产 → 创建者或管理员；审核中 → 当前节点责任人或管理员（审核人员即使只有 reviewer 角色也可签改）；
+// 存档 → 一律拒绝（管理员须先解除存档）。
+func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, drawingNo string) error {
+	admin := isAdmin(user.Roles)
+	designer := false
+	for _, role := range user.Roles {
+		if role == "designer" {
+			designer = true
+			break
+		}
 	}
+	drawingNo = strings.TrimSpace(drawingNo)
+
+	// 未装配策略（非图纸附件等）：退回旧的角色门禁。
+	if service.drawings == nil || drawingNo == "" {
+		if admin || designer {
+			return nil
+		}
+		return errors.New("当前账号没有 CAD 编辑权限")
+	}
+
 	item, err := service.drawings.FindByNo(ctx, drawingNo)
 	if errors.Is(err, drawing.ErrNotFound) {
 		return errors.New("未找到图纸信息，无法发起编辑")
@@ -219,7 +233,7 @@ func (service *Service) checkEditPermission(ctx context.Context, user auth.AuthU
 	if err != nil {
 		return fmt.Errorf("读取图纸状态失败: %w", err)
 	}
-	admin := isAdmin(user.Roles)
+
 	switch item.Status {
 	case drawing.StatusReviewing:
 		if admin {
@@ -229,17 +243,26 @@ func (service *Service) checkEditPermission(ctx context.Context, user auth.AuthU
 		if assigneeErr != nil {
 			return fmt.Errorf("读取审核节点责任人失败: %w", assigneeErr)
 		}
-		if assignee == "" || assignee != user.ID {
+		if assignee != "" && assignee == user.ID {
+			return nil
+		}
+		if designer {
 			return errors.New("审核中的图纸仅当前节点责任人可编辑，其他用户请使用「本地查看（只读）」")
 		}
-		return nil
+		return errors.New("审核中的图纸仅当前节点责任人可编辑，当前账号不是该节点责任人")
 	case drawing.StatusArchived:
 		return errors.New("图纸已存档，处于只读保护中；如需修改请联系管理员解除存档")
 	default:
-		if admin || item.CreatedByID == user.ID {
+		if admin {
 			return nil
 		}
-		return errors.New("仅创建者或管理员可以编辑图纸，其他用户请使用「本地查看（只读）」")
+		if designer && item.CreatedByID == user.ID {
+			return nil
+		}
+		if designer {
+			return errors.New("仅创建者或管理员可以编辑图纸，其他用户请使用「本地查看（只读）」")
+		}
+		return errors.New("当前账号没有 CAD 编辑权限")
 	}
 }
 
@@ -287,7 +310,8 @@ func (service *Service) ReadOnlyOpen(ctx context.Context, user auth.AuthUser, st
 		caxaPath = ""
 	}
 	return ReadOnlyOpenResult{
-		DownloadPath: "/api/attachments/" + actualStorageKey,
+		// 相对 API 前缀的路径（客户端 apiBase 已含 /api，直接拼接）。
+		DownloadPath: "/attachments/" + actualStorageKey,
 		FileName:     filepath.Base(actualStorageKey),
 		CaxaPath:     caxaPath,
 	}, nil
@@ -553,15 +577,6 @@ func (service *Service) localPath(storageKey string) (string, error) {
 
 func (service *Service) smbRoot() string {
 	return `\\` + strings.Trim(service.cfg.Host, `\`) + `\` + strings.Trim(service.cfg.Share, `\`)
-}
-
-func canEdit(roles []string) bool {
-	for _, role := range roles {
-		if role == "admin" || role == "designer" {
-			return true
-		}
-	}
-	return false
 }
 
 func isAdmin(roles []string) bool {
