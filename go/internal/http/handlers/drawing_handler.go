@@ -244,8 +244,10 @@ func validStatus(status drawing.Status) bool {
 
 // transitionDrawingStatus 存档（生产→存档，创建者/管理员）与解除存档（存档→生产，仅管理员）。
 func transitionDrawingStatus(ctx context.Context, repository drawing.Repository, user auth.AuthUser, key, action string) (drawing.Drawing, error) {
+	// key 可能是 uuid 或图纸号；Find 按 uuid 查询，非 uuid 输入会报 22P02 而非
+	// ErrNotFound，因此任何错误都回退到按图纸号查询，两者都未命中才算不存在。
 	target, err := repository.Find(ctx, key)
-	if errors.Is(err, drawing.ErrNotFound) {
+	if err != nil {
 		target, err = repository.FindByNo(ctx, key)
 	}
 	if err != nil {
