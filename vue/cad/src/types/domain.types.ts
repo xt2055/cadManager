@@ -1,4 +1,4 @@
-export type DrawingStatus = 'published' | 'reviewing' | 'draft' | 'hidden' | 'disabled'
+export type DrawingStatus = 'published' | 'reviewing' | 'draft' | 'hidden' | 'disabled' | 'archived'
 
 export type ActivityType = 'view' | 'create' | 'edit' | 'branch' | 'upload' | 'download' | 'delete' | 'check' | 'parse'
 

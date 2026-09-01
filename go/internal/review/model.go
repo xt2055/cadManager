@@ -103,4 +103,6 @@ type Repository interface {
 	ListCases(ctx context.Context) ([]ReviewCase, error)
 	SubmitNode(ctx context.Context, caseID string, input SubmitNodeInput, userID string) (ReviewCase, error)
 	CompletedActions(ctx context.Context) ([]CompletedAction, error)
+	// ActiveCaseAssigneeByDrawingNo 返回审核中图纸当前活动节点的责任人用户 ID（无进行中案例返回空串）。
+	ActiveCaseAssigneeByDrawingNo(ctx context.Context, drawingNo string) (string, error)
 }

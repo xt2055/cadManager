@@ -495,8 +495,8 @@ func (repository *PGRepository) SubmitNode(ctx context.Context, caseID string, i
 		}
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE review_case_nodes SET status = $2, opinion = $3, reviewed_at = now()
-		WHERE id = $4::uuid`, nodeID, action, opinion, nodeID); err != nil {
+		UPDATE review_case_nodes SET status = $1, opinion = $2, reviewed_at = now()
+		WHERE id = $3::uuid`, action, opinion, nodeID); err != nil {
 		return ReviewCase{}, fmt.Errorf("更新审核节点失败: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -537,6 +537,23 @@ func (repository *PGRepository) SubmitNode(ctx context.Context, caseID string, i
 		return ReviewCase{}, fmt.Errorf("提交签署事务失败: %w", err)
 	}
 	return repository.caseByID(ctx, caseID)
+}
+
+// ActiveCaseAssigneeByDrawingNo 查询审核中案例当前活动节点（node_order 最小的 pending 节点）的责任人用户 ID。
+func (repository *PGRepository) ActiveCaseAssigneeByDrawingNo(ctx context.Context, drawingNo string) (string, error) {
+	var assignee string
+	err := repository.pool.QueryRow(ctx, `
+		SELECT COALESCE(n.assigned_user_id::text, '')
+		FROM review_cases c
+		JOIN drawings d ON d.id = c.drawing_id
+		JOIN review_case_nodes n ON n.review_case_id = c.id
+		WHERE d.drawing_no = $1 AND c.status = 'reviewing' AND n.status = 'pending'
+		ORDER BY n.node_order
+		LIMIT 1`, drawingNo).Scan(&assignee)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("查询审核节点责任人失败: %w", err)
+	}
+	return assignee, nil
 }
 
 // CompletedActions 返回已办审核归档（通过/驳回动作）。

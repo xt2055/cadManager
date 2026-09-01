@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"cadguanliq/internal/auth"
 	"cadguanliq/internal/drawing"
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
@@ -116,6 +119,15 @@ func DrawingResource(repository drawing.Repository) http.HandlerFunc {
 			response.WriteData(writer, http.StatusCreated, item)
 			return
 		}
+		if len(parts) == 2 && (parts[1] == "archive" || parts[1] == "unarchive") && request.Method == http.MethodPost {
+			item, err := transitionDrawingStatus(request.Context(), repository, user, parts[0], parts[1])
+			if err != nil {
+				writeTransitionError(writer, err)
+				return
+			}
+			response.WriteData(writer, http.StatusOK, item)
+			return
+		}
 		if len(parts) != 1 {
 			response.WriteError(writer, http.StatusNotFound, "图纸接口不存在")
 			return
@@ -216,9 +228,56 @@ func writeDrawingError(writer http.ResponseWriter, err error, fallback string) {
 
 func validStatus(status drawing.Status) bool {
 	switch status {
-	case drawing.StatusPublished, drawing.StatusReviewing, drawing.StatusDraft, drawing.StatusHidden, drawing.StatusDisabled:
+	case drawing.StatusPublished, drawing.StatusReviewing, drawing.StatusDraft, drawing.StatusHidden, drawing.StatusDisabled, drawing.StatusArchived:
 		return true
 	default:
 		return false
 	}
 }
+
+// transitionDrawingStatus 存档（生产→存档，创建者/管理员）与解除存档（存档→生产，仅管理员）。
+func transitionDrawingStatus(ctx context.Context, repository drawing.Repository, user auth.AuthUser, key, action string) (drawing.Drawing, error) {
+	target, err := repository.Find(ctx, key)
+	if errors.Is(err, drawing.ErrNotFound) {
+		target, err = repository.FindByNo(ctx, key)
+	}
+	if err != nil {
+		return drawing.Drawing{}, err
+	}
+	if action == "archive" {
+		if target.CreatedByID != user.ID && !hasAdminRole(user.Roles) {
+			return drawing.Drawing{}, fmt.Errorf("仅创建者或管理员可以存档图纸")
+		}
+		item, err := repository.SetStatusByNo(ctx, target.No, drawing.StatusPublished, drawing.StatusArchived, user.ID)
+		if errors.Is(err, drawing.ErrInvalidTransition) {
+			return drawing.Drawing{}, fmt.Errorf("仅「生产中」的图纸可以存档（草稿需先完成审核，审核中请等待签署完成）")
+		}
+		return item, err
+	}
+	if !hasAdminRole(user.Roles) {
+		return drawing.Drawing{}, fmt.Errorf("解除存档需要管理员操作，请联系管理员")
+	}
+	item, err := repository.SetStatusByNo(ctx, target.No, drawing.StatusArchived, drawing.StatusPublished, user.ID)
+	if errors.Is(err, drawing.ErrInvalidTransition) {
+		return drawing.Drawing{}, fmt.Errorf("该图纸当前不在存档状态")
+	}
+	return item, err
+}
+
+func writeTransitionError(writer http.ResponseWriter, err error) {
+	log.Printf("drawing status transition failed: %v", err)
+	switch {
+	case errors.Is(err, drawing.ErrNotFound):
+		response.WriteError(writer, http.StatusNotFound, "图纸不存在")
+	case errors.Is(err, drawing.ErrInvalidTransition):
+		response.WriteError(writer, http.StatusConflict, "图纸当前状态不允许该操作")
+	default:
+		if msg := err.Error(); !strings.Contains(msg, "资源") && !strings.HasPrefix(msg, "drawing") {
+			response.WriteError(writer, http.StatusForbidden, err.Error())
+			return
+		}
+		response.WriteError(writer, http.StatusInternalServerError, "图纸状态更新失败")
+	}
+}
+
+// hasAdminRole 复用 review_handler.go 中的同名包内 helper。

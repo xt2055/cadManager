@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("drawing resource not found")
-	ErrConflict = errors.New("drawing resource conflict")
+	ErrNotFound          = errors.New("drawing resource not found")
+	ErrConflict          = errors.New("drawing resource conflict")
+	ErrInvalidTransition = errors.New("drawing status transition not allowed")
 )
 
 type PGRepository struct {
@@ -76,7 +77,8 @@ func (repository *PGRepository) find(ctx context.Context, condition string, argu
 		SELECT d.id::text, d.drawing_no, d.name, d.kind, d.project, d.material, d.vendor, d.status,
 		       d.version, d.borrow_from, d.remark,
 		       COALESCE(created_user.display_name, created_user.account, ''), d.created_at,
-		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), d.updated_at
+		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), d.updated_at,
+		       COALESCE(d.created_by::text, '')
 		FROM drawings d
 		LEFT JOIN users created_user ON created_user.id = d.created_by
 		LEFT JOIN users updated_user ON updated_user.id = d.updated_by `+condition, argument)
@@ -103,7 +105,7 @@ func scanDrawing(row rowScanner) (Drawing, error) {
 	var status string
 	var createdAt time.Time
 	var updatedAt time.Time
-	if err := row.Scan(&item.ID, &item.No, &item.Name, &item.Kind, &item.Project, &item.Material, &item.Vendor, &status, &item.Version, &item.BorrowFrom, &item.Remark, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.No, &item.Name, &item.Kind, &item.Project, &item.Material, &item.Vendor, &status, &item.Version, &item.BorrowFrom, &item.Remark, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt, &item.CreatedByID); err != nil {
 		return Drawing{}, err
 	}
 	item.Status = Status(status)
@@ -175,6 +177,24 @@ func (repository *PGRepository) Update(ctx context.Context, id string, input Upd
 		return Drawing{}, ErrNotFound
 	}
 	return item, err
+}
+
+// SetStatusByNo 受控状态流转：仅当图纸当前状态等于 from 时更新为 to，否则返回 ErrInvalidTransition。
+func (repository *PGRepository) SetStatusByNo(ctx context.Context, no string, from, to Status, userID string) (Drawing, error) {
+	tag, err := repository.pool.Exec(ctx, `
+		UPDATE drawings
+		SET status = $2, updated_by = $3::uuid, updated_at = now()
+		WHERE drawing_no = $1 AND status = $4`, no, to, userID, from)
+	if err != nil {
+		return Drawing{}, fmt.Errorf("更新图纸状态失败: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		if _, findErr := repository.FindByNo(ctx, no); findErr != nil {
+			return Drawing{}, ErrNotFound
+		}
+		return Drawing{}, ErrInvalidTransition
+	}
+	return repository.FindByNo(ctx, no)
 }
 
 func (repository *PGRepository) ListParts(ctx context.Context, drawingID string) ([]Part, error) {

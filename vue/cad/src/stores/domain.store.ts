@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
 import { reviewFlowService, signerRoleForNode } from '@/services/review-flow.service'
 import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.service'
+import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
 import type { DataDocument } from '@/services/data-manager'
 import type {
   ActivityLog,
@@ -40,11 +41,12 @@ import type {
 } from '@/types/domain.types'
 
 export const STATUS = {
-  published: { t: '已发布', c: 'ok' },
+  published: { t: '生产中', c: 'ok' },
   reviewing: { t: '审核中', c: 'info' },
   draft: { t: '草稿', c: 'mute' },
   hidden: { t: '已隐藏', c: 'danger' },
   disabled: { t: '已禁用', c: 'danger' },
+  archived: { t: '已存档', c: 'warn' },
 } as const
 
 interface AttachmentInput {
@@ -1782,6 +1784,25 @@ export const useDomainStore = defineStore('domain', () => {
     await persist()
   }
 
+  // 存档 / 解除存档：生产 ⇄ 存档。权威校验在后端（创建者或管理员存档，管理员解档）。
+  async function setDrawingArchived(drawingNo: string, archived: boolean): Promise<void> {
+    await initialize()
+    const target = findDrawingOrPart(drawingNo)
+    if (!target) throw new Error(`未找到图纸：${drawingNo}`)
+    const item = archived
+      ? await drawingLifecycleService.archive(drawingNo)
+      : await drawingLifecycleService.unarchive(drawingNo)
+    target.status = (item.status as Drawing['status']) ?? (archived ? 'archived' : 'published')
+    recordActivity({
+      drawingNo,
+      drawingName: target.name,
+      targetType: 'drawing',
+      act: 'edit',
+      text: archived ? `将图纸 <b>${drawingNo}</b> 存档归档` : `解除图纸 <b>${drawingNo}</b> 的存档`,
+    })
+    await persist()
+  }
+
   // 节点责任人是否为当前登录人（优先按后端分配的用户 ID 匹配，姓名/账号兜底）。
   function isNodeAssignee(user: string | undefined, assignedUserId?: string): boolean {
     const current = authStore.currentUser
@@ -2094,6 +2115,7 @@ export const useDomainStore = defineStore('domain', () => {
     downloadAttachment,
     startReview,
     submitNodeReview,
+    setDrawingArchived,
     setReviewNodeStatus,
     updateStructurePart,
     refreshUsers,

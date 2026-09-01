@@ -573,29 +573,100 @@ func ResolveCaxaPath(configured string) (string, error) {
 	if path, err := exec.LookPath("CDRAFT_M.exe"); err == nil {
 		return path, nil
 	}
-	if path := scanCaxaInstalls(); path != "" {
+	if path := caxaScanCache(); path != "" {
 		return path, nil
 	}
 	return "", errors.New("找不到 CAXA CAD，请设置 CAD_CAXA_BIN")
 }
 
-// scanCaxaInstalls searches Program Files for any CAXA CAD installation
-// (e.g. CAXA\CAXA CAD\2022\Bin64\CDRAFT_M.exe, any version) and returns the
-// newest one found.
-func scanCaxaInstalls() string {
-	var best string
-	for _, root := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramW6432"), os.Getenv("ProgramFiles(x86)")} {
+// caxaScanCache 进程内缓存：磁盘与注册表扫描只执行一次，避免每次打开图纸重复全盘查找。
+var caxaScanCache = sync.OnceValue(func() string {
+	if path := scanCaxaRegistry(); path != "" {
+		return path
+	}
+	return scanCaxaDiskInstalls()
+})
+
+// scanCaxaRegistry 通过注册表 Uninstall 键定位 CAXA CAD 安装位置（含 32 位程序视图），
+// 覆盖非默认安装路径（自定义盘符/目录）的场景。
+func scanCaxaRegistry() string {
+	roots := []string{
+		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`,
+		`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`,
+	}
+	best := ""
+	for _, root := range roots {
+		listing, err := exec.Command("reg", "query", root, "/s", "/f", "CAXA", "/d").CombinedOutput()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(listing), "\r\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "HKEY_") {
+				continue
+			}
+			detail, err := exec.Command("reg", "query", line, "/v", "InstallLocation").CombinedOutput()
+			if err != nil {
+				continue
+			}
+			installDir := regStringValue(string(detail))
+			if installDir == "" {
+				continue
+			}
+			for _, match := range globCaxaBin(installDir) {
+				if best == "" || slices.Compare(numericSegments(best), numericSegments(match)) < 0 {
+					best = match
+				}
+			}
+		}
+	}
+	return best
+}
+
+// regStringValue 从 reg query 输出中提取 REG_SZ 字符串值。
+func regStringValue(output string) string {
+	for _, line := range strings.Split(output, "\r\n") {
+		if idx := strings.Index(line, "REG_SZ"); idx >= 0 {
+			return strings.TrimSpace(line[idx+len("REG_SZ"):])
+		}
+	}
+	return ""
+}
+
+// globCaxaBin 在安装目录下按有限深度查找 Bin64\CDRAFT_M.exe。
+func globCaxaBin(installDir string) []string {
+	var matches []string
+	for depth := 0; depth <= 3; depth++ {
+		segments := make([]string, depth)
+		for i := range segments {
+			segments[i] = "*"
+		}
+		pattern := filepath.Join(append([]string{installDir}, append(segments, "Bin64", "CDRAFT_M.exe")...)...)
+		found, _ := filepath.Glob(pattern)
+		matches = append(matches, found...)
+	}
+	return matches
+}
+
+// scanCaxaDiskInstalls 兜底磁盘扫描：Program Files（含 64/32 位视图）与常见盘符根目录下的 CAXA 目录，
+// 返回版本号最新的安装（如 CAXA\CAXA CAD\2022\Bin64\CDRAFT_M.exe）。
+func scanCaxaDiskInstalls() string {
+	roots := []string{
+		os.Getenv("ProgramFiles"), os.Getenv("ProgramW6432"), os.Getenv("ProgramFiles(x86)"),
+		`C:\`, `D:\`, `E:\`, `F:\`,
+	}
+	best := ""
+	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
 		caxaRoot := filepath.Join(root, "CAXA")
-		for depth := 1; depth <= 3; depth++ {
-			pattern := filepath.Join(caxaRoot, strings.Repeat(`*\`, depth)+"Bin64", "CDRAFT_M.exe")
-			matches, _ := filepath.Glob(pattern)
-			for _, match := range matches {
-				if best == "" || slices.Compare(numericSegments(best), numericSegments(match)) < 0 {
-					best = match
-				}
+		if _, err := os.Stat(caxaRoot); err != nil {
+			continue
+		}
+		for _, match := range globCaxaBin(caxaRoot) {
+			if best == "" || slices.Compare(numericSegments(best), numericSegments(match)) < 0 {
+				best = match
 			}
 		}
 	}

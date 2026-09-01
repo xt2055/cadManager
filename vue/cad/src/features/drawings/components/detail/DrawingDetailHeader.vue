@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { useAuthStore } from '@/stores/auth.store'
+import { useUiStore } from '@/stores/ui.store'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 
 defineOptions({
@@ -11,6 +13,8 @@ defineOptions({
 
 const router = useRouter()
 const domainStore = useDomainStore()
+const uiStore = useUiStore()
+const authStore = useAuthStore()
 
 const drawing = computed(() => domainStore.currentDrawing)
 const isPart = computed(() => Boolean(drawing.value && 'parentNo' in drawing.value))
@@ -18,6 +22,39 @@ const parentDrawing = computed(() => {
   const parentNo = isPart.value ? (drawing.value as { parentNo: string }).parentNo : ''
   return domainStore.drawings.find((item) => item.no === parentNo) ?? null
 })
+
+const statusMeta = computed(() => (drawing.value ? STATUS[drawing.value.status] ?? null : null))
+const isAdmin = computed(() => authStore.currentUser?.roles?.includes('admin') ?? false)
+const isCreator = computed(() => {
+  const item = drawing.value
+  const current = authStore.currentUser
+  if (!item || !current) return false
+  return (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
+})
+const canArchive = computed(() => !isPart.value && drawing.value?.status === 'published' && (isCreator.value || isAdmin.value))
+const canUnarchive = computed(() => !isPart.value && drawing.value?.status === 'archived' && isAdmin.value)
+
+function toggleArchive() {
+  const item = drawing.value
+  if (!item) return
+  if (item.status === 'published') {
+    uiStore.confirm('存档图纸', `确定将「${item.no}」存档吗？\n存档后图纸进入只读保护，如需修改须由管理员解除存档。`, {
+      confirmText: '存档',
+      onConfirm: async () => {
+        try {
+          await domainStore.setDrawingArchived(item.no, true)
+          uiStore.toast('图纸已存档', 'ok')
+        } catch (error) {
+          uiStore.toast(error instanceof Error ? error.message : '图纸状态更新失败', 'warn')
+        }
+      },
+    })
+    return
+  }
+  void domainStore.setDrawingArchived(item.no, false)
+    .then(() => uiStore.toast('已解除存档，图纸恢复生产状态', 'ok'))
+    .catch((error: unknown) => uiStore.toast(error instanceof Error ? error.message : '图纸状态更新失败', 'warn'))
+}
 
 const designerName = computed(() => {
   if (!drawing.value) return ''
@@ -60,12 +97,13 @@ function openParentDrawing() {
 
     <div class="dh-row">
       <div class="dh-main">
-        <div class="dh-title">
-          <h2>{{ drawing?.name }}</h2>
-          <span v-if="designerName" class="designer-badge">
-            <DemoIcon name="pen-tool" :size="13" />
-            设计：<b>{{ designerName }}</b>
-          </span>
+         <div class="dh-title">
+           <h2>{{ drawing?.name }}</h2>
+           <span v-if="statusMeta" class="tag" :class="statusMeta.c">{{ statusMeta.t }}</span>
+           <span v-if="designerName" class="designer-badge">
+             <DemoIcon name="pen-tool" :size="13" />
+             设计：<b>{{ designerName }}</b>
+           </span>
           <span class="dh-no">{{ drawing?.no }}</span>
            <span class="tag mute tag-no-dot">{{ drawing?.ver }}</span>
          </div>
@@ -83,6 +121,27 @@ function openParentDrawing() {
        </div>
 
         <div class="dh-acts">
+          <button
+            v-if="canArchive"
+            class="btn"
+            type="button"
+            @click="toggleArchive"
+          >
+            <DemoIcon name="shield-check" :size="14" />存档图纸
+          </button>
+          <button
+            v-else-if="canUnarchive"
+            class="btn"
+            type="button"
+            @click="toggleArchive"
+          >
+            <DemoIcon name="folder-lock" :size="14" />解除存档
+          </button>
+          <span
+            v-else-if="drawing?.status === 'archived'"
+            class="tag warn"
+            title="存档图纸受只读保护，如需修改请联系管理员解除存档"
+          >已存档 · 修改请联系管理员</span>
           <button class="btn" type="button" @click="openProperties"><DemoIcon name="info" :size="14" />属性详情</button>
        </div>
     </div>

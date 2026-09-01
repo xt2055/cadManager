@@ -17,6 +17,7 @@ import (
 	"cadguanliq/internal/auth"
 	"cadguanliq/internal/config"
 	"cadguanliq/internal/converter"
+	"cadguanliq/internal/drawing"
 	"cadguanliq/internal/storage"
 	"cadguanliq/internal/versioning"
 )
@@ -28,6 +29,16 @@ var (
 	ErrInvalidTicket    = errors.New("打开票据无效或已使用")
 )
 
+// DrawingLookup 提供图纸生命周期查询（状态与创建者），用于编辑权限强校验。
+type DrawingLookup interface {
+	FindByNo(ctx context.Context, no string) (drawing.Drawing, error)
+}
+
+// ReviewAssigneeLookup 提供审核中图纸当前活动节点责任人查询。
+type ReviewAssigneeLookup interface {
+	ActiveCaseAssigneeByDrawingNo(ctx context.Context, drawingNo string) (string, error)
+}
+
 type Service struct {
 	attachments attachment.Repository
 	storage     storage.ObjectStorage
@@ -37,6 +48,8 @@ type Service struct {
 	}
 	repository Repository
 	cfg        config.SMBConfig
+	drawings   DrawingLookup
+	reviews    ReviewAssigneeLookup
 }
 
 func NewService(sessionRepository Repository, attachmentRepository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service, smbConfig config.SMBConfig) *Service {
@@ -47,6 +60,12 @@ func NewService(sessionRepository Repository, attachmentRepository attachment.Re
 		repository:  sessionRepository,
 		cfg:         smbConfig,
 	}
+}
+
+// SetPolicy 装配图纸生命周期与审核责任人查询（编辑权限强校验）。
+func (service *Service) SetPolicy(drawings DrawingLookup, reviews ReviewAssigneeLookup) {
+	service.drawings = drawings
+	service.reviews = reviews
 }
 
 func (service *Service) SetVersioning(versions interface {
@@ -76,6 +95,11 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	}
 	if !isCADFile(item.Name) {
 		return OpenResult{}, errors.New("当前附件不是可直接编辑的 CAD 文件")
+	}
+	// 图纸生命周期 × 身份强校验：审核中仅当前节点责任人可编辑；存档仅管理员经解除存档后编辑；
+	// 草稿/生产仅创建者或管理员可编辑。其他用户一律走「本地查看（只读）」。
+	if err := service.checkEditPermission(ctx, user, item.DrawingNo); err != nil {
+		return OpenResult{}, err
 	}
 
 	actualStorageKey := item.StorageKey
@@ -182,8 +206,94 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	}, nil
 }
 
-func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTicket string) (ExchangeResult, error) {
-	if service.repository == nil {
+// checkEditPermission 图纸生命周期 × 身份的编辑权限矩阵（后端强校验）。
+func (service *Service) checkEditPermission(ctx context.Context, user auth.AuthUser, drawingNo string) error {
+	if service.drawings == nil || strings.TrimSpace(drawingNo) == "" {
+		// 未装配策略或非图纸附件：保持旧行为（仅角色校验）。
+		return nil
+	}
+	item, err := service.drawings.FindByNo(ctx, drawingNo)
+	if errors.Is(err, drawing.ErrNotFound) {
+		return errors.New("未找到图纸信息，无法发起编辑")
+	}
+	if err != nil {
+		return fmt.Errorf("读取图纸状态失败: %w", err)
+	}
+	admin := isAdmin(user.Roles)
+	switch item.Status {
+	case drawing.StatusReviewing:
+		if admin {
+			return nil
+		}
+		assignee, assigneeErr := service.reviews.ActiveCaseAssigneeByDrawingNo(ctx, drawingNo)
+		if assigneeErr != nil {
+			return fmt.Errorf("读取审核节点责任人失败: %w", assigneeErr)
+		}
+		if assignee == "" || assignee != user.ID {
+			return errors.New("审核中的图纸仅当前节点责任人可编辑，其他用户请使用「本地查看（只读）」")
+		}
+		return nil
+	case drawing.StatusArchived:
+		return errors.New("图纸已存档，处于只读保护中；如需修改请联系管理员解除存档")
+	default:
+		if admin || item.CreatedByID == user.ID {
+			return nil
+		}
+		return errors.New("仅创建者或管理员可以编辑图纸，其他用户请使用「本地查看（只读）」")
+	}
+}
+
+// ReadOnlyOpen 只读查看：不建会话、不占文件锁、不捕获版本。
+// 解析当前可编辑格式（EXB 自动转换为 DWG）后返回附件下载相对路径，
+// 客户端下载到本机临时目录打开，退出后由客户端销毁临时文件。
+func (service *Service) ReadOnlyOpen(ctx context.Context, user auth.AuthUser, storageKey string) (ReadOnlyOpenResult, error) {
+	if service.storage == nil {
+		return ReadOnlyOpenResult{}, errors.New("文件存储未配置")
+	}
+	item, err := service.attachments.Find(ctx, storageKey)
+	if err != nil {
+		return ReadOnlyOpenResult{}, err
+	}
+	if !isCADFile(item.Name) {
+		return ReadOnlyOpenResult{}, errors.New("当前附件不是可打开的 CAD 文件")
+	}
+
+	actualStorageKey := item.StorageKey
+	ext := filepath.Ext(item.StorageKey)
+	if ext == "" {
+		ext = filepath.Ext(item.Name)
+	}
+	if strings.EqualFold(ext, ".exb") && service.converter != nil {
+		dwgKey, convErr := service.converter.EnsureDwg(ctx, item)
+		if convErr != nil {
+			return ReadOnlyOpenResult{}, fmt.Errorf("将 EXB 转换为 DWG 失败: %w", convErr)
+		}
+		actualStorageKey = dwgKey
+		dwgName := strings.TrimSuffix(item.Name, ext) + ".dwg"
+		if reader, info, openErr := service.storage.Open(ctx, dwgKey); openErr == nil {
+			_ = reader.Close()
+			_ = service.attachments.SetCurrentContent(ctx, item.StorageKey, dwgKey, dwgName, info.Size, "application/acad", info.SHA256)
+		}
+	} else if item.CurrentStorageKey != "" {
+		if reader, _, statErr := service.storage.Open(ctx, item.CurrentStorageKey); statErr == nil {
+			_ = reader.Close()
+			actualStorageKey = item.CurrentStorageKey
+		} else {
+			actualStorageKey = item.StorageKey
+		}
+	}
+	caxaPath, caxaErr := converter.ResolveCaxaPath("")
+	if caxaErr != nil {
+		caxaPath = ""
+	}
+	return ReadOnlyOpenResult{
+		DownloadPath: "/api/attachments/" + actualStorageKey,
+		FileName:     filepath.Base(actualStorageKey),
+		CaxaPath:     caxaPath,
+	}, nil
+}
+
+func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTicket string) (ExchangeResult, error) {	if service.repository == nil {
 		return ExchangeResult{}, errors.New("编辑会话数据库未配置")
 	}
 	now := time.Now().UTC()

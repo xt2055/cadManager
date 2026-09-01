@@ -10,6 +10,7 @@ const (
 	StatusDraft     Status = "draft"
 	StatusHidden    Status = "hidden"
 	StatusDisabled  Status = "disabled"
+	StatusArchived  Status = "archived"
 )
 
 type Drawing struct {
@@ -31,6 +32,9 @@ type Drawing struct {
 	UpdatedBy  string  `json:"updatedBy,omitempty"`
 	UpdatedAt  string  `json:"updatedAt,omitempty"`
 	Signers    Signers `json:"signers"`
+
+	// CreatedByID 创建者用户 ID（仅用于服务端权限判断，不下发前端）。
+	CreatedByID string `json:"-"`
 }
 
 type Signers map[string]string
@@ -140,6 +144,8 @@ type Repository interface {
 	FindByNo(ctx context.Context, no string) (Drawing, error)
 	Create(ctx context.Context, input CreateDrawingInput, userID string) (Drawing, error)
 	Update(ctx context.Context, id string, input UpdateDrawingInput, userID string) (Drawing, error)
+	// SetStatusByNo 受控状态流转（CAS：仅当当前状态等于 from 才更新），用于存档/解除存档。
+	SetStatusByNo(ctx context.Context, no string, from, to Status, userID string) (Drawing, error)
 	ListParts(ctx context.Context, drawingID string) ([]Part, error)
 	FindPart(ctx context.Context, id string) (Part, error)
 	CreatePart(ctx context.Context, drawingID string, input CreatePartInput, userID string) (Part, error)

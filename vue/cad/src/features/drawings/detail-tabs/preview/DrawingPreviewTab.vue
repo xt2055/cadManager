@@ -5,9 +5,10 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { dataManager } from '@/services/data-manager'
 import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/services/data-manager/data-provider'
+import { useAuthStore } from '@/stores/auth.store'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import { openCadEditSession } from '@/services/tauri/cad-edit.service'
+import { openCadEditSession, openCadReadonly } from '@/services/tauri/cad-edit.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 
@@ -18,6 +19,7 @@ defineOptions({
 const router = useRouter()
 const domainStore = useDomainStore()
 const uiStore = useUiStore()
+const authStore = useAuthStore()
 
 const currentItem = computed(() => domainStore.currentDrawing)
 const isAssembly = computed(() => !currentItem.value || !('parentNo' in currentItem.value))
@@ -108,11 +110,13 @@ interface LocalActiveEditSession {
   uncPath: string
   openUrl: string
   startedAt: string
+  lastHeartbeatAt?: number
 }
 
 let sessionPollTimer: number | null = null
 let heartbeatTimer: number | null = null
 const editingFileId = ref<string | null>(null)
+const readonlyFileId = ref<string | null>(null)
 const activeSessionList = ref<ActiveEditSessionInfo[]>([])
 const myActiveSessions = ref<LocalActiveEditSession[]>([])
 const closingSessionIds = ref<Set<string>>(new Set())
@@ -385,6 +389,7 @@ async function relaunchEditorForFile(file: DrawingFile) {
         uncPath: result.uncPath,
         openUrl: result.openUrl,
         startedAt: new Date().toLocaleTimeString(),
+        lastHeartbeatAt: Date.now(),
       },
     ]
     await openCadEditSession(result)
@@ -397,8 +402,53 @@ async function relaunchEditorForFile(file: DrawingFile) {
   }
 }
 
-async function openEditor(file: DrawingFile) {
-  if (!currentItem.value) return
+// 编辑权限矩阵（前端显隐；后端 editing.Open 同步强校验）：
+// 草稿/生产 → 创建者或管理员；审核中 → 当前节点责任人或管理员；存档 → 一律禁止（管理员需先解除存档）。
+const canEditFiles = computed(() => {
+  const item = currentItem.value
+  const current = authStore.currentUser
+  if (!item || !current) return false
+  const admin = current.roles?.includes('admin') ?? false
+  if (item.status === 'archived') return false
+  if (item.status === 'reviewing') {
+    if (admin) return true
+    return domainStore.myPendingReviews.some((reviewCase) => reviewCase.no === item.no)
+  }
+  const creator = (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
+  return creator || admin
+})
+const editDenyReason = computed(() => {
+  const item = currentItem.value
+  if (!item) return ''
+  if (item.status === 'archived') return '图纸已存档（只读保护），如需修改请联系管理员解除存档'
+  if (item.status === 'reviewing') return '审核中的图纸仅当前节点责任人可编辑，其他用户请使用「本地查看」'
+  return '仅创建者或管理员可以编辑图纸，其他用户请使用「本地查看」'
+})
+
+// 心跳新鲜度：30s 一次心跳，90s 内有成功记录视为保护生效中。
+function isHeartbeatFresh(session: LocalActiveEditSession): boolean {
+  return Boolean(session.lastHeartbeatAt && Date.now() - session.lastHeartbeatAt < 90_000)
+}
+
+/** 本地只读查看：临时副本在本机打开，退出即销毁，不回传服务器。 */
+async function openReadonly(file: DrawingFile) {
+  if (!file.storageKey) {
+    uiStore.toast('该文件尚未保存物理存储，无法本地查看', 'warn')
+    return
+  }
+  if (readonlyFileId.value) return
+  readonlyFileId.value = file.id
+  try {
+    await openCadReadonly({ storageKey: file.storageKey })
+    uiStore.toast(`已用本机 CAD 打开「${file.name}」（只读副本，关闭后自动销毁）`, 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '本地查看失败', 'warn')
+  } finally {
+    readonlyFileId.value = null
+  }
+}
+
+async function openEditor(file: DrawingFile) {  if (!currentItem.value) return
   if (editingFileId.value) return
   if (!file.storageKey) {
     uiStore.toast('该文件尚未保存物理存储，无法使用本地 CAD 打开', 'warn')
@@ -439,6 +489,7 @@ async function openEditor(file: DrawingFile) {
       uncPath: session.uncPath,
       openUrl: session.openUrl,
       startedAt: new Date().toLocaleTimeString(),
+      lastHeartbeatAt: Date.now(),
     }
 
     myActiveSessions.value = [
@@ -472,12 +523,16 @@ onMounted(() => {
     void refreshActiveSessions()
   }, 10_000)
 
-  // 统一心跳轮询：对当前正在编辑的多开图纸批量保活
+  // 统一心跳轮询：对当前正在编辑的多开图纸批量保活，并记录最近成功时间用于状态展示
   heartbeatTimer = window.setInterval(() => {
     for (const session of myActiveSessions.value) {
-      void dataManager.heartbeatEditSession(session.sessionId).catch((error) => {
-        console.warn(`会话 ${session.sessionId} 心跳失败`, error)
-      })
+      void dataManager.heartbeatEditSession(session.sessionId)
+        .then(() => {
+          session.lastHeartbeatAt = Date.now()
+        })
+        .catch((error) => {
+          console.warn(`会话 ${session.sessionId} 心跳失败`, error)
+        })
     }
   }, 30_000)
 })
@@ -1019,7 +1074,11 @@ function closeReidentifyModal() {
           </div>
           <div class="dock-file-info">
             <span class="file-name" :title="session.fileName">{{ session.fileName }}</span>
-            <span class="dock-time">开始于 {{ session.startedAt }} · 自动落盘与版本保护生效中</span>
+            <span class="dock-time">
+              开始于 {{ session.startedAt }} ·
+              <b :class="isHeartbeatFresh(session) ? 'hb-ok' : 'hb-lost'">{{ isHeartbeatFresh(session) ? '心跳正常' : '心跳检测中' }}</b>
+              · {{ isHeartbeatFresh(session) ? '自动落盘与版本保护生效中' : '等待心跳确认...' }}
+            </span>
           </div>
         </div>
         <div class="dock-actions">
@@ -1108,7 +1167,23 @@ function closeReidentifyModal() {
                 <button class="btn sm primary" type="button" title="在线 CAD 矢量浏览" @click="openBrowse(file)">
                   <DemoIcon name="eye" :size="13" />浏览
                 </button>
-                <button class="btn sm" type="button" title="使用网页 CAD 编辑器打开并编辑文件" @click="openOnlineEditor(file)">
+                <button
+                  class="btn sm"
+                  type="button"
+                  :disabled="Boolean(readonlyFileId)"
+                  title="下载临时只读副本到本机用 CAD 打开，关闭后自动销毁，不影响服务器数据"
+                  @click="openReadonly(file)"
+                >
+                  <span v-if="readonlyFileId === file.id" class="local-edit-spinner" aria-hidden="true"></span>
+                  <DemoIcon v-else name="eye" :size="13" />本地查看
+                </button>
+                <button
+                  class="btn sm"
+                  type="button"
+                  :disabled="!canEditFiles"
+                  :title="canEditFiles ? '使用网页 CAD 编辑器打开并编辑文件' : editDenyReason"
+                  @click="openOnlineEditor(file)"
+                >
                   <img class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />在线编辑
                 </button>
 
@@ -1122,8 +1197,30 @@ function closeReidentifyModal() {
                 >
                   <span class="pulse-dot"></span>编辑中
                 </button>
+                <template v-else-if="!isFileLockedByOther(file)">
+                  <button
+                    v-if="canEditFiles"
+                    class="btn sm"
+                    type="button"
+                    :disabled="Boolean(editingFileId)"
+                    title="使用本机 CAD 软件（如 CAXA）打开并协同编辑"
+                    @click="openEditor(file)"
+                  >
+                    <span v-if="editingFileId === file.id" class="local-edit-spinner" aria-hidden="true"></span>
+                    <img v-else class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />{{ editingFileId === file.id ? '启动中...' : '本地编辑' }}
+                  </button>
+                  <button
+                    v-else
+                    class="btn sm muted-btn"
+                    type="button"
+                    :title="editDenyReason"
+                    disabled
+                  >
+                    <DemoIcon name="lock" :size="12" />本地编辑
+                  </button>
+                </template>
                 <button
-                  v-else-if="isFileLockedByOther(file)"
+                  v-else
                   class="btn sm locked-btn"
                   type="button"
                   :disabled="!getFileLockInfo(file)?.canClose || closingSessionIds.has(getFileLockInfo(file)!.id)"
@@ -1136,26 +1233,27 @@ function closeReidentifyModal() {
                   <DemoIcon v-else name="lock" :size="12" />
                   {{ getFileLockInfo(file)?.canClose ? (getFileLockInfo(file)?.online === false ? '强制释放(离线)' : '强制释放') : (getFileLockInfo(file)?.online === false ? '已被占用(离线)' : '已被占用') }}
                 </button>
+
                 <button
-                  v-else
                   class="btn sm"
                   type="button"
-                  :disabled="Boolean(editingFileId)"
-                  title="使用本机 CAD 软件（如 CAXA）打开并协同编辑"
-                  @click="openEditor(file)"
+                  :disabled="!canEditFiles"
+                  :title="canEditFiles ? '替换当前图纸文件并生成新版本' : editDenyReason"
+                  @click="triggerReplace(file)"
                 >
-                  <span v-if="editingFileId === file.id" class="local-edit-spinner" aria-hidden="true"></span>
-                  <img v-else class="editor-icon" src="/编辑.svg" alt="" aria-hidden="true" />{{ editingFileId === file.id ? '启动中...' : '本地编辑' }}
-                </button>
-
-                <button class="btn sm" type="button" title="替换当前图纸文件并生成新版本" @click="triggerReplace(file)">
                   <DemoIcon name="refresh-cw" :size="13" />替换
                 </button>
                 <button class="btn sm history-action" type="button" title="查看该文件所有历史版本树与演进" @click="openHistory(file)">
                   <DemoIcon name="history" :size="13" />历史
                   <span v-if="isHistoryUnread(file)" class="hist-count">{{ file.history?.length }}</span>
                 </button>
-                <button class="btn sm danger" type="button" title="删除文件" @click="handleDeleteFile(file)">
+                <button
+                  class="btn sm danger"
+                  type="button"
+                  :disabled="!canEditFiles"
+                  :title="canEditFiles ? '删除文件' : editDenyReason"
+                  @click="handleDeleteFile(file)"
+                >
                   <DemoIcon name="trash-2" :size="13" />删除
                 </button>
               </td>
@@ -2510,6 +2608,19 @@ function closeReidentifyModal() {
   color: var(--ok, #16a34a) !important;
   border-color: rgba(34, 197, 94, 0.35) !important;
   font-weight: 600;
+}
+
+.muted-btn {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+}
+
+.dock-time .hb-ok {
+  color: var(--ok, #16a34a);
+}
+
+.dock-time .hb-lost {
+  color: var(--warn, #f59e0b);
 }
 
 .locked-btn {

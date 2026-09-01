@@ -137,6 +137,102 @@ async fn open_cad_edit_session(api_base_url: String, access_token: String, open_
   connect_smb_and_open_file(&data)
 }
 
+#[derive(serde::Deserialize)]
+struct ReadOnlyOpenResponse {
+  data: ReadOnlyOpenData,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadOnlyOpenData {
+  download_path: String,
+  file_name: String,
+  #[serde(default)]
+  caxa_path: String,
+}
+
+/// 打开只读临时副本：下载到本机临时目录（不占用 SMB 工作区、不建会话、不生成版本），
+/// CAXA 退出后由后台线程销毁整个临时目录，任何修改都不会回传服务器。
+#[cfg(windows)]
+fn open_readonly_and_cleanup(caxa_path: PathBuf, temp_dir: PathBuf, file_path: PathBuf) {
+  let mut cmd = std::process::Command::new(&caxa_path);
+  cmd.current_dir(&temp_dir);
+  let _ = cmd.arg(&file_path).status();
+  // 去掉只读属性后整体销毁，确保不残留任何本地副本。
+  let _ = std::process::Command::new("attrib")
+    .args(["-R", "/S", "/D", &format!("{}\\*.*", temp_dir.display())])
+    .status();
+  let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[cfg(not(windows))]
+fn open_readonly_and_cleanup(_caxa_path: PathBuf, temp_dir: PathBuf, _file_path: PathBuf) {
+  let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tauri::command]
+async fn open_cad_readonly(api_base_url: String, access_token: String, storage_key: String) -> Result<(), String> {
+  if access_token.trim().is_empty() {
+    return Err("当前登录会话无效，请重新登录".to_string());
+  }
+  let base = api_base_url.trim_end_matches('/').to_string();
+  let endpoint = format!("{}/editing/read-only", base);
+  let response = reqwest::Client::new()
+    .post(endpoint)
+    .bearer_auth(&access_token)
+    .json(&serde_json::json!({ "storageKey": storage_key }))
+    .send()
+    .await
+    .map_err(|error| format!("请求只读打开失败：{}", error))?;
+  if !response.status().is_success() {
+    return Err(format!("请求只读打开失败：HTTP {}", response.status()));
+  }
+  let data = response
+    .json::<ReadOnlyOpenResponse>()
+    .await
+    .map_err(|error| format!("解析只读打开信息失败：{}", error))?
+    .data;
+  if data.caxa_path.trim().is_empty() {
+    return Err("未找到可用的 CAXA 程序，请在服务器配置 CAD_CAXA_BIN".to_string());
+  }
+  let caxa_path = PathBuf::from(&data.caxa_path);
+  if !caxa_path.is_file() {
+    return Err(format!("CAXA 程序不存在：{}", data.caxa_path));
+  }
+  let file_url = format!("{}{}", base, data.download_path);
+  let file_response = reqwest::Client::new()
+    .get(file_url)
+    .bearer_auth(&access_token)
+    .send()
+    .await
+    .map_err(|error| format!("下载只读副本失败：{}", error))?;
+  if !file_response.status().is_success() {
+    return Err(format!("下载只读副本失败：HTTP {}", file_response.status()));
+  }
+  let bytes = file_response
+    .bytes()
+    .await
+    .map_err(|error| format!("读取只读副本失败：{}", error))?;
+  let unique = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|value| value.as_nanos())
+    .unwrap_or(0);
+  let temp_dir = std::env::temp_dir().join(format!("cadguanliq_readonly_{}", unique));
+  fs::create_dir_all(&temp_dir).map_err(|error| format!("创建临时目录失败：{}", error))?;
+  let file_path = temp_dir.join(&data.file_name);
+  {
+    let mut file = fs::File::create(&file_path).map_err(|error| format!("写入临时文件失败：{}", error))?;
+    file.write_all(&bytes).map_err(|error| format!("写入临时文件失败：{}", error))?;
+  }
+  // 设只读属性，提示（不阻止）CAD 覆盖保存；退出后整个目录会被销毁。
+  let _ = std::process::Command::new("attrib")
+    .args(["+R", file_path.to_str().unwrap_or_default()])
+    .status();
+  let caxa_clone = caxa_path.clone();
+  std::thread::spawn(move || open_readonly_and_cleanup(caxa_clone, temp_dir, file_path));
+  Ok(())
+}
+
 fn ensure_config_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
   let path = config_file_path(app)?;
   if !path.exists() {
@@ -329,6 +425,7 @@ pub fn run() {
       delete_attachment,
       open_generated_excel,
       open_cad_edit_session,
+      open_cad_readonly,
       read_debug_mode,
       write_debug_mode
     ])

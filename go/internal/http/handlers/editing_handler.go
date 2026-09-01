@@ -114,6 +114,33 @@ func EditSessionResource(service *editing.Service) http.HandlerFunc {
 	}
 }
 
+func EditReadOnly(service *editing.Service) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodPost {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var input struct {
+			StorageKey string `json:"storageKey"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil || strings.TrimSpace(input.StorageKey) == "" {
+			response.WriteError(writer, http.StatusBadRequest, "缺少 CAD 文件存储键")
+			return
+		}
+		result, err := service.ReadOnlyOpen(request.Context(), user, strings.TrimSpace(input.StorageKey))
+		if err != nil {
+			writeEditingError(writer, err)
+			return
+		}
+		response.WriteData(writer, http.StatusOK, result)
+	}
+}
+
 func writeEditingError(writer http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, editing.ErrSMBNotConfigured):

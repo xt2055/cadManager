@@ -56,6 +56,13 @@ type ExchangeResult struct {
 	HeartbeatSecond int    `json:"heartbeatIntervalSeconds"`
 }
 
+// ReadOnlyOpenResult 只读查看：返回附件下载相对路径与文件名，客户端下载到本机临时目录打开。
+type ReadOnlyOpenResult struct {
+	DownloadPath string `json:"downloadPath"`
+	FileName     string `json:"fileName"`
+	CaxaPath     string `json:"caxaPath"`
+}
+
 type Repository interface {
 	CreateSession(ctx context.Context, session Session) error
 	CreateTicket(ctx context.Context, token string, sessionID, userID string, expiresAt time.Time) error
