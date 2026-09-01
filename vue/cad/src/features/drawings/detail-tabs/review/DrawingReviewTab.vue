@@ -29,6 +29,8 @@ const activeNodeName = computed(() => (isReviewing.value
   ? sortedNodes.value.find((node) => node.status === 'pending')?.name ?? null
   : null))
 const isRejected = computed(() => domainStore.currentReviewCase?.status === 'rejected')
+// 图纸状态是审核中但查不到任何案例：历史残留数据，提供重新初始化入口。
+const missingCase = computed(() => isReviewing.value && !domainStore.currentReviewCase)
 
 // 签署权：当前活动节点且节点责任人是当前登录人（后端分配 ID 优先，姓名/账号兜底）。
 function canSignNode(node: ReviewNode): boolean {
@@ -117,12 +119,12 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
 
       <div class="summary-actions">
         <button
-          v-if="!isReviewing && !isPublished"
+          v-if="missingCase || (!isReviewing && !isPublished)"
           class="btn primary lg"
           type="button"
           @click="handleStartReview"
         >
-          <DemoIcon :name="isRejected ? 'refresh-cw' : 'play-circle'" :size="16" />{{ isRejected ? '重新发起审核（从驳回节点继续）' : '开始发起审核流程' }}
+          <DemoIcon :name="isRejected || missingCase ? 'refresh-cw' : 'play-circle'" :size="16" />{{ missingCase ? '重新初始化审核流程' : isRejected ? '重新发起审核（从驳回节点继续）' : '开始发起审核流程' }}
         </button>
         <button
           v-else-if="isReviewing"

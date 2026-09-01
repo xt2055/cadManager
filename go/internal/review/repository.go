@@ -230,7 +230,17 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 		return ReviewCase{}, fmt.Errorf("读取待审核图纸失败: %w", err)
 	}
 	if drawingStatus == "reviewing" {
-		return ReviewCase{}, ErrCaseConflict
+		// 状态可能来自历史残留数据：只要没有进行中的案例就允许重新发起（自愈）。
+		var activeCaseID string
+		err = tx.QueryRow(ctx, `
+			SELECT id::text FROM review_cases
+			WHERE drawing_id = $1::uuid AND status IN ('pending', 'reviewing')`, drawingID).Scan(&activeCaseID)
+		if err == nil {
+			return ReviewCase{}, ErrCaseConflict
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return ReviewCase{}, fmt.Errorf("检查进行中审核案例失败: %w", err)
+		}
 	}
 
 	var userName string
