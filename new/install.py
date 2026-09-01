@@ -244,8 +244,8 @@ def main():
         f'CAD_SMB_HOST={detect_local_ip()}',
         'CAD_SMB_SHARE=CadWorking',
         'CAD_SMB_LOCAL_ROOT=./storage/smb',
-        'CAD_SMB_USERNAME=',
-        'CAD_SMB_PASSWORD=',
+        'CAD_SMB_USERNAME=cadshare',
+        'CAD_SMB_PASSWORD=Cadshare@2026',
     ]
     (DEPLOY_ROOT / '.env').write_text('\r\n'.join(env_lines) + '\r\n', encoding='utf-8')
     ok('.env written')
