@@ -295,8 +295,10 @@ export const useDomainStore = defineStore('domain', () => {
       }))
       // 后端案例状态是权威：同步图纸文档状态，避免驳回/发布后前端仍停留在旧状态。
       // rejected → draft（等发起人重新发起）、published → published、reviewing → reviewing。
+      // cases 按 started_at 降序：只取每张图纸最新案例的状态，防止旧驳回案例覆盖进行中状态。
       const statusByDrawing = new Map<string, 'reviewing' | 'draft' | 'published'>()
       for (const item of reviewCases.value) {
+        if (statusByDrawing.has(item.drawingNo)) continue
         statusByDrawing.set(item.drawingNo, item.status === 'reviewing' ? 'reviewing' : item.status === 'published' ? 'published' : 'draft')
       }
       let statusChanged = false

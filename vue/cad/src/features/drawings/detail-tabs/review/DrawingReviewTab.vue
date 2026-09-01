@@ -32,6 +32,16 @@ const isRejected = computed(() => domainStore.currentReviewCase?.status === 'rej
 // 图纸状态是审核中但查不到任何案例：历史残留数据，提供重新初始化入口。
 const missingCase = computed(() => isReviewing.value && !domainStore.currentReviewCase)
 
+// 发起/重新发起仅创建者或管理员可用（驳回后由发起人重新发起，审核员无权）。
+const canStartReview = computed(() => {
+  const item = domainStore.currentDrawing
+  const current = authStore.currentUser
+  if (!item || !current) return false
+  if (current.roles?.includes('admin')) return true
+  const creator = (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
+  return creator
+})
+
 // 签署权：当前活动节点且节点责任人是当前登录人（后端分配 ID 优先，姓名/账号兜底）。
 function canSignNode(node: ReviewNode): boolean {
   if (!isReviewing.value || node.name !== activeNodeName.value) return false
@@ -118,14 +128,17 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
       </div>
 
       <div class="summary-actions">
-        <button
-          v-if="missingCase || (!isReviewing && !isPublished)"
-          class="btn primary lg"
-          type="button"
-          @click="handleStartReview"
-        >
-          <DemoIcon :name="isRejected || missingCase ? 'refresh-cw' : 'play-circle'" :size="16" />{{ missingCase ? '重新初始化审核流程' : isRejected ? '重新发起审核（从驳回节点继续）' : '开始发起审核流程' }}
-        </button>
+        <template v-if="missingCase || (!isReviewing && !isPublished)">
+          <button
+            v-if="canStartReview"
+            class="btn primary lg"
+            type="button"
+            @click="handleStartReview"
+          >
+            <DemoIcon :name="isRejected || missingCase ? 'refresh-cw' : 'play-circle'" :size="16" />{{ missingCase ? '重新初始化审核流程' : isRejected ? '重新发起审核（从驳回节点继续）' : '开始发起审核流程' }}
+          </button>
+          <span v-else class="tag warn">{{ isRejected ? '已驳回 · 等待发起人重新发起' : '等待图纸创建者发起审核' }}</span>
+        </template>
         <button
           v-else-if="isReviewing"
           class="btn lg"
@@ -135,7 +148,7 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
           <DemoIcon name="clock" :size="16" />审核流转中 ({{ done }}/{{ total }})
         </button>
         <button
-          v-else
+          v-else-if="canStartReview"
           class="btn lg"
           type="button"
           @click="handleStartReview"

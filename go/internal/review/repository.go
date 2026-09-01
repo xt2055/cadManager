@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -214,7 +215,12 @@ func saveNodes(ctx context.Context, tx pgx.Tx, flowID string, nodes []Node) erro
 }
 
 func isUniqueViolation(err error) bool {
-	return strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "unique constraint")
+	// 数据库 locale 可能是中文（错误消息非英文），必须按 SQLSTATE 判断。
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
 }
 
 // StartCase 为总图发起审核（存在被驳回案例时从驳回节点续审）。
@@ -233,18 +239,16 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 	if err != nil {
 		return ReviewCase{}, fmt.Errorf("读取待审核图纸失败: %w", err)
 	}
-	if drawingStatus == "reviewing" {
-		// 状态可能来自历史残留数据：只要没有进行中的案例就允许重新发起（自愈）。
-		var activeCaseID string
-		err = tx.QueryRow(ctx, `
-			SELECT id::text FROM review_cases
-			WHERE drawing_id = $1::uuid AND status IN ('pending', 'reviewing')`, drawingID).Scan(&activeCaseID)
-		if err == nil {
-			return ReviewCase{}, ErrCaseConflict
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return ReviewCase{}, fmt.Errorf("检查进行中审核案例失败: %w", err)
-		}
+	// 进行中的案例唯一：无论图纸状态字段是否被污染，先查活动案例给出友好冲突提示。
+	var activeCaseID string
+	err = tx.QueryRow(ctx, `
+		SELECT id::text FROM review_cases
+		WHERE drawing_id = $1::uuid AND status IN ('pending', 'reviewing')`, drawingID).Scan(&activeCaseID)
+	if err == nil {
+		return ReviewCase{}, ErrCaseConflict
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return ReviewCase{}, fmt.Errorf("检查进行中审核案例失败: %w", err)
 	}
 
 	var userName string
