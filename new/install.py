@@ -94,6 +94,35 @@ def detect_local_ip():
         return '127.0.0.1'
 
 
+def add_venv_to_path():
+    """Append <deploy>/.venv/Scripts to the SYSTEM PATH so `python` works anywhere.
+
+    Edits HKLM ...\\Session Manager\\Environment in place, keeps the original
+    value type (usually REG_EXPAND_SZ so %var% entries survive), and broadcasts
+    WM_SETTINGCHANGE so new processes pick it up without a reboot.
+    """
+    import winreg
+
+    scripts = str(DEPLOY_ROOT / '.venv' / 'Scripts')
+    key_path = r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ | winreg.KEY_WRITE)
+    try:
+        try:
+            path_value, value_type = winreg.QueryValueEx(key, 'Path')
+        except FileNotFoundError:
+            path_value, value_type = '', winreg.REG_EXPAND_SZ
+        entries = [entry.strip().lower() for entry in path_value.split(';') if entry.strip()]
+        if scripts.lower().rstrip('\\') in entries:
+            ok(f'PATH already contains {scripts}')
+            return
+        new_path = path_value.rstrip(';') + ';' + scripts if path_value.strip() else scripts
+        winreg.SetValueEx(key, 'Path', 0, value_type, new_path)
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, 'Environment', 0x0002, 5000, None)
+        ok(f'PATH now includes {scripts} (open a NEW terminal to use `python`)')
+    finally:
+        winreg.CloseKey(key)
+
+
 def main():
     elevate()
 
@@ -236,6 +265,11 @@ def main():
                 print('  WARN venv python check failed - EXB parsing will fall back to uv/system python')
             else:
                 print(r.stdout, end='')
+                step('Adding venv python to system PATH')
+                try:
+                    add_venv_to_path()
+                except Exception as exc:
+                    print(f'  WARN could not update system PATH: {exc}')
 
     # --- 7. write .env ---
     step('Writing .env config')
