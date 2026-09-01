@@ -204,26 +204,38 @@ def main():
         die('failed to create admin account')
     ok(f"admin account '{ADMIN_ACCOUNT}' ready (password: {ADMIN_PASSWORD} - change it after first login)")
 
-    # --- 6. repair venv for this machine (portable python runtime) ---
+    # --- 6. repair venv for this machine ---
     step('Repairing Python venv')
     venv_cfg = DEPLOY_ROOT / '.venv' / 'pyvenv.cfg'
     runtime_python = DEPLOY_ROOT / 'runtime' / 'python' / 'python.exe'
+    venv_python = DEPLOY_ROOT / '.venv' / 'Scripts' / 'python.exe'
     if not venv_cfg.exists():
         ok('no venv in package (skip)')
-    elif not runtime_python.exists():
-        die(f'portable python missing: {runtime_python}')
     else:
-        cfg = venv_cfg.read_text(encoding='utf-8-sig')
-        cfg = re.sub(r'home = .*', lambda m: f'home = {runtime_python.parent}', cfg)
-        venv_cfg.write_text(cfg, encoding='utf-8')
-        venv_python = DEPLOY_ROOT / '.venv' / 'Scripts' / 'python.exe'
-        r = run([venv_python, '-c',
-                 "import olefile, sys; print('  OK python', sys.version.split()[0], 'olefile', olefile.__version__)"])
-        if r.returncode != 0:
-            if r.stderr:
-                print(r.stderr, file=sys.stderr, end='')
-            die('venv python check failed')
-        print(r.stdout, end='')
+        base = None
+        if runtime_python.exists():
+            base = runtime_python.parent
+        else:
+            # no bundled runtime: fall back to a system python and point the venv at it
+            for candidate in ('python', 'python3', 'py'):
+                probe = run([candidate, '-c', 'import sys; print(sys.executable)'])
+                if probe.returncode == 0 and probe.stdout.strip():
+                    base = Path(probe.stdout.strip()).parent
+                    break
+        if base is None:
+            print('  WARN no usable python found - EXB parsing will fall back to uv/system python')
+        else:
+            cfg = venv_cfg.read_text(encoding='utf-8-sig')
+            cfg = re.sub(r'home = .*', lambda m: f'home = {base}', cfg)
+            venv_cfg.write_text(cfg, encoding='utf-8')
+            r = run([venv_python, '-c',
+                     "import olefile, sys; print('  OK python', sys.version.split()[0], 'olefile', olefile.__version__)"])
+            if r.returncode != 0:
+                if r.stderr:
+                    print(r.stderr, file=sys.stderr, end='')
+                print('  WARN venv python check failed - EXB parsing will fall back to uv/system python')
+            else:
+                print(r.stdout, end='')
 
     # --- 7. write .env ---
     step('Writing .env config')
