@@ -127,7 +127,7 @@ func DrawingResource(repository drawing.Repository) http.HandlerFunc {
 			return
 		}
 		if len(parts) == 2 && (parts[1] == "archive" || parts[1] == "unarchive") && request.Method == http.MethodPost {
-			item, err := transitionDrawingStatus(request.Context(), repository, user, parts[0], parts[1])
+			item, err := transitionDrawingStatus(request.Context(), repository, user, id, parts[1])
 			if err != nil {
 				writeTransitionError(writer, err)
 				return
