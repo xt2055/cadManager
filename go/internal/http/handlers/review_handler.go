@@ -15,12 +15,13 @@ import (
 func ReviewFlows(repository review.Repository) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := middleware.UserFromContext(request.Context())
-		if !ok || !hasAdminRole(user.Roles) {
-			response.WriteError(writer, http.StatusForbidden, "只有管理员可以管理审核流程")
-			return
-		}
 		switch request.Method {
 		case http.MethodGet:
+			// 发起审核时普通用户也需要读取启用流程的节点签署人员，读操作不限制管理员。
+			if !ok {
+				response.WriteError(writer, http.StatusUnauthorized, "请先登录")
+				return
+			}
 			items, err := repository.List(request.Context())
 			if err != nil {
 				log.Printf("review flow list failed: %v", err)
@@ -29,6 +30,10 @@ func ReviewFlows(repository review.Repository) http.HandlerFunc {
 			}
 			response.WriteData(writer, http.StatusOK, items)
 		case http.MethodPost:
+			if !ok || !hasAdminRole(user.Roles) {
+				response.WriteError(writer, http.StatusForbidden, "只有管理员可以管理审核流程")
+				return
+			}
 			var input review.SaveFlowInput
 			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 				response.WriteError(writer, http.StatusBadRequest, "审核流程参数格式无效")

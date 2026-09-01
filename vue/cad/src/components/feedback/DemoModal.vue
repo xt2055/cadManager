@@ -5,7 +5,7 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useUiStore } from '@/stores/ui.store'
 import { useDomainStore } from '@/stores/domain.store'
 import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
-import { reviewFlowService, type ReviewAccountRole } from '@/services/review-flow.service'
+import { reviewFlowService, signerRoleForNode, type ReviewAccountRole } from '@/services/review-flow.service'
 import type { UserRole } from '@/types/domain.types'
 
 defineOptions({
@@ -24,6 +24,7 @@ const resetPassword = ref('')
 
 interface FlowNodeConfig {
   name: string
+  signerRole: string
   role: ReviewAccountRole
   assignedUserId: string
   assignedName: string
@@ -31,12 +32,12 @@ interface FlowNodeConfig {
 }
 
 const DEFAULT_FLOW_NODES: FlowNodeConfig[] = [
-  { name: '设计自检', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
-  { name: '校对复核', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
-  { name: '专业审核', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
-  { name: '工艺会签', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
-  { name: '标准化审查', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: false },
-  { name: '主管批准', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
+  { name: '设计自检', signerRole: '设计', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
+  { name: '校对复核', signerRole: '校对', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
+  { name: '专业审核', signerRole: '审核', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
+  { name: '工艺会签', signerRole: '工艺', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
+  { name: '标准化审查', signerRole: '标准化', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: false },
+  { name: '主管批准', signerRole: '批准', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true },
 ]
 
 const flowName = ref('企业标准图纸审核流程')
@@ -75,6 +76,7 @@ async function loadFlowForm(flowId?: string) {
   flowName.value = flow.name
   flowNodes.value = flow.nodes.map((node, index) => ({
     name: node.name?.trim() || DEFAULT_FLOW_NODES[index]?.name || `审核节点 ${index + 1}`,
+    signerRole: signerRoleForNode(node.name ?? '', node.signerRole),
     role: node.candidateRole || 'reviewer',
     assignedUserId: node.assignedUserId || '',
     assignedName: node.assignedName || '待定',
@@ -149,6 +151,7 @@ function toggleRole(role: UserRole) {
         enabled: true,
         nodes: flowNodes.value.map((node, index) => ({
           name: node.name.trim(),
+          signerRole: signerRoleForNode(node.name, node.signerRole),
           candidateRole: node.role,
           assignedUserId: node.assignedUserId,
           assignedName: node.assignedName || '待定',
@@ -231,7 +234,7 @@ function toggleRole(role: UserRole) {
               <label class="flow-req-check"><input v-model="node.required" type="checkbox" />必需</label>
               <button class="icon-btn" type="button" @click="flowNodes.splice(index, 1)"><DemoIcon name="trash-2" :size="14" /></button>
             </div>
-            <button class="btn sm" type="button" @click="flowNodes.push({ name: `新审核节点 ${flowNodes.length + 1}`, role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true })"><DemoIcon name="plus" :size="14" />添加节点</button>
+            <button class="btn sm" type="button" @click="flowNodes.push({ name: `新审核节点 ${flowNodes.length + 1}`, signerRole: '', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true })"><DemoIcon name="plus" :size="14" />添加节点</button>
           </div>
           <div class="note"><DemoIcon name="info" :size="14" /><div>流程节点身份可自定义，系统默认采用 reviewer 审核身份候选，也可指定特定设计或管理岗位。</div></div>
         </template>

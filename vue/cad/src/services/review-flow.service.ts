@@ -1,5 +1,21 @@
 export type ReviewAccountRole = 'admin' | 'designer' | 'reviewer'
 
+// 节点显示名 → 图纸签署角色。历史数据或自定义流程可能未回填 signerRole，按节点名兜底。
+export const NODE_NAME_TO_SIGNER_ROLE: Record<string, string> = {
+  设计自检: '设计',
+  校对复核: '校对',
+  专业审核: '审核',
+  工艺会签: '工艺',
+  标准化审查: '标准化',
+  主管批准: '批准',
+}
+
+export function signerRoleForNode(name: string, signerRole?: string): string {
+  const trimmedRole = signerRole?.trim()
+  if (trimmedRole) return trimmedRole
+  return NODE_NAME_TO_SIGNER_ROLE[name?.trim() ?? ''] ?? ''
+}
+
 export interface ReviewFlowNodeDto {
   id?: string
   name: string

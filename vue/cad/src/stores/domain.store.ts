@@ -7,6 +7,7 @@ import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-number-parser'
 import { useAuthStore } from '@/stores/auth.store'
 import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
+import { reviewFlowService, signerRoleForNode } from '@/services/review-flow.service'
 import type { DataDocument } from '@/services/data-manager'
 import type {
   ActivityLog,
@@ -444,8 +445,36 @@ export const useDomainStore = defineStore('domain', () => {
     return null
   }
 
-  function getSigners(target: Drawing | StructurePart): Partial<DrawingSigners> {
-    return target.signers ?? {}
+  // 从启用的审核流程节点回填缺失的图纸签署人员（signerRole 优先，节点名映射兜底）。
+  async function resolveSigners(target: Drawing | StructurePart): Promise<Partial<DrawingSigners>> {
+    const signers: Partial<DrawingSigners> = { ...(target.signers ?? {}) }
+    const missing = REQUIRED_SIGNER_ROLES.filter((role) => !signers[role] || signers[role] === '待定')
+    if (!missing.length) return signers
+
+    try {
+      const flows = await reviewFlowService.list()
+      const enabledFlow = flows.find((flow) => flow.enabled)
+      if (enabledFlow) {
+        for (const node of enabledFlow.nodes) {
+          const role = signerRoleForNode(node.name, node.signerRole)
+          if (!REQUIRED_SIGNER_ROLES.includes(role as (typeof REQUIRED_SIGNER_ROLES)[number])) continue
+          const current = signers[role as keyof DrawingSigners]
+          const assigned = node.assignedName?.trim()
+          if ((!current || current === '待定') && assigned && assigned !== '待定') {
+            signers[role as keyof DrawingSigners] = assigned
+          }
+        }
+      }
+    } catch {
+      // 流程读取失败时退回原有校验路径，由下方缺失校验给出提示。
+    }
+
+    // 设计人兜底：图纸标题栏扫描到的设计人，或当前登录用户。
+    if (!signers['设计'] || signers['设计'] === '待定') {
+      const fallback = ('designer' in target && target.designer) || authStore.currentUser?.displayName
+      if (fallback) signers['设计'] = fallback
+    }
+    return signers
   }
 
   function getTargetFiles(target: Drawing | StructurePart): DrawingFile[] {
@@ -1716,14 +1745,17 @@ export const useDomainStore = defineStore('domain', () => {
     await initialize()
     const target = findDrawingOrPart(drawingNo)
     if (!target) throw new Error(`未找到待审核对象：${drawingNo}`)
-    const signers = getSigners(target)
+    const signers = await resolveSigners(target)
     const missingRoles = REQUIRED_SIGNER_ROLES.filter((role) => {
       const user = signers[role]
       return !user || user === '待定'
     })
     if (missingRoles.length) {
-      throw new Error(`无法发起审核，缺少签署人员：${missingRoles.join('、')}`)
+      throw new Error(`无法发起审核，缺少签署人员：${missingRoles.join('、')}。请联系管理员在「审核流程管理」中为对应节点指定人员。`)
     }
+
+    // 回写图纸签署人员，保证详情页签署栏与审核节点一致。
+    target.signers = { ...(target.signers ?? {}), ...signers }
 
     const reviewCaseId = createId('review-case')
     const designUser = signers['设计'] ?? initiator ?? '当前用户'
