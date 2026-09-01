@@ -233,43 +233,80 @@ def main():
         die('failed to create admin account')
     ok(f"admin account '{ADMIN_ACCOUNT}' ready (password: {ADMIN_PASSWORD} - change it after first login)")
 
-    # --- 6. repair venv for this machine ---
-    step('Repairing Python venv')
-    venv_cfg = DEPLOY_ROOT / '.venv' / 'pyvenv.cfg'
-    runtime_python = DEPLOY_ROOT / 'runtime' / 'python' / 'python.exe'
-    venv_python = DEPLOY_ROOT / '.venv' / 'Scripts' / 'python.exe'
-    if not venv_cfg.exists():
-        ok('no venv in package (skip)')
+    # --- 6. python runtime: silent install 3.14.7 -> create .venv -> offline olefile ---
+    step('Setting up Python runtime')
+    python_setup = DEPLOY_ROOT / 'python-3.14.7-amd64.exe'
+    target_dir = Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'Python314'
+    base_python = target_dir / 'python.exe'
+
+    def venv_ready():
+        venv_python = DEPLOY_ROOT / '.venv' / 'Scripts' / 'python.exe'
+        if not venv_python.exists():
+            return False
+        r = run([venv_python, '-c', 'import olefile'])
+        return r.returncode == 0
+
+    if base_python.exists():
+        ok(f'Python already installed at {target_dir}')
     else:
-        base = None
-        if runtime_python.exists():
-            base = runtime_python.parent
-        else:
-            # no bundled runtime: fall back to a system python and point the venv at it
-            for candidate in ('python', 'python3', 'py'):
-                probe = run([candidate, '-c', 'import sys; print(sys.executable)'])
-                if probe.returncode == 0 and probe.stdout.strip():
-                    base = Path(probe.stdout.strip()).parent
+        # probe an existing system python (py launcher / PATH) before installing
+        for candidate in ('py', 'python', 'python3'):
+            probe = run([candidate, '-c', 'import sys; print(sys.executable)'])
+            if probe.returncode == 0 and probe.stdout.strip():
+                found = Path(probe.stdout.strip())
+                if found != Path(sys.executable) or found.exists():
+                    base_python = found
+                    ok(f'using existing python: {found}')
                     break
-        if base is None:
-            print('  WARN no usable python found - EXB parsing will fall back to uv/system python')
-        else:
-            cfg = venv_cfg.read_text(encoding='utf-8-sig')
-            cfg = re.sub(r'home = .*', lambda m: f'home = {base}', cfg)
-            venv_cfg.write_text(cfg, encoding='utf-8')
-            r = run([venv_python, '-c',
-                     "import olefile, sys; print('  OK python', sys.version.split()[0], 'olefile', olefile.__version__)"])
-            if r.returncode != 0:
-                if r.stderr:
-                    print(r.stderr, file=sys.stderr, end='')
-                print('  WARN venv python check failed - EXB parsing will fall back to uv/system python')
-            else:
-                print(r.stdout, end='')
-                step('Adding venv python to system PATH')
-                try:
-                    add_venv_to_path()
-                except Exception as exc:
-                    print(f'  WARN could not update system PATH: {exc}')
+    if not base_python.exists():
+        if not python_setup.exists():
+            die(f'python installer not found: {python_setup}')
+        step(f'Silently installing Python 3.14.7 into {target_dir}')
+        proc = run([python_setup, '/quiet', 'InstallAllUsers=1', 'PrependPath=0',
+                    f'TargetDir={target_dir}', 'Include_pip=1', 'Include_doc=0',
+                    'Include_tcltk=0', 'Include_test=0'], timeout=600)
+        if proc.returncode not in (0, 3010) or not base_python.exists():
+            die(f'python installer failed (code {proc.returncode})')
+        ok(f'Python installed at {target_dir}')
+
+    if venv_ready():
+        ok('.venv already ready (olefile importable)')
+    else:
+        venv_dir = DEPLOY_ROOT / '.venv'
+        if venv_dir.exists():
+            step('Recreating broken .venv')
+            shutil.rmtree(venv_dir, ignore_errors=True)
+        step('Creating virtual environment .venv')
+        proc = run([base_python, '-m', 'venv', str(venv_dir)])
+        if proc.returncode != 0:
+            if proc.stdout:
+                print(proc.stdout, end='')
+            if proc.stderr:
+                print(proc.stderr, file=sys.stderr, end='')
+            die('failed to create .venv')
+        venv_python = venv_dir / 'Scripts' / 'python.exe'
+        step('Installing olefile (offline wheel from packages/)')
+        proc = run([venv_python, '-m', 'pip', 'install', '--no-index',
+                    '--find-links', str(DEPLOY_ROOT / 'packages'), 'olefile'])
+        if proc.returncode != 0:
+            if proc.stderr:
+                print(proc.stderr, file=sys.stderr, end='')
+            die('failed to install olefile into .venv')
+
+    venv_python = DEPLOY_ROOT / '.venv' / 'Scripts' / 'python.exe'
+    r = run([venv_python, '-c',
+             "import olefile, sys; print('  OK python', sys.version.split()[0], 'olefile', olefile.__version__)"])
+    if r.returncode != 0:
+        if r.stderr:
+            print(r.stderr, file=sys.stderr, end='')
+        print('  WARN venv python check failed - EXB parsing will fall back to uv/system python')
+    else:
+        print(r.stdout, end='')
+        step('Adding venv python to system PATH')
+        try:
+            add_venv_to_path()
+        except Exception as exc:
+            print(f'  WARN could not update system PATH: {exc}')
 
     # --- 7. write .env ---
     step('Writing .env config')
