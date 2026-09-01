@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -81,13 +82,19 @@ func DrawingResource(repository drawing.Repository) http.HandlerFunc {
 			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
 			return
 		}
-		resourcePath := strings.TrimPrefix(request.URL.Path, "/api/drawings/")
+		// 图纸号可能含「/」（如 JG9055e-50/32-00），必须基于未解码的路径分段，
+		// 否则 %2F 解码后被拆段导致 404。
+		resourcePath := strings.TrimPrefix(request.URL.EscapedPath(), "/api/drawings/")
 		parts := strings.Split(strings.Trim(resourcePath, "/"), "/")
 		if len(parts) == 0 || parts[0] == "" {
 			response.WriteError(writer, http.StatusNotFound, "图纸不存在")
 			return
 		}
-		id := parts[0]
+		id, err := url.PathUnescape(parts[0])
+		if err != nil {
+			response.WriteError(writer, http.StatusBadRequest, "图纸编号无效")
+			return
+		}
 		if len(parts) == 2 && parts[1] == "structure" && request.Method == http.MethodGet {
 			items, err := repository.ListParts(request.Context(), id)
 			if err != nil {
