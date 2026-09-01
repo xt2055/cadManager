@@ -19,17 +19,25 @@ const percent = computed(() => (total.value ? Math.round((done.value / total.val
 const isReviewing = computed(() => currentItem.value?.status === 'reviewing')
 const isPublished = computed(() => currentItem.value?.status === 'published')
 
-// 当前激活正在书写意见的节点
-const activeNodeName = ref<string | null>(null)
+// 顺序流转：节点按 order 排序，第一个待处理节点为当前活动节点，仅它可签署。
+const sortedNodes = computed(() => domainStore.currentReviewNodes
+  .slice()
+  .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)))
+const activeNodeName = computed(() => (isReviewing.value
+  ? sortedNodes.value.find((node) => node.status === 'pending')?.name ?? null
+  : null))
+
+// 意见表单当前展开的节点
+const editingNodeName = ref<string | null>(null)
 const opinionText = ref('')
 
 function openOpinionForm(node: ReviewNode) {
-  activeNodeName.value = node.name
+  editingNodeName.value = node.name
   opinionText.value = node.opinion || ''
 }
 
 function cancelOpinion() {
-  activeNodeName.value = null
+  editingNodeName.value = null
   opinionText.value = ''
 }
 
@@ -37,7 +45,7 @@ async function handleStartReview() {
   if (!currentItem.value) return
   try {
     await domainStore.startReview(currentItem.value.no)
-    uiStore.toast(`图纸「${currentItem.value.no}」已成功发起无序并行审核流程`, 'ok')
+    uiStore.toast(`图纸「${currentItem.value.no}」已发起审核，请按顺序完成各节点签署`, 'ok')
   } catch (error) {
     console.error('发起审核失败', error)
     uiStore.toast(error instanceof Error ? error.message : '发起审核失败', 'warn')
@@ -66,7 +74,7 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
         : `节点「${nodeName}」已驳回，发起人将收到整改通知`,
       action === 'pass' ? 'ok' : 'warn',
     )
-    activeNodeName.value = null
+    editingNodeName.value = null
     opinionText.value = ''
   } catch (error) {
     console.error('提交审核意见失败', error)
@@ -86,11 +94,11 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
         <div class="summary-texts">
           <div class="summary-title-row">
             <h3>图纸工程审核流转中心</h3>
-            <span v-if="isReviewing" class="tag info">审核中 · 无序并行</span>
+            <span v-if="isReviewing" class="tag info">审核中 · 顺序流转</span>
             <span v-else-if="isPublished" class="tag ok">已全部通过 · 已发布</span>
             <span v-else class="tag mute">草稿状态 · 待发起审核</span>
           </div>
-          <p>所有必需节点并行处理；各专业人员可在图纸浏览后直接在线签署意见。</p>
+          <p>节点按设计 → 校对 → 审核 → 工艺 → 批准顺序签署；前序节点通过后，下一节点才会开放审核。</p>
         </div>
       </div>
 
@@ -136,26 +144,27 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
     <div v-if="domainStore.currentReviewNodes.length" class="review-diagram-area">
       <div class="section-subhead">
         <DemoIcon name="git-commit" :size="15" />
-        <h4>审核节点网络（无序并行处理）</h4>
+        <h4>审核节点流程（按顺序签署）</h4>
       </div>
 
       <div class="review-nodes-grid">
         <div
-          v-for="node in domainStore.currentReviewNodes"
+          v-for="node in sortedNodes"
           :key="node.name"
           class="card rn-card"
-          :class="[node.status]"
+          :class="[node.status, { 'is-active': node.name === activeNodeName }]"
         >
           <div class="rn-top">
             <div class="rn-ring">
-              <DemoIcon :name="node.status === 'pass' ? 'check' : node.status === 'rejected' ? 'x' : 'clock'" :size="16" />
+              <DemoIcon :name="node.status === 'pass' ? 'check' : node.status === 'rejected' ? 'x' : node.name === activeNodeName ? 'pencil' : 'clock'" :size="16" />
             </div>
             <div class="rn-info">
               <div class="rn-name">{{ node.name }}</div>
               <div class="rn-user">责任人 · {{ node.user }}</div>
             </div>
-            <span class="tag" :class="node.status === 'pass' ? 'ok' : node.status === 'rejected' ? 'danger' : 'warn'">
-              {{ node.status === 'pass' ? '已同意' : node.status === 'rejected' ? '已驳回' : '待处理' }}
+            <span v-if="node.name === activeNodeName" class="tag warn">当前节点</span>
+            <span v-else class="tag" :class="node.status === 'pass' ? 'ok' : node.status === 'rejected' ? 'danger' : 'mute'">
+              {{ node.status === 'pass' ? '已同意' : node.status === 'rejected' ? '已驳回' : '等待前置节点' }}
             </span>
           </div>
 
@@ -167,8 +176,8 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
 
           <div class="rn-time">{{ node.time }}</div>
 
-          <!-- 审核意见填写抽屉/展开框 -->
-          <div v-if="activeNodeName === node.name" class="opinion-editor-box">
+          <!-- 审核意见填写抽屉/展开框（仅当前活动节点可展开） -->
+          <div v-if="editingNodeName === node.name" class="opinion-editor-box">
             <label>请填写针对本图纸的评审意见：</label>
             <textarea
               v-model="opinionText"
@@ -187,11 +196,17 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
             </div>
           </div>
 
-          <!-- 操作按钮栏 -->
-          <div v-else-if="node.status !== 'pass'" class="rn-acts">
+          <!-- 操作按钮栏：仅当前活动节点可审核 -->
+          <div v-else-if="node.name === activeNodeName" class="rn-acts">
             <button class="btn sm primary" type="button" @click="openOpinionForm(node)">
               <DemoIcon name="pencil" :size="13" />填写意见并审核
             </button>
+          </div>
+
+          <!-- 非当前节点：等待提示 -->
+          <div v-else-if="node.status === 'pending' && isReviewing" class="rn-waiting">
+            <DemoIcon name="clock" :size="12" />
+            <span>等待前置节点通过后开放审核</span>
           </div>
         </div>
       </div>
@@ -200,7 +215,7 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
     <div v-else class="card empty">
       <DemoIcon name="stamp" :size="38" />
       <div class="t">尚未初始化审核流程</div>
-      <p>点击上方「开始发起审核流程」自动装配企业标准化无序审核节点网络</p>
+      <p>点击上方「开始发起审核流程」装配企业标准化顺序审核节点</p>
     </div>
   </div>
 </template>
@@ -340,6 +355,27 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
 .rn-card.pending .rn-ring {
   border-color: var(--warn);
   color: var(--warn);
+}
+.rn-card.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.rn-card.is-active .rn-ring {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.rn-waiting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: auto;
+  padding: 7px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+  color: var(--text-3);
+  font-size: 11px;
 }
 .rn-info {
   flex: 1;

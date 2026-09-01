@@ -1780,16 +1780,18 @@ export const useDomainStore = defineStore('domain', () => {
     reviewCases.value.push(reviewCase)
     target.status = 'reviewing'
     myReviews.value = myReviews.value.filter((item) => item.no !== drawingNo)
-    nodes.filter((node) => node.status === 'pending').forEach((node) => {
+    // 顺序流转：待办只包含当前活动节点（顺序最靠前的待处理节点）。
+    const activeNode = nodes.filter((node) => node.status === 'pending').sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
+    if (activeNode) {
       myReviews.value.push({
         reviewCaseId,
         no: drawingNo,
         name: target.name,
-        node: node.name,
+        node: activeNode.name,
         by: designUser,
         time: nowLabel(),
       })
-    })
+    }
     recordActivity({
       drawingNo,
       drawingName: target.name,
@@ -1815,6 +1817,19 @@ export const useDomainStore = defineStore('domain', () => {
     const node = reviewCase.nodes.find((item) => item.name === nodeName)
     if (!node) throw new Error(`未找到审核节点：${nodeName}`)
     if (node.status === 'pass' && action === 'pass') throw new Error(`审核节点已完成：${nodeName}`)
+    if (node.status === 'pending') {
+      // 顺序守卫：只允许处理顺序最靠前的待处理节点。
+      const activeNode = reviewCase.nodes
+        .filter((item) => item.status === 'pending')
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
+      if (!activeNode || activeNode.name !== nodeName) {
+        throw new Error(
+          activeNode
+            ? `审核须按顺序流转：请先处理当前节点「${activeNode.name}」`
+            : '审核流程当前没有可处理的节点',
+        )
+      }
+    }
 
     node.status = action
     node.time = nowLabel()
@@ -1843,6 +1858,20 @@ export const useDomainStore = defineStore('domain', () => {
       target.status = 'draft'
       myReviews.value = myReviews.value.filter((item) => item.reviewCaseId !== reviewCase.id)
     } else {
+      // 通过后推进待办到下一个顺序节点。
+      const nextActive = reviewCase.nodes
+        .filter((item) => item.status === 'pending')
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
+      if (nextActive) {
+        myReviews.value.push({
+          reviewCaseId: reviewCase.id,
+          no: drawingNo,
+          name: target.name,
+          node: nextActive.name,
+          by: reviewCase.initiator,
+          time: nowLabel(),
+        })
+      }
       const requiredPending = reviewCase.nodes.some((item) => item.required !== false && item.status !== 'pass')
       if (!requiredPending) {
         reviewCase.status = 'published'
