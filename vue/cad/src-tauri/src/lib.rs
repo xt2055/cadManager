@@ -233,6 +233,37 @@ async fn open_cad_readonly(api_base_url: String, access_token: String, storage_k
   Ok(())
 }
 
+#[tauri::command]
+fn ensure_smb_credential(host: String, username: String, password: String) -> Result<(), String> {
+  #[cfg(windows)]
+  {
+    if host.trim().is_empty() || username.trim().is_empty() {
+      return Err("服务器未配置 SMB 主机或访问账号".to_string());
+    }
+    let output = std::process::Command::new("cmdkey")
+      .args([
+        format!("/add:{}", host.trim()),
+        format!("/user:{}", username.trim()),
+        format!("/pass:{}", password),
+      ])
+      .output()
+      .map_err(|error| format!("调用 cmdkey 失败：{}", error))?;
+    if output.status.success() {
+      Ok(())
+    } else {
+      Err(format!(
+        "写入 Windows 凭据失败：{}",
+        String::from_utf8_lossy(&output.stderr).trim()
+      ))
+    }
+  }
+  #[cfg(not(windows))]
+  {
+    let _ = (host, username, password);
+    Err("SMB 凭据写入目前仅支持 Windows".to_string())
+  }
+}
+
 fn ensure_config_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
   let path = config_file_path(app)?;
   if !path.exists() {
@@ -426,6 +457,7 @@ pub fn run() {
       open_generated_excel,
       open_cad_edit_session,
       open_cad_readonly,
+      ensure_smb_credential,
       read_debug_mode,
       write_debug_mode
     ])

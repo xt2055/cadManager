@@ -10,6 +10,7 @@ import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/
 import { reviewFlowService, signerRoleForNode } from '@/services/review-flow.service'
 import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.service'
 import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
+import { ensureSmbCredential } from '@/services/tauri/cad-edit.service'
 import type { DataDocument } from '@/services/data-manager'
 import type {
   ActivityLog,
@@ -349,6 +350,10 @@ export const useDomainStore = defineStore('domain', () => {
         await refreshReviewData()
         initialized.value = true
         startReviewPolling()
+        // 桌面客户端：自动写入 SMB 访问凭据（失败不影响业务）。
+        void ensureSmbCredential().catch((smbError: unknown) => {
+          console.warn('SMB 凭据自动配置失败', smbError)
+        })
       } catch (loadError: unknown) {
         initialized.value = false
         error.value = loadError instanceof Error ? loadError.message : String(loadError)

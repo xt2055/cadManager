@@ -75,20 +75,94 @@ func Ensure(ctx context.Context, cfg config.SMBConfig) error {
 			return fmt.Errorf("SMB 共享 %q 已存在，但目录不是 %q；请先修正该共享配置", cfg.Share, root)
 		}
 		log.Printf("[SMB] 成功：共享已存在且目录匹配 \\\\%s\\%s", cfg.Host, cfg.Share)
+	} else {
+		log.Printf("[SMB] 共享不存在，准备创建：\\\\%s\\%s -> %q", cfg.Host, cfg.Share, root)
+
+		args := []string{"share", cfg.Share + "=" + root}
+		if principal := currentPrincipal(ctx); principal != "" {
+			args = append(args, "/GRANT:"+principal+",FULL")
+		}
+		if output, err := run(ctx, "net", args...); err != nil {
+			log.Printf("[SMB] 失败：创建共享失败 share=%q err=%v details=%q", cfg.Share, err, strings.TrimSpace(output))
+			return fmt.Errorf("创建 SMB 共享 %q 失败（请使用管理员权限启动 Go 后端）: %w: %s", cfg.Share, err, strings.TrimSpace(output))
+		}
+		log.Printf("[SMB] 成功：共享已创建 \\\\%s\\%s -> %q", cfg.Host, cfg.Share, root)
+	}
+
+	// 访问保障（幂等，每次启动都会校正）：共享权限、防火墙、专用访问账号。
+	if err := ensureShareAccess(ctx, cfg.Share); err != nil {
+		log.Printf("[SMB] 失败：配置共享访问权限失败 err=%v", err)
+		return fmt.Errorf("配置 SMB 共享访问权限失败（请使用管理员权限启动 Go 后端）: %w", err)
+	}
+	if err := ensureFirewall(ctx); err != nil {
+		log.Printf("[SMB] 失败：配置防火墙规则失败 err=%v", err)
+		return fmt.Errorf("配置 SMB 防火墙规则失败（请使用管理员权限启动 Go 后端）: %w", err)
+	}
+	if err := ensureAccessAccount(ctx, cfg); err != nil {
+		log.Printf("[SMB] 失败：配置 SMB 访问账号失败 err=%v", err)
+		return fmt.Errorf("配置 SMB 访问账号失败（请使用管理员权限启动 Go 后端）: %w", err)
+	}
+	return nil
+}
+
+// ensureShareAccess 保证 Everyone 对共享拥有完全控制，其他电脑才能免本地账号直连。
+func ensureShareAccess(ctx context.Context, share string) error {
+	log.Printf("[SMB] 检查共享访问权限：Everyone Full share=%q", share)
+	escaped := strings.ReplaceAll(share, "'", "''")
+	command := "$ErrorActionPreference='Stop'; Grant-SmbShareAccess -Name '" + escaped + "' -AccountName Everyone -AccessRight Full -Force | Out-Null; 'OK'"
+	output, err := run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command)
+	if err != nil || !strings.Contains(output, "OK") {
+		return fmt.Errorf("授予 Everyone 共享权限失败: %w: %s", err, strings.TrimSpace(output))
+	}
+	log.Printf("[SMB] 成功：Everyone 拥有共享完全控制")
+	return nil
+}
+
+// ensureFirewall 保证 445 端口可被局域网访问：启用专用网络内置规则，
+// 公用网络仅对本网段放行 TCP/UDP 445（降低暴露面）。
+func ensureFirewall(ctx context.Context) error {
+	log.Printf("[SMB] 检查防火墙 SMB-In 规则")
+	command := `$ErrorActionPreference='Stop'; $result=@(); ` +
+		`try { Enable-NetFirewallRule -Name FPS-SMB-In-TCP -ErrorAction Stop; $result+='private-ok' } catch { $result+='private-fail' }; ` +
+		`if (-not (Get-NetFirewallRule -DisplayName 'SMB-In 445 TCP (Public LocalSubnet)' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName 'SMB-In 445 TCP (Public LocalSubnet)' -Direction Inbound -Protocol TCP -LocalPort 445 -Profile Public -RemoteAddress LocalSubnet -Action Allow | Out-Null; $result+='tcp-created' }; ` +
+		`if (-not (Get-NetFirewallRule -DisplayName 'SMB-In 445 UDP (Public LocalSubnet)' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName 'SMB-In 445 UDP (Public LocalSubnet)' -Direction Inbound -Protocol UDP -LocalPort 445 -Profile Public -RemoteAddress LocalSubnet -Action Allow | Out-Null; $result+='udp-created' }; ` +
+		`$result -join ','`
+	output, err := run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command)
+	if err != nil {
+		return fmt.Errorf("配置防火墙规则失败: %w: %s", err, strings.TrimSpace(output))
+	}
+	if strings.Contains(output, "private-fail") {
+		return fmt.Errorf("启用专用网络 SMB-In 规则失败: %s", strings.TrimSpace(output))
+	}
+	log.Printf("[SMB] 成功：防火墙 SMB-In 规则已就绪 (%s)", strings.TrimSpace(output))
+	return nil
+}
+
+// ensureAccessAccount 确保 CAD_SMB_USERNAME 指定的本地账号存在并可用于 SMB 登录；
+// 客户端通过 /api/system/smb-access 拿到该账号自动写入凭据，免手动输入。
+func ensureAccessAccount(ctx context.Context, cfg config.SMBConfig) error {
+	username := strings.TrimSpace(cfg.Username)
+	if username == "" {
+		log.Printf("[SMB] 未配置 CAD_SMB_USERNAME，跳过专用访问账号")
 		return nil
 	}
-	log.Printf("[SMB] 共享不存在，准备创建：\\\\%s\\%s -> %q", cfg.Host, cfg.Share, root)
-
-	args := []string{"share", cfg.Share + "=" + root}
-	if principal := currentPrincipal(ctx); principal != "" {
-		args = append(args, "/GRANT:"+principal+",FULL")
+	if output, err := run(ctx, "net", "user", username); err == nil {
+		log.Printf("[SMB] 成功：访问账号 %q 已存在", username)
+		return nil
+	} else if !isExitError(err) {
+		return fmt.Errorf("检查访问账号 %q 失败: %w: %s", username, err, strings.TrimSpace(output))
 	}
-	if output, err := run(ctx, "net", args...); err != nil {
-		log.Printf("[SMB] 失败：创建共享失败 share=%q err=%v details=%q", cfg.Share, err, strings.TrimSpace(output))
-		return fmt.Errorf("创建 SMB 共享 %q 失败（请使用管理员权限启动 Go 后端）: %w: %s", cfg.Share, err, strings.TrimSpace(output))
+	output, err := run(ctx, "net", "user", username, cfg.Password, "/add", "/Y")
+	if err != nil {
+		return fmt.Errorf("创建访问账号 %q 失败（请检查 CAD_SMB_PASSWORD 是否符合密码策略）: %w: %s", username, err, strings.TrimSpace(output))
 	}
-	log.Printf("[SMB] 成功：共享已创建 \\\\%s\\%s -> %q", cfg.Host, cfg.Share, root)
+	log.Printf("[SMB] 成功：访问账号 %q 已创建", username)
 	return nil
+}
+
+func isExitError(err error) bool {
+	_, ok := err.(*exec.ExitError)
+	return ok
 }
 
 func Inspect(ctx context.Context, cfg config.SMBConfig) Status {

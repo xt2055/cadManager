@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"cadguanliq/internal/auth"
@@ -170,6 +171,37 @@ func caxaStatus(configured string) CAXAStatusSnapshot {
 		return CAXAStatusSnapshot{Error: err.Error()}
 	}
 	return CAXAStatusSnapshot{Available: true, Path: path}
+}
+
+type SMBAccessResponse struct {
+	Host     string `json:"host"`
+	Share    string `json:"share"`
+	UNCRoot  string `json:"uncRoot"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// SMBAccess 下发 SMB 访问信息（需登录）。桌面客户端据此自动写入 Windows 凭据管理器，
+// 免去每台电脑手动输入凭据；内网环境且与编辑票据凭据下发一致，不新增暴露面。
+func SMBAccess(cfg config.Config) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		smbConfig := cfg.SMB
+		uncRoot := ""
+		if strings.TrimSpace(smbConfig.Host) != "" && strings.TrimSpace(smbConfig.Share) != "" {
+			uncRoot = `\\` + strings.Trim(smbConfig.Host, `\`) + `\` + strings.Trim(smbConfig.Share, `\`)
+		}
+		response.WriteData(writer, http.StatusOK, SMBAccessResponse{
+			Host:     smbConfig.Host,
+			Share:    smbConfig.Share,
+			UNCRoot:  uncRoot,
+			Username: smbConfig.Username,
+			Password: smbConfig.Password,
+		})
+	}
 }
 
 func Heartbeat(authService *auth.Service) http.HandlerFunc {
