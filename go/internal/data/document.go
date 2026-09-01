@@ -153,22 +153,20 @@ func syncCompatibilityRecords(ctx context.Context, tx pgx.Tx, raw []byte, userID
 		if material == "" {
 			material = "—"
 		}
-		status := item.Status
-		if status == "" {
-			status = "draft"
-		}
 		version := item.Version
 		if version == "" {
 			version = "v1.0"
 		}
+		// 图纸状态是后端受控流转（审核/存档）的权威数据，文档同步只维护内容字段，
+		// 严禁回写 status，否则自动保存会把过期状态覆盖回去（如已存档被拖回草稿）。
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO drawings (drawing_no, name, project, kind, material, vendor, status, version, borrow_from, remark, created_by, updated_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, '')::uuid, NULLIF($11, '')::uuid)
+			VALUES ($1, $2, $3, $4, $5, $6, 'draft', $7, $8, $9, NULLIF($10, '')::uuid, NULLIF($10, '')::uuid)
 			ON CONFLICT (drawing_no) DO UPDATE SET
 				name = EXCLUDED.name, project = EXCLUDED.project, kind = EXCLUDED.kind, material = EXCLUDED.material,
-				vendor = EXCLUDED.vendor, status = EXCLUDED.status, version = EXCLUDED.version,
+				vendor = EXCLUDED.vendor, version = EXCLUDED.version,
 				borrow_from = EXCLUDED.borrow_from, remark = EXCLUDED.remark, updated_by = EXCLUDED.updated_by,
-				updated_at = now()`, item.No, item.Name, item.Project, kind, material, item.Vendor, status, version, item.BorrowFrom, item.Remark, userID); err != nil {
+				updated_at = now()`, item.No, item.Name, item.Project, kind, material, item.Vendor, version, item.BorrowFrom, item.Remark, userID); err != nil {
 			return fmt.Errorf("同步图纸 %s 失败: %w", item.No, err)
 		}
 	}
