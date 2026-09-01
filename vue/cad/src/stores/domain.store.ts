@@ -123,7 +123,32 @@ export const useDomainStore = defineStore('domain', () => {
   const currentReviewNodes = computed(() => currentReviewCase.value?.nodes ?? [])
   const bom = computed(() => bomItems.value.filter((item) => item.drawingNo === currentNo.value))
   const crafts = computed(() => craftFiles.value.filter((file) => file.drawingNo === currentNo.value))
-  const reviewCount = computed(() => myReviews.value.length)
+  // 待我审核：从进行中的审核案例实时推导，仅含当前活动节点且责任人为当前登录人的任务。
+  const myPendingReviews = computed<MyReview[]>(() => {
+    const user = authStore.currentUser
+    if (!user) return []
+    const result: MyReview[] = []
+    for (const reviewCase of reviewCases.value) {
+      if (reviewCase.status !== 'reviewing') continue
+      const activeNode = reviewCase.nodes
+        .filter((node) => node.status === 'pending')
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
+      if (!activeNode) continue
+      if (activeNode.user !== user.displayName && activeNode.user !== user.account) continue
+      const target = drawings.value.find((item) => item.no === reviewCase.drawingNo)
+        ?? structure.value.find((item) => item.no === reviewCase.drawingNo)
+      result.push({
+        reviewCaseId: reviewCase.id,
+        no: reviewCase.drawingNo,
+        name: target?.name ?? reviewCase.drawingNo,
+        node: activeNode.name,
+        by: activeNode.user,
+        time: reviewCase.startedAt,
+      })
+    }
+    return result
+  })
+  const reviewCount = computed(() => myPendingReviews.value.length)
   const drawingStats = computed(() => {
     const assemblies = drawings.value.filter((item) => item.kind === '总图').length
     const parts = structure.value.length
@@ -2073,6 +2098,7 @@ export const useDomainStore = defineStore('domain', () => {
     flows,
     hiddenList,
     adminLogs,
+    myPendingReviews,
     currentDrawing,
     currentReviewCase,
     selectedStructureIndex,

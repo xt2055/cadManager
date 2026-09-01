@@ -105,11 +105,11 @@ function openReview(no: string) {
           <DemoIcon name="stamp" :size="16" />待我审核
           <span class="hint">{{ domainStore.reviewCount }} 项</span>
         </div>
-        <div v-if="domainStore.myReviews.length" class="todo-list">
-          <div v-for="item in domainStore.myReviews" :key="`${item.reviewCaseId}-${item.node}`" class="todo-item">
+        <div v-if="domainStore.myPendingReviews.length" class="todo-list">
+          <div v-for="item in domainStore.myPendingReviews" :key="`${item.reviewCaseId}-${item.node}`" class="todo-item">
             <div class="todo-info">
               <b>{{ item.name }} · {{ item.node }}</b>
-              <span>{{ item.no }} · {{ item.by }} 发起于 {{ item.time }}</span>
+              <span>{{ item.no }} · 责任人 {{ item.by }} · 发起于 {{ item.time }}</span>
             </div>
             <div class="todo-acts">
               <button class="btn sm primary" type="button" @click="openReview(item.no)">

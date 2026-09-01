@@ -25,8 +25,8 @@ function startReviewingFlow(no: string) {
       <span class="lib-count">点击进入图纸详情 · 审阅图纸后完成签署与意见录入</span>
     </div>
 
-    <template v-if="domainStore.myReviews.length">
-      <div v-for="review in domainStore.myReviews" :key="`${review.reviewCaseId}-${review.node}`" class="card review-row">
+    <template v-if="domainStore.myPendingReviews.length">
+      <div v-for="review in domainStore.myPendingReviews" :key="`${review.reviewCaseId}-${review.node}`" class="card review-row">
         <div class="feed-ic review-icon">
           <DemoIcon name="clipboard-check" :size="20" />
         </div>
@@ -37,7 +37,7 @@ function startReviewingFlow(no: string) {
             <span class="dh-no review-no">{{ review.no }}</span>
           </div>
           <div class="review-meta">
-            待审专业节点 <b>{{ review.node }}</b> · {{ review.by }} 发起于 {{ review.time }} · 无序并行流程
+            待审节点 <b>{{ review.node }}</b> · 责任人 {{ review.by }} · 发起于 {{ review.time }} · 顺序流转
           </div>
         </div>
 
