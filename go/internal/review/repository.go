@@ -274,7 +274,44 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 		return ReviewCase{}, fmt.Errorf("读取审核流程失败: %w", err)
 	}
 
-	nodes := make([]CaseNode, 0)
+	// 审核节点始终与后台流程配置同步：配置删除的节点不再进入案例，
+	// 非必须且未指定责任人的节点跳过，已通过节点保留签署历史。
+	type flowNodeDef struct {
+		name           string
+		signerRole     string
+		assignedUserID string
+		assignedName   string
+		required       bool
+		order          int
+	}
+	flowNodes := make([]flowNodeDef, 0)
+	{
+		rows, err := tx.Query(ctx, `
+			SELECT name, signer_role, COALESCE(assigned_user_id::text, ''), assigned_name, required, node_order
+			FROM review_flow_nodes WHERE flow_id = $1::uuid ORDER BY node_order`, flowID)
+		if err != nil {
+			return ReviewCase{}, fmt.Errorf("读取审核节点失败: %w", err)
+		}
+		for rows.Next() {
+			var item flowNodeDef
+			if err := rows.Scan(&item.name, &item.signerRole, &item.assignedUserID, &item.assignedName, &item.required, &item.order); err != nil {
+				rows.Close()
+				return ReviewCase{}, fmt.Errorf("解析审核节点失败: %w", err)
+			}
+			flowNodes = append(flowNodes, item)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return ReviewCase{}, fmt.Errorf("遍历审核节点失败: %w", err)
+		}
+		rows.Close()
+	}
+	if len(flowNodes) == 0 {
+		return ReviewCase{}, fmt.Errorf("审核流程没有配置任何节点")
+	}
+
+	// 上一案例节点（续审时保留已通过记录）。
+	prevByName := make(map[string]CaseNode)
 	if prevCaseID != "" {
 		rows, err := tx.Query(ctx, `
 			SELECT name, COALESCE(assigned_user_id::text, ''), assigned_name, status, opinion, required, node_order,
@@ -283,72 +320,70 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 		if err != nil {
 			return ReviewCase{}, fmt.Errorf("读取历史审核节点失败: %w", err)
 		}
-		defer rows.Close()
 		for rows.Next() {
 			var node CaseNode
-			var status string
-			if err := rows.Scan(&node.Name, &node.AssignedUserID, &node.AssignedName, &status, &node.Opinion, &node.Required, &node.Order, &node.ReviewedAt); err != nil {
+			if err := rows.Scan(&node.Name, &node.AssignedUserID, &node.AssignedName, &node.Status, &node.Opinion, &node.Required, &node.Order, &node.ReviewedAt); err != nil {
+				rows.Close()
 				return ReviewCase{}, fmt.Errorf("解析历史审核节点失败: %w", err)
 			}
-			node.Status = status
-			if status == "rejected" {
-				node.Status = "pending"
-				node.Opinion = ""
-				node.ReviewedAt = ""
-			}
-			nodes = append(nodes, node)
+			prevByName[node.Name] = node
 		}
 		if err := rows.Err(); err != nil {
+			rows.Close()
 			return ReviewCase{}, fmt.Errorf("遍历历史审核节点失败: %w", err)
 		}
-	} else {
-		rows, err := tx.Query(ctx, `
-			SELECT name, signer_role, COALESCE(assigned_user_id::text, ''), assigned_name, required, node_order
-			FROM review_flow_nodes WHERE flow_id = $1::uuid ORDER BY node_order`, flowID)
-		if err != nil {
-			return ReviewCase{}, fmt.Errorf("读取审核节点失败: %w", err)
+		rows.Close()
+	}
+
+	nodes := make([]CaseNode, 0)
+	for _, flowItem := range flowNodes {
+		signerRole := flowItem.signerRole
+		if signerRole == "" {
+			signerRole = nodeNameToSignerRole[flowItem.name]
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var name, signerRole, assignedUserID, assignedName string
-			var required bool
-			var order int
-			if err := rows.Scan(&name, &signerRole, &assignedUserID, &assignedName, &required, &order); err != nil {
-				return ReviewCase{}, fmt.Errorf("解析审核节点失败: %w", err)
+		assignedUserID := flowItem.assignedUserID
+		assignedName := flowItem.assignedName
+		if signerRole == "设计" || flowItem.name == "设计自检" {
+			assignedUserID = userID
+			assignedName = userName
+		}
+
+		// 已通过节点保留签署历史（签署人/意见/时间不变），顺序与必填性跟随最新配置。
+		if prev, ok := prevByName[flowItem.name]; ok && prev.Status == "pass" {
+			prev.Order = flowItem.order
+			prev.Required = flowItem.required
+			nodes = append(nodes, prev)
+			continue
+		}
+
+		// 未通过节点（含被驳回）一律按当前配置重建为待签；非必须且无责任人直接跳过。
+		if assignedUserID == "" {
+			if flowItem.required {
+				return ReviewCase{}, fmt.Errorf("审核节点「%s」未指定责任人，请在「审核流程管理」中配置", flowItem.name)
 			}
-			if signerRole == "" {
-				signerRole = nodeNameToSignerRole[name]
-			}
-			// 设计自检节点由发起人担任；其余必填节点必须已在流程中指定责任人。
-			if signerRole == "设计" || name == "设计自检" {
-				assignedUserID = userID
-				assignedName = userName
-			} else if assignedUserID == "" && required {
-				return ReviewCase{}, fmt.Errorf("审核节点「%s」未指定责任人，请在「审核流程管理」中配置", name)
-			}
-			nodes = append(nodes, CaseNode{
-				Name:           name,
-				AssignedUserID: assignedUserID,
-				AssignedName:   assignedName,
-				Status:         "pending",
-				Required:       required,
-				Order:          order,
-			})
+			continue
 		}
-		if err := rows.Err(); err != nil {
-			return ReviewCase{}, fmt.Errorf("遍历审核节点失败: %w", err)
-		}
-		if len(nodes) == 0 {
-			return ReviewCase{}, fmt.Errorf("审核流程没有配置任何节点")
-		}
-		// 设计自检直接通过。
-		for index := range nodes {
-			if nodes[index].Name == "设计自检" || nodeNameToSignerRole[nodes[index].Name] == "设计" {
+		nodes = append(nodes, CaseNode{
+			Name:           flowItem.name,
+			AssignedUserID: assignedUserID,
+			AssignedName:   assignedName,
+			Status:         "pending",
+			Required:       flowItem.required,
+			Order:          flowItem.order,
+		})
+	}
+	if len(nodes) == 0 {
+		return ReviewCase{}, fmt.Errorf("审核流程没有可执行的审核节点")
+	}
+	// 设计自检直接通过（新进入案例时）。
+	for index := range nodes {
+		if nodes[index].Name == "设计自检" || nodeNameToSignerRole[nodes[index].Name] == "设计" {
+			if nodes[index].Status != "pass" {
 				nodes[index].Status = "pass"
 				nodes[index].Opinion = "设计完成并自检通过，发起审核流转。"
 				nodes[index].ReviewedAt = time.Now().Format(goTimeLayout)
-				break
 			}
+			break
 		}
 	}
 
