@@ -2,7 +2,6 @@
 import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingAttribute } from '@/types/domain.types'
@@ -23,9 +22,6 @@ const editingAttribute = ref(false)
 const submitting = ref(false)
 const editingFieldId = ref('')
 const editingFieldName = ref('')
-
-// 实时预览模拟状态
-const previewValues = ref<Record<string, string>>({})
 
 const attributes = computed(() => domainStore.attributes
   .slice()
@@ -306,7 +302,7 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- 中右栏：配置与实时预览 -->
+      <!-- 右栏：属性配置与字段管理 -->
       <div class="attribute-detail-column">
         <!-- 属性基本设置卡片 -->
         <section class="attribute-editor-panel card">
@@ -491,25 +487,6 @@ onMounted(() => {
           </div>
         </section>
 
-        <!-- 实时表单效果预览 -->
-        <section class="card preview-card">
-          <div class="preview-head">
-            <div class="preview-title">
-              <DemoIcon name="eye" :size="14" />
-              <strong>业务属性录入效果实时预览</strong>
-            </div>
-            <span class="preview-sub">工程师在“新建图纸 / 详情属性”中将按以下形式填写</span>
-          </div>
-
-          <div class="preview-canvas">
-            <DrawingAttributesForm
-              v-model="previewValues"
-              :attributes="domainStore.sortedAttributes"
-              title="图纸业务属性（实际呈现）"
-              description="带 * 的属性为必填项；系统自动校验"
-            />
-          </div>
-        </section>
       </div>
     </div>
   </div>
@@ -1066,37 +1043,6 @@ onMounted(() => {
 
 .empty-fields-tip span {
   font-size: 11.5px;
-}
-
-/* ================= 实时预览面板 ================= */
-.preview-card {
-  padding: 16px 20px;
-}
-
-.preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 12px;
-  border-bottom: 1px dashed var(--line);
-  margin-bottom: 12px;
-}
-
-.preview-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--accent);
-  font-size: 13px;
-}
-
-.preview-sub {
-  color: var(--text-3);
-  font-size: 11px;
-}
-
-.preview-canvas {
-  padding: 4px 0;
 }
 
 @media (max-width: 960px) {
