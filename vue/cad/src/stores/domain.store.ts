@@ -609,6 +609,29 @@ export const useDomainStore = defineStore('domain', () => {
     await persist()
   }
 
+  async function reorderAttributeFields(attributeId: string, fieldIds: string[]): Promise<void> {
+    await initialize()
+    const attribute = attributes.value.find((item) => item.id === attributeId)
+    if (!attribute) throw new Error('属性不存在')
+    const fieldMap = new Map(attribute.fields.map((field) => [field.id, field]))
+    const newFields: DrawingAttributeField[] = []
+    fieldIds.forEach((id, index) => {
+      const field = fieldMap.get(id)
+      if (field) {
+        field.sortOrder = index + 1
+        newFields.push(field)
+        fieldMap.delete(id)
+      }
+    })
+    // 补齐遗漏字段
+    fieldMap.forEach((field) => {
+      field.sortOrder = newFields.length + 1
+      newFields.push(field)
+    })
+    attribute.fields = newFields
+    await persist()
+  }
+
   async function setDrawingAttributes(drawingNo: string, values: Record<string, string>): Promise<void> {
     await initialize()
     const drawing = drawings.value.find((item) => item.no === drawingNo)
@@ -1948,6 +1971,22 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
+  async function hideDrawing(drawingNo: string): Promise<void> {
+    await initialize()
+    const drawing = drawings.value.find((item) => item.no === drawingNo)
+    if (!drawing) throw new Error(`图纸 ${drawingNo} 不存在`)
+    if (!hiddenList.value.some((item) => item.no === drawingNo)) {
+      hiddenList.value.push({
+        no: drawing.no,
+        name: drawing.name,
+        op: '隐藏图纸',
+        by: '系统用户',
+        date: nowLabel(),
+      })
+      await persist()
+    }
+  }
+
   async function restoreHidden(index: number): Promise<void> {
     await initialize()
     hiddenList.value.splice(index, 1)
@@ -1998,6 +2037,7 @@ export const useDomainStore = defineStore('domain', () => {
     deleteAttribute,
     addAttributeField,
     updateAttributeField,
+    reorderAttributeFields,
     setDrawingAttributes,
     forkDrawing,
     createPartWithFile,
@@ -2026,6 +2066,7 @@ export const useDomainStore = defineStore('domain', () => {
     resetUserPassword,
     toggleUser,
     toggleFlow,
+    hideDrawing,
     restoreHidden,
   }
 })
