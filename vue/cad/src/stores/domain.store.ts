@@ -346,6 +346,7 @@ export const useDomainStore = defineStore('domain', () => {
         await loadRemoteActivityLogs()
         await refreshReviewData()
         initialized.value = true
+        startReviewPolling()
       } catch (loadError: unknown) {
         initialized.value = false
         error.value = loadError instanceof Error ? loadError.message : String(loadError)
@@ -358,6 +359,17 @@ export const useDomainStore = defineStore('domain', () => {
     })()
 
     return initializationPromise
+  }
+
+  // 审核数据轮询：发起/签署/驳回后，其他登录用户（如审核员）的待办与详情在 30s 内自动更新，
+  // 无需手动刷新页面。
+  let reviewPollTimer: number | null = null
+  function startReviewPolling(): void {
+    if (reviewPollTimer !== null) return
+    reviewPollTimer = window.setInterval(() => {
+      if (!authStore.currentUser) return
+      void refreshReviewData()
+    }, 30_000)
   }
 
   async function scanUnscannedCraftFiles(): Promise<void> {
