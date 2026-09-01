@@ -8,6 +8,7 @@ import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-numb
 import { useAuthStore } from '@/stores/auth.store'
 import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
 import { reviewFlowService, signerRoleForNode } from '@/services/review-flow.service'
+import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.service'
 import type { DataDocument } from '@/services/data-manager'
 import type {
   ActivityLog,
@@ -45,8 +46,6 @@ export const STATUS = {
   hidden: { t: '已隐藏', c: 'danger' },
   disabled: { t: '已禁用', c: 'danger' },
 } as const
-
-const REQUIRED_SIGNER_ROLES = ['设计', '校对', '审核', '工艺', '批准'] as const
 
 interface AttachmentInput {
   id: string
@@ -250,6 +249,54 @@ export const useDomainStore = defineStore('domain', () => {
     await persist()
   }
 
+  // 审核案例与已办归档的权威数据在 Go 后端，初始化与每次流转后从这里刷新。
+  function mapApiReviewCase(item: ApiReviewCase) {
+    return {
+      id: item.id,
+      drawingNo: item.drawingNo,
+      flow: item.flow,
+      status: item.status as 'pending' | 'reviewing' | 'published' | 'rejected',
+      initiator: item.initiator,
+      startedAt: item.startedAt,
+      nodes: item.nodes.map((node) => ({
+        name: node.name,
+        user: node.assignedName,
+        assignedUserId: node.assignedUserId,
+        status: node.status,
+        time: node.time || '—',
+        opinion: node.opinion,
+        required: node.required,
+        order: node.order,
+      })),
+    }
+  }
+
+  async function refreshReviewData(): Promise<void> {
+    try {
+      const [cases, completed] = await Promise.all([
+        reviewCaseService.list(),
+        reviewCaseService.completed(),
+      ])
+      reviewCases.value = cases.map(mapApiReviewCase)
+      completedReviews.value = completed.map((item) => ({
+        id: item.id,
+        reviewCaseId: item.reviewCaseId,
+        no: item.no,
+        name: item.name,
+        node: item.node,
+        by: item.by,
+        reviewer: item.reviewer,
+        time: item.time,
+        result: item.result,
+        opinion: item.opinion,
+        ver: item.ver,
+      }))
+    } catch (loadError) {
+      // 审核服务不可用时保留文档内数据，避免整个工作台不可用。
+      console.warn('加载审核数据失败', loadError)
+    }
+  }
+
   function initialize(): Promise<void> {
     if (initialized.value) return Promise.resolve()
     if (initializationPromise) return initializationPromise
@@ -280,6 +327,7 @@ export const useDomainStore = defineStore('domain', () => {
         adminLogs.value = document.adminLogs
         await scanUnscannedCraftFiles()
         await loadRemoteActivityLogs()
+        await refreshReviewData()
         initialized.value = true
       } catch (loadError: unknown) {
         initialized.value = false
@@ -468,38 +516,6 @@ export const useDomainStore = defineStore('domain', () => {
       if (reviewCase?.drawingNo === drawingNo) return reviewCase
     }
     return null
-  }
-
-  // 从启用的审核流程节点回填缺失的图纸签署人员（signerRole 优先，节点名映射兜底）。
-  async function resolveSigners(target: Drawing | StructurePart): Promise<Partial<DrawingSigners>> {
-    const signers: Partial<DrawingSigners> = { ...(target.signers ?? {}) }
-    const missing = REQUIRED_SIGNER_ROLES.filter((role) => !signers[role] || signers[role] === '待定')
-    if (!missing.length) return signers
-
-    try {
-      const flows = await reviewFlowService.list()
-      const enabledFlow = flows.find((flow) => flow.enabled)
-      if (enabledFlow) {
-        for (const node of enabledFlow.nodes) {
-          const role = signerRoleForNode(node.name, node.signerRole)
-          if (!REQUIRED_SIGNER_ROLES.includes(role as (typeof REQUIRED_SIGNER_ROLES)[number])) continue
-          const current = signers[role as keyof DrawingSigners]
-          const assigned = node.assignedName?.trim()
-          if ((!current || current === '待定') && assigned && assigned !== '待定') {
-            signers[role as keyof DrawingSigners] = assigned
-          }
-        }
-      }
-    } catch {
-      // 流程读取失败时退回原有校验路径，由下方缺失校验给出提示。
-    }
-
-    // 设计人兜底：图纸标题栏扫描到的设计人，或当前登录用户。
-    if (!signers['设计'] || signers['设计'] === '待定') {
-      const fallback = ('designer' in target && target.designer) || authStore.currentUser?.displayName
-      if (fallback) signers['设计'] = fallback
-    }
-    return signers
   }
 
   function getTargetFiles(target: Drawing | StructurePart): DrawingFile[] {
@@ -1766,89 +1782,36 @@ export const useDomainStore = defineStore('domain', () => {
     await persist()
   }
 
-  // 节点责任人是否为当前登录人（姓名或账号匹配）。
-  function isNodeAssignee(user: string | undefined): boolean {
+  // 节点责任人是否为当前登录人（优先按后端分配的用户 ID 匹配，姓名/账号兜底）。
+  function isNodeAssignee(user: string | undefined, assignedUserId?: string): boolean {
     const current = authStore.currentUser
-    if (!current || !user) return false
+    if (!current) return false
+    if (assignedUserId) return assignedUserId === current.id
+    if (!user) return false
     return user === current.displayName || user === current.account
   }
 
-  async function startReview(drawingNo: string, initiator?: string): Promise<void> {
+  async function startReview(drawingNo: string, _initiator?: string): Promise<void> {
     await initialize()
     const target = findDrawingOrPart(drawingNo)
     if (!target) throw new Error(`未找到待审核对象：${drawingNo}`)
-    const signers = await resolveSigners(target)
-    const missingRoles = REQUIRED_SIGNER_ROLES.filter((role) => {
-      const user = signers[role]
-      return !user || user === '待定'
-    })
-    if (missingRoles.length) {
-      throw new Error(`无法发起审核，缺少签署人员：${missingRoles.join('、')}。请联系管理员在「审核流程管理」中为对应节点指定人员。`)
+
+    // 审核案例权威数据在 Go 后端（总图与零件统一处理），由后端强制顺序与责任人。
+    await reviewCaseService.start(drawingNo)
+    const refreshed = await reviewCaseService.list().catch(() => [])
+    const created = refreshed.find((item) => item.drawingNo === drawingNo && item.status === 'reviewing')
+    if (created) {
+      // 用后端节点责任人同步图纸签署栏展示。
+      const signerMap: Partial<DrawingSigners> = {}
+      for (const node of created.nodes) {
+        const role = signerRoleForNode(node.name, '')
+        if (role) signerMap[role as keyof DrawingSigners] = node.assignedName
+      }
+      target.signers = { ...(target.signers ?? {}), ...signerMap }
     }
-
-    // 回写图纸签署人员，保证详情页签署栏与审核节点一致。
-    target.signers = { ...(target.signers ?? {}), ...signers }
-
-    const reviewCaseId = createId('review-case')
-    const designUser = signers['设计'] ?? initiator ?? '当前用户'
-    // 驳回续审：存在被驳回的历史案例时，保留已通过节点，从被驳回节点继续。
-    const previousCase = reviewCases.value
-      .filter((item) => item.drawingNo === drawingNo && item.status === 'rejected')
-      .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))[0]
-    const nodes: ReviewNode[] = previousCase
-      ? previousCase.nodes
-          .slice()
-          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          .map((node) => ({
-            ...node,
-            status: node.status === 'rejected' ? 'pending' as const : node.status,
-            time: node.status === 'rejected' ? '—' : node.time,
-            opinion: node.status === 'rejected' ? '' : node.opinion,
-          }))
-      : [
-          { name: '设计自检', user: designUser, status: 'pass', time: nowLabel(), opinion: '设计完成并自检通过，发起审核流转。', required: true, order: 1 },
-          { name: '校对复核', user: signers['校对'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 2 },
-          { name: '专业审核', user: signers['审核'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 3 },
-          { name: '工艺会签', user: signers['工艺'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 4 },
-          { name: '标准化审查', user: signers['标准化'] ?? '待定', status: 'pending', time: '—', opinion: '', required: false, order: 5 },
-          { name: '主管批准', user: signers['批准'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 6 },
-        ]
-    const reviewCase: ReviewCase = {
-      id: reviewCaseId,
-      drawingNo,
-      flow: previousCase ? '企业标准图纸审核流程（续审）' : '企业标准图纸审核流程',
-      status: 'reviewing',
-      initiator: designUser,
-      startedAt: nowLabel(),
-      nodes,
-    }
-
-    reviewCases.value.push(reviewCase)
     target.status = 'reviewing'
-    myReviews.value = myReviews.value.filter((item) => item.no !== drawingNo)
-    // 顺序流转：待办只包含当前活动节点（顺序最靠前的待处理节点）。
-    const activeNode = nodes.filter((node) => node.status === 'pending').sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
-    if (activeNode) {
-      myReviews.value.push({
-        reviewCaseId,
-        no: drawingNo,
-        name: target.name,
-        node: activeNode.name,
-        by: designUser,
-        time: nowLabel(),
-      })
-    }
-    recordActivity({
-      drawingNo,
-      drawingName: target.name,
-      targetType: 'review',
-      act: 'check',
-      text: previousCase
-        ? `为图纸 <b>${drawingNo}</b> 重新发起审核，从被驳回节点继续流转`
-        : `为图纸 <b>${drawingNo}</b> 发起了图纸审核流程`,
-      detail: { reviewCaseId },
-    })
     await persist()
+    await refreshReviewData()
   }
 
   async function submitNodeReview(
@@ -1878,69 +1841,27 @@ export const useDomainStore = defineStore('domain', () => {
         )
       }
       // 责任人守卫：仅节点责任人可签署，防止代签。
-      if (!isNodeAssignee(node.user)) {
+      if (!isNodeAssignee(node.user, node.assignedUserId)) {
         throw new Error(`节点「${nodeName}」由「${node.user || '待定'}」负责，当前登录人无权签署`)
       }
     }
 
-    node.status = action
-    node.time = nowLabel()
-    node.opinion = opinion || (action === 'pass' ? '同意通过。' : '审核驳回，请按意见修正后重新提交。')
-    myReviews.value = myReviews.value.filter((item) => !(item.reviewCaseId === reviewCase.id && item.node === nodeName))
+    // 签署权威校验与落库在 Go 后端：顺序、责任人、状态推进全部由后端事务保证。
+    await reviewCaseService.submit(reviewCase.id, nodeName, action, opinion)
 
     const target = findDrawingOrPart(drawingNo)
-    if (!target) throw new Error(`未找到待审核对象：${drawingNo}`)
-    const completedReview: CompletedReview = {
-      id: createId('completed-review'),
-      reviewCaseId: reviewCase.id,
-      no: drawingNo,
-      name: target.name,
-      node: nodeName,
-      by: reviewCase.initiator,
-      reviewer,
-      time: nowLabel(),
-      result: action,
-      opinion: node.opinion,
-      ver: target.ver,
+    if (target) {
+      recordActivity({
+        drawingNo,
+        drawingName: target.name,
+        targetType: 'review',
+        act: 'check',
+        text: `审核图纸 <b>${drawingNo}</b>（节点：${nodeName}）：${action === 'pass' ? '通过' : '驳回'}`,
+        detail: { reviewCaseId: reviewCase.id, nodeName, result: action },
+      })
+      await persist()
     }
-    completedReviews.value.unshift(completedReview)
-
-    if (action === 'rejected') {
-      reviewCase.status = 'rejected'
-      target.status = 'draft'
-      myReviews.value = myReviews.value.filter((item) => item.reviewCaseId !== reviewCase.id)
-    } else {
-      // 通过后推进待办到下一个顺序节点。
-      const nextActive = reviewCase.nodes
-        .filter((item) => item.status === 'pending')
-        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
-      if (nextActive) {
-        myReviews.value.push({
-          reviewCaseId: reviewCase.id,
-          no: drawingNo,
-          name: target.name,
-          node: nextActive.name,
-          by: reviewCase.initiator,
-          time: nowLabel(),
-        })
-      }
-      const requiredPending = reviewCase.nodes.some((item) => item.required !== false && item.status !== 'pass')
-      if (!requiredPending) {
-        reviewCase.status = 'published'
-        target.status = 'published'
-        myReviews.value = myReviews.value.filter((item) => item.reviewCaseId !== reviewCase.id)
-      }
-    }
-
-    recordActivity({
-      drawingNo,
-      drawingName: target.name,
-      targetType: 'review',
-      act: 'check',
-      text: `审核图纸 <b>${drawingNo}</b>（节点：${nodeName}）：${action === 'pass' ? '通过' : '驳回'}`,
-      detail: { reviewCaseId: reviewCase.id, nodeName, result: action, opinion: node.opinion },
-    })
-    await persist()
+    await refreshReviewData()
   }
 
   async function setReviewNodeStatus(name: string, status: 'pass' | 'pending' | 'rejected', opinion = ''): Promise<void> {

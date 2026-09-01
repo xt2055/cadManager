@@ -244,6 +244,7 @@ export interface ReviewNode {
   opinion: string
   required?: boolean
   order?: number
+  assignedUserId?: string
 }
 
 export type ReviewCaseStatus = 'pending' | 'reviewing' | 'published' | 'rejected'

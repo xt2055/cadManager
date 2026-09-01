@@ -30,11 +30,12 @@ const activeNodeName = computed(() => (isReviewing.value
   : null))
 const isRejected = computed(() => domainStore.currentReviewCase?.status === 'rejected')
 
-// 签署权：当前活动节点且节点责任人是当前登录人。
+// 签署权：当前活动节点且节点责任人是当前登录人（后端分配 ID 优先，姓名/账号兜底）。
 function canSignNode(node: ReviewNode): boolean {
   if (!isReviewing.value || node.name !== activeNodeName.value) return false
   const current = authStore.currentUser
   if (!current) return false
+  if (node.assignedUserId) return node.assignedUserId === current.id
   return node.user === current.displayName || node.user === current.account
 }
 

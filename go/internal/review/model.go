@@ -31,9 +31,62 @@ type SaveFlowInput struct {
 	Nodes       []Node `json:"nodes"`
 }
 
+// ReviewCase 一次图纸审核流转实例（含顺序节点）。
+type ReviewCase struct {
+	ID          string     `json:"id"`
+	DrawingNo   string     `json:"drawingNo"`
+	DrawingName string     `json:"drawingName"`
+	FlowName    string     `json:"flow"`
+	Status      string     `json:"status"`
+	Initiator   string     `json:"initiator"`
+	StartedAt   string     `json:"startedAt"`
+	CompletedAt string     `json:"completedAt,omitempty"`
+	Nodes       []CaseNode `json:"nodes"`
+}
+
+// CaseNode 审核案例中的单个签署节点。
+type CaseNode struct {
+	Name           string `json:"name"`
+	AssignedUserID string `json:"assignedUserId,omitempty"`
+	AssignedName   string `json:"assignedName"`
+	Status         string `json:"status"`
+	Opinion        string `json:"opinion"`
+	Required       bool   `json:"required"`
+	Order          int    `json:"order"`
+	ReviewedAt     string `json:"time,omitempty"`
+}
+
+// CompletedAction 已办审核归档记录。
+type CompletedAction struct {
+	ID        string `json:"id"`
+	CaseID    string `json:"reviewCaseId"`
+	DrawingNo string `json:"no"`
+	Name      string `json:"name"`
+	NodeName  string `json:"node"`
+	Initiator string `json:"by"`
+	Reviewer  string `json:"reviewer"`
+	Time      string `json:"time"`
+	Result    string `json:"result"`
+	Opinion   string `json:"opinion"`
+	Ver       string `json:"ver"`
+}
+
+type StartCaseInput struct {
+	DrawingNo string `json:"drawingNo"`
+}
+
+type SubmitNodeInput struct {
+	NodeName string `json:"nodeName"`
+	Action   string `json:"action"`
+	Opinion  string `json:"opinion"`
+}
+
 var (
-	ErrNotFound = errorString("review flow not found")
-	ErrConflict = errorString("review flow conflict")
+	ErrNotFound      = errorString("review flow not found")
+	ErrConflict      = errorString("review flow conflict")
+	ErrCaseNotFound  = errorString("review case not found")
+	ErrCaseConflict  = errorString("review case conflict")
+	ErrCaseForbidden = errorString("review forbidden")
 )
 
 type errorString string
@@ -46,4 +99,8 @@ type Repository interface {
 	Create(ctx context.Context, input SaveFlowInput, userID string) (Flow, error)
 	Update(ctx context.Context, id string, input SaveFlowInput, userID string) (Flow, error)
 	SetEnabled(ctx context.Context, id string, enabled bool, userID string) (Flow, error)
+	StartCase(ctx context.Context, drawingNo string, userID string) (ReviewCase, error)
+	ListCases(ctx context.Context) ([]ReviewCase, error)
+	SubmitNode(ctx context.Context, caseID string, input SubmitNodeInput, userID string) (ReviewCase, error)
+	CompletedActions(ctx context.Context) ([]CompletedAction, error)
 }
