@@ -21,10 +21,19 @@ import olefile
 ZLIB_HEADERS = {b"\x78\x01", b"\x78\x9c", b"\x78\xda"}
 TEXT_PATTERN = re.compile(r"[\x20-\x7e\u3400-\u9fff]{2,}")
 SCALE_PATTERN = re.compile(r"^\d+(?:\.\d+)?:\d+(?:\.\d+)?$")
-DRAWING_NO_PATTERN = re.compile(r"^(?=.*\d)(?=.*[A-Za-z])[A-Za-z0-9]+(?:[/.-][A-Za-z0-9]+)+$")
+# 图号中的尺寸表达式可能包含“%x”（例如 3255%x4070）。
+DRAWING_NO_PATTERN = re.compile(r"^(?=.*\d)(?=.*[A-Za-z])[A-Za-z0-9%]+(?:[/.-][A-Za-z0-9%]+)+$")
 STANDARD_PATTERN = re.compile(r"\b(?:GB|JB)(?:/[A-Z]+)?/[A-Z0-9.-]+", re.IGNORECASE)
 MATERIAL_PATTERN = re.compile(r"^(?:\d+[A-Za-z]+\d*[A-Za-z0-9]*|[A-Za-z]+\d+[A-Za-z0-9]*)$")
 TITLE_BLOCK_STREAM = "*BlockStg/*Blk_fffffffb"
+# 总图（装配图）的标题栏属性可能存在不同流：零件图在 *Blk_fffffffb，
+# 装配图在 *SpaceStream（键值紧邻），图框定义在 *GBlock。按优先级依次配对，先到先得。
+TITLE_BLOCK_STREAMS = (
+    TITLE_BLOCK_STREAM,
+    "*SpaceStream",
+    "*BlockStg/*GBlock",
+)
+STANDARD_NO_PATTERN = re.compile(r"^(?:GB|JB|ISO|DIN|HB|QB|Q)[/.\-A-Z0-9]+", re.IGNORECASE)
 TITLE_BLOCK_KEYS = (
     "单位名称",
     "图纸名称",
@@ -224,14 +233,48 @@ def build_summary(texts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def extract_title_block_fields(texts: list[dict[str, Any]]) -> dict[str, str]:
-    """从 CAXA 标题栏块中提取标签和值，不把全图文本当成业务字段。"""
+    """从标题栏相关流中提取标签和值，不把全图文本当成业务字段。
+
+    不同 CAXA 图纸类型把标题栏属性存在不同流：按 TITLE_BLOCK_STREAMS 优先级
+    依次做键值配对，先到先得；全部落空时才启用严格图号兜底。
+    """
+
+    fields: dict[str, str] = {}
+    for stream in TITLE_BLOCK_STREAMS:
+        stream_fields = extract_fields_from_stream(texts, stream)
+        for key, value in stream_fields.items():
+            fields.setdefault(key, value)
+
+    # 部分 CAXA 图框没有保存“图纸编号”标签，但右下角仍保存了真实图号。
+    # 此时只从标题栏流中挑选严格符合工程图号规则的候选，取最后出现的候选近似右下角字段。
+    if "图纸编号" not in fields:
+        title_texts = [
+            item
+            for item in texts
+            if item["stream"] == TITLE_BLOCK_STREAM and item["encoding"] == "utf-16le"
+        ]
+        title_texts.sort(key=lambda item: item["offset"])
+        fallback_candidates = [
+            item["value"].strip()
+            for item in title_texts
+            if is_likely_drawing_number(item["value"])
+        ]
+        if fallback_candidates:
+            fields["图纸编号"] = fallback_candidates[-1]
+
+    return fields
+
+
+def extract_fields_from_stream(texts: list[dict[str, Any]], stream_name: str) -> dict[str, str]:
+    """在单个流内做标题栏键值配对（键后寻找值，同流同对齐方式）。"""
 
     title_texts = [
         item
         for item in texts
-        if item["stream"] == TITLE_BLOCK_STREAM and item["encoding"] == "utf-16le"
+        if item["stream"] == stream_name and item["encoding"] == "utf-16le"
     ]
     title_texts.sort(key=lambda item: item["offset"])
+    candidates_by_key: dict[str, list[str]] = {}
     fields: dict[str, str] = {}
 
     index = 0
@@ -239,7 +282,7 @@ def extract_title_block_fields(texts: list[dict[str, Any]]) -> dict[str, str]:
         item = title_texts[index]
         raw_key = item["value"].strip()
         key = TITLE_BLOCK_KEY_ALIASES.get(raw_key, raw_key)
-        if key in TITLE_BLOCK_KEYS and key not in fields:
+        if key in TITLE_BLOCK_KEYS:
             # 优先从紧随当前键后面的有效值选取
             candidates: list[str] = []
             next_index = index + 1
@@ -260,37 +303,29 @@ def extract_title_block_fields(texts: list[dict[str, Any]]) -> dict[str, str]:
                     candidates.append(value)
                 next_index += 1
             if candidates:
-                # CAXA 标题栏通常同时保存人员编号和姓名。姓名会在标题栏中重复出现，
-                # 优先选择重复值，避免把损坏的编号文本误当成设计人。
-                counts = {value: candidates.count(value) for value in candidates}
-                repeated = [value for value in candidates if counts[value] >= 2]
-                if repeated:
-                    fields[key] = max(repeated, key=lambda value: (counts[value], len(value)))
-                elif key not in {"设计", "校对", "审核", "工艺", "标准化", "批准"}:
-                    fields[key] = max(candidates, key=title_block_value_score)
+                candidates_by_key.setdefault(key, []).extend(candidates)
         index += 1
 
-    # 部分 CAXA 图框没有保存“图纸编号”标签，但右下角仍保存了真实图号。
-    # 此时只从图框流中挑选严格符合工程图号规则的候选，取最后出现的候选近似右下角字段。
-    if "图纸编号" not in fields:
-        fallback_candidates = [
-            item["value"].strip()
-            for item in title_texts
-            if is_likely_drawing_number(item["value"])
-        ]
-        if fallback_candidates:
-            fields["图纸编号"] = fallback_candidates[-1]
+    for key, candidates in candidates_by_key.items():
+        # CAXA 标题栏通常同时保存人员编号和姓名。姓名会在标题栏中重复出现，
+        # 优先选择重复值，避免把损坏的编号文本误当成设计人。
+        counts = {value: candidates.count(value) for value in candidates}
+        repeated = [value for value in candidates if counts[value] >= 2]
+        if repeated:
+            fields[key] = max(repeated, key=lambda value: (counts[value], len(value)))
+        elif key not in {"设计", "校对", "审核", "工艺", "标准化", "批准"}:
+            fields[key] = max(candidates, key=title_block_value_score)
 
     return fields
 
 
-def title_block_value_score(value: str) -> tuple[int, int, int]:
+def title_block_value_score(value: str) -> tuple[int, int, int, int]:
     """优先选择规范图号，避免将错位二进制文本作为标题栏值。"""
     normalized = value.strip()
     is_drawing_number = is_likely_drawing_number(normalized)
     has_digit = any(char.isdigit() for char in normalized)
     has_separator = any(char in normalized for char in ".-_/")
-    return (3 if is_drawing_number else 0, 1 if has_digit else 0, 1 if has_separator else 0)
+    return (3 if is_drawing_number else 0, 1 if has_digit else 0, 1 if has_separator else 0, len(normalized))
 
 
 def is_likely_drawing_number(value: str) -> bool:
@@ -323,6 +358,9 @@ def is_title_block_value(value: str, key: str) -> bool:
         return False
     if key == "图纸比例":
         return bool(SCALE_PATTERN.fullmatch(value))
+    if key == "标准":
+        # 标准号期望 GB/T xxx 样式，二进制错位解码常产生生僻字乱码（如“餟裶”）。
+        return bool(STANDARD_NO_PATTERN.match(value))
     if key == "图纸编号":
         return is_likely_drawing_number(value)
     if key in {"图纸名称", "材料名称", "材质", "单位名称"}:
