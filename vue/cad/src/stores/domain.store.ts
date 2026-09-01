@@ -542,11 +542,14 @@ export const useDomainStore = defineStore('domain', () => {
     if (reviewCaseId) {
       return reviewCases.value.find((item) => item.id === reviewCaseId && item.drawingNo === drawingNo) ?? null
     }
-    for (let index = reviewCases.value.length - 1; index >= 0; index -= 1) {
-      const reviewCase = reviewCases.value[index]
-      if (reviewCase?.drawingNo === drawingNo) return reviewCase
+    // 同一图纸可能存在历史案例（驳回/已完成）：始终返回最新发起的一个，
+    // 否则续审后详情页仍显示旧驳回案例（节点状态与待办全部错位）。
+    let latest: ReviewCase | null = null
+    for (const reviewCase of reviewCases.value) {
+      if (reviewCase?.drawingNo !== drawingNo) continue
+      if (!latest || (reviewCase.startedAt || '') >= (latest.startedAt || '')) latest = reviewCase
     }
-    return null
+    return latest
   }
 
   function getTargetFiles(target: Drawing | StructurePart): DrawingFile[] {
