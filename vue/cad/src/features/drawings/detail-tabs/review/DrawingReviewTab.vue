@@ -3,12 +3,14 @@ import { computed, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useDomainStore } from '@/stores/domain.store'
+import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { ReviewNode } from '@/types/domain.types'
 
 defineOptions({ name: 'DrawingReviewTab' })
 
 const domainStore = useDomainStore()
+const authStore = useAuthStore()
 const uiStore = useUiStore()
 
 const currentItem = computed(() => domainStore.currentDrawing)
@@ -26,6 +28,15 @@ const sortedNodes = computed(() => domainStore.currentReviewNodes
 const activeNodeName = computed(() => (isReviewing.value
   ? sortedNodes.value.find((node) => node.status === 'pending')?.name ?? null
   : null))
+const isRejected = computed(() => domainStore.currentReviewCase?.status === 'rejected')
+
+// 签署权：当前活动节点且节点责任人是当前登录人。
+function canSignNode(node: ReviewNode): boolean {
+  if (!isReviewing.value || node.name !== activeNodeName.value) return false
+  const current = authStore.currentUser
+  if (!current) return false
+  return node.user === current.displayName || node.user === current.account
+}
 
 // 意见表单当前展开的节点
 const editingNodeName = ref<string | null>(null)
@@ -65,7 +76,7 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
       nodeName,
       action,
       opinionText.value.trim(),
-      '当前审核人',
+      authStore.currentUser?.displayName || '当前审核人',
       domainStore.currentReviewCase?.id,
     )
     uiStore.toast(
@@ -96,9 +107,10 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
             <h3>图纸工程审核流转中心</h3>
             <span v-if="isReviewing" class="tag info">审核中 · 顺序流转</span>
             <span v-else-if="isPublished" class="tag ok">已全部通过 · 已发布</span>
+            <span v-else-if="isRejected" class="tag danger">已驳回 · 待重新发起</span>
             <span v-else class="tag mute">草稿状态 · 待发起审核</span>
           </div>
-          <p>节点按设计 → 校对 → 审核 → 工艺 → 批准顺序签署；前序节点通过后，下一节点才会开放审核。</p>
+          <p>节点按设计 → 校对 → 审核 → 工艺 → 批准顺序签署；驳回后由发起人重新发起，已通过节点保留，从驳回节点继续。</p>
         </div>
       </div>
 
@@ -109,7 +121,7 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
           type="button"
           @click="handleStartReview"
         >
-          <DemoIcon name="play-circle" :size="16" />开始发起审核流程
+          <DemoIcon :name="isRejected ? 'refresh-cw' : 'play-circle'" :size="16" />{{ isRejected ? '重新发起审核（从驳回节点继续）' : '开始发起审核流程' }}
         </button>
         <button
           v-else-if="isReviewing"
@@ -162,7 +174,9 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
               <div class="rn-name">{{ node.name }}</div>
               <div class="rn-user">责任人 · {{ node.user }}</div>
             </div>
-            <span v-if="node.name === activeNodeName" class="tag warn">当前节点</span>
+            <span v-if="node.name === activeNodeName && isReviewing" class="tag warn">
+              {{ canSignNode(node) ? '当前节点 · 待我签署' : `等待「${node.user || '待定'}」签署` }}
+            </span>
             <span v-else class="tag" :class="node.status === 'pass' ? 'ok' : node.status === 'rejected' ? 'danger' : 'mute'">
               {{ node.status === 'pass' ? '已同意' : node.status === 'rejected' ? '已驳回' : '等待前置节点' }}
             </span>
@@ -196,17 +210,17 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
             </div>
           </div>
 
-          <!-- 操作按钮栏：仅当前活动节点可审核 -->
-          <div v-else-if="node.name === activeNodeName" class="rn-acts">
+          <!-- 操作按钮栏：仅当前活动节点且责任人本人可审核 -->
+          <div v-else-if="canSignNode(node)" class="rn-acts">
             <button class="btn sm primary" type="button" @click="openOpinionForm(node)">
               <DemoIcon name="pencil" :size="13" />填写意见并审核
             </button>
           </div>
 
-          <!-- 非当前节点：等待提示 -->
+          <!-- 非当前节点 / 非责任人：等待提示 -->
           <div v-else-if="node.status === 'pending' && isReviewing" class="rn-waiting">
             <DemoIcon name="clock" :size="12" />
-            <span>等待前置节点通过后开放审核</span>
+            <span>{{ node.name === activeNodeName ? `等待责任人「${node.user || '待定'}」签署` : '等待前置节点通过后开放审核' }}</span>
           </div>
         </div>
       </div>

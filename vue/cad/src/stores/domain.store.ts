@@ -1766,6 +1766,13 @@ export const useDomainStore = defineStore('domain', () => {
     await persist()
   }
 
+  // 节点责任人是否为当前登录人（姓名或账号匹配）。
+  function isNodeAssignee(user: string | undefined): boolean {
+    const current = authStore.currentUser
+    if (!current || !user) return false
+    return user === current.displayName || user === current.account
+  }
+
   async function startReview(drawingNo: string, initiator?: string): Promise<void> {
     await initialize()
     const target = findDrawingOrPart(drawingNo)
@@ -1784,18 +1791,32 @@ export const useDomainStore = defineStore('domain', () => {
 
     const reviewCaseId = createId('review-case')
     const designUser = signers['设计'] ?? initiator ?? '当前用户'
-    const nodes: ReviewNode[] = [
-      { name: '设计自检', user: designUser, status: 'pass', time: nowLabel(), opinion: '设计完成并自检通过，发起审核流转。', required: true, order: 1 },
-      { name: '校对复核', user: signers['校对'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 2 },
-      { name: '专业审核', user: signers['审核'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 3 },
-      { name: '工艺会签', user: signers['工艺'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 4 },
-      { name: '标准化审查', user: signers['标准化'] ?? '待定', status: 'pending', time: '—', opinion: '', required: false, order: 5 },
-      { name: '主管批准', user: signers['批准'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 6 },
-    ]
+    // 驳回续审：存在被驳回的历史案例时，保留已通过节点，从被驳回节点继续。
+    const previousCase = reviewCases.value
+      .filter((item) => item.drawingNo === drawingNo && item.status === 'rejected')
+      .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))[0]
+    const nodes: ReviewNode[] = previousCase
+      ? previousCase.nodes
+          .slice()
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+          .map((node) => ({
+            ...node,
+            status: node.status === 'rejected' ? 'pending' as const : node.status,
+            time: node.status === 'rejected' ? '—' : node.time,
+            opinion: node.status === 'rejected' ? '' : node.opinion,
+          }))
+      : [
+          { name: '设计自检', user: designUser, status: 'pass', time: nowLabel(), opinion: '设计完成并自检通过，发起审核流转。', required: true, order: 1 },
+          { name: '校对复核', user: signers['校对'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 2 },
+          { name: '专业审核', user: signers['审核'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 3 },
+          { name: '工艺会签', user: signers['工艺'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 4 },
+          { name: '标准化审查', user: signers['标准化'] ?? '待定', status: 'pending', time: '—', opinion: '', required: false, order: 5 },
+          { name: '主管批准', user: signers['批准'] ?? '待定', status: 'pending', time: '—', opinion: '', required: true, order: 6 },
+        ]
     const reviewCase: ReviewCase = {
       id: reviewCaseId,
       drawingNo,
-      flow: '企业标准图纸审核流程',
+      flow: previousCase ? '企业标准图纸审核流程（续审）' : '企业标准图纸审核流程',
       status: 'reviewing',
       initiator: designUser,
       startedAt: nowLabel(),
@@ -1822,7 +1843,9 @@ export const useDomainStore = defineStore('domain', () => {
       drawingName: target.name,
       targetType: 'review',
       act: 'check',
-      text: `为图纸 <b>${drawingNo}</b> 发起了图纸审核流程`,
+      text: previousCase
+        ? `为图纸 <b>${drawingNo}</b> 重新发起审核，从被驳回节点继续流转`
+        : `为图纸 <b>${drawingNo}</b> 发起了图纸审核流程`,
       detail: { reviewCaseId },
     })
     await persist()
@@ -1853,6 +1876,10 @@ export const useDomainStore = defineStore('domain', () => {
             ? `审核须按顺序流转：请先处理当前节点「${activeNode.name}」`
             : '审核流程当前没有可处理的节点',
         )
+      }
+      // 责任人守卫：仅节点责任人可签署，防止代签。
+      if (!isNodeAssignee(node.user)) {
+        throw new Error(`节点「${nodeName}」由「${node.user || '待定'}」负责，当前登录人无权签署`)
       }
     }
 
