@@ -782,7 +782,7 @@ async function onAssemblyFileChange(event: Event) {
     role: 'assembly',
     drawingNo: currentItem.value.no,
     version: currentItem.value.ver || 'v1.0',
-        uploadedBy: ('by' in (currentItem.value || {})) ? (currentItem.value as any).by : '当前用户',
+        uploadedBy: authStore.currentUser?.displayName || authStore.currentUser?.account || '未知',
     uploadedAt: formatCurrentTime(),
     previewable: true,
   }
@@ -822,7 +822,7 @@ async function onPartFilesChange(event: Event) {
           role: 'other',
           drawingNo: rootNo,
           version: 'v1.0',
-          uploadedBy: ('by' in currentItem.value ? currentItem.value.by : '当前用户') || '当前用户',
+          uploadedBy: authStore.currentUser?.displayName || authStore.currentUser?.account || '未知',
           uploadedAt: formatCurrentTime(),
           previewable: true,
         }
@@ -847,7 +847,7 @@ async function onPartFilesChange(event: Event) {
         drawingNo: rootNo,
         ...(isStructuredPart ? { partNo } : {}),
         version: 'v1.0',
-        uploadedBy: ('by' in currentItem.value ? currentItem.value.by : '当前用户') || '当前用户',
+        uploadedBy: authStore.currentUser?.displayName || authStore.currentUser?.account || '未知',
         uploadedAt: formatCurrentTime(),
         previewable: true,
       }

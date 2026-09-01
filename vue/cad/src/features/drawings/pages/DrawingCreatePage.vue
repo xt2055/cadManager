@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
+import { useAuthStore } from '@/stores/auth.store'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import { dataManager } from '@/services/data-manager'
@@ -17,6 +18,9 @@ defineOptions({
 const router = useRouter()
 const domainStore = useDomainStore()
 const uiStore = useUiStore()
+const authStore = useAuthStore()
+// 创建人/上传人取当前登录人，不再写占位符（否则换账号后仍显示旧值）。
+const operatorName = authStore.currentUser?.displayName || authStore.currentUser?.account || '未知'
 
 const formProject = ref('')
 const formProjectNo = ref('')
@@ -302,7 +306,8 @@ async function performCreate() {
     status: 'draft',
     ver: 'v1.0',
     updated: '刚刚',
-     by: '当前用户',
+    by: operatorName,
+    createdBy: operatorName,
     borrow: 0,
     hasFile: Boolean(assemblyFile.value),
      ...(Object.keys(formAttributeValues.value).length ? { attributeValues: { ...formAttributeValues.value } } : {}),
@@ -364,7 +369,7 @@ async function performCreate() {
        drawingNo,
       partNo: parsed.no,
       version: 'v1.0',
-      uploadedBy: '当前用户',
+      uploadedBy: operatorName,
       uploadedAt: '刚刚',
       previewable: true,
     } satisfies DrawingFile,
@@ -417,7 +422,7 @@ async function performCreate() {
       role: 'other' as const,
        drawingNo,
       version: 'v1.0',
-       uploadedBy: '当前用户',
+       uploadedBy: operatorName,
       uploadedAt: '刚刚',
       previewable: true,
     }))
@@ -430,7 +435,7 @@ async function performCreate() {
         role: 'assembly' as const,
          drawingNo,
         version: 'v1.0',
-         uploadedBy: '当前用户',
+         uploadedBy: operatorName,
         uploadedAt: '刚刚',
         previewable: true,
       }

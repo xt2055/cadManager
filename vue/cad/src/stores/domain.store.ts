@@ -181,7 +181,7 @@ export const useDomainStore = defineStore('domain', () => {
       drawingName: input.drawingName || target?.name || input.drawingNo,
       targetType: input.targetType,
       ...(operator?.id ? { userId: operator.id } : {}),
-      user: operator?.displayName || '当前用户',
+      user: operator?.displayName || '未知',
       act: input.act,
       txt: input.text,
       time: occurredAt,

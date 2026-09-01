@@ -73,6 +73,14 @@ const designerName = computed(() => {
   return 'designer' in drawing.value ? drawing.value.designer || '' : ''
 })
 
+// 创建人：历史数据可能存有「当前用户」占位符（无法追溯真实创建人），显示为 —。
+const creatorLabel = computed(() => {
+  const item = drawing.value as { createdBy?: string; by?: string } | null
+  if (!item) return ''
+  const value = item.createdBy || item.by || ''
+  return value === '当前用户' ? '—' : value
+})
+
 function openProperties() {
   if (!drawing.value) return
   router.push({ name: 'drawing-properties', params: { drawingId: drawing.value.no } })
@@ -111,7 +119,7 @@ function openParentDrawing() {
            <span>厂商 <b>{{ ('vendor' in (drawing || {})) ? (drawing as any).vendor : '内部加工' }}</b></span>
           <span>项目 <b>{{ ('project' in (drawing || {})) ? (drawing as any).project : '—' }}</b></span>
           <span v-if="isPart">关联图号 <b class="mono">{{ drawing?.no }}</b></span>
-          <span>创建人 <b>{{ ('createdBy' in (drawing || {}) && (drawing as any).createdBy) ? (drawing as any).createdBy : ('by' in (drawing || {})) ? (drawing as any).by : '待定' }}</b></span>
+          <span>创建人 <b>{{ creatorLabel || '待定' }}</b></span>
           <span>更新时间 <b>{{ ('updated' in (drawing || {})) ? (drawing as any).updated : '刚刚' }}</b></span>
           <span v-if="'forkedFrom' in (drawing || {}) && (drawing as any).forkedFrom" class="tag plain">分叉自·{{ (drawing as any).forkedFrom }}</span>
           <button v-if="isPart && parentDrawing" class="parent-link" type="button" @click="openParentDrawing">
