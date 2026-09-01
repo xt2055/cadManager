@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { Drawing, StructurePart, StructurePartEditable } from '@/types/domain.types'
@@ -13,6 +14,10 @@ const domainStore = useDomainStore()
 const router = useRouter()
 const uiStore = useUiStore()
 const currentItem = computed(() => domainStore.currentDrawing)
+const currentDrawing = computed<Drawing | null>(() => {
+  const item = currentItem.value
+  return item && !('parentNo' in item) ? item : null
+})
 const currentPart = computed<StructurePart | null>(() => {
   if (!currentItem.value || !('parentNo' in currentItem.value)) return null
   return currentItem.value
@@ -24,6 +29,9 @@ const parentDrawing = computed(() => {
 })
 const editing = ref(false)
 const saving = ref(false)
+const attributeEditing = ref(false)
+const attributeSaving = ref(false)
+const attributeForm = ref<Record<string, string>>({})
 
 function emptyEditForm(): StructurePartEditable {
   return {
@@ -64,6 +72,11 @@ watch(currentPart, (part) => {
   if (part) loadEditForm(part)
 }, { immediate: true })
 
+watch(currentItem, (item) => {
+  attributeForm.value = { ...(item && !('parentNo' in item) ? item.attributeValues ?? {} : {}) }
+  attributeEditing.value = false
+}, { immediate: true })
+
 function startEdit() {
   if (!currentPart.value) return
   loadEditForm(currentPart.value)
@@ -87,6 +100,26 @@ async function saveEdit() {
     uiStore.toast(error instanceof Error ? error.message : '零件属性保存失败，请稍后重试', 'warn')
   } finally {
     saving.value = false
+  }
+}
+
+function startAttributeEdit() {
+  if (!currentDrawing.value) return
+  attributeForm.value = { ...(currentDrawing.value.attributeValues ?? {}) }
+  attributeEditing.value = true
+}
+
+async function saveAttributes() {
+  if (!currentDrawing.value || attributeSaving.value) return
+  attributeSaving.value = true
+  try {
+    await domainStore.setDrawingAttributes(currentDrawing.value.no, attributeForm.value)
+    attributeEditing.value = false
+    uiStore.toast('图纸属性已保存', 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '图纸属性保存失败，请稍后重试', 'warn')
+  } finally {
+    attributeSaving.value = false
   }
 }
 
@@ -114,9 +147,12 @@ const feedIcons: Record<string, string> = {
       <div class="card-title no-padding property-title">
         <DemoIcon name="info" :size="16" />
         {{ isPart ? '零件图核心元数据属性' : '项目总图核心属性' }}
-        <button v-if="isPart && !editing" class="btn sm primary property-edit-button" type="button" @click="startEdit">
-          <DemoIcon name="pencil" :size="13" />编辑零件属性
-        </button>
+         <button v-if="isPart && !editing" class="btn sm primary property-edit-button" type="button" @click="startEdit">
+           <DemoIcon name="pencil" :size="13" />编辑零件属性
+         </button>
+         <button v-if="!isPart && !attributeEditing && domainStore.sortedAttributes.length" class="btn sm primary property-edit-button" type="button" @click="startAttributeEdit">
+           <DemoIcon name="pencil" :size="13" />编辑图纸属性
+         </button>
         <div v-else-if="isPart" class="property-actions">
           <button class="btn sm" type="button" :disabled="saving" @click="cancelEdit">取消</button>
           <button class="btn sm primary" type="button" :disabled="saving" @click="saveEdit">
@@ -195,8 +231,21 @@ const feedIcons: Record<string, string> = {
         </div>
       </template>
 
-      <div v-else class="kv-grid">
-        <div class="kv"><div class="k">图号</div><div class="v mono">{{ currentItem?.no }}</div></div>
+         <div v-else class="kv-grid">
+         <div v-if="domainStore.sortedAttributes.length" class="drawing-attributes-detail full-width">
+           <DrawingAttributesForm
+             v-model="attributeForm"
+             :attributes="domainStore.sortedAttributes"
+             :readonly="!attributeEditing"
+           />
+           <div v-if="attributeEditing" class="attribute-edit-actions">
+             <button class="btn sm" type="button" :disabled="attributeSaving" @click="attributeEditing = false">取消</button>
+             <button class="btn sm primary" type="button" :disabled="attributeSaving" @click="saveAttributes">
+               <DemoIcon :name="attributeSaving ? 'loader' : 'check'" :size="13" />{{ attributeSaving ? '保存中…' : '保存属性' }}
+             </button>
+           </div>
+         </div>
+         <div class="kv"><div class="k">图号</div><div class="v mono">{{ currentItem?.no }}</div></div>
         <div class="kv"><div class="k">图纸名称</div><div class="v">{{ currentItem?.name }}</div></div>
         <div class="kv"><div class="k">对象分类</div><div class="v"><span class="tag plain">项目总图</span></div></div>
          <div class="kv"><div class="k">材料牌号</div><div class="v">总图</div></div>

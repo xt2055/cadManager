@@ -200,9 +200,9 @@ export const routes: RouteRecordRaw[] = [
         component: () => import('@/features/admin/pages/UpdateManagementPage.vue'),
       },
       {
-        path: 'categories',
-        name: RouteName.AdminCategories,
-        component: () => import('@/features/admin/pages/CategoryManagementPage.vue'),
+        path: 'attributes',
+        name: RouteName.AdminAttributes,
+        component: () => import('@/features/admin/pages/AttributeManagementPage.vue'),
       },
     ],
   },

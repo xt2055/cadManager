@@ -93,23 +93,22 @@ export interface CraftFile {
   scanned: boolean
 }
 
-export interface DrawingCategory {
+export interface DrawingAttributeField {
   id: string
   name: string
-  parentId?: string
-  sortOrder?: number
+  enabled: boolean
+  sortOrder: number
   createdAt?: string
 }
 
-export interface CategoryTreeNode {
-  category: DrawingCategory
-  children: CategoryTreeNode[]
-  level: number
-  path: string[]
-  pathIds: string[]
-  fullPath: string
-  directCount: number
-  totalCount: number
+export interface DrawingAttribute {
+  id: string
+  name: string
+  required: boolean
+  enabled: boolean
+  sortOrder: number
+  fields: DrawingAttributeField[]
+  createdAt?: string
 }
 
 export interface Drawing {
@@ -132,7 +131,7 @@ export interface Drawing {
   hasFile: boolean
   borrowFrom?: string
   forkedFrom?: string
-  categoryId?: string
+  attributeValues?: Record<string, string>
   signers?: Partial<DrawingSigners>
   remark?: string
   files?: DrawingFile[]

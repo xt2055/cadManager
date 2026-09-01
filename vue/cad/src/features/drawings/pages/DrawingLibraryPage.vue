@@ -1,966 +1,163 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import CategoryTreeNodes from '@/components/common/CategoryTreeNodes.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingStatus } from '@/types/domain.types'
 
-defineOptions({
-  name: 'DrawingLibraryPage',
-})
+defineOptions({ name: 'DrawingLibraryPage' })
 
 const router = useRouter()
 const domainStore = useDomainStore()
 const uiStore = useUiStore()
-
 const query = ref('')
 const status = ref<DrawingStatus | ''>('')
-const selectedCategoryId = ref<string>('') // ''=全部, '__none__'=未分类, 其它=具体分类ID
-const categoryTreeSearch = ref('')
-const isCategoryPanelCollapsed = ref(false)
-const expandedCategoryKeys = ref<Set<string>>(new Set())
-
-const menuFor = ref<string | null>(null)
+const attributeFilters = ref<Record<string, string>>({})
 const expandedProjects = ref<Set<string>>(new Set())
+const menuFor = ref<string | null>(null)
 
-// 计算所有符合条件的图纸列表
 const rows = computed(() => {
-  const q = query.value.trim().toLowerCase()
+  const keyword = query.value.trim().toLowerCase()
   return domainStore.drawings.filter((drawing) => {
-    const parts = partsForDrawing(drawing.no)
-    const matchesQuery =
-      !q ||
-      [
-        drawing.no,
-        drawing.name,
-        drawing.vendor,
-        drawing.project,
-        domainStore.getCategoryFullPath(drawing.categoryId),
-        ...parts.flatMap((part) => [part.no, part.name]),
-      ]
-        .join(' ')
-        .toLowerCase()
-        .includes(q)
-
-    const matchesStatus = !status.value || drawing.status === status.value
-    const matchesCategory = matchesSelectedCategory(drawing)
-    return matchesQuery && matchesStatus && matchesCategory
+    const attributeText = domainStore.sortedAttributes.flatMap((attribute) => [
+      attribute.name,
+      domainStore.attributeFieldName(attribute.id, drawing.attributeValues?.[attribute.id]),
+    ])
+    const searchable = [drawing.no, drawing.name, drawing.vendor, drawing.project, ...attributeText, ...partsForDrawing(drawing.no).flatMap((part) => [part.no, part.name])]
+      .join(' ').toLowerCase()
+    const matchesAttributes = domainStore.sortedAttributes.every((attribute) => {
+      const selected = attributeFilters.value[attribute.id]
+      return !selected || drawing.attributeValues?.[attribute.id] === selected
+    })
+    return (!keyword || searchable.includes(keyword)) && (!status.value || drawing.status === status.value) && matchesAttributes
   })
 })
 
-function matchesSelectedCategory(drawing: { categoryId?: string }): boolean {
-  if (!selectedCategoryId.value) return true
-  if (selectedCategoryId.value === '__none__') return !drawing.categoryId
-  if (drawing.categoryId === selectedCategoryId.value) return true
-  // 递归穿透：如果选中了父节点，包含其所有子孙节点下的图纸
-  const descendants = domainStore.getDescendantCategoryIds(selectedCategoryId.value)
-  return Boolean(drawing.categoryId && descendants.includes(drawing.categoryId))
-}
+const activeFilterCount = computed(() => Object.values(attributeFilters.value).filter(Boolean).length)
 
-const activeCategoryBreadcrumbs = computed(() => {
-  if (!selectedCategoryId.value) return []
-  if (selectedCategoryId.value === '__none__') {
-    return [{ id: '__none__', name: '未分类图纸' }]
-  }
-  let curr = domainStore.categories.find((c) => c.id === selectedCategoryId.value)
-  const items: Array<{ id: string; name: string }> = []
-  const visited = new Set<string>()
-  while (curr && !visited.has(curr.id)) {
-    visited.add(curr.id)
-    items.unshift({ id: curr.id, name: curr.name })
-    curr = curr.parentId ? domainStore.categories.find((c) => c.id === curr!.parentId) : undefined
-  }
-  return items
-})
-
-const unclassifiedCount = computed(() => {
-  return domainStore.drawings.filter((d) => !d.categoryId).length
-})
-
-function selectCategory(id: string) {
-  selectedCategoryId.value = id
-}
-
-function clearCategoryFilter() {
-  selectedCategoryId.value = ''
-}
-
-function toggleCategoryExpand(id: string) {
-  const next = new Set(expandedCategoryKeys.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  expandedCategoryKeys.value = next
-}
-
+function clearFilters() { attributeFilters.value = {} }
 function partsForDrawing(drawingNo: string) {
-  return domainStore.structure
-    .filter((part) => part.no.startsWith(`${drawingNo}-`) || part.parentNo === drawingNo)
-    .sort((left, right) => left.no.localeCompare(right.no, undefined, { numeric: true }))
+  return domainStore.structure.filter((part) => part.no.startsWith(`${drawingNo}-`) || part.parentNo === drawingNo).sort((a, b) => a.no.localeCompare(b.no, undefined, { numeric: true }))
 }
-
-function isExpanded(no: string) {
-  return expandedProjects.value.has(no)
-}
-
 function toggleExpanded(no: string) {
   const next = new Set(expandedProjects.value)
-  if (next.has(no)) next.delete(no)
-  else next.add(no)
+  if (next.has(no)) next.delete(no); else next.add(no)
   expandedProjects.value = next
 }
-
 function openDetail(no: string) {
   domainStore.openDrawing(no)
   router.push({ name: 'drawing-preview', params: { drawingId: no } })
 }
-
-function createDrawing() {
-  router.push({ name: 'drawing-create' })
-}
-
-function toggleMenu(no: string) {
-  menuFor.value = menuFor.value === no ? null : no
-}
-
+function toggleMenu(no: string) { menuFor.value = menuFor.value === no ? null : no }
 function menuAction(action: string, no: string) {
   menuFor.value = null
   if (action === 'detail') openDetail(no)
   if (action === 'hide') uiStore.toast('图纸已隐藏：用户不可见，管理员可随时恢复，历史完整保留', 'warn')
 }
-
-function goCategoryAdmin() {
-  router.push({ name: 'admin-categories' })
-}
 </script>
 
 <template>
-  <div class="page library-page-pro">
-    <!-- 主界面双栏容器 -->
-    <div class="lib-layout-container">
-      <!-- 左侧：专业分类树导航栏 -->
-      <aside class="lib-category-sidebar card" :class="{ collapsed: isCategoryPanelCollapsed }">
-        <div class="cat-sidebar-header">
-          <div class="cat-sidebar-title" @click="clearCategoryFilter">
-            <DemoIcon name="folder-tree" :size="16" class="title-icon" />
-            <span v-if="!isCategoryPanelCollapsed" class="title-text">图纸分类架构</span>
-          </div>
-          <button
-            class="icon-btn collapse-toggle-btn"
-            type="button"
-            :title="isCategoryPanelCollapsed ? '展开分类导航' : '折叠分类导航'"
-            @click="isCategoryPanelCollapsed = !isCategoryPanelCollapsed"
-          >
-            <DemoIcon :name="isCategoryPanelCollapsed ? 'chevron-right' : 'chevron-left'" :size="14" />
-          </button>
-        </div>
+  <div class="page drawing-library-page">
+    <header class="library-head">
+      <div>
+        <div class="eyebrow"><DemoIcon name="layers" :size="14" />工程图纸资产</div>
+        <h1>图纸库</h1>
+        <p>按图纸属性查找和管理工程资料，共 {{ rows.length }} 个总图</p>
+      </div>
+      <div class="library-actions">
+        <button class="btn" type="button" @click="router.push({ name: 'admin-attributes' })"><DemoIcon name="sliders-horizontal" :size="14" />属性管理</button>
+        <button class="btn primary" type="button" @click="router.push({ name: 'drawing-create' })"><DemoIcon name="plus" :size="14" />创建图纸</button>
+      </div>
+    </header>
 
-        <template v-if="!isCategoryPanelCollapsed">
-          <!-- 分类过滤搜索框 -->
-          <div class="cat-tree-search-wrap">
-            <DemoIcon name="search" :size="13" class="search-ico" />
-            <input
-              v-model="categoryTreeSearch"
-              class="cat-search-inp"
-              placeholder="快速过滤分类..."
-            />
-            <button
-              v-if="categoryTreeSearch"
-              class="clear-ico-btn"
-              type="button"
-              @click="categoryTreeSearch = ''"
-            >
-              <DemoIcon name="x" :size="12" />
-            </button>
-          </div>
+    <section v-if="domainStore.sortedAttributes.length" class="attribute-filter-panel card">
+      <div class="filter-panel-head">
+        <strong><DemoIcon name="filter" :size="14" />属性筛选 <span v-if="activeFilterCount">已选 {{ activeFilterCount }} 项</span></strong>
+        <button v-if="activeFilterCount" class="btn-clear" type="button" @click="clearFilters">清除全部</button>
+      </div>
+      <div class="filter-grid">
+        <label v-for="attribute in domainStore.sortedAttributes" :key="attribute.id" class="filter-field">
+          <span>{{ attribute.name }}<em v-if="attribute.required">必填</em></span>
+          <select v-model="attributeFilters[attribute.id]" class="inp">
+            <option value="">全部字段</option>
+            <option v-for="field in attribute.fields.filter((item) => item.enabled)" :key="field.id" :value="field.id">{{ field.name }}</option>
+          </select>
+        </label>
+      </div>
+    </section>
 
-          <!-- 快速顶层导航：全部 & 未分类 -->
-          <div class="cat-quick-nav">
-            <div
-              class="quick-nav-item"
-              :class="{ active: selectedCategoryId === '' }"
-              @click="selectCategory('')"
-            >
-              <DemoIcon name="layers" :size="15" class="nav-ico" />
-              <span class="nav-label">全部图纸</span>
-              <span class="nav-badge">{{ domainStore.drawings.length }}</span>
-            </div>
-            <div
-              class="quick-nav-item unclassified"
-              :class="{ active: selectedCategoryId === '__none__' }"
-              @click="selectCategory('__none__')"
-            >
-              <DemoIcon name="circle-slash" :size="15" class="nav-ico warning-ico" />
-              <span class="nav-label">未分类图纸</span>
-              <span class="nav-badge" :class="{ highlight: unclassifiedCount > 0 }">{{ unclassifiedCount }}</span>
-            </div>
-          </div>
-
-          <div class="cat-sidebar-divider"></div>
-
-          <!-- 树形节点列表 -->
-          <div class="cat-tree-body">
-            <div v-if="!domainStore.categoryTree.length" class="empty-cat-tip">
-              <span>暂无分类</span>
-              <button class="btn sm" type="button" @click="goCategoryAdmin">去创建</button>
-            </div>
-
-            <!-- 递归树节点 -->
-            <CategoryTreeNodes
-              :nodes="domainStore.categoryTree"
-              :selected-id="selectedCategoryId"
-              :expanded-keys="expandedCategoryKeys"
-              :search-query="categoryTreeSearch"
-              variant="nav"
-              @select="selectCategory"
-              @toggle-expand="toggleCategoryExpand"
-            />
-          </div>
-
-          <!-- 底部快捷配置入口 -->
-          <div class="cat-sidebar-footer">
-            <button class="btn-manage-link" type="button" @click="goCategoryAdmin">
-              <DemoIcon name="settings" :size="13" />
-              <span>架构管理与移动</span>
-            </button>
-          </div>
-        </template>
-      </aside>
-
-      <!-- 右侧：图纸库主工作区 -->
-      <main class="lib-main-content">
-        <!-- 顶栏操作区 -->
-        <div class="lib-head">
-          <div class="lib-head-left">
-            <h1 class="lib-main-title">图纸资产库</h1>
-            <span class="lib-count-tag">
-              已显示 <b>{{ rows.length }}</b> 个总图 · 零件 <b>{{ domainStore.drawingStats?.parts ?? 0 }}</b> 项
-            </span>
-          </div>
-
-          <div class="lib-head-actions">
-            <label class="search-box">
-              <DemoIcon name="search" :size="15" />
-              <input v-model="query" placeholder="搜索图号 / 名称 / 分类路径 / 零件 / 厂商..." />
-              <button v-if="query" class="clear-search-x" type="button" @click="query = ''">
-                <DemoIcon name="x" :size="12" />
-              </button>
-            </label>
-
-            <select v-model="status" class="inp filter-select">
-              <option value="">全部状态</option>
-              <option v-for="(item, key) in STATUS" :key="key" :value="key">{{ item.t }}</option>
-            </select>
-
-            <button class="btn primary" type="button" @click="createDrawing">
-              <DemoIcon name="plus" :size="14" />创建图纸
-            </button>
-          </div>
-        </div>
-
-        <!-- 交互式分类面包屑条 -->
-        <div v-if="selectedCategoryId" class="active-category-banner">
-          <div class="banner-left">
-            <DemoIcon name="filter" :size="13" class="filter-icon" />
-            <span class="filter-label">当前筛选分类:</span>
-            <div class="breadcrumb-trail">
-              <button class="crumb-btn root" type="button" @click="clearCategoryFilter">全部图纸</button>
-              <template v-for="(crumb, idx) in activeCategoryBreadcrumbs" :key="crumb.id">
-                <span class="crumb-sep">/</span>
-                <button
-                  class="crumb-btn"
-                  :class="{ current: idx === activeCategoryBreadcrumbs.length - 1 }"
-                  type="button"
-                  @click="selectCategory(crumb.id)"
-                >
-                  {{ crumb.name }}
-                </button>
-              </template>
-            </div>
-          </div>
-          <button class="btn-clear-cat" type="button" @click="clearCategoryFilter">
-            <DemoIcon name="x" :size="12" />清除分类过滤
-          </button>
-        </div>
-
-        <!-- 图纸表格卡片 -->
-        <div class="card library-card">
-          <table class="tbl pro-table">
-            <thead>
+    <section class="card library-table-card">
+      <div class="table-toolbar">
+        <label class="search-box"><DemoIcon name="search" :size="15" /><input v-model="query" placeholder="搜索图号、名称、项目、属性字段..." /><button v-if="query" class="clear-search" type="button" @click="query = ''"><DemoIcon name="x" :size="12" /></button></label>
+        <select v-model="status" class="inp status-select"><option value="">全部状态</option><option v-for="(item, key) in STATUS" :key="key" :value="key">{{ item.t }}</option></select>
+      </div>
+      <div class="table-scroll">
+        <table class="tbl library-table">
+          <thead><tr><th>项目图号</th><th>图纸名称</th><th>属性摘要</th><th>责任单位</th><th>状态</th><th>版本</th><th>更新时间</th><th>操作</th></tr></thead>
+          <tbody>
+            <template v-for="drawing in rows" :key="drawing.no">
               <tr>
-                <th class="project-no-header">项目图号</th>
-                <th>名称与说明</th>
-                <th>分类层级路径</th>
-                <th>厂商/项目部</th>
-                <th>状态</th>
-                <th>版本</th>
-                <th>更新时间</th>
-                <th class="operation-column">操作</th>
+                <td class="mono no-cell"><button v-if="partsForDrawing(drawing.no).length" class="expand-btn" type="button" @click="toggleExpanded(drawing.no)"><DemoIcon name="chevron-down" :size="13" :class="{ collapsed: !expandedProjects.has(drawing.no) }" /></button><button class="link" type="button" @click="openDetail(drawing.no)">{{ drawing.no }}</button></td>
+                <td><strong>{{ drawing.name }}</strong><small v-if="drawing.remark">{{ drawing.remark }}</small></td>
+                <td class="attribute-summary"><span v-if="domainStore.sortedAttributes.some((attribute) => drawing.attributeValues?.[attribute.id])">{{ domainStore.sortedAttributes.filter((attribute) => drawing.attributeValues?.[attribute.id]).map((attribute) => `${attribute.name}: ${domainStore.attributeFieldName(attribute.id, drawing.attributeValues?.[attribute.id])}`).join(' · ') }}</span><span v-else class="tag plain">未填写属性</span></td>
+                <td>{{ drawing.vendor }}</td>
+                <td><span class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span></td>
+                <td class="mono">{{ drawing.ver }}</td><td class="mono">{{ drawing.updated }}</td>
+                <td class="row-actions"><button class="btn sm" type="button" @click="openDetail(drawing.no)"><DemoIcon name="eye" :size="13" />详情</button><button class="icon-btn" type="button" @click="toggleMenu(drawing.no)"><DemoIcon name="ellipsis" :size="15" /></button><div v-if="menuFor === drawing.no" class="dropdown row-dropdown"><button class="dd-item" type="button" @click="menuAction('detail', drawing.no)">查看详情</button><button class="dd-item" type="button" @click="menuAction('hide', drawing.no)">隐藏图纸</button></div></td>
               </tr>
-            </thead>
-            <tbody>
-              <template v-for="drawing in rows" :key="drawing.no">
-                <tr class="drawing-row">
-                  <td class="num project-no-cell">
-                    <span class="expand-slot">
-                      <button
-                        v-if="partsForDrawing(drawing.no).length"
-                        class="expand-button"
-                        type="button"
-                        :title="isExpanded(drawing.no) ? '收起零件图' : '展开零件图'"
-                        @click="toggleExpanded(drawing.no)"
-                      >
-                        <DemoIcon name="chevron-down" :size="14" :class="{ collapsed: !isExpanded(drawing.no) }" />
-                      </button>
-                    </span>
-                    <button class="link project-no-link" type="button" @click="openDetail(drawing.no)">
-                      {{ drawing.no }}
-                    </button>
-                  </td>
-
-                  <td class="drawing-name-cell">
-                    <div class="drawing-main-title">
-                      <span class="name-text">{{ drawing.name }}</span>
-                      <span v-if="drawing.borrowFrom" class="tag plain borrow-tag">借用·{{ drawing.borrowFrom }}</span>
-                    </div>
-                    <div v-if="drawing.remark" class="drawing-sub-remark" :title="drawing.remark">
-                      {{ drawing.remark }}
-                    </div>
-                  </td>
-
-                  <!-- 增强的分类路径展示 -->
-                  <td class="category-path-cell">
-                    <template v-if="drawing.categoryId">
-                      <div
-                        class="category-breadcrumb-tag"
-                        :title="`完整路径: ${domainStore.getCategoryFullPath(drawing.categoryId)} (点击筛选)`"
-                        @click="selectCategory(drawing.categoryId)"
-                      >
-                        <DemoIcon name="folder" :size="12" class="cat-tag-icon" />
-                        <span class="cat-tag-text">{{ domainStore.getCategoryFullPath(drawing.categoryId) }}</span>
-                      </div>
-                    </template>
-                    <span v-else class="tag plain unclassified-tag" @click="selectCategory('__none__')">
-                      未分类
-                    </span>
-                  </td>
-
-                  <td class="vendor-cell">{{ drawing.vendor }}</td>
-
-                  <td>
-                    <span class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span>
-                  </td>
-
-                  <td class="num ver-cell">{{ drawing.ver }}</td>
-
-                  <td class="num updated-cell">{{ drawing.updated }}</td>
-
-                  <td class="row-actions">
-                    <button class="btn sm" type="button" @click="openDetail(drawing.no)">
-                      <DemoIcon name="eye" :size="14" />详情
-                    </button>
-                    <div class="row-menu-wrap">
-                      <button class="icon-btn row-menu-button" type="button" @click.stop="toggleMenu(drawing.no)">
-                        <DemoIcon name="ellipsis" :size="16" />
-                      </button>
-                      <div v-if="menuFor === drawing.no" class="dropdown row-dropdown">
-                        <button class="dd-item" type="button" @click="menuAction('detail', drawing.no)">
-                          <DemoIcon name="eye" :size="14" />查看详情与工艺文件
-                        </button>
-                        <div class="dd-sep"></div>
-                        <button class="dd-item" type="button" @click="menuAction('hide', drawing.no)">
-                          <DemoIcon name="eye-off" :size="14" />隐藏图纸（管理员）
-                        </button>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-
-                <!-- 展开零件图区域 -->
-                <tr v-if="isExpanded(drawing.no)" class="parts-row">
-                  <td colspan="8">
-                    <div class="parts-panel">
-                      <div class="parts-panel-head">
-                        <DemoIcon name="layers" :size="13" />
-                        <span>所属零件与结构明细 (共 {{ partsForDrawing(drawing.no).length }} 项)</span>
-                      </div>
-                      <div class="parts-list-grid">
-                        <button
-                          v-for="part in partsForDrawing(drawing.no)"
-                          :key="part.no"
-                          class="part-link-card"
-                          type="button"
-                          @click="openDetail(part.no)"
-                        >
-                          <DemoIcon name="file" :size="14" class="part-ico" />
-                          <div class="part-card-body">
-                            <span class="part-card-name">{{ part.name }}</span>
-                            <span class="part-card-no mono">{{ part.no }}</span>
-                          </div>
-                          <span v-if="part.borrowFrom" class="tag plain borrow-tag">借用·{{ part.borrowFrom }}</span>
-                          <DemoIcon name="arrow-up-right" :size="13" class="arrow-ico" />
-                        </button>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              </template>
-
-              <!-- 空状态提示 -->
-              <tr v-if="!rows.length">
-                <td colspan="8">
-                  <div class="empty-state-box">
-                    <DemoIcon name="search-x" :size="40" class="empty-ico" />
-                    <div class="empty-title">没有找到匹配的图纸</div>
-                    <p class="empty-desc">
-                      {{ selectedCategoryId ? '当前分类下暂无图纸，可尝试切换分类或清空过滤条件' : '请尝试调整搜索关键字或状态筛选' }}
-                    </p>
-                    <button v-if="selectedCategoryId" class="btn sm" type="button" @click="clearCategoryFilter">
-                      查看全部图纸
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </main>
-    </div>
+              <tr v-if="expandedProjects.has(drawing.no)" class="parts-row"><td colspan="8"><div class="parts-panel"><span class="parts-title">零件明细（{{ partsForDrawing(drawing.no).length }} 项）</span><button v-for="part in partsForDrawing(drawing.no)" :key="part.no" class="part-link" type="button" @click="openDetail(part.no)"><DemoIcon name="file" :size="13" />{{ part.name }} <span class="mono">{{ part.no }}</span></button></div></td></tr>
+            </template>
+            <tr v-if="!rows.length"><td colspan="8"><div class="empty"><DemoIcon name="search-x" :size="34" /><div class="t">没有符合条件的图纸</div></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.library-page-pro {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-width: 0;
-}
-
-.lib-layout-container {
-  display: flex;
-  gap: 16px;
-  align-items: stretch;
-  flex: 1;
-  min-height: 0;
-}
-
-/* 左侧分类导航栏 */
-.lib-category-sidebar {
-  width: 260px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 14px;
-  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  overflow: hidden;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius, 12px);
-}
-
-.lib-category-sidebar.collapsed {
-  width: 52px;
-  padding: 14px 8px;
-}
-
-.cat-sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.cat-sidebar-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 13.5px;
-  color: var(--text-1);
-  cursor: pointer;
-}
-
-.title-icon {
-  color: var(--accent);
-}
-
-.collapse-toggle-btn {
-  color: var(--text-3);
-}
-
-.cat-tree-search-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  margin-bottom: 10px;
-}
-
-.cat-search-inp {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-1);
-  font-size: 12px;
-  outline: none;
-}
-
-.clear-ico-btn {
-  border: none;
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  padding: 0;
-}
-
-.cat-quick-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.quick-nav-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  color: var(--text-2);
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.quick-nav-item:hover {
-  background: var(--hover);
-  color: var(--text-1);
-}
-
-.quick-nav-item.active {
-  background: var(--active);
-  color: var(--accent);
-  font-weight: 500;
-}
-
-.warning-ico {
-  color: var(--warn);
-}
-
-.nav-label {
-  flex: 1;
-}
-
-.nav-badge {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: var(--panel-2);
-  color: var(--text-3);
-}
-
-.nav-badge.highlight {
-  background: var(--active);
-  color: var(--warn);
-}
-
-.cat-sidebar-divider {
-  height: 1px;
-  background: var(--line);
-  margin: 10px 0;
-}
-
-.cat-tree-body {
-  flex: 1;
-  overflow-y: auto;
-  margin-right: -6px;
-  padding-right: 6px;
-}
-
-.empty-cat-tip {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 20px 0;
-  color: var(--text-3);
-  font-size: 12.5px;
-}
-
-.cat-sidebar-footer {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-}
-
-.btn-manage-link {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px;
-  border: 1px dashed var(--line);
-  background: transparent;
-  color: var(--text-3);
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-manage-link:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--hover);
-}
-
-/* 右侧主工作区 */
-.lib-main-content {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.lib-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.lib-head-left {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.lib-main-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-1);
-  margin: 0;
-}
-
-.lib-count-tag {
-  color: var(--text-3);
-  font-size: 12px;
-}
-
-.lib-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius, 8px);
-  min-width: 260px;
-}
-
-.search-box input {
-  border: none;
-  background: transparent;
-  outline: none;
-  color: var(--text-1);
-  font-size: 12.5px;
-  width: 100%;
-}
-
-.clear-search-x {
-  border: none;
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  padding: 2px;
-}
-
-/* 分类面包屑条 */
-.active-category-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius, 8px);
-}
-
-.banner-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.filter-icon {
-  color: var(--accent);
-  flex-shrink: 0;
-}
-
-.filter-label {
-  color: var(--text-3);
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
-.breadcrumb-trail {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12.5px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.crumb-btn {
-  border: none;
-  background: transparent;
-  color: var(--text-2);
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 4px;
-  transition: color 0.15s;
-}
-
-.crumb-btn:hover {
-  color: var(--accent);
-}
-
-.crumb-btn.current {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.crumb-sep {
-  color: var(--text-3);
-  font-size: 11px;
-}
-
-.btn-clear-cat {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: none;
-  background: transparent;
-  color: var(--text-3);
-  font-size: 11.5px;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.btn-clear-cat:hover {
-  color: var(--text-1);
-  background: var(--hover);
-}
-
-/* 表格区域 */
-.library-card {
-  padding: 0;
-  overflow: hidden;
-  border-radius: var(--radius, 10px);
-}
-
-.pro-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-
-.pro-table th {
-  padding: 10px 14px;
-  text-align: left;
-  color: var(--text-3);
-  font-weight: 500;
-  font-size: 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel-2);
-}
-
-.pro-table td {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
-  vertical-align: middle;
-}
-
-.drawing-row:hover {
-  background: var(--hover);
-}
-
-.project-no-cell {
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.project-no-link {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 600;
-  color: var(--accent);
-}
-
-.drawing-main-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 500;
-}
-
-.drawing-sub-remark {
-  font-size: 11px;
-  color: var(--text-3);
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 220px;
-}
-
-.category-breadcrumb-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  color: var(--accent);
-  font-size: 11.5px;
-  cursor: pointer;
-  max-width: 240px;
-  transition: all 0.15s;
-}
-
-.category-breadcrumb-tag:hover {
-  background: var(--active);
-  border-color: var(--accent-2, var(--accent));
-}
-
-.cat-tag-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.unclassified-tag {
-  cursor: pointer;
-}
-
-.unclassified-tag:hover {
-  border-color: var(--text-2);
-}
-
-.borrow-tag {
-  font-size: 10.5px;
-  color: var(--warn);
-  border-color: var(--warn);
-  background: rgb(251 191 36 / 9%);
-}
-
-/* 零件抽屉 */
-.parts-row {
-  background: var(--panel-2);
-}
-
-.parts-panel {
-  padding: 14px 20px;
-}
-
-.parts-panel-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-  margin-bottom: 10px;
-}
-
-.parts-list-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 8px;
-}
-
-.part-link-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  color: var(--text-1);
-  cursor: pointer;
-  text-align: left;
-  transition: all 0.15s;
-}
-
-.part-link-card:hover {
-  border-color: var(--accent);
-  background: var(--hover);
-}
-
-.part-card-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.part-card-name {
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.part-card-no {
-  font-size: 10.5px;
-  color: var(--text-3);
-}
-
-.empty-state-box {
-  padding: 40px;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.empty-ico {
-  color: var(--text-3);
-}
-
-.empty-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-2);
-}
-
-.empty-desc {
-  font-size: 12px;
-  color: var(--text-3);
-  margin-bottom: 6px;
-}
+.drawing-library-page { display:flex; flex-direction:column; gap:16px; min-height:100%; padding:22px 26px; }
+.library-head { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; }
+.library-head h1 { margin:5px 0 4px; font-family:var(--font-display); font-size:22px; font-weight:900; }
+.library-head p { margin:0; color:var(--text-3); font-size:12px; }
+.eyebrow { display:inline-flex; align-items:center; gap:6px; color:var(--accent); font:11px 'JetBrains Mono', monospace; letter-spacing:1px; }
+.library-actions { display:flex; gap:8px; }
+.attribute-filter-panel { padding:14px 16px; }
+.filter-panel-head { display:flex; justify-content:space-between; margin-bottom:12px; }
+.filter-panel-head strong { display:inline-flex; align-items:center; gap:6px; font-size:13px; }
+.filter-panel-head strong span { margin-left:5px; color:var(--text-3); font-size:11px; font-weight:400; }
+.btn-clear { border:0; background:transparent; color:var(--accent); cursor:pointer; font-size:11px; }
+.filter-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px 14px; }
+.filter-field { display:flex; flex-direction:column; gap:5px; }
+.filter-field>span { color:var(--text-2); font-size:11.5px; font-weight:600; }
+.filter-field em { margin-left:5px; color:var(--warn); font-size:10px; font-style:normal; font-weight:400; }
+.table-toolbar { display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid var(--line); }
+.search-box { display:flex; align-items:center; gap:8px; flex:1; max-width:440px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; color:var(--text-3); }
+.search-box input { width:100%; border:0; outline:0; background:transparent; color:var(--text-1); font-size:12px; }
+.clear-search { border:0; background:transparent; color:var(--text-3); cursor:pointer; }
+.status-select { width:120px; }
+.library-table-card { padding:0; overflow:hidden; }
+.table-scroll { overflow-x:auto; }
+.library-table { min-width:920px; width:100%; border-collapse:collapse; }
+.library-table th { padding:10px 14px; background:var(--panel-2); color:var(--text-3); font-size:11px; font-weight:600; text-align:left; border-bottom:1px solid var(--line); }
+.library-table td { padding:10px 14px; color:var(--text-2); border-bottom:1px solid var(--line); vertical-align:middle; }
+.library-table td strong { display:block; color:var(--text-1); font-size:12.5px; }
+.library-table td small { display:block; max-width:220px; margin-top:3px; overflow:hidden; color:var(--text-3); font-size:10.5px; text-overflow:ellipsis; white-space:nowrap; }
+.no-cell { white-space:nowrap; color:var(--accent)!important; font-weight:600; }
+.expand-btn { margin-right:5px; padding:2px; border:0; background:transparent; color:var(--text-3); cursor:pointer; }
+.expand-btn .collapsed { transform:rotate(-90deg); }
+.attribute-summary { max-width:310px; color:var(--text-2)!important; font-size:11.5px; }
+.attribute-summary>span:not(.tag) { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.row-actions { position:relative; display:flex; align-items:center; gap:5px; white-space:nowrap; }
+.dropdown { position:absolute; right:0; top:calc(100% + 4px); z-index:20; min-width:120px; padding:5px; background:var(--panel); border:1px solid var(--line-strong); border-radius:var(--radius); box-shadow:var(--shadow); }
+.dd-item { display:block; width:100%; padding:7px 9px; border:0; border-radius:5px; background:transparent; color:var(--text-2); text-align:left; cursor:pointer; font-size:11.5px; }
+.dd-item:hover { background:var(--hover); color:var(--text-1); }
+.parts-row { background:var(--panel-2); }
+.parts-panel { display:flex; align-items:center; flex-wrap:wrap; gap:7px; padding:12px 20px; }
+.parts-title { width:100%; color:var(--text-3); font-size:11px; }
+.part-link { display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text-2); cursor:pointer; font-size:11px; }
+.part-link:hover { border-color:var(--accent); color:var(--accent); }
+@media (max-width:680px) { .drawing-library-page{padding:16px}.library-head{flex-direction:column}.library-actions{width:100%}.library-actions .btn{flex:1;justify-content:center}.table-toolbar{flex-wrap:wrap}.search-box{max-width:none;flex-basis:100%} }
 </style>

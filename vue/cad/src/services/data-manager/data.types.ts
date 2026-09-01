@@ -16,7 +16,8 @@ import type {
   ReviewCase,
   ReviewFlow,
   ReviewNode,
-  DrawingCategory,
+  DrawingAttribute,
+  DrawingAttributeField,
   StructurePart,
   PartManufacturingType,
   UserAccount,
@@ -27,7 +28,7 @@ import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, par
 
 export interface DataDocument {
   version: 2
-  categories: DrawingCategory[]
+  attributes: DrawingAttribute[]
   drawings: Drawing[]
   structure: StructurePart[]
   versions: DrawingVersion[]
@@ -48,7 +49,7 @@ export interface DataDocument {
 export function createEmptyDataDocument(): DataDocument {
   return {
     version: 2,
-    categories: [],
+    attributes: [],
     drawings: [],
     structure: [],
     versions: [],
@@ -85,6 +86,32 @@ function asNumber(value: unknown, fallback = 0): number {
 
 function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === 'boolean' ? value : fallback
+}
+
+function normalizeAttributes(value: unknown): DrawingAttribute[] {
+  return readArray<unknown>(value).map((item, index) => {
+    const source = isRecord(item) ? item : {}
+    const fields = readArray<unknown>(source.fields).map((field, fieldIndex): DrawingAttributeField => {
+      const fieldSource = isRecord(field) ? field : {}
+      return {
+        id: asString(fieldSource.id, stableId('attribute-field', `${index}|${fieldIndex}|${asString(fieldSource.name)}`)),
+        name: asString(fieldSource.name, `选项 ${fieldIndex + 1}`),
+        enabled: asBoolean(fieldSource.enabled, true),
+        sortOrder: asNumber(fieldSource.sortOrder, fieldIndex + 1),
+        ...(asString(fieldSource.createdAt) ? { createdAt: asString(fieldSource.createdAt) } : {}),
+      }
+    }).filter((field) => field.name.trim())
+
+    return {
+      id: asString(source.id, stableId('attribute', `${index}|${asString(source.name)}`)),
+      name: asString(source.name, `图纸属性 ${index + 1}`),
+      required: asBoolean(source.required),
+      enabled: asBoolean(source.enabled, true),
+      sortOrder: asNumber(source.sortOrder, index + 1),
+      fields,
+      ...(asString(source.createdAt) ? { createdAt: asString(source.createdAt) } : {}),
+    }
+  }).filter((attribute) => attribute.name.trim())
 }
 
 function asPartManufacturingType(value: unknown): PartManufacturingType {
@@ -310,6 +337,13 @@ function normalizeDrawings(value: unknown): Drawing[] {
       ...(asString(source.borrowFrom) ? { borrowFrom: asString(source.borrowFrom) } : {}),
       ...(isRecord(source.signers) ? { signers: source.signers as Drawing['signers'] } : {}),
       ...(asString(source.remark) ? { remark: asString(source.remark) } : {}),
+      ...(isRecord(source.attributeValues)
+        ? {
+            attributeValues: Object.fromEntries(
+              Object.entries(source.attributeValues).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+            ),
+          }
+        : {}),
       ...(asString(source.designer) ? { designer: asString(source.designer) } : {}),
       files,
       otherFiles: readArray<unknown>(source.otherFiles).map((file) => normalizeDrawingFile(file, no, 'other')),
@@ -616,13 +650,7 @@ export function normalizeDataDocument(value: unknown): DataDocument {
 
   return {
     version: 2,
-    categories: readArray<DrawingCategory>(source.categories).map((item) => ({
-      id: isRecord(item) ? asString(item.id) : '',
-      name: isRecord(item) ? asString(item.name) : '',
-      ...(isRecord(item) && asString(item.parentId) ? { parentId: asString(item.parentId) } : {}),
-      ...(isRecord(item) && typeof item.sortOrder === 'number' ? { sortOrder: item.sortOrder } : {}),
-      ...(isRecord(item) && asString(item.createdAt) ? { createdAt: asString(item.createdAt) } : {}),
-    })).filter((item) => item.id && item.name),
+    attributes: normalizeAttributes(source.attributes),
     drawings: cleanDrawings,
     structure: recoveredStructure,
     versions: readArray<DrawingVersion>(source.versions),

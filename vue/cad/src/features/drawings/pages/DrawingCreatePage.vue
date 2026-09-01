@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import CategoryTreeSelect from '@/components/common/CategoryTreeSelect.vue'
+import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import { dataManager } from '@/services/data-manager'
@@ -22,7 +22,7 @@ const formProject = ref('')
 const formProjectNo = ref('')
 const formDrawingNo = ref('')
 const formRemark = ref('')
-const formCategoryId = ref('')
+const formAttributeValues = ref<Record<string, string>>({})
 const isIdentifyingAssembly = ref(false)
 const assemblyIdentifyMessage = ref('')
 let assemblyIdentifySequence = 0
@@ -40,7 +40,7 @@ function onForkSourceChange() {
   formProjectNo.value = source.project || ''
   formDrawingNo.value = source.no
   formRemark.value = `分叉自 ${source.no} · 继承图纸、备料与工艺文件及零件结构`
-  formCategoryId.value = source.categoryId ?? ''
+  formAttributeValues.value = { ...(source.attributeValues ?? {}) }
 }
 
 interface UploadedAssembly {
@@ -254,6 +254,12 @@ async function performCreate() {
     return
   }
 
+  const attributeErrors = domainStore.validateAttributeValues(formAttributeValues.value)
+  if (attributeErrors.length) {
+    uiStore.toast(attributeErrors[0] ?? '请完善图纸属性', 'warn')
+    return
+  }
+
   if (createMode.value === 'fork') {
     if (!selectedForkSourceNo.value) {
       uiStore.toast('请选择要分叉的源图纸', 'warn')
@@ -270,10 +276,11 @@ async function performCreate() {
         drawingNo,
         projectName,
         undefined,
-        formRemark.value.trim(),
-        undefined,
-        projectNo,
-      )
+       formRemark.value.trim(),
+         undefined,
+         projectNo,
+         formAttributeValues.value,
+       )
       domainStore.openDrawing(drawingNo)
       uiStore.toast(`已基于「${selectedForkSourceNo.value}」成功分叉项目「${projectNo}」，总图图号为「${drawingNo}」`, 'ok')
       router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
@@ -298,7 +305,7 @@ async function performCreate() {
      by: '当前用户',
     borrow: 0,
     hasFile: Boolean(assemblyFile.value),
-    ...(formCategoryId.value ? { categoryId: formCategoryId.value } : {}),
+     ...(Object.keys(formAttributeValues.value).length ? { attributeValues: { ...formAttributeValues.value } } : {}),
     signers: {},
   }
 
@@ -569,15 +576,12 @@ async function performCreate() {
                 placeholder="填写项目背景、技术交底要求或交付期限等"
               />
             </div>
-            <div class="form-item">
-              <label for="create-category">图纸分类归属</label>
-              <CategoryTreeSelect
-                v-model="formCategoryId"
-                placeholder="请选择或快捷新建分类（如 油缸 / 耳环安装 / 焊接工艺）"
-                :allow-quick-create="true"
-              />
-            </div>
           </div>
+
+          <DrawingAttributesForm
+            v-model="formAttributeValues"
+            :attributes="domainStore.sortedAttributes"
+          />
         </section>
       </div>
 

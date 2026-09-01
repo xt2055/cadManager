@@ -17,11 +17,11 @@ import type {
   BomItem,
   Branch,
   BorrowRecord,
-  CategoryTreeNode,
   CompletedReview,
   CraftFile,
   Drawing,
-  DrawingCategory,
+  DrawingAttribute,
+  DrawingAttributeField,
   DrawingFile,
   DrawingSigners,
   DrawingVersion,
@@ -95,7 +95,7 @@ function activityTime(): string {
 export const useDomainStore = defineStore('domain', () => {
 	const authStore = useAuthStore()
   const drawings = ref<Drawing[]>([])
-  const categories = ref<DrawingCategory[]>([])
+  const attributes = ref<DrawingAttribute[]>([])
   const structure = ref<StructurePart[]>([])
   const versions = ref<DrawingVersion[]>([])
   const branches = ref<Branch[]>([])
@@ -187,7 +187,7 @@ export const useDomainStore = defineStore('domain', () => {
   function toDocument(): DataDocument {
     return {
       version: 2,
-      categories: categories.value,
+      attributes: attributes.value,
       drawings: drawings.value,
       structure: structure.value,
       versions: versions.value,
@@ -234,7 +234,7 @@ export const useDomainStore = defineStore('domain', () => {
       try {
         const document = await dataManager.load()
         drawings.value = document.drawings
-        categories.value = document.categories ?? []
+        attributes.value = document.attributes ?? []
         structure.value = document.structure
         versions.value = document.versions
         branches.value = document.branches
@@ -512,184 +512,112 @@ export const useDomainStore = defineStore('domain', () => {
     selectedStructureIndex.value = 0
   }
 
-  // ---------- 图纸分类（无限层级多叉树，支持路径计算、子孙穿透与拖拽调序） ----------
+  // ---------- 图纸属性（平铺属性 + 字段选项） ----------
 
-  const categoryTree = computed<CategoryTreeNode[]>(() => {
-    function buildSubTree(parentId: string | undefined, currentPath: string[], currentPathIds: string[], level: number): CategoryTreeNode[] {
-      const direct = categories.value
-        .filter((cat) => (cat.parentId ?? undefined) === parentId)
-        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name, 'zh-CN'))
+  const sortedAttributes = computed(() => attributes.value
+    .filter((attribute) => attribute.enabled)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'zh-CN')))
 
-      return direct.map((cat) => {
-        const nextPath = [...currentPath, cat.name]
-        const nextPathIds = [...currentPathIds, cat.id]
-        const children = buildSubTree(cat.id, nextPath, nextPathIds, level + 1)
-        const directCount = drawings.value.filter((d) => d.categoryId === cat.id).length
-        const totalCount = directCount + children.reduce((sum, child) => sum + child.totalCount, 0)
-        return {
-          category: cat,
-          children,
-          level,
-          path: nextPath,
-          pathIds: nextPathIds,
-          fullPath: nextPath.join(' > '),
-          directCount,
-          totalCount,
-        }
-      })
-    }
-    return buildSubTree(undefined, [], [], 0)
-  })
-
-  function getCategoryPath(id?: string): string[] {
-    if (!id) return []
-    const path: string[] = []
-    const visited = new Set<string>()
-    let curr: DrawingCategory | undefined = categories.value.find((c) => c.id === id)
-    while (curr && !visited.has(curr.id)) {
-      visited.add(curr.id)
-      path.unshift(curr.name)
-      curr = curr.parentId ? categories.value.find((c) => c.id === curr!.parentId) : undefined
-    }
-    return path
+  function attributeName(id: string): string {
+    return attributes.value.find((attribute) => attribute.id === id)?.name ?? ''
   }
 
-  function getCategoryFullPath(id?: string): string {
-    return getCategoryPath(id).join(' > ')
+  function attributeFieldName(attributeId: string, fieldId?: string): string {
+    if (!fieldId) return ''
+    return attributes.value.find((attribute) => attribute.id === attributeId)?.fields.find((field) => field.id === fieldId)?.name ?? ''
   }
 
-  function getDescendantCategoryIds(id: string): string[] {
-    const results: string[] = [id]
-    const visited = new Set<string>([id])
-    const queue = [id]
-    while (queue.length) {
-      const current = queue.shift()!
-      const directChildren = categories.value.filter((c) => c.parentId === current)
-      for (const child of directChildren) {
-        if (visited.has(child.id)) continue
-        visited.add(child.id)
-        results.push(child.id)
-        queue.push(child.id)
+  function validateAttributeValues(values: Record<string, string> = {}): string[] {
+    return sortedAttributes.value.flatMap((attribute) => {
+      const value = values[attribute.id] ?? ''
+      if (attribute.required && !value) return [`请填写属性「${attribute.name}」`]
+      if (value && !attribute.fields.some((field) => field.enabled && field.id === value)) {
+        return [`属性「${attribute.name}」的字段选项无效`]
       }
-    }
-    return results
+      return []
+    })
   }
 
-  function categoryName(id?: string): string {
-    if (!id) return ''
-    return categories.value.find((item) => item.id === id)?.name ?? ''
-  }
-
-  function countDrawingsInCategory(categoryId: string, includeDescendants = false): number {
-    if (!includeDescendants) {
-      return drawings.value.filter((drawing) => drawing.categoryId === categoryId).length
-    }
-    const allIds = new Set(getDescendantCategoryIds(categoryId))
-    return drawings.value.filter((drawing) => drawing.categoryId && allIds.has(drawing.categoryId)).length
-  }
-
-  async function addCategory(name: string, parentId?: string): Promise<DrawingCategory> {
+  async function addAttribute(name: string, required = false): Promise<DrawingAttribute> {
     await initialize()
     const trimmed = name.trim()
-    if (!trimmed) throw new Error('分类名称不能为空')
-    if (parentId && !categories.value.some((item) => item.id === parentId)) {
-      throw new Error('所选父分类不存在，请刷新后重试')
-    }
-    const duplicated = categories.value.some((item) => item.name === trimmed && (item.parentId ?? '') === (parentId ?? ''))
-    if (duplicated) throw new Error(`同级分类中已存在「${trimmed}」`)
-
-    const siblings = categories.value.filter((c) => (c.parentId ?? '') === (parentId ?? ''))
-    const maxSort = siblings.reduce((max, c) => Math.max(max, c.sortOrder ?? 0), 0)
-
-    const category: DrawingCategory = {
-      id: createId('cat'),
+    if (!trimmed) throw new Error('属性名称不能为空')
+    if (attributes.value.some((attribute) => attribute.name === trimmed)) throw new Error(`属性「${trimmed}」已存在`)
+    const attribute: DrawingAttribute = {
+      id: createId('attribute'),
       name: trimmed,
-      ...(parentId ? { parentId } : {}),
-      sortOrder: maxSort + 1,
+      required,
+      enabled: true,
+      sortOrder: attributes.value.length + 1,
+      fields: [],
       createdAt: nowLabel(),
     }
-    categories.value.push(category)
+    attributes.value.push(attribute)
     await persist()
-    return category
+    return attribute
   }
 
-  async function renameCategory(id: string, name: string): Promise<void> {
+  async function updateAttribute(id: string, payload: Pick<DrawingAttribute, 'name' | 'required' | 'enabled'>): Promise<void> {
     await initialize()
-    const category = categories.value.find((item) => item.id === id)
-    if (!category) throw new Error('分类不存在或已被删除')
+    const attribute = attributes.value.find((item) => item.id === id)
+    if (!attribute) throw new Error('属性不存在')
+    const name = payload.name.trim()
+    if (!name) throw new Error('属性名称不能为空')
+    if (attributes.value.some((item) => item.id !== id && item.name === name)) throw new Error(`属性「${name}」已存在`)
+    Object.assign(attribute, { name, required: payload.required, enabled: payload.enabled })
+    await persist()
+  }
+
+  async function deleteAttribute(id: string): Promise<void> {
+    await initialize()
+    if (!attributes.value.some((item) => item.id === id)) throw new Error('属性不存在')
+    attributes.value = attributes.value.filter((item) => item.id !== id)
+    for (const drawing of drawings.value) {
+      if (drawing.attributeValues) delete drawing.attributeValues[id]
+    }
+    await persist()
+  }
+
+  async function addAttributeField(attributeId: string, name: string): Promise<DrawingAttributeField> {
+    await initialize()
+    const attribute = attributes.value.find((item) => item.id === attributeId)
+    if (!attribute) throw new Error('属性不存在')
     const trimmed = name.trim()
-    if (!trimmed) throw new Error('分类名称不能为空')
-    const duplicated = categories.value.some((item) => item.id !== id && item.name === trimmed && (item.parentId ?? '') === (category.parentId ?? ''))
-    if (duplicated) throw new Error(`同级分类中已存在「${trimmed}」`)
-    category.name = trimmed
+    if (!trimmed) throw new Error('字段名称不能为空')
+    if (attribute.fields.some((field) => field.name === trimmed)) throw new Error(`字段「${trimmed}」已存在`)
+    const field: DrawingAttributeField = {
+      id: createId('attribute-field'),
+      name: trimmed,
+      enabled: true,
+      sortOrder: attribute.fields.length + 1,
+      createdAt: nowLabel(),
+    }
+    attribute.fields.push(field)
     await persist()
+    return field
   }
 
-  async function moveCategory(id: string, newParentId: string | undefined, newSortOrder?: number): Promise<void> {
+  async function updateAttributeField(attributeId: string, fieldId: string, name: string, enabled: boolean): Promise<void> {
     await initialize()
-    const category = categories.value.find((item) => item.id === id)
-    if (!category) throw new Error('分类不存在')
-    if (newParentId === id) throw new Error('分类不能将其自身作为父分类')
-    if (newParentId) {
-      const descendants = getDescendantCategoryIds(id)
-      if (descendants.includes(newParentId)) {
-        throw new Error('不能将分类移动到其子孙分类下')
-      }
-    }
-    category.parentId = newParentId || undefined
-    if (typeof newSortOrder === 'number') {
-      category.sortOrder = newSortOrder
-    }
+    const attribute = attributes.value.find((item) => item.id === attributeId)
+    const field = attribute?.fields.find((item) => item.id === fieldId)
+    if (!attribute || !field) throw new Error('字段不存在')
+    const trimmed = name.trim()
+    if (!trimmed) throw new Error('字段名称不能为空')
+    if (attribute.fields.some((item) => item.id !== fieldId && item.name === trimmed)) throw new Error(`字段「${trimmed}」已存在`)
+    Object.assign(field, { name: trimmed, enabled })
     await persist()
   }
 
-  async function deleteCategory(id: string): Promise<void> {
-    await initialize()
-    const category = categories.value.find((item) => item.id === id)
-    if (!category) throw new Error('分类不存在或已被删除')
-    const children = categories.value.filter((item) => item.parentId === id)
-    if (children.length) {
-      throw new Error(`分类「${category.name}」下还有 ${children.length} 个子分类，请先删除或移出子分类`)
-    }
-    const usedBy = countDrawingsInCategory(id)
-    if (usedBy > 0) {
-      throw new Error(`分类「${category.name}」下还有 ${usedBy} 张图纸，请先移动这些图纸再删除`)
-    }
-    categories.value = categories.value.filter((item) => item.id !== id)
-    await persist()
-  }
-
-  async function setDrawingCategory(drawingNo: string, categoryId: string): Promise<void> {
+  async function setDrawingAttributes(drawingNo: string, values: Record<string, string>): Promise<void> {
     await initialize()
     const drawing = drawings.value.find((item) => item.no === drawingNo)
     if (!drawing) throw new Error(`图纸 ${drawingNo} 不存在`)
-    if (categoryId && !categories.value.some((item) => item.id === categoryId)) {
-      throw new Error('目标分类不存在，请刷新后重试')
-    }
-    drawing.categoryId = categoryId || undefined
+    const errors = validateAttributeValues(values)
+    if (errors.length) throw new Error(errors[0])
+    drawing.attributeValues = Object.fromEntries(Object.entries(values).filter(([, value]) => value))
     drawing.updated = nowLabel()
     await persist()
-  }
-
-  async function batchSetDrawingCategory(drawingNos: string[], categoryId: string): Promise<void> {
-    await initialize()
-    if (categoryId && !categories.value.some((item) => item.id === categoryId)) {
-      throw new Error('目标分类不存在，请刷新后重试')
-    }
-    const targetCat = categoryId || undefined
-    const now = nowLabel()
-    let changed = 0
-    for (const no of drawingNos) {
-      const drawing = drawings.value.find((item) => item.no === no)
-      if (drawing && drawing.categoryId !== targetCat) {
-        drawing.categoryId = targetCat
-        drawing.updated = now
-        changed++
-      }
-    }
-    if (changed > 0) {
-      await persist()
-    }
   }
 
   async function addDrawing(
@@ -767,6 +695,7 @@ export const useDomainStore = defineStore('domain', () => {
     newRemark?: string,
 	operator = authStore.currentUser?.displayName || '当前用户',
     newProjectNo?: string,
+    newAttributeValues?: Record<string, string>,
   ): Promise<void> {
     await initialize()
     const sourceDrawing = drawings.value.find((item) => item.no === sourceNo)
@@ -830,6 +759,7 @@ export const useDomainStore = defineStore('domain', () => {
       updated: nowLabel(),
       borrow: 0,
       signers: { ...(sourceDrawing.signers ?? {}) },
+      ...(newAttributeValues ? { attributeValues: { ...newAttributeValues } } : {}),
     }
 
     forkedDrawing.files = (sourceDrawing.files ?? []).map((file) => cloneFile(file, newDrawingNo))
@@ -2026,8 +1956,8 @@ export const useDomainStore = defineStore('domain', () => {
 
   return {
     drawings,
-    categories,
-    categoryTree,
+    attributes,
+    sortedAttributes,
     structure,
     versions,
     branches,
@@ -2060,17 +1990,15 @@ export const useDomainStore = defineStore('domain', () => {
     clearCurrentDrawing,
     getReviewCase,
     addDrawing,
-    addCategory,
-    renameCategory,
-    moveCategory,
-    deleteCategory,
-    setDrawingCategory,
-    batchSetDrawingCategory,
-    categoryName,
-    getCategoryPath,
-    getCategoryFullPath,
-    getDescendantCategoryIds,
-    countDrawingsInCategory,
+    attributeName,
+    attributeFieldName,
+    validateAttributeValues,
+    addAttribute,
+    updateAttribute,
+    deleteAttribute,
+    addAttributeField,
+    updateAttributeField,
+    setDrawingAttributes,
     forkDrawing,
     createPartWithFile,
     borrowPartToProject,
