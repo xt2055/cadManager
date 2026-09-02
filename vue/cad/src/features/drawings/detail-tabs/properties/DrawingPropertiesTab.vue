@@ -49,6 +49,8 @@ function emptyEditForm(): StructurePartEditable {
   }
 }
 
+const partNoEdit = ref('')
+
 const editForm = ref<StructurePartEditable>(emptyEditForm())
 const activityLogs = computed(() => {
   const drawingNo = currentItem.value?.no
@@ -56,6 +58,7 @@ const activityLogs = computed(() => {
 })
 
 function loadEditForm(part: StructurePart) {
+  partNoEdit.value = part.no
   editForm.value = {
     name: part.name,
     material: part.material,
@@ -95,9 +98,13 @@ async function saveEdit() {
   if (!part) return
   saving.value = true
   try {
-    await domainStore.updateStructurePart(part.no, { ...editForm.value })
+    const nextPartNo = partNoEdit.value.trim() || part.no
+    await domainStore.updateStructurePart(part.no, { ...editForm.value, partNo: nextPartNo })
     editing.value = false
-    uiStore.toast(`零件图「${part.no}」属性已保存`, 'ok')
+    if (nextPartNo !== part.no) {
+      await router.replace({ name: 'drawing-properties', params: { drawingId: nextPartNo } })
+    }
+    uiStore.toast(`零件图「${nextPartNo}」属性已保存`, 'ok')
   } catch (error) {
     uiStore.toast(error instanceof Error ? error.message : '零件属性保存失败，请稍后重试', 'warn')
   } finally {
@@ -206,9 +213,9 @@ const feedIcons: Record<string, string> = {
       <!-- 零件编辑态 -->
       <template v-if="isPart && currentPart">
         <div v-if="editing" class="edit-form-grid">
-          <div class="form-field readonly-field">
-            <label>零件图号</label>
-            <div class="readonly-value mono">{{ currentPart.no }}</div>
+          <div class="form-field">
+            <label for="part-no">零件图号</label>
+            <input id="part-no" v-model="partNoEdit" class="inp mono" type="text" />
           </div>
           <div class="form-field">
             <label for="part-name">零件名称 *</label>

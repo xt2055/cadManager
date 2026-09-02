@@ -60,6 +60,13 @@ interface UploadedPart {
   file?: File
 }
 
+interface IdentifiedPartFile {
+  part: UploadedPart
+  parsed: ReturnType<typeof parseDrawingNumber>
+  material: string
+  identified: boolean
+}
+
 const assemblyFile = ref<UploadedAssembly | null>(null)
 const partFiles = ref<UploadedPart[]>([])
 const isDraggingAssembly = ref(false)
@@ -210,6 +217,22 @@ function isDetailListFile(name: string): boolean {
   return /密封件|外购件/.test(name) && name.includes('明细表')
 }
 
+function fallbackPartNoFromFileName(name: string): string {
+  return name.replace(/\.[^./\\]+$/, '').trim() || name.trim()
+}
+
+function fallbackPartIdentity(name: string): ReturnType<typeof parseDrawingNumber> {
+  const partNo = fallbackPartNoFromFileName(name)
+  return {
+    no: partNo,
+    name: partNo,
+    rootNo: partNo,
+    parentNo: null,
+    level: 0,
+    isStandard: Boolean(partNo),
+  }
+}
+
 function triggerAssemblyPick() {
   assemblyFileInput.value?.click()
 }
@@ -314,48 +337,43 @@ async function performCreate() {
     signers: {},
   }
 
-  const identifiedPartFiles: Array<{ part: UploadedPart; parsed: ReturnType<typeof parseDrawingNumber>; material: string }> = []
-  try {
-    for (const [index, part] of partFiles.value.entries()) {
-      if (!part.file) throw new Error(`零件文件「${part.name}」缺少文件内容`)
-      if (!supportsDrawingNumberIdentification(part.name) || isDetailListFile(part.name)) {
-        identifiedPartFiles.push({
-          part,
-          parsed: parseDrawingNumber(''),
-          material: '—',
-        })
-        continue
+  const identifiedPartFiles: IdentifiedPartFile[] = []
+  const unidentifiedPartNames: string[] = []
+  for (const [index, part] of partFiles.value.entries()) {
+    if (!part.file) throw new Error(`零件文件「${part.name}」缺少文件内容`)
+
+    createStatus.value = `正在识别零件图号（${index + 1}/${partFiles.value.length}）`
+    let identity: Awaited<ReturnType<typeof dataManager.identifyDrawingFile>> | null = null
+    if (supportsDrawingNumberIdentification(part.name) && !isDetailListFile(part.name)) {
+      try {
+        identity = await dataManager.identifyDrawingFile(part.file, part.name)
+      } catch (error) {
+        console.warn(`读取零件图号失败，改用文件名：${part.name}`, error)
       }
-      createStatus.value = `正在识别零件图号（${index + 1}/${partFiles.value.length}）`
-      const identity = await dataManager.identifyDrawingFile(part.file, part.name)
-      const parsed = parseDrawingNumber(identity.partNo)
-      if (!parsed.isStandard) {
-        // 没有可靠工程图号的标准件、明细表等文件保留为其他文件，不能臆造零件号。
-        identifiedPartFiles.push({ part, parsed, material: identity.material || '—' })
-        continue
-      }
-      identifiedPartFiles.push({
-        part,
-        parsed,
-        material: identity.material || identity.titleBlock?.['材料名称'] || identity.titleBlock?.['材料'] || identity.titleBlock?.['材质'] || '—',
-      })
     }
-  } catch (error) {
-    uiStore.toast(error instanceof Error ? error.message : '读取零件图号失败，请检查图纸标题栏', 'warn')
-    return
+
+    const parsedIdentity = identity ? parseDrawingNumber(identity.partNo) : parseDrawingNumber('')
+    const identified = parsedIdentity.isStandard
+    if (!identified) unidentifiedPartNames.push(part.name)
+    identifiedPartFiles.push({
+      part,
+      parsed: identified ? parsedIdentity : fallbackPartIdentity(part.name),
+      material: identity?.material || identity?.titleBlock?.['材料名称'] || identity?.titleBlock?.['材料'] || identity?.titleBlock?.['材质'] || '—',
+      identified,
+    })
   }
 
   const projectFamilyNo = drawingNo
-  const parsedPartFiles = identifiedPartFiles.map(({ part, parsed, material }) => ({
+  const parsedPartFiles = identifiedPartFiles.map(({ part, parsed, material, identified }) => ({
     part,
     parsed,
     material,
-    isBorrowed: parsed.isStandard && !isSameDrawingFamily(parsed.no, projectFamilyNo),
+    isBorrowed: identified && !isSameDrawingFamily(parsed.no, projectFamilyNo),
   }))
   const assemblyNos = [
     drawingNo,
   ].filter(Boolean)
-  const structuredPartFiles = parsedPartFiles.filter(({ parsed }) => parsed.isStandard && !isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
+  const structuredPartFiles = parsedPartFiles.filter(({ parsed }) => !isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
   const validPartEntries = structuredPartFiles.map(({ part, parsed, isBorrowed, material }, index) => ({
     part,
     parsed,
@@ -413,7 +431,7 @@ async function performCreate() {
     }
   })
   const otherFileEntries = parsedPartFiles
-    .filter(({ parsed }) => !parsed.isStandard || isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
+    .filter(({ parsed }) => isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
   const otherDrawingFiles: DrawingFile[] = otherFileEntries
     .map(({ part }, index) => ({
       id: `${Date.now()}-other-${index}`,
@@ -468,7 +486,10 @@ async function performCreate() {
    domainStore.openDrawing(newProjectDrawing.no)
 
   const borrowedPartCount = groupedPartEntries.filter((entries) => entries[0]?.isBorrowed).length
-   uiStore.toast(`项目「${projectNo}」已成功创建，总图图号为「${drawingNo}」${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}`, 'ok')
+   const fallbackMessage = unidentifiedPartNames.length
+     ? `；${unidentifiedPartNames.join('、')} 未识别出图号，已暂用文件名，可在零件详情页修改`
+     : ''
+   uiStore.toast(`项目「${projectNo}」已成功创建，总图图号为「${drawingNo}」${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}${fallbackMessage}`, unidentifiedPartNames.length ? 'warn' : 'ok')
   router.push({ name: 'drawing-preview', params: { drawingId: newProjectDrawing.no } })
 }
 </script>

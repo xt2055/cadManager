@@ -1,4 +1,5 @@
 import type { ActivityLog, ActivityResult, ActivityTargetType, ActivityType } from '@/types/domain.types'
+import { getApiBaseUrl } from '@/services/api-base.service'
 
 interface OperationLogInput {
   drawingNo: string
@@ -38,10 +39,8 @@ function authHeaders(): Record<string, string> {
   return headers
 }
 
-const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
-
 export async function createDrawingOperationLog(input: OperationLogInput): Promise<ActivityLog> {
-  const response = await fetch(`${baseUrl}/drawing-operation-logs`, {
+  const response = await fetch(`${getApiBaseUrl()}/drawing-operation-logs`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     credentials: 'include',
@@ -58,7 +57,7 @@ export async function listDrawingOperationLogs(options: { page?: number; pageSiz
   })
   if (options.action) query.set('action', options.action)
   if (options.drawingNo) query.set('drawing_no', options.drawingNo)
-  const response = await fetch(`${baseUrl}/drawing-operation-logs?${query}`, {
+  const response = await fetch(`${getApiBaseUrl()}/drawing-operation-logs?${query}`, {
     method: 'GET',
     headers: authHeaders(),
     credentials: 'include',

@@ -8,7 +8,7 @@ import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/services/da
 import { useAuthStore } from '@/stores/auth.store'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import { openCadEditSession, openCadReadonly } from '@/services/tauri/cad-edit.service'
+import { CAXA_NOT_FOUND_PREFIX, openCadEditSession, openCadReadonly, openDefaultAppsSettings, pickCaxaExecutable, saveLocalCaxaPath } from '@/services/tauri/cad-edit.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 
@@ -107,10 +107,33 @@ interface LocalActiveEditSession {
   sessionId: string
   fileId: string
   fileName: string
+  drawingNo: string
   uncPath: string
   openUrl: string
   startedAt: string
   lastHeartbeatAt?: number
+}
+
+// 编辑会话状态持久化：切换页签/路由导致本组件卸载重建时，“编辑中”状态栏不能丢。
+const LOCAL_SESSIONS_STORAGE_KEY = 'cad:active-edit-sessions:v1'
+
+function loadLocalSessions(): LocalActiveEditSession[] {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SESSIONS_STORAGE_KEY)
+    const list = raw ? JSON.parse(raw) : []
+    if (!Array.isArray(list)) return []
+    return list.filter((item): item is LocalActiveEditSession => Boolean(item && item.sessionId && item.fileId))
+  } catch {
+    return []
+  }
+}
+
+function persistLocalSessions() {
+  try {
+    window.localStorage.setItem(LOCAL_SESSIONS_STORAGE_KEY, JSON.stringify(myActiveSessions.value))
+  } catch {
+    // 本地存储不可用时忽略：仅影响状态栏恢复
+  }
 }
 
 let sessionPollTimer: number | null = null
@@ -118,10 +141,59 @@ let heartbeatTimer: number | null = null
 const editingFileId = ref<string | null>(null)
 const readonlyFileId = ref<string | null>(null)
 const activeSessionList = ref<ActiveEditSessionInfo[]>([])
-const myActiveSessions = ref<LocalActiveEditSession[]>([])
+const myActiveSessions = ref<LocalActiveEditSession[]>(loadLocalSessions())
 const closingSessionIds = ref<Set<string>>(new Set())
 const closedSessions = ref<{ sessionId: string; fileName: string; savedAt: string }[]>([])
 const borrowReasonInput = ref('')
+const caxaHelpVisible = ref(false)
+const caxaHelpDetail = ref('')
+const isSavingCaxaPath = ref(false)
+let pendingCadRetry: (() => Promise<void>) | null = null
+
+/** 统一处理本地 CAD 打开失败：找不到 CAXA 时弹出可操作的弹窗，其余仅提示。 */
+function handleCadOpenError(error: unknown, retry: () => Promise<void>) {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.startsWith(CAXA_NOT_FOUND_PREFIX)) {
+    caxaHelpDetail.value = message.slice(CAXA_NOT_FOUND_PREFIX.length)
+    pendingCadRetry = retry
+    caxaHelpVisible.value = true
+    return
+  }
+  uiStore.toast(message, 'warn')
+}
+
+function closeCaxaHelpModal() {
+  caxaHelpVisible.value = false
+  pendingCadRetry = null
+}
+
+async function pickAndSaveCaxa() {
+  if (isSavingCaxaPath.value) return
+  isSavingCaxaPath.value = true
+  try {
+    const picked = await pickCaxaExecutable()
+    if (!picked) return
+    await saveLocalCaxaPath(picked)
+    uiStore.toast(`已记住本机 CAXA 程序：${picked}`, 'ok')
+    caxaHelpVisible.value = false
+    const retry = pendingCadRetry
+    pendingCadRetry = null
+    await retry?.()
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '保存 CAXA 路径失败', 'warn')
+  } finally {
+    isSavingCaxaPath.value = false
+  }
+}
+
+async function openSystemDefaultApps() {
+  try {
+    await openDefaultAppsSettings()
+    uiStore.toast('已打开系统「默认应用」设置，请为图纸扩展名配置打开方式', 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '打开系统设置失败', 'warn')
+  }
+}
 
 // 获取除当前项目外的所有可选项目（支持名称、图号、厂商模糊过滤）
 const candidateProjects = computed(() => {
@@ -281,9 +353,14 @@ async function refreshActiveSessions() {
     const list = await dataManager.listEditSessions(drawingNo)
     activeSessionList.value = list
 
-    // 同步更新 myActiveSessions 状态：如果服务端已被关闭，则自动剔除
+    // 同步更新 myActiveSessions：只校验当前图纸的会话（服务端已关闭则剔除）；
+    // 其他图纸的会话不由本次轮询裁决，否则在项目间切换时会误删编辑状态。
     const validIds = new Set(list.filter((s) => s.isCurrent).map((s) => s.id))
-    myActiveSessions.value = myActiveSessions.value.filter((s) => validIds.has(s.sessionId))
+    const filtered = myActiveSessions.value.filter((s) => s.drawingNo !== drawingNo || validIds.has(s.sessionId))
+    if (filtered.length !== myActiveSessions.value.length) {
+      myActiveSessions.value = filtered
+      persistLocalSessions()
+    }
   } catch {
     // 轮询静默失败
   }
@@ -340,6 +417,7 @@ async function doStopSession(targetId: string, targetFileName: string) {
   try {
     await dataManager.closeEditSession(targetId)
     myActiveSessions.value = myActiveSessions.value.filter((s) => s.sessionId !== targetId)
+    persistLocalSessions()
     await refreshActiveSessions()
     // 后端已完成文件稳定等待与版本捕获，给用户明确的“结束成功”反馈。
     const successRecord = { sessionId: targetId, fileName: targetFileName, savedAt: new Date().toLocaleTimeString() }
@@ -364,7 +442,7 @@ async function relaunchEditor(session: LocalActiveEditSession) {
     })
     uiStore.toast('已重新呼出本地 CAD', 'ok')
   } catch (error) {
-    uiStore.toast(error instanceof Error ? error.message : '重新唤醒本地 CAD 失败', 'warn')
+    handleCadOpenError(error, () => relaunchEditor(session))
   }
 }
 
@@ -375,28 +453,31 @@ async function relaunchEditorForFile(file: DrawingFile) {
     return
   }
   // 页面关闭后重开的恢复场景：服务端会话仍在占用中，重新认领（幂等）并呼出 CAD。
-  if (!file.storageKey) return
+  const storageKey = file.rawStorageKey || file.storageKey
+  if (!storageKey) return
   if (editingFileId.value) return
   editingFileId.value = file.id
   try {
-    const result = await dataManager.openEditSession(file.storageKey)
+    const result = await dataManager.openEditSession(storageKey)
     myActiveSessions.value = [
       ...myActiveSessions.value.filter((s) => s.sessionId !== result.sessionId),
       {
         sessionId: result.sessionId,
         fileId: file.id,
         fileName: file.name,
+        drawingNo: currentItem.value?.no || '',
         uncPath: result.uncPath,
         openUrl: result.openUrl,
         startedAt: new Date().toLocaleTimeString(),
         lastHeartbeatAt: Date.now(),
       },
     ]
+    persistLocalSessions()
     await openCadEditSession(result)
     await refreshActiveSessions()
     uiStore.toast('已重新认领编辑会话并呼出本地 CAD', 'ok')
   } catch (error) {
-    uiStore.toast(error instanceof Error ? error.message : '重新认领编辑会话失败', 'warn')
+    handleCadOpenError(error, () => relaunchEditorForFile(file))
   } finally {
     editingFileId.value = null
   }
@@ -424,17 +505,19 @@ function isHeartbeatFresh(session: LocalActiveEditSession): boolean {
 
 /** 本地只读查看：临时副本在本机打开，退出即销毁，不回传服务器。 */
 async function openReadonly(file: DrawingFile) {
-  if (!file.storageKey) {
+  // 服务端附件记录与编辑会话都以原始存储键为准；合并后的当前键可能指向转换产物。
+  const storageKey = file.rawStorageKey || file.storageKey
+  if (!storageKey) {
     uiStore.toast('该文件尚未保存物理存储，无法本地查看', 'warn')
     return
   }
   if (readonlyFileId.value) return
   readonlyFileId.value = file.id
   try {
-    await openCadReadonly({ storageKey: file.storageKey })
+    await openCadReadonly({ storageKey })
     uiStore.toast(`已用本机 CAD 打开「${file.name}」（只读副本，关闭后自动销毁）`, 'ok')
   } catch (error) {
-    uiStore.toast(error instanceof Error ? error.message : '本地查看失败', 'warn')
+    handleCadOpenError(error, () => openReadonly(file))
   } finally {
     readonlyFileId.value = null
   }
@@ -478,6 +561,7 @@ async function openEditor(file: DrawingFile) {  if (!currentItem.value) return
       sessionId: session.sessionId,
       fileId: file.id,
       fileName: file.name,
+      drawingNo: currentItem.value?.no || '',
       uncPath: session.uncPath,
       openUrl: session.openUrl,
       startedAt: new Date().toLocaleTimeString(),
@@ -488,15 +572,18 @@ async function openEditor(file: DrawingFile) {  if (!currentItem.value) return
       ...myActiveSessions.value.filter((s) => s.sessionId !== session.sessionId && s.fileId !== file.id),
       newLocalSession,
     ]
+    persistLocalSessions()
 
     await openCadEditSession(session)
     await refreshActiveSessions()
     uiStore.toast(`已在本地 CAD 中打开「${file.name}」，支持多开协同编辑`, 'ok')
   } catch (error) {
-    if (sessionId) {
+    const message = error instanceof Error ? error.message : String(error)
+    // 本机未找到 CAXA 时保留服务端会话：文件已唤醒到工作区，用户在弹窗中选择程序后可直接重试。
+    if (sessionId && !message.startsWith(CAXA_NOT_FOUND_PREFIX)) {
       await dataManager.closeEditSession(sessionId).catch(() => undefined)
     }
-    uiStore.toast(error instanceof Error ? error.message : '启动本地 CAD 失败', 'warn')
+    handleCadOpenError(error, () => openEditor(file))
   } finally {
     editingFileId.value = null
   }
@@ -1322,6 +1409,38 @@ function closeReidentifyModal() {
             <DemoIcon name="check" :size="14" />
             {{ isExecutingReidentify ? '校正中...' : `确认校正 (${reidentifyList.filter((i) => i.checked).length} 项)` }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 本机未找到 CAXA：提供可操作的解决途径，而不是一闪而过的提示 -->
+    <div v-if="caxaHelpVisible" class="modal-backdrop">
+      <div class="modal card caxa-help-modal">
+        <div class="modal-head">
+          <div class="modal-title">
+            <DemoIcon name="alert-triangle" :size="18" />
+            <span>未找到本机 CAD 程序</span>
+          </div>
+          <button class="btn sm close-btn" type="button" @click="closeCaxaHelpModal">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <p class="caxa-help-detail">{{ caxaHelpDetail }}</p>
+          <p class="caxa-help-text">请选择一种处理方式；指定一次后系统会自动记住，之后无需重复选择：</p>
+          <div class="caxa-help-actions">
+            <button class="btn primary" type="button" :disabled="isSavingCaxaPath" @click="pickAndSaveCaxa">
+              <DemoIcon name="folder-open" :size="14" />
+              {{ isSavingCaxaPath ? '处理中...' : '选择 CAXA 程序（CDRAFT_M.exe）' }}
+            </button>
+            <button class="btn" type="button" @click="openSystemDefaultApps">
+              <DemoIcon name="settings" :size="14" />打开系统「默认应用」设置
+            </button>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <button class="btn" type="button" @click="closeCaxaHelpModal">稍后处理</button>
+          <button class="btn primary" type="button" :disabled="isSavingCaxaPath" @click="pickAndSaveCaxa">选择程序并重试</button>
         </div>
       </div>
     </div>
@@ -2610,6 +2729,38 @@ function closeReidentifyModal() {
   flex-direction: column;
   gap: 8px;
   width: 100%;
+}
+
+.caxa-help-modal {
+  max-width: 540px;
+  width: min(540px, calc(100vw - 48px));
+}
+
+.caxa-help-detail {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--warn-soft, rgba(234, 179, 8, 0.12));
+  color: var(--warn, #b45309);
+  font-size: 12.5px;
+  line-height: 1.7;
+  word-break: break-all;
+}
+
+.caxa-help-text {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-2, #4b5563);
+}
+
+.caxa-help-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.caxa-help-actions .btn {
+  justify-content: center;
 }
 
 .collab-dock-card {

@@ -8,27 +8,20 @@ import { AcApDocManager } from '@mlightcad/cad-simple-viewer'
 import App from './App.vue'
 import { router } from './router'
 import { getTimeBasedMode } from './stores/theme.store'
+import { getApiBaseUrl, initializeApiBaseUrl } from './services/api-base.service'
 import '@mlightcad/cad-viewer/style.css'
 import './styles/index.css'
 
 async function openDeepLink(url: string): Promise<void> {
   if (!url.startsWith('cadguanliq://open')) return
   const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
-  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+  const apiBaseUrl = getApiBaseUrl()
   if (!accessToken || !apiBaseUrl) return
   try {
     await invoke('open_cad_edit_session', { apiBaseUrl, accessToken, openUrl: url })
   } catch (error) {
     console.error('处理 CAD 打开链接失败', error)
   }
-}
-
-if (isTauri()) {
-  void onOpenUrl((urls) => Promise.all(urls.map(openDeepLink)))
-  void getCurrent().then((urls) => Promise.all((urls || []).map(openDeepLink))).catch((error) => {
-    console.error('读取 CAD 打开链接失败', error)
-  })
-  void listen<string[]>('cad-deep-link', (event) => Promise.all(event.payload.map(openDeepLink)))
 }
 
 document.documentElement.dataset.skin = 'classic'
@@ -52,13 +45,25 @@ AcApDocManager.createInstance = (options = {}) => originalCreateInstance({
   },
 })
 
-const app = createApp(App)
+async function bootstrap(): Promise<void> {
+  await initializeApiBaseUrl()
 
-router.onError((error) => {
-  console.error('路由导航失败', error)
-})
+  if (isTauri()) {
+    void onOpenUrl((urls) => Promise.all(urls.map(openDeepLink)))
+    void getCurrent().then((urls) => Promise.all((urls || []).map(openDeepLink))).catch((error) => {
+      console.error('读取 CAD 打开链接失败', error)
+    })
+    void listen<string[]>('cad-deep-link', (event) => Promise.all(event.payload.map(openDeepLink)))
+  }
 
-app.use(createPinia())
-app.use(i18n)
-app.use(router)
-app.mount('#app')
+  const app = createApp(App)
+  router.onError((error) => {
+    console.error('路由导航失败', error)
+  })
+  app.use(createPinia())
+  app.use(i18n)
+  app.use(router)
+  app.mount('#app')
+}
+
+void bootstrap()

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/cadtext"
@@ -370,12 +371,32 @@ func ReidentifyPart(repository attachment.Repository) http.HandlerFunc {
 }
 
 func firstTitleBlockValue(fields map[string]string, keys ...string) string {
+	normalizedKeys := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		normalizedKeys[normalizeTitleBlockKey(key)] = struct{}{}
+	}
 	for _, key := range keys {
 		if value := strings.TrimSpace(fields[key]); value != "" {
 			return value
 		}
 	}
+	for key, value := range fields {
+		if _, ok := normalizedKeys[normalizeTitleBlockKey(key)]; ok {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
 	return ""
+}
+
+func normalizeTitleBlockKey(value string) string {
+	return strings.Map(func(character rune) rune {
+		if unicode.IsSpace(character) {
+			return -1
+		}
+		return character
+	}, strings.TrimSpace(value))
 }
 
 func resolvePartNo(filename string, titleBlock map[string]string, titleBlockOnly bool) (string, string) {
@@ -404,7 +425,8 @@ func isLikelyDrawingNo(value string) bool {
 	if value == "" || !strings.ContainsAny(value, "0123456789") || !strings.ContainsAny(upper, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
 		return false
 	}
-	if strings.Contains(value, ":") || strings.ContainsAny(value, "×xX") || strings.Contains(value, " ") {
+	withoutPercentDimensions := strings.ReplaceAll(upper, "%X", "")
+	if strings.Contains(value, ":") || strings.ContainsAny(withoutPercentDimensions, "×X") || strings.Contains(value, " ") {
 		return false
 	}
 	if strings.HasPrefix(upper, "GB") || strings.HasPrefix(upper, "JB") || strings.HasPrefix(upper, "ISO") || strings.HasPrefix(upper, "DIN") || strings.HasPrefix(upper, "HB") {
@@ -440,7 +462,7 @@ func fallbackPartNoFromFilename(filename string) string {
 			if !isASCIIAlphaNumeric(character) {
 				return ""
 			}
-		} else if !isASCIIAlphaNumeric(character) && character != '.' && character != '-' && character != '/' {
+		} else if !isASCIIAlphaNumeric(character) && character != '.' && character != '-' && character != '/' && character != '%' {
 			break
 		}
 		builder.WriteRune(character)

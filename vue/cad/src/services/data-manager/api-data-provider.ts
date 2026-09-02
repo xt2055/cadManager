@@ -2,6 +2,7 @@ import { normalizeDataDocument, type DataDocument } from './data.types'
 import type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import type { UserManagementInput } from './data-provider'
+import { getApiBaseUrl } from '@/services/api-base.service'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -26,7 +27,7 @@ export class ApiDataProvider implements DataProvider {
   /** 最近一次读取/保存确认的文档更新时间，用于乐观并发校验（防止旧窗口覆盖新数据）。 */
   private documentStamp = ''
 
-  constructor(baseUrl = import.meta.env.VITE_API_BASE_URL || '/api') {
+  constructor(baseUrl = getApiBaseUrl()) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 

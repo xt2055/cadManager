@@ -197,19 +197,29 @@ func AttachmentResource(repository attachment.Repository, objectStorage storage.
 			return
 		}
 		item, err := repository.Find(request.Context(), key)
-		if err != nil {
+		if err != nil && !errors.Is(err, attachment.ErrNotFound) {
 			writeAttachmentError(writer, err)
 			return
 		}
+		// 转换产物（如 EXB 转出的 DWG）没有附件记录；GET 时允许按对象存储直接下载，
+		// 否则只读查看会因查无记录而 404。删除等变更操作仍要求记录存在。
+		recordMissing := err != nil
 		switch request.Method {
 		case http.MethodGet:
-			reader, object, err := objectStorage.Open(request.Context(), key)
-			if err != nil {
+			reader, object, openErr := objectStorage.Open(request.Context(), key)
+			if openErr != nil {
 				response.WriteError(writer, http.StatusNotFound, "附件文件不存在")
 				return
 			}
 			defer reader.Close()
-			if strings.EqualFold(filepathExt(item.Name), ".dxf") || strings.EqualFold(filepathExt(key), ".dxf") {
+			fileName := filepath.Base(key)
+			mimeType := firstNonEmpty(object.MimeType, "application/octet-stream")
+			if !recordMissing {
+				fileName = item.Name
+				mimeType = firstNonEmpty(item.MimeType, object.MimeType, "application/octet-stream")
+			}
+			isDxf := strings.EqualFold(filepathExt(key), ".dxf") || (!recordMissing && strings.EqualFold(filepathExt(item.Name), ".dxf"))
+			if isDxf {
 				content, readErr := io.ReadAll(reader)
 				if readErr != nil {
 					response.WriteError(writer, http.StatusInternalServerError, "读取 DXF 文件失败")
@@ -222,13 +232,13 @@ func AttachmentResource(repository attachment.Repository, objectStorage storage.
 				}
 				content = normalized
 				writer.Header().Set("Content-Type", "application/dxf")
-				writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(item.Name)))
+				writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(fileName)))
 				writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
 				_, _ = writer.Write(content)
 				return
 			}
-			writer.Header().Set("Content-Type", firstNonEmpty(item.MimeType, object.MimeType, "application/octet-stream"))
-			writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(item.Name)))
+			writer.Header().Set("Content-Type", mimeType)
+			writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(fileName)))
 			writer.Header().Set("Content-Length", fmt.Sprintf("%d", object.Size))
 			_, _ = io.Copy(writer, reader)
 		case http.MethodDelete:

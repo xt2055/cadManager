@@ -4,20 +4,24 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
+import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
-import type { DrawingStatus } from '@/types/domain.types'
+import type { DrawingStatus, StructurePart } from '@/types/domain.types'
 
 defineOptions({ name: 'DrawingLibraryPage' })
 
 const domainStore = useDomainStore()
+const authStore = useAuthStore()
 const router = useRouter()
 const uiStore = useUiStore()
 
 const query = ref('')
 const status = ref<DrawingStatus | ''>('')
+const mode = ref<'drawing' | 'part'>('drawing')
 const attributeFilters = ref<Record<string, string>>({})
 const menuFor = ref<string | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
+const isAdmin = computed(() => authStore.hasRole('admin'))
 
 const activeFilterCount = computed(() => Object.values(attributeFilters.value).filter(Boolean).length)
 
@@ -34,6 +38,40 @@ const activeFiltersList = computed(() => {
       }
     })
     .filter(Boolean) as Array<{ attributeId: string; attributeName: string; fieldName: string }>
+})
+
+function partsForDrawing(drawingNo: string) {
+  return domainStore.structure.filter((part) => part.parentNo === drawingNo)
+}
+
+function partMatchesQuery(part: ReturnType<typeof partsForDrawing>[number], q: string): boolean {
+  const fileNames = (part.files ?? [])
+    .flatMap((file) => [file.name, file.rawName ?? ''])
+  return [part.no, ...fileNames].some((value) => value.toLowerCase().includes(q))
+}
+
+function projectNoForPart(part: StructurePart): string {
+  return part.project || domainStore.drawings.find((drawing) => drawing.no === part.parentNo)?.project || ''
+}
+
+function partFileNames(part: StructurePart): string[] {
+  return [...new Set((part.files ?? []).map((file) => file.name).filter(Boolean))]
+}
+
+function matchesPartSearch(part: StructurePart, q: string): boolean {
+  if (!q) return true
+  return [part.no, part.parentNo, projectNoForPart(part), ...partFileNames(part), ...(part.files ?? []).flatMap((file) => file.rawName || '')]
+    .some((value) => value.toLowerCase().includes(q))
+}
+
+const matchingPartProjects = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return new Set<string>()
+  return new Set(
+    domainStore.structure
+      .filter((part) => partMatchesQuery(part, q))
+      .map((part) => part.parentNo),
+  )
 })
 
 const rows = computed(() => {
@@ -56,7 +94,8 @@ const rows = computed(() => {
       drawing.remark ?? '',
       attributeText,
     ].some((val) => val.toLowerCase().includes(q))
-    if (!matchesQuery) return false
+    const matchesPart = Boolean(q) && partsForDrawing(drawing.no).some((part) => partMatchesQuery(part, q))
+    if (!matchesQuery && !matchesPart) return false
 
     const matchesAttributes = domainStore.sortedAttributes.every((attribute) => {
       const selected = attributeFilters.value[attribute.id]
@@ -66,8 +105,18 @@ const rows = computed(() => {
   })
 })
 
-function partsForDrawing(drawingNo: string) {
-  return domainStore.structure.filter((part) => part.parentNo === drawingNo)
+const partRows = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  const st = status.value
+  return domainStore.structure.filter((part) => {
+    if (domainStore.hiddenList.some((item) => item.no === part.no)) return false
+    if (st && part.status !== st) return false
+    return matchesPartSearch(part, q)
+  })
+})
+
+function isProjectExpanded(drawingNo: string): boolean {
+  return expandedProjects.value.has(drawingNo) || matchingPartProjects.value.has(drawingNo)
 }
 
 function toggleExpanded(drawingNo: string) {
@@ -116,10 +165,11 @@ onMounted(() => {
       <div class="head-left">
         <div class="eyebrow"><DemoIcon name="layers" :size="14" /> 企业图纸资产中心</div>
         <h1>工程图纸库</h1>
-        <p>支持按企业标准化业务属性组合筛选，已收录 {{ rows.length }} 份项目总图</p>
+        <p v-if="mode === 'drawing'">支持按企业标准化业务属性组合筛选，已收录 {{ rows.length }} 份项目总图</p>
+        <p v-else>按文件名、所属图号和项目号检索，已收录 {{ partRows.length }} 个零件</p>
       </div>
       <div class="library-actions">
-        <button class="btn" type="button" @click="router.push({ name: 'admin-attributes' })">
+        <button v-if="isAdmin" class="btn" type="button" @click="router.push({ name: 'admin-attributes' })">
           <DemoIcon name="sliders-horizontal" :size="14" />属性管理
         </button>
         <button class="btn primary" type="button" @click="router.push({ name: 'drawing-create' })">
@@ -129,7 +179,7 @@ onMounted(() => {
     </header>
 
     <!-- 属性筛选面板 -->
-    <section v-if="domainStore.sortedAttributes.length" class="attribute-filter-panel card">
+    <section v-if="mode === 'drawing' && domainStore.sortedAttributes.length" class="attribute-filter-panel card">
       <div class="filter-panel-head">
         <div class="filter-head-title">
           <DemoIcon name="filter" :size="14" />
@@ -177,9 +227,17 @@ onMounted(() => {
     <!-- 图纸列表表格卡片 -->
     <section class="card library-table-card">
       <div class="table-toolbar">
+        <div class="view-mode-switch" role="tablist" aria-label="图纸库模式">
+          <button class="mode-btn" :class="{ active: mode === 'drawing' }" type="button" @click="mode = 'drawing'">
+            <DemoIcon name="layers" :size="13" />总图模式
+          </button>
+          <button class="mode-btn" :class="{ active: mode === 'part' }" type="button" @click="mode = 'part'">
+            <DemoIcon name="file" :size="13" />零件模式
+          </button>
+        </div>
         <label class="search-box">
           <DemoIcon name="search" :size="15" />
-          <input v-model="query" placeholder="搜索图号、名称、项目号、责任单位、属性字段…" />
+          <input v-model="query" :placeholder="mode === 'part' ? '搜索零件文件名、所属图号、项目号…' : '搜索图号、名称、项目号、责任单位、属性字段…'" />
           <button v-if="query" class="clear-search" type="button" @click="query = ''">
             <DemoIcon name="x" :size="12" />
           </button>
@@ -193,7 +251,7 @@ onMounted(() => {
       </div>
 
       <div class="table-scroll">
-        <table class="tbl library-table">
+        <table v-if="mode === 'drawing'" class="tbl library-table">
           <thead>
             <tr>
               <th style="width: 140px;">总图图号</th>
@@ -261,7 +319,7 @@ onMounted(() => {
               </tr>
 
               <!-- 展开的零件清单折叠面板 -->
-              <tr v-if="expandedProjects.has(drawing.no)" class="parts-row">
+              <tr v-if="isProjectExpanded(drawing.no)" class="parts-row">
                 <td colspan="8">
                   <div class="parts-panel">
                     <span class="parts-title">
@@ -292,6 +350,57 @@ onMounted(() => {
                   <DemoIcon name="search-x" :size="36" />
                   <strong>没有找到符合条件的图纸</strong>
                   <span>尝试调整搜索关键词或重置业务属性筛选</span>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <table v-else class="tbl library-table part-library-table">
+          <thead>
+            <tr>
+              <th style="width: 150px;">零件图号</th>
+              <th style="width: 240px;">文件名</th>
+              <th style="width: 150px;">所属图号</th>
+              <th style="width: 140px;">项目号</th>
+              <th>零件名称</th>
+              <th style="width: 90px;">状态</th>
+              <th style="width: 70px;">版本</th>
+              <th style="width: 90px; text-align: center;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="part in partRows" :key="part.no">
+              <td class="mono no-cell">
+                <button class="link drawing-no-link" type="button" @click="openDetail(part.no)">
+                  {{ part.no }}
+                </button>
+              </td>
+              <td>
+                <span v-if="partFileNames(part).length" class="part-file-list">
+                  {{ partFileNames(part).join('、') }}
+                </span>
+                <span v-else class="muted-text">未上传零件图纸</span>
+              </td>
+              <td class="mono">{{ part.parentNo || '—' }}</td>
+              <td class="mono">{{ projectNoForPart(part) || '—' }}</td>
+              <td>
+                <strong>{{ part.name }}</strong>
+                <small v-if="part.remark">{{ part.remark }}</small>
+              </td>
+              <td><span class="tag" :class="STATUS[part.status].c">{{ STATUS[part.status].t }}</span></td>
+              <td class="mono">{{ part.ver }}</td>
+              <td class="row-actions">
+                <button class="btn sm" type="button" @click="openDetail(part.no)">
+                  <DemoIcon name="eye" :size="13" />详情
+                </button>
+              </td>
+            </tr>
+            <tr v-if="!partRows.length">
+              <td colspan="8">
+                <div class="empty-state-view">
+                  <DemoIcon name="search-x" :size="36" />
+                  <strong>没有找到符合条件的零件</strong>
+                  <span>请按零件文件名、所属图号或项目号搜索</span>
                 </div>
               </td>
             </tr>
@@ -530,6 +639,35 @@ onMounted(() => {
   border-bottom: 1px solid var(--line);
 }
 
+.view-mode-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mode-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .search-box {
   display: flex;
   align-items: center;
@@ -570,6 +708,19 @@ onMounted(() => {
   width: 120px;
   height: 32px;
   font-size: 12px;
+}
+
+.part-file-list {
+  display: block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+
+.muted-text {
+  color: var(--text-3);
 }
 
 .table-scroll {

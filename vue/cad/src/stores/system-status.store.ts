@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { useAuthStore } from '@/stores/auth.store'
+import { getApiBaseUrl } from '@/services/api-base.service'
 
 export interface SystemStatusData {
   service: {
@@ -66,7 +67,7 @@ export const useSystemStatusStore = defineStore('systemStatus', () => {
 
   async function fetchStatus(): Promise<void> {
     loading.value = true
-    const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+    const baseUrl = getApiBaseUrl()
     let fetched = false
     try {
       const token = authStore.token || (typeof window !== 'undefined'
@@ -108,7 +109,7 @@ export const useSystemStatusStore = defineStore('systemStatus', () => {
   }
 
   async function heartbeat(): Promise<void> {
-    const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+    const baseUrl = getApiBaseUrl()
     const token = authStore.token || (typeof window !== 'undefined'
       ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
       : null)

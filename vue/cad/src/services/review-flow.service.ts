@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from '@/services/api-base.service'
+
 export type ReviewAccountRole = 'admin' | 'designer' | 'reviewer'
 
 // 节点显示名 → 图纸签署角色。历史数据或自定义流程可能未回填 signerRole，按节点名兜底。
@@ -39,7 +41,7 @@ export interface ReviewFlowDto {
 }
 
 function apiBaseUrl() {
-  return (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  return getApiBaseUrl()
 }
 
 function authHeaders(): Record<string, string> {

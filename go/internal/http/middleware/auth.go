@@ -13,6 +13,9 @@ type contextKey string
 
 const authUserKey contextKey = "auth-user"
 
+// AuthUserContextKey 导出认证用户的 context 键，供测试与内部装配注入已认证用户。
+const AuthUserContextKey = authUserKey
+
 func RequireAuth(service *auth.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

@@ -46,13 +46,27 @@ func TestResolvePartNoTitleBlockOnly(t *testing.T) {
 	}
 }
 
+func TestResolvePartNoNormalizesTitleBlockKeyWhitespace(t *testing.T) {
+	got, source := resolvePartNo("fallback-01(零件).exb", map[string]string{"图纸 编号": "JG1285-250/180-3255%x4070"}, true)
+	if got != "JG1285-250/180-3255%x4070" || source != "titleBlock" {
+		t.Fatalf("resolvePartNo() = %q, %q; want normalized title block value", got, source)
+	}
+}
+
+func TestFallbackPartNoAllowsPercentDimensions(t *testing.T) {
+	got, source := resolvePartNo("JG1285-250-180-3255%x4070(液压缸).exb", nil, false)
+	if got != "JG1285-250-180-3255%x4070" || source != "filename" {
+		t.Fatalf("resolvePartNo() = %q, %q; want complete filename fallback", got, source)
+	}
+}
+
 func TestIsLikelyDrawingNoRejectsDimensions(t *testing.T) {
 	for _, value := range []string{"4-MN-12WD", "0.02", "GB1235-76", "1.2:1"} {
 		if isLikelyDrawingNo(value) {
 			t.Fatalf("isLikelyDrawingNo(%q) = true", value)
 		}
 	}
-	for _, value := range []string{"2000W.02.03E-01-3", "JG9055e-5032-01", "JG9055e-50/32-00"} {
+	for _, value := range []string{"2000W.02.03E-01-3", "JG9055e-5032-01", "JG9055e-50/32-00", "JG1285-250/180-3255%x4070"} {
 		if !isLikelyDrawingNo(value) {
 			t.Fatalf("isLikelyDrawingNo(%q) = false", value)
 		}

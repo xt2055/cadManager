@@ -89,7 +89,12 @@ func Ensure(ctx context.Context, cfg config.SMBConfig) error {
 		log.Printf("[SMB] 成功：共享已创建 \\\\%s\\%s -> %q", cfg.Host, cfg.Share, root)
 	}
 
-	// 访问保障（幂等，每次启动都会校正）：共享权限、防火墙、专用访问账号。
+	// 访问保障（幂等，每次启动都会校正）：NTFS 权限、共享权限、防火墙、专用访问账号。
+	// SMB 生效权限 = 共享权限 ∩ NTFS 权限；缺 NTFS 授权时 cadshare 等账号会被"无法访问"拒绝。
+	if err := ensureNtfsAccess(ctx, root); err != nil {
+		log.Printf("[SMB] 失败：配置工作目录 NTFS 权限失败 err=%v", err)
+		return fmt.Errorf("配置 SMB 工作目录 NTFS 权限失败（请使用管理员权限启动 Go 后端）: %w", err)
+	}
 	if err := ensureShareAccess(ctx, cfg.Share); err != nil {
 		log.Printf("[SMB] 失败：配置共享访问权限失败 err=%v", err)
 		return fmt.Errorf("配置 SMB 共享访问权限失败（请使用管理员权限启动 Go 后端）: %w", err)
@@ -102,6 +107,18 @@ func Ensure(ctx context.Context, cfg config.SMBConfig) error {
 		log.Printf("[SMB] 失败：配置 SMB 访问账号失败 err=%v", err)
 		return fmt.Errorf("配置 SMB 访问账号失败（请使用管理员权限启动 Go 后端）: %w", err)
 	}
+	return nil
+}
+
+// ensureNtfsAccess 保证 Everyone（通用 SID *S-1-1-0，不受系统语言影响）对工作目录
+// 拥有 NTFS 完全控制；内网部署以可用优先，避免桌面等受限目录导致远程访问被拒。
+func ensureNtfsAccess(ctx context.Context, root string) error {
+	log.Printf("[SMB] 检查 NTFS 权限：Everyone (OI)(CI)F path=%q", root)
+	output, err := run(ctx, "icacls", root, "/grant", "*S-1-1-0:(OI)(CI)F", "/T", "/C", "/Q")
+	if err != nil {
+		return fmt.Errorf("授予工作目录 NTFS 权限失败: %w: %s", err, strings.TrimSpace(output))
+	}
+	log.Printf("[SMB] 成功：工作目录 NTFS 权限已就绪")
 	return nil
 }
 
@@ -147,7 +164,16 @@ func ensureAccessAccount(ctx context.Context, cfg config.SMBConfig) error {
 		return nil
 	}
 	if output, err := run(ctx, "net", "user", username); err == nil {
-		log.Printf("[SMB] 成功：访问账号 %q 已存在", username)
+		// 账号已存在时也校正密码，保证 /api/system/smb-access 下发的凭据始终与配置一致；
+		// 否则历史部署残留的旧密码会让客户端写入无效凭据，SMB 访问一直被拒。
+		if strings.TrimSpace(cfg.Password) == "" {
+			log.Printf("[SMB] 成功：访问账号 %q 已存在（未配置 CAD_SMB_PASSWORD，跳过密码校正）", username)
+			return nil
+		}
+		if resetOutput, resetErr := run(ctx, "net", "user", username, cfg.Password); resetErr != nil {
+			return fmt.Errorf("校正访问账号 %q 密码失败（请检查 CAD_SMB_PASSWORD 是否符合密码策略）: %w: %s", username, resetErr, strings.TrimSpace(resetOutput))
+		}
+		log.Printf("[SMB] 成功：访问账号 %q 已存在，密码已按配置校正", username)
 		return nil
 	} else if !isExitError(err) {
 		return fmt.Errorf("检查访问账号 %q 失败: %w: %s", username, err, strings.TrimSpace(output))

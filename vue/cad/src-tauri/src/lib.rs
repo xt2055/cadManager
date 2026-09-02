@@ -26,6 +26,151 @@ fn default_config() -> &'static str {
   "# 图枢运行配置\n# debug_mode = true 时使用本地 JSON 数据；false 时请求正式 API。\ndebug_mode = false\n"
 }
 
+/// 用户手动指定的本机 CAXA 程序路径（进程内共享，优先于自动扫描结果）。
+static CAXA_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+fn set_caxa_override(path: PathBuf) {
+  *CAXA_OVERRIDE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
+}
+
+fn caxa_override() -> Option<PathBuf> {
+  CAXA_OVERRIDE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+}
+
+fn caxa_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  use tauri::Manager;
+
+  let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+  fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+  Ok(data_dir.join("caxa-path.json"))
+}
+
+fn stored_caxa_path(app: &tauri::AppHandle) -> Result<String, String> {
+  let path = caxa_config_path(app)?;
+  if !path.exists() {
+    return Ok(String::new());
+  }
+  let content = fs::read_to_string(&path).map_err(|error| format!("读取 caxa-path.json 失败：{}", error))?;
+  let value: Value = serde_json::from_str(&content).map_err(|error| format!("解析 caxa-path.json 失败：{}", error))?;
+  Ok(value.get("caxaPath").and_then(|item| item.as_str()).unwrap_or("").to_string())
+}
+
+#[tauri::command]
+fn get_local_caxa_path(app: tauri::AppHandle) -> Result<String, String> {
+  stored_caxa_path(&app)
+}
+
+#[tauri::command]
+fn save_local_caxa_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+  let trimmed = path.trim().trim_matches('"').to_string();
+  if trimmed.is_empty() {
+    return Err("请选择 CAXA 程序文件（如 CDRAFT_M.exe）".to_string());
+  }
+  let candidate = PathBuf::from(&trimmed);
+  if !candidate.is_file() {
+    return Err(format!("文件不存在：{}", trimmed));
+  }
+  let config = serde_json::json!({ "caxaPath": trimmed });
+  let config_path = caxa_config_path(&app)?;
+  fs::write(&config_path, format!("{}\n", serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?))
+    .map_err(|error| format!("保存 caxa-path.json 失败：{}", error))?;
+  set_caxa_override(candidate);
+  println!("[CAD] 已记录用户手动指定的 CAXA 路径：{}", trimmed);
+  Ok(())
+}
+
+#[tauri::command]
+fn pick_caxa_executable() -> Result<String, String> {
+  #[cfg(windows)]
+  {
+    match native_open_file_dialog(
+      "请选择 CAXA 程序（CDRAFT_M.exe）",
+      "CAXA 程序 (CDRAFT_M.exe)\0CDRAFT_M.exe\0程序 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0",
+    ) {
+      Some(path) => Ok(path),
+      None => Ok(String::new()),
+    }
+  }
+  #[cfg(not(windows))]
+  {
+    Err("文件选择功能目前仅支持 Windows".to_string())
+  }
+}
+
+/// 弹出原生“打开文件”对话框，返回所选文件路径；用户取消时返回 None。
+#[cfg(windows)]
+fn native_open_file_dialog(title: &str, filter: &str) -> Option<String> {
+  use std::os::windows::ffi::OsStrExt;
+  use windows_sys::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+
+  fn to_wide(value: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+  }
+  let title_wide = to_wide(title);
+  // 文件名过滤器以 \0 分隔、双 \0 结尾；to_wide 已补一个 \0，字面量末尾自带一个。
+  let filter_wide = to_wide(filter);
+  let mut file_buffer = [0u16; 1024];
+  let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+  dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+  dialog.lpstrFilter = filter_wide.as_ptr();
+  dialog.lpstrFile = file_buffer.as_mut_ptr();
+  dialog.nMaxFile = file_buffer.len() as u32;
+  dialog.lpstrTitle = title_wide.as_ptr();
+  dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+  if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
+    return None;
+  }
+  let end = file_buffer.iter().position(|&character| character == 0).unwrap_or(0);
+  if end == 0 {
+    return None;
+  }
+  Some(String::from_utf16_lossy(&file_buffer[..end]))
+}
+
+#[tauri::command]
+fn open_default_apps_settings() -> Result<(), String> {
+  silent_command("cmd")
+    .args(["/C", "start", "", "ms-settings:defaultapps"])
+    .spawn()
+    .map(|_| ())
+    .map_err(|error| format!("打开系统设置失败：{}", error))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiConfig {
+  api_base_url: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiConfigResult {
+  api_base_url: String,
+  path: String,
+}
+
+#[tauri::command]
+fn ensure_api_config(app: tauri::AppHandle, default_api_base_url: String) -> Result<ApiConfigResult, String> {
+  use tauri::Manager;
+
+  let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+  fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+  let path = data_dir.join("api-config.json");
+  if !path.exists() {
+    let config = ApiConfig { api_base_url: default_api_base_url };
+    let content = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
+    fs::write(&path, format!("{}\n", content)).map_err(|error| error.to_string())?;
+  }
+
+  let content = fs::read_to_string(&path).map_err(|error| format!("读取 api-config.json 失败：{}", error))?;
+  let config = serde_json::from_str::<ApiConfig>(&content)
+    .map_err(|error| format!("解析 api-config.json 失败：{}", error))?;
+  Ok(ApiConfigResult {
+    api_base_url: config.api_base_url,
+    path: path.to_string_lossy().into_owned(),
+  })
+}
+
 #[derive(serde::Deserialize)]
 struct EditTicketResponse {
   data: EditTicketData,
@@ -78,7 +223,7 @@ async fn exchange_edit_ticket(api_base_url: &str, access_token: &str, open_url: 
 #[cfg(windows)]
 fn connect_smb_and_open_file(data: &EditTicketData) -> Result<(), String> {
   use std::os::windows::ffi::OsStrExt;
-  use windows_sys::Win32::NetworkManagement::WNet::{WNetAddConnection2W, NETRESOURCEW, RESOURCETYPE_DISK};
+  use windows_sys::Win32::NetworkManagement::WNet::{WNetAddConnection2W, WNetCancelConnection2W, NETRESOURCEW, RESOURCETYPE_DISK};
 
   let smb_root = if data.smb_root.is_empty() {
     data.unc_path.rsplit_once('\\').map(|(root, _)| root.to_string()).unwrap_or_else(|| data.unc_path.clone())
@@ -100,27 +245,19 @@ fn connect_smb_and_open_file(data: &EditTicketData) -> Result<(), String> {
   };
   let username_ptr = if data.smb_username.trim().is_empty() { std::ptr::null() } else { username.as_ptr() };
   let password_ptr = if data.smb_password.is_empty() { std::ptr::null() } else { password.as_ptr() };
-  let result = unsafe { WNetAddConnection2W(&resource, password_ptr, username_ptr, 0) };
+  let mut result = unsafe { WNetAddConnection2W(&resource, password_ptr, username_ptr, 0) };
+  if result == 1219 {
+    // 同一服务器已存在其他凭据的连接（Windows 不允许多凭据并存）：
+    // 强制断开旧的无盘符连接后，用本次票据凭据重连。
+    eprintln!("[CAD] 检测到旧凭据连接（错误码 1219），断开后重连");
+    unsafe { WNetCancelConnection2W(remote_path.as_ptr(), 0, 1) };
+    result = unsafe { WNetAddConnection2W(&resource, password_ptr, username_ptr, 0) };
+  }
   if result != 0 && result != 85 {
     return Err(format!("建立 SMB 连接失败：Windows 错误码 {}", result));
   }
-  let caxa_path = if data.caxa_path.trim().is_empty() {
-    return Err("后端未返回 CAXA 程序路径，请重新启动最新 Go 后端".to_string());
-  } else {
-    PathBuf::from(&data.caxa_path)
-  };
-  if !caxa_path.is_file() {
-    return Err(format!("后端返回的 CAXA 程序不存在：{}", caxa_path.display()));
-  }
-  println!("[CAD] 使用 CAXA 打开文件：{} -> {}", caxa_path.display(), data.unc_path);
-  let mut cmd = std::process::Command::new(&caxa_path);
-  if let Some(parent) = Path::new(&data.unc_path).parent() {
-    cmd.current_dir(parent);
-  }
-  cmd.arg(&data.unc_path)
-    .spawn()
-    .map_err(|error| format!("启动 CAXA 失败：{}", error))?;
-  Ok(())
+  let configured_caxa = (!data.caxa_path.trim().is_empty()).then(|| PathBuf::from(&data.caxa_path));
+  open_cad_file(configured_caxa.as_deref(), Path::new(&data.unc_path), false)
 }
 
 #[cfg(not(windows))]
@@ -151,23 +288,259 @@ struct ReadOnlyOpenData {
   caxa_path: String,
 }
 
-/// 打开只读临时副本：下载到本机临时目录（不占用 SMB 工作区、不建会话、不生成版本），
-/// CAXA 退出后由后台线程销毁整个临时目录，任何修改都不会回传服务器。
+/// Windows 后台辅助命令一律隐藏控制台窗口：否则每秒一次的 attrib 等调用会不停闪黑窗，
+/// 还会抢走系统前台焦点（例如打断用户在资源管理器地址栏的输入）。
 #[cfg(windows)]
-fn open_readonly_and_cleanup(caxa_path: PathBuf, temp_dir: PathBuf, file_path: PathBuf) {
-  let mut cmd = std::process::Command::new(&caxa_path);
-  cmd.current_dir(&temp_dir);
-  let _ = cmd.arg(&file_path).status();
-  // 去掉只读属性后整体销毁，确保不残留任何本地副本。
-  let _ = std::process::Command::new("attrib")
-    .args(["-R", "/S", "/D", &format!("{}\\*.*", temp_dir.display())])
-    .status();
-  let _ = fs::remove_dir_all(&temp_dir);
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn silent_command(program: &str) -> std::process::Command {
+  use std::os::windows::process::CommandExt;
+  let mut command = std::process::Command::new(program);
+  command.creation_flags(CREATE_NO_WINDOW);
+  command
 }
 
-#[cfg(not(windows))]
-fn open_readonly_and_cleanup(_caxa_path: PathBuf, temp_dir: PathBuf, _file_path: PathBuf) {
-  let _ = fs::remove_dir_all(&temp_dir);
+/// 只读副本生命周期：等待 CAXA 打开文件 → 恢复只读提示属性 → CAXA 退出后销毁整个临时目录。
+#[cfg(windows)]
+fn cleanup_readonly_dir(temp_dir: PathBuf, file_path: PathBuf) {
+  // 1. 等待 CAXA 打开工作文件（最多 120 秒）：文件被写占用即视为已成功打开。
+  let mut opened = false;
+  for _ in 0..240 {
+    if file_write_locked(&file_path) {
+      opened = true;
+      break;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+  }
+  if !opened {
+    // CAXA 始终未打开（启动失败/用户取消），直接销毁副本，不留本地残留。
+    let _ = silent_command("attrib")
+      .args(["-R", "/S", "/D", &format!("{}\\*.*", temp_dir.display())])
+      .status();
+    if fs::remove_dir_all(&temp_dir).is_err() {
+      eprintln!("[CAD] 临时目录清理失败（可能仍被占用）：{}", temp_dir.display());
+    }
+    return;
+  }
+  // 2. 恢复只读属性，提示（不阻止）CAD 覆盖保存；对已打开的句柄无影响。
+  let _ = silent_command("attrib")
+    .args(["+R", file_path.to_str().unwrap_or_default()])
+    .status();
+  // 3. CAXA 退出（文件解锁）后销毁整个目录；只读属性已清除，删除失败时静默重试最多 120 秒。
+  for _ in 0..120 {
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    if fs::remove_dir_all(&temp_dir).is_ok() {
+      return;
+    }
+  }
+  eprintln!("[CAD] 临时目录清理失败（可能仍被占用）：{}", temp_dir.display());
+}
+
+/// 尝试以可写方式打开文件：被占用（如 CAXA 独占打开）时返回 true。
+#[cfg(windows)]
+fn file_write_locked(path: &Path) -> bool {
+  if !path.is_file() {
+    return false;
+  }
+  std::fs::OpenOptions::new().append(true).open(path).is_err()
+}
+
+#[cfg(windows)]
+fn open_cad_file(caxa_path: Option<&Path>, file_path: &Path, wait: bool) -> Result<(), String> {
+  // 候选顺序：服务器提示路径（本机存在时）→ 客户端本机扫描结果。
+  let mut candidates: Vec<PathBuf> = Vec::new();
+  if let Some(path) = caxa_path.filter(|path| path.is_file()) {
+    candidates.push(path.to_path_buf());
+  }
+  if let Some(local) = find_local_caxa() {
+    if !candidates.iter().any(|item| item == &local) {
+      candidates.push(local);
+    }
+  }
+  for candidate in &candidates {
+    println!("[CAD] 使用本机 CAXA 打开文件：{} -> {}", candidate.display(), file_path.display());
+    let mut command = std::process::Command::new(candidate);
+    if let Some(parent) = file_path.parent() {
+      command.current_dir(parent);
+    }
+    let result = if wait {
+      command.arg(file_path).status().map(|_| ())
+    } else {
+      command.arg(file_path).spawn().map(|_| ())
+    };
+    match result {
+      Ok(()) => return Ok(()),
+      Err(error) => eprintln!("[CAD] 直接启动失败，尝试下一方式：{}（{}）", candidate.display(), error),
+    }
+  }
+
+  // 与资源管理器地址栏回车完全等价：交给系统文件关联，无 cmd 解析风险。
+  println!("[CAD] 使用 Windows 文件关联打开图纸：{}", file_path.display());
+  open_with_shell_execute(file_path, wait)
+}
+
+#[cfg(windows)]
+fn open_with_shell_execute(file_path: &Path, wait: bool) -> Result<(), String> {
+  use std::os::windows::ffi::OsStrExt;
+  use windows_sys::Win32::Foundation::CloseHandle;
+  use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+  use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+
+  fn to_wide(value: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+  }
+
+  let file = to_wide(&file_path.to_string_lossy());
+  let verb = to_wide("open");
+  let mut exec_info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+  exec_info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+  exec_info.fMask = if wait { SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI } else { SEE_MASK_FLAG_NO_UI };
+  exec_info.lpVerb = verb.as_ptr();
+  exec_info.lpFile = file.as_ptr();
+  exec_info.nShow = 1; // SW_SHOWNORMAL
+  let started = unsafe { ShellExecuteExW(&mut exec_info) };
+  if started == 0 {
+    // CAXA_NOT_FOUND 前缀：前端据此弹出“未找到本机 CAD”操作弹窗，而不是一闪而过的提示。
+    return Err(format!(
+      "CAXA_NOT_FOUND:本机未找到 CAXA 程序，且系统未配置图纸文件关联（文件：{}）。可在弹窗中选择 CAXA 程序或配置默认打开方式",
+      file_path.display()
+    ));
+  }
+  if wait && !exec_info.hProcess.is_null() {
+    // DDE/代理启动时句柄可能为空，此时由只读清理线程的重试逻辑兜底。
+    unsafe {
+      WaitForSingleObject(exec_info.hProcess, INFINITE);
+      CloseHandle(exec_info.hProcess);
+    }
+  }
+  Ok(())
+}
+
+/// 客户端自行寻找本机 CAXA（与服务端互不干扰）：优先用户手动指定的路径，其次自动扫描（进程内缓存）。
+#[cfg(windows)]
+fn find_local_caxa() -> Option<PathBuf> {
+  if let Some(path) = caxa_override() {
+    if path.is_file() {
+      return Some(path);
+    }
+    eprintln!("[CAD] 手动指定的 CAXA 路径已失效：{}，改用自动扫描", path.display());
+  }
+  static CACHE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+  CACHE
+    .get_or_init(|| {
+      let best = scan_local_caxa().into_iter().next();
+      match &best {
+        Some(path) => println!("[CAD] 本机扫描到 CAXA：{}", path.display()),
+        None => println!("[CAD] 本机未扫描到 CAXA，将按 Windows 文件关联打开"),
+      }
+      best
+    })
+    .clone()
+}
+
+/// 本机扫描 CAXA 安装（注册表 Uninstall 键 + 常见目录），按版本号新→旧排序。
+#[cfg(windows)]
+fn scan_local_caxa() -> Vec<PathBuf> {
+  let mut matches: Vec<PathBuf> = Vec::new();
+
+  for root in [
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+    r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+  ] {
+    let Ok(output) = silent_command("reg").args(["query", root, "/s", "/f", "CAXA", "/d"]).output() else {
+      continue;
+    };
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    for line in text.lines().map(str::trim).filter(|line| line.starts_with("HKEY_")) {
+      let Ok(detail) = silent_command("reg").args(["query", line, "/v", "InstallLocation"]).output() else {
+        continue;
+      };
+      let install_dir = extract_reg_string(&String::from_utf8_lossy(&detail.stdout));
+      if install_dir.is_empty() {
+        continue;
+      }
+      matches.extend(glob_caxa_bin(Path::new(&install_dir)));
+    }
+  }
+
+  let mut roots: Vec<PathBuf> = Vec::new();
+  for variable in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+    if let Ok(value) = std::env::var(variable) {
+      roots.push(PathBuf::from(value));
+    }
+  }
+  for drive in ["C", "D", "E", "F"] {
+    roots.push(PathBuf::from(format!("{drive}:")));
+  }
+  for root in roots {
+    let caxa_root = root.join("CAXA");
+    if caxa_root.is_dir() {
+      matches.extend(glob_caxa_bin(&caxa_root));
+    }
+  }
+
+  matches.sort_by_key(|path| std::cmp::Reverse(numeric_segments(path)));
+  matches.dedup();
+  matches
+}
+
+/// 递归查找安装目录下 Bin64\CDRAFT_M.exe 或 Bin\CDRAFT_M.exe（最多深入 3 层）。
+#[cfg(windows)]
+fn glob_caxa_bin(install_dir: &Path) -> Vec<PathBuf> {
+  fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+    for bin in ["Bin64", "Bin"] {
+      let candidate = dir.join(bin).join("CDRAFT_M.exe");
+      if candidate.is_file() {
+        found.push(candidate);
+      }
+    }
+    if depth == 0 {
+      return;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+      for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+          walk(&path, depth - 1, found);
+        }
+      }
+    }
+  }
+  let mut found = Vec::new();
+  walk(install_dir, 3, &mut found);
+  found
+}
+
+/// 从 reg query 输出提取 REG_SZ 字符串值。
+#[cfg(windows)]
+fn extract_reg_string(output: &str) -> String {
+  for line in output.lines() {
+    if let Some(index) = line.find("REG_SZ") {
+      return line[index + "REG_SZ".len()..].trim().to_string();
+    }
+  }
+  String::new()
+}
+
+/// 提取路径中的数字段用于比较版本新旧（如 ...\CAXA CAD\2022\Bin64 -> [2022, 64]）。
+#[cfg(windows)]
+fn numeric_segments(path: &Path) -> Vec<u64> {
+  let mut segments: Vec<u64> = Vec::new();
+  let mut current = String::new();
+  for character in path.to_string_lossy().chars() {
+    if character.is_ascii_digit() {
+      current.push(character);
+    } else if !current.is_empty() {
+      segments.push(current.parse().unwrap_or(0));
+      current.clear();
+    }
+  }
+  if !current.is_empty() {
+    segments.push(current.parse().unwrap_or(0));
+  }
+  segments
 }
 
 #[tauri::command]
@@ -192,13 +565,6 @@ async fn open_cad_readonly(api_base_url: String, access_token: String, storage_k
     .await
     .map_err(|error| format!("解析只读打开信息失败：{}", error))?
     .data;
-  if data.caxa_path.trim().is_empty() {
-    return Err("未找到可用的 CAXA 程序，请在服务器配置 CAD_CAXA_BIN".to_string());
-  }
-  let caxa_path = PathBuf::from(&data.caxa_path);
-  if !caxa_path.is_file() {
-    return Err(format!("CAXA 程序不存在：{}", data.caxa_path));
-  }
   let file_url = format!("{}{}", base, data.download_path);
   let file_response = reqwest::Client::new()
     .get(file_url)
@@ -224,13 +590,12 @@ async fn open_cad_readonly(api_base_url: String, access_token: String, storage_k
     let mut file = fs::File::create(&file_path).map_err(|error| format!("写入临时文件失败：{}", error))?;
     file.write_all(&bytes).map_err(|error| format!("写入临时文件失败：{}", error))?;
   }
-  // 设只读属性，提示（不阻止）CAD 覆盖保存；退出后整个目录会被销毁。
-  let _ = std::process::Command::new("attrib")
-    .args(["+R", file_path.to_str().unwrap_or_default()])
-    .status();
-  let caxa_clone = caxa_path.clone();
-  std::thread::spawn(move || open_readonly_and_cleanup(caxa_clone, temp_dir, file_path));
-  Ok(())
+  let caxa_path = (!data.caxa_path.trim().is_empty()).then(|| PathBuf::from(&data.caxa_path));
+  // 同步打开：本机找不到 CAXA 时把错误返回给前端（弹操作弹窗），不再“提示成功却没打开”。
+  let open_result = open_cad_file(caxa_path.as_deref(), &file_path, false);
+  // 清理必须等 CAXA 真正打开文件之后才开始：启动中就删除会让 CAXA 打开已消失的文件（报格式错误）。
+  std::thread::spawn(move || cleanup_readonly_dir(temp_dir, file_path));
+  open_result
 }
 
 #[tauri::command]
@@ -240,7 +605,7 @@ fn ensure_smb_credential(host: String, username: String, password: String) -> Re
     if host.trim().is_empty() || username.trim().is_empty() {
       return Err("服务器未配置 SMB 主机或访问账号".to_string());
     }
-    let output = std::process::Command::new("cmdkey")
+    let output = silent_command("cmdkey")
       .args([
         format!("/add:{}", host.trim()),
         format!("/user:{}", username.trim()),
@@ -405,7 +770,7 @@ fn open_generated_excel(app: tauri::AppHandle, file_name: String, bytes: Vec<u8>
   fs::create_dir_all(&downloads_dir).map_err(|error| error.to_string())?;
   let path = downloads_dir.join(file_name);
   fs::write(&path, bytes).map_err(|error| error.to_string())?;
-  std::process::Command::new("cmd")
+  silent_command("cmd")
     .args(["/C", "start", "", &path.to_string_lossy()])
     .spawn()
     .map_err(|error| error.to_string())?;
@@ -458,6 +823,11 @@ pub fn run() {
       open_cad_edit_session,
       open_cad_readonly,
       ensure_smb_credential,
+      get_local_caxa_path,
+      save_local_caxa_path,
+      pick_caxa_executable,
+      open_default_apps_settings,
+      ensure_api_config,
       read_debug_mode,
       write_debug_mode
     ])
@@ -504,6 +874,12 @@ pub fn run() {
         )?;
       }
       ensure_config_file(app.handle())?;
+      // 启动时恢复用户手动指定的 CAXA 路径（保存于 caxa-path.json）。
+      if let Ok(path) = stored_caxa_path(app.handle()) {
+        if !path.trim().is_empty() {
+          set_caxa_override(PathBuf::from(path));
+        }
+      }
       Ok(())
     })
     .run(tauri::generate_context!())

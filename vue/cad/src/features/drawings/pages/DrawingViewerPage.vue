@@ -7,6 +7,7 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 // import CadVectorViewer from '@/features/drawings/detail-tabs/preview/CadVectorViewer.vue'
 import MlightCadViewer from '@/features/drawings/detail-tabs/preview/MlightCadViewer.vue'
 import { useDomainStore } from '@/stores/domain.store'
+import { getApiBaseUrl } from '@/services/api-base.service'
 import type { DrawingFile } from '@/types/domain.types'
 
 defineOptions({
@@ -92,7 +93,7 @@ async function loadTargetFile() {
       // if (file.partNo) params.set('partNo', file.partNo)
       // params.set('fileName', file.name)
       // params.set('_t', String(Date.now()))
-      const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+       const baseUrl = getApiBaseUrl()
       // 已废弃：Canvas 渲染需要的 DXF 预览接口不再由前端调用。
       // cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
       if (file.storageKey) {

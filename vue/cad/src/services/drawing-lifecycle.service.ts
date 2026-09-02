@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from '@/services/api-base.service'
+
 export interface ApiDrawingLifecycle {
   id: string
   no: string
@@ -6,7 +8,7 @@ export interface ApiDrawingLifecycle {
 }
 
 function apiBaseUrl() {
-  return (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  return getApiBaseUrl()
 }
 
 function authHeaders(): Record<string, string> {

@@ -8,6 +8,7 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import { windowService } from '@/services/tauri/window.service'
+import { getApiBaseUrl } from '@/services/api-base.service'
 import type { DrawingFile } from '@/types/domain.types'
 import { assertCadWorkerAssets, getCadWorkerUrls } from '../detail-tabs/preview/cad-worker-assets'
 import { findWipeoutMasks } from '../detail-tabs/preview/cad-entity-filters'
@@ -103,7 +104,7 @@ async function loadTargetFile() {
     if (isCad && file.storageKey) {
       try {
         const token = getAccessToken()
-        const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+        const baseUrl = getApiBaseUrl()
         const cacheBuster = Date.now()
         const response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(file.storageKey)}&_t=${cacheBuster}`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -236,7 +237,7 @@ async function exportAsExb() {
     }
 
     const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
-    const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+    const baseUrl = getApiBaseUrl()
     const downloadUrl = `${baseUrl}/exb/convert?storageKey=${encodeURIComponent(targetFile.value.storageKey)}&download=true`
 
     const response = await fetch(downloadUrl, {
@@ -281,7 +282,7 @@ async function convertDxfToDwgOnServer(dxfBlob: Blob, baseName: string): Promise
   const formData = new FormData()
   formData.append('file', dxfBlob, `${baseName}.dxf`)
   const token = getAccessToken()
-  const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}/cad/convert-dwg`, {
     method: 'POST',
     headers: {

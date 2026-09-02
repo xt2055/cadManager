@@ -1942,18 +1942,36 @@ export const useDomainStore = defineStore('domain', () => {
     }
 
     const name = payload.name.trim()
+    const nextPartNo = payload.partNo?.trim() || part.no
     const material = payload.material.trim()
     const spec = payload.spec.trim()
     const surfaceTreatment = payload.surfaceTreatment.trim()
     const vendor = payload.vendor?.trim() || undefined
     const remark = payload.remark?.trim() || undefined
     if (!name) throw new Error('请输入零件名称')
+    if (!nextPartNo) throw new Error('请输入零件图号')
+    if (nextPartNo !== part.no && structure.value.some((item) => item !== part && item.no === nextPartNo)) {
+      throw new Error(`零件编号已存在：${nextPartNo}`)
+    }
     if (!material) throw new Error('请输入材料牌号')
     if (!Number.isFinite(payload.qty) || payload.qty <= 0) throw new Error('装配数量必须大于 0')
     if (!Number.isFinite(payload.weight) || payload.weight < 0) throw new Error('理论重量不能小于 0')
 
     const original = { ...part }
+    const originalStructure = structure.value.map((candidate) => ({
+      candidate,
+      parentNo: candidate.parentNo,
+      files: candidate.files ? [...candidate.files] : undefined,
+      otherFiles: candidate.otherFiles ? [...candidate.otherFiles] : undefined,
+    }))
+    const originalDrawings = drawings.value.map((drawing) => ({
+      drawing,
+      files: drawing.files ? [...drawing.files] : undefined,
+      otherFiles: drawing.otherFiles ? [...drawing.otherFiles] : undefined,
+    }))
+    const originalPartNo = part.no
     Object.assign(part, {
+      no: nextPartNo,
       name,
       material,
       spec,
@@ -1966,18 +1984,45 @@ export const useDomainStore = defineStore('domain', () => {
     })
 
     const activityLog = recordActivity({
-      drawingNo: partNo,
+      drawingNo: nextPartNo,
       drawingName: part.name,
       targetType: 'part',
       act: 'edit',
-      text: `更新零件图 <b>${partNo}</b> 属性：材料 ${material} · 规格 ${spec || '未填写'} · 数量 ×${payload.qty}`,
-      detail: { changedFields: payload },
+      text: `更新零件图 <b>${nextPartNo}</b> 属性：材料 ${material} · 规格 ${spec || '未填写'} · 数量 ×${payload.qty}`,
+      detail: { changedFields: payload, ...(originalPartNo !== nextPartNo ? { oldPartNo: originalPartNo, newPartNo: nextPartNo } : {}) },
     })
+
+    if (originalPartNo !== nextPartNo) {
+      const parentNo = directParentDrawingNo(nextPartNo)
+      if (parentNo && (drawings.value.some((item) => item.no === parentNo) || structure.value.some((item) => item.no === parentNo))) {
+        part.parentNo = parentNo
+      }
+      for (const candidate of structure.value) {
+        if (candidate !== part && candidate.parentNo === originalPartNo) candidate.parentNo = nextPartNo
+      }
+      for (const drawing of drawings.value) {
+        drawing.files = (drawing.files ?? []).map((file) => file.partNo === originalPartNo ? { ...file, partNo: nextPartNo } : file)
+        drawing.otherFiles = (drawing.otherFiles ?? []).map((file) => file.partNo === originalPartNo ? { ...file, partNo: nextPartNo } : file)
+      }
+      for (const candidate of structure.value) {
+        candidate.files = (candidate.files ?? []).map((file) => file.partNo === originalPartNo ? { ...file, partNo: nextPartNo } : file)
+        candidate.otherFiles = (candidate.otherFiles ?? []).map((file) => file.partNo === originalPartNo ? { ...file, partNo: nextPartNo } : file)
+      }
+    }
 
     try {
       await persist()
     } catch (saveError) {
       Object.assign(part, original)
+      for (const snapshot of originalStructure) {
+        snapshot.candidate.parentNo = snapshot.parentNo
+        snapshot.candidate.files = snapshot.files
+        snapshot.candidate.otherFiles = snapshot.otherFiles
+      }
+      for (const snapshot of originalDrawings) {
+        snapshot.drawing.files = snapshot.files
+        snapshot.drawing.otherFiles = snapshot.otherFiles
+      }
       logs.value = logs.value.filter((item) => item.id !== activityLog.id)
       throw saveError
     }

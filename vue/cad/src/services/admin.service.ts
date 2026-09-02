@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from '@/services/api-base.service'
+
 export interface SystemLogLine {
   time: string
   level: string
@@ -45,10 +47,8 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return headers
 }
 
-const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
-
 async function request<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, init)
+  const response = await fetch(`${getApiBaseUrl()}${path}`, init)
   if (response.status === 403) throw new Error('需要管理员权限')
   const body: unknown = await response.json().catch(() => ({}))
   const data = unwrap<T>(body)
@@ -69,7 +69,7 @@ export async function fetchSystemLogFiles(): Promise<SystemLogFile[]> {
 }
 
 export function systemLogDownloadUrl(file: string): string {
-  return `${baseUrl}/system/logs/download?file=${encodeURIComponent(file)}`
+  return `${getApiBaseUrl()}/system/logs/download?file=${encodeURIComponent(file)}`
 }
 
 export async function fetchUpdateList(): Promise<UpdateRecord[]> {
@@ -97,5 +97,5 @@ export async function deleteUpdatePackage(id: string): Promise<void> {
 }
 
 export function updatePackageDownloadUrl(record: UpdateRecord): string {
-  return record.downloadUrl ? `${baseUrl}${record.downloadUrl}` : ''
+  return record.downloadUrl ? `${getApiBaseUrl()}${record.downloadUrl}` : ''
 }

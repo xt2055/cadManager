@@ -1,4 +1,5 @@
 import type { AuthProvider, AuthResult, AuthUser, LoginRequest, StoredAuthSession } from '@/features/auth/types/auth.types'
+import { getApiBaseUrl } from '@/services/api-base.service'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -7,7 +8,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class ApiAuthProvider implements AuthProvider {
   private readonly baseUrl: string
 
-  constructor(baseUrl = import.meta.env.VITE_API_BASE_URL || '/api') {
+  constructor(baseUrl = getApiBaseUrl()) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 

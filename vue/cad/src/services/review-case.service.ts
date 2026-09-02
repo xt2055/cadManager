@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from '@/services/api-base.service'
+
 export interface ApiReviewCaseNode {
   name: string
   assignedUserId?: string
@@ -36,7 +38,7 @@ export interface ApiCompletedAction {
 }
 
 function apiBaseUrl() {
-  return (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  return getApiBaseUrl()
 }
 
 function authHeaders(): Record<string, string> {

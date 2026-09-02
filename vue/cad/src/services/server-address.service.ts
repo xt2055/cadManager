@@ -1,8 +1,11 @@
-// 服务器地址管理（仅用于客户端更新检查）：内网服务器 IP 可能变化，
-// 用户可输入服务器地址用于寻找更新；业务请求不受影响，仍走编译期配置。
+import { getApiBaseUrl } from '@/services/api-base.service'
+
+// 服务器地址管理：更新服务器地址仍可单独记忆；业务请求统一由 api-config.json 决定。
 
 const STORAGE_KEY = 'cad:server-base:v1'
-const DEFAULT_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+function defaultBaseUrl(): string {
+  return getApiBaseUrl()
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -29,9 +32,9 @@ export function normalizeServerInput(input: string): string {
 
 /** 更新检查使用的基地址（记住的服务器地址优先，其次编译期默认值） */
 export function getUpdateBaseUrl(): string {
-  if (typeof window === 'undefined') return DEFAULT_BASE_URL
+  if (typeof window === 'undefined') return defaultBaseUrl()
   const saved = window.localStorage.getItem(STORAGE_KEY)
-  return saved && saved.trim() ? saved.trim() : DEFAULT_BASE_URL
+  return saved && saved.trim() ? saved.trim() : defaultBaseUrl()
 }
 
 /** 是否已记住自定义更新服务器地址 */

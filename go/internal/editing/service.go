@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,7 @@ type Service struct {
 	attachments attachment.Repository
 	storage     storage.ObjectStorage
 	converter   *converter.Service
+	caxaBin     string
 	versions    interface {
 		CapturePath(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error)
 	}
@@ -53,10 +55,15 @@ type Service struct {
 }
 
 func NewService(sessionRepository Repository, attachmentRepository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service, smbConfig config.SMBConfig) *Service {
+	var caxaBin string
+	if convService != nil {
+		caxaBin = convService.CaxaBin()
+	}
 	return &Service{
 		attachments: attachmentRepository,
 		storage:     objectStorage,
 		converter:   convService,
+		caxaBin:     caxaBin,
 		repository:  sessionRepository,
 		cfg:         smbConfig,
 	}
@@ -305,16 +312,28 @@ func (service *Service) ReadOnlyOpen(ctx context.Context, user auth.AuthUser, st
 			actualStorageKey = item.StorageKey
 		}
 	}
-	caxaPath, caxaErr := converter.ResolveCaxaPath("")
+	// 只读打开同样仅提供可选提示；客户端负责在本机寻找 CAXA 或按文件关联启动。
+	caxaPath, caxaErr := converter.ResolveCaxaPath(service.caxaBin)
 	if caxaErr != nil {
+		log.Printf("[编辑会话] 只读打开未找到服务器 CAXA，交由客户端启动: %v", caxaErr)
 		caxaPath = ""
 	}
 	return ReadOnlyOpenResult{
 		// 相对 API 前缀的路径（客户端 apiBase 已含 /api，直接拼接）。
-		DownloadPath: "/attachments/" + actualStorageKey,
+		// 存储键可能含 %、括号、中文（如 3255%x4070），必须按路径段转义，否则 %x4 被当作 URL 转义序列。
+		DownloadPath: "/attachments/" + encodeAttachmentKeyPath(actualStorageKey),
 		FileName:     filepath.Base(actualStorageKey),
 		CaxaPath:     caxaPath,
 	}, nil
+}
+
+// encodeAttachmentKeyPath 按路径段转义存储键，保证含 %、空格、中文等字符的 key 能原样到达服务端。
+func encodeAttachmentKeyPath(key string) string {
+	segments := strings.Split(strings.ReplaceAll(key, "\\", "/"), "/")
+	for index, segment := range segments {
+		segments[index] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }
 
 func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTicket string) (ExchangeResult, error) {	if service.repository == nil {
@@ -329,9 +348,12 @@ func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTi
 	if err != nil {
 		return ExchangeResult{}, err
 	}
-	caxaPath, err := converter.ResolveCaxaPath("")
-	if err != nil {
-		return ExchangeResult{}, err
+	// CAXA 由客户端在本机查找或按文件关联启动，与服务端互不干扰；
+	// 这里仅按 .env 的 CAD_CAXA_BIN 提供可选提示，找不到时返回空路径，不阻塞交换。
+	caxaPath, caxaErr := converter.ResolveCaxaPath(service.caxaBin)
+	if caxaErr != nil {
+		log.Printf("[编辑会话] 服务器未找到 CAXA，交由客户端按文件关联启动: %v", caxaErr)
+		caxaPath = ""
 	}
 
 	actualStorageKey := item.StorageKey

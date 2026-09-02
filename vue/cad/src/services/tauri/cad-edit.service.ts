@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
+import { getApiBaseUrl } from '@/services/api-base.service'
 
 export interface NativeEditOpenPayload {
   sessionId: string
@@ -12,7 +13,7 @@ export async function openCadEditSession(payload: NativeEditOpenPayload): Promis
     throw new Error('当前不是桌面客户端，已复制打开链接，请在图枢客户端中使用')
   }
   const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
-  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  const apiBaseUrl = getApiBaseUrl()
   await invoke('open_cad_edit_session', {
     apiBaseUrl,
     accessToken,
@@ -30,7 +31,7 @@ export async function openCadReadonly(payload: ReadonlyOpenPayload): Promise<voi
     throw new Error('本地查看需要在图枢桌面客户端中使用')
   }
   const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
-  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  const apiBaseUrl = getApiBaseUrl()
   await invoke('open_cad_readonly', {
     apiBaseUrl,
     accessToken,
@@ -55,7 +56,7 @@ export async function ensureSmbCredential(): Promise<void> {
   if (!isTauri()) return
   const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
   if (!accessToken) return
-  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  const apiBaseUrl = getApiBaseUrl()
   const response = await fetch(`${apiBaseUrl}/system/smb-access`, {
     headers: { Accept: 'application/json', Authorization: `Bearer ${accessToken}` },
     credentials: 'include',
@@ -69,4 +70,27 @@ export async function ensureSmbCredential(): Promise<void> {
     username: info.username,
     password: info.password,
   })
+}
+
+/** Rust 端约定：本机找不到 CAXA 且文件关联失败时，错误消息以此为前缀。 */
+export const CAXA_NOT_FOUND_PREFIX = 'CAXA_NOT_FOUND:'
+
+/** 弹出原生文件选择框，让用户手动指定 CAXA 程序（CDRAFT_M.exe）；取消返回空串。 */
+export async function pickCaxaExecutable(): Promise<string> {
+  return invoke<string>('pick_caxa_executable')
+}
+
+/** 保存用户手动指定的 CAXA 路径（持久化到 caxa-path.json，后续打开优先使用）。 */
+export async function saveLocalCaxaPath(path: string): Promise<void> {
+  await invoke('save_local_caxa_path', { path })
+}
+
+/** 读取已保存的手动 CAXA 路径（未设置时返回空串）。 */
+export async function getLocalCaxaPath(): Promise<string> {
+  return invoke<string>('get_local_caxa_path')
+}
+
+/** 打开 Windows「默认应用」设置页，便于用户为图纸扩展名配置打开方式。 */
+export async function openDefaultAppsSettings(): Promise<void> {
+  await invoke('open_default_apps_settings')
 }

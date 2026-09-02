@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from '@/services/api-base.service'
+
 // CAD 字体库基地址：优先使用 Tauri 内嵌资源（完全离线可用），
 // 探测失败时回退到后端静态伺服地址。
 // 注意：@mlightcad/cad-simple-viewer 期望 baseUrl 指向 cad-data 根目录
@@ -12,7 +14,7 @@ export function cadFontsBaseUrl(): string {
 }
 
 function serverCadDataBaseUrl(): string {
-  const api = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  const api = getApiBaseUrl()
   const root = api.replace(/\/api$/, '')
   return `${root}/cad-data/`
 }

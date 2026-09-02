@@ -189,7 +189,9 @@ export type PartManufacturingType = '自制件' | '外协件' | '标准件' | '�
 export type StructurePartEditable = Pick<
   StructurePart,
   'name' | 'material' | 'spec' | 'weight' | 'surfaceTreatment' | 'partType' | 'qty' | 'vendor' | 'remark'
->
+> & {
+  partNo?: string
+}
 
 export type SignerAssignments = Partial<Record<keyof DrawingSigners, string>>
 

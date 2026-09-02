@@ -87,6 +87,12 @@ func NewService(repo attachment.Repository, objStorage storage.ObjectStorage, to
 	}
 }
 
+// CaxaBin 返回 .env 配置的 CAXA 程序路径（可能为空），供编辑会话向客户端
+// 提供可选提示；客户端启动 CAXA 与服务端无关，不会因此阻塞。
+func (s *Service) CaxaBin() string {
+	return s.caxaBin
+}
+
 func (s *Service) Start(ctx context.Context) {
 	log.Println("[CAD Converter] 转换服务已启动...")
 	go s.workerLoop(ctx)
@@ -253,6 +259,7 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 
 		doneFile := tempDwg + ".done"
 		success := false
+		nudged := false
 		for i := 0; i < 120; i++ {
 			time.Sleep(500 * time.Millisecond)
 			if _, err := os.Stat(doneFile); err == nil {
@@ -261,6 +268,11 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 					success = true
 				}
 				break
+			}
+			// CAXA 已启动但停在空界面时插件不消费任务：10 秒后补开一次哨兵图纸激活插件。
+			if !nudged && i == 20 {
+				nudged = true
+				s.nudgeSentinel(ctx)
 			}
 		}
 
@@ -412,6 +424,7 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 	}
 
 	doneFile := outputPath + ".done"
+	nudged := false
 	for i := 0; i < 180; i++ {
 		select {
 		case <-ctx.Done():
@@ -425,6 +438,11 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 				return nil
 			}
 			return errors.New("CAXA 转换任务失败")
+		}
+		// CAXA 已启动但停在空界面时插件不消费任务：10 秒后补开一次哨兵图纸激活插件。
+		if !nudged && i == 20 {
+			nudged = true
+			s.nudgeSentinel(ctx)
 		}
 	}
 	return errors.New("CAXA 转换任务超时")
@@ -524,8 +542,18 @@ func (s *Service) ensureCaxaRunning(ctx context.Context) error {
 	}
 
 	log.Printf("[CAD Converter] CAXA 未运行，正在自动启动: %s", binPath)
-	if err := exec.Command(binPath).Start(); err != nil {
-		return fmt.Errorf("启动 CAXA 失败: %w", err)
+	// CAXA 插件只在打开图纸后才消费转换任务文件，启动时必须同时打开一张哨兵图纸，
+	// 否则任务会一直无人处理，直到 60 秒转换超时。
+	sentinel := s.ensureSentinelDrawing(ctx)
+	var startErr error
+	if sentinel != "" {
+		log.Printf("[CAD Converter] 随 CAXA 打开哨兵图纸以激活转换插件: %s", sentinel)
+		startErr = exec.Command(binPath, sentinel).Start()
+	} else {
+		startErr = exec.Command(binPath).Start()
+	}
+	if startErr != nil {
+		return fmt.Errorf("启动 CAXA 失败: %w", startErr)
 	}
 
 	deadline := time.NewTimer(15 * time.Second)
@@ -547,8 +575,85 @@ func (s *Service) ensureCaxaRunning(ctx context.Context) error {
 	}
 }
 
-func resolveToolPath(configured, name string) (string, error) {
-	if strings.TrimSpace(configured) != "" {
+// ensureSentinelDrawing 从对象存储挑一个最小的 DWG（无 DWG 则 EXB）复制为哨兵图纸，
+// 供自动启动 CAXA 时打开以激活转换插件。文件缓存在临时目录，可重复使用。
+func (s *Service) ensureSentinelDrawing(ctx context.Context) string {
+	for _, ext := range []string{".dwg", ".exb"} {
+		sentinel := filepath.Join(os.TempDir(), "caxa_sentinel"+ext)
+		if info, err := os.Stat(sentinel); err == nil && info.Size() > 0 {
+			return sentinel
+		}
+	}
+
+	list, err := s.repo.ListAllCad(ctx)
+	if err != nil || len(list) == 0 {
+		return ""
+	}
+	var best attachment.Attachment
+	found := false
+	for _, ext := range []string{".dwg", ".exb"} {
+		for _, att := range list {
+			attExt := filepathExt(att.StorageKey)
+			if attExt == "" {
+				attExt = filepathExt(att.Name)
+			}
+			if !strings.EqualFold(attExt, ext) {
+				continue
+			}
+			if !found || att.Size < best.Size {
+				best = att
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		return ""
+	}
+	ext := strings.ToLower(filepathExt(best.StorageKey))
+	if ext == "" {
+		ext = strings.ToLower(filepathExt(best.Name))
+	}
+	sentinel := filepath.Join(os.TempDir(), "caxa_sentinel"+ext)
+	reader, _, err := s.storage.Open(ctx, best.StorageKey)
+	if err != nil {
+		return ""
+	}
+	defer reader.Close()
+	file, err := os.Create(sentinel)
+	if err != nil {
+		return ""
+	}
+	if _, err := ioCopy(file, reader); err != nil {
+		file.Close()
+		_ = os.Remove(sentinel)
+		return ""
+	}
+	file.Close()
+	return sentinel
+}
+
+// nudgeSentinel 让已运行的 CAXA 再打开一次哨兵图纸：插件只在打开图纸后消费转换任务，
+// 若 CAXA 启动后一直停在空界面，任务文件会无人处理，需要补一次打开动作激活插件。
+func (s *Service) nudgeSentinel(ctx context.Context) {
+	if isCaxaRunning() {
+		return
+	}
+	binPath, err := ResolveCaxaPath(s.caxaBin)
+	if err != nil {
+		return
+	}
+	sentinel := s.ensureSentinelDrawing(ctx)
+	if sentinel == "" {
+		return
+	}
+	log.Printf("[CAD Converter] 转换任务迟迟未完成，尝试打开哨兵图纸激活插件: %s", sentinel)
+	_ = exec.Command(binPath, sentinel).Start()
+}
+
+func resolveToolPath(configured, name string) (string, error) {	if strings.TrimSpace(configured) != "" {
 		for _, path := range candidatePaths(configured) {
 			if _, err := os.Stat(path); err == nil {
 				return path, nil

@@ -6,7 +6,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export async function fetchReviewerCandidates(role = 'reviewer'): Promise<Array<{ id: string; name: string; account: string }>> {
-  const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
+  const baseUrl = getApiBaseUrl()
   try {
     const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
     const headers: Record<string, string> = { Accept: 'application/json' }
@@ -38,3 +38,4 @@ export async function fetchReviewerCandidates(role = 'reviewer'): Promise<Array<
     return []
   }
 }
+import { getApiBaseUrl } from '@/services/api-base.service'
