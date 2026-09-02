@@ -90,6 +90,7 @@ func EditSessionResource(service *editing.Service) http.HandlerFunc {
 			return
 		}
 		var err error
+		var closeResult editing.CloseResult
 		switch request.Method {
 		case http.MethodPost:
 			if strings.HasSuffix(request.URL.Path, "/heartbeat") {
@@ -97,7 +98,7 @@ func EditSessionResource(service *editing.Service) http.HandlerFunc {
 				err = service.Heartbeat(request.Context(), user, sessionID)
 			} else if strings.HasSuffix(request.URL.Path, "/close") {
 				sessionID = strings.TrimSuffix(sessionID, "/close")
-				err = service.Close(request.Context(), user, sessionID)
+				closeResult, err = service.Close(request.Context(), user, sessionID)
 			} else {
 				response.WriteError(writer, http.StatusNotFound, "编辑会话操作不存在")
 				return
@@ -108,6 +109,10 @@ func EditSessionResource(service *editing.Service) http.HandlerFunc {
 		}
 		if err != nil {
 			writeEditingError(writer, err)
+			return
+		}
+		if closeResult.SessionID != "" {
+			response.WriteData(writer, http.StatusOK, closeResult)
 			return
 		}
 		response.WriteData(writer, http.StatusOK, nil)

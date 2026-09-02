@@ -23,9 +23,9 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 
 func (repository *PGRepository) CreateSession(ctx context.Context, session Session) error {
 	_, err := repository.pool.Exec(ctx, `
-		INSERT INTO edit_sessions (id, attachment_id, user_id, storage_key, status, started_at, last_seen_at)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7)`,
-		session.ID, session.AttachmentID, session.UserID, session.StorageKey, session.Status, session.StartedAt, session.LastSeenAt)
+		INSERT INTO edit_sessions (id, attachment_id, user_id, storage_key, work_storage_key, status, started_at, last_seen_at)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8)`,
+		session.ID, session.AttachmentID, session.UserID, session.StorageKey, session.WorkStorageKey, session.Status, session.StartedAt, session.LastSeenAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "uq_edit_sessions_one_active_attachment") {
 			return ErrFileBusy
@@ -39,21 +39,52 @@ func (repository *PGRepository) FindActiveByStorageKey(ctx context.Context, stor
 	var session Session
 	var userName string
 	var closedAt *time.Time
+	var workStorageKey *string
 	// 占用与会话在线状态解耦：只要会话未关闭就一直占用，
 	// 用户关闭页面/退出软件后仍可重新认领自己的会话继续编辑。
 	err := repository.pool.QueryRow(ctx, `
-		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.user_id::text,
+		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.work_storage_key, s.user_id::text,
 		       COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at, s.closed_at
 		FROM edit_sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.storage_key = $1 AND s.status = 'active'
 		ORDER BY s.started_at DESC LIMIT 1`, storageKey).Scan(
-		&session.ID, &session.AttachmentID, &session.StorageKey, &session.UserID, &userName,
+		&session.ID, &session.AttachmentID, &session.StorageKey, &workStorageKey, &session.UserID, &userName,
 		&session.Status, &session.StartedAt, &session.LastSeenAt, &closedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrSessionNotFound
 	}
 	if err != nil {
 		return Session{}, fmt.Errorf("查询活动编辑会话失败: %w", err)
+	}
+	if workStorageKey != nil {
+		session.WorkStorageKey = *workStorageKey
+	}
+	session.UserName = userName
+	session.ClosedAt = closedAt
+	return session, nil
+}
+
+// FindActiveByID 按会话 ID 读取活动会话（结束编辑时用于获取工作文件键）。
+func (repository *PGRepository) FindActiveByID(ctx context.Context, sessionID string) (Session, error) {
+	var session Session
+	var userName string
+	var closedAt *time.Time
+	var workStorageKey *string
+	err := repository.pool.QueryRow(ctx, `
+		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.work_storage_key, s.user_id::text,
+		       COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at, s.closed_at
+		FROM edit_sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.id = $1::uuid AND s.status = 'active'`, sessionID).Scan(
+		&session.ID, &session.AttachmentID, &session.StorageKey, &workStorageKey, &session.UserID, &userName,
+		&session.Status, &session.StartedAt, &session.LastSeenAt, &closedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Session{}, ErrSessionNotFound
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("查询编辑会话失败: %w", err)
+	}
+	if workStorageKey != nil {
+		session.WorkStorageKey = *workStorageKey
 	}
 	session.UserName = userName
 	session.ClosedAt = closedAt
@@ -70,7 +101,7 @@ func (repository *PGRepository) ListActiveSessions(ctx context.Context, now time
 
 	// 列出所有未关闭的会话（含离线），Online 标记最近 5 分钟内有心跳的会话。
 	baseQuery := `
-		SELECT s.id::text, s.attachment_id::text, s.storage_key,
+		SELECT s.id::text, s.attachment_id::text, s.storage_key, COALESCE(s.work_storage_key, ''),
 		       COALESCE(a.current_name, a.original_name, ''),
 		       COALESCE(d.drawing_no, parent.drawing_no, ''),
 		       COALESCE(p.part_no, ''),
@@ -101,14 +132,16 @@ func (repository *PGRepository) ListActiveSessions(ctx context.Context, now time
 	var list []ActiveSessionInfo
 	for rows.Next() {
 		var item ActiveSessionInfo
+		var workKey string
 		if err := rows.Scan(
-			&item.ID, &item.AttachmentID, &item.StorageKey,
+			&item.ID, &item.AttachmentID, &item.StorageKey, &workKey,
 			&item.FileName, &item.DrawingNo, &item.PartNo,
 			&item.UserID, &item.UserName, &item.UserAccount,
 			&item.Status, &item.StartedAt, &item.LastSeenAt, &item.Online,
 		); err != nil {
 			return nil, fmt.Errorf("读取活动编辑会话行失败: %w", err)
 		}
+		item.WorkStorageKey = workKey
 		list = append(list, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -162,6 +195,7 @@ func (repository *PGRepository) ConsumeTicket(ctx context.Context, token, userID
 	var session Session
 	var userName string
 	var closedAt *time.Time
+	var ticketWorkKey *string
 	err = tx.QueryRow(ctx, `
 		UPDATE edit_session_tickets
 		SET used_at = $3
@@ -174,17 +208,20 @@ func (repository *PGRepository) ConsumeTicket(ctx context.Context, token, userID
 		return Session{}, fmt.Errorf("消费编辑票据失败: %w", err)
 	}
 	err = tx.QueryRow(ctx, `
-		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.user_id::text,
+		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.work_storage_key, s.user_id::text,
 		       COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at, s.closed_at
 		FROM edit_sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.id = $1::uuid`, session.ID).Scan(
-		&session.ID, &session.AttachmentID, &session.StorageKey, &session.UserID, &userName,
+		&session.ID, &session.AttachmentID, &session.StorageKey, &ticketWorkKey, &session.UserID, &userName,
 		&session.Status, &session.StartedAt, &session.LastSeenAt, &closedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrSessionNotFound
 	}
 	if err != nil {
 		return Session{}, fmt.Errorf("读取编辑会话失败: %w", err)
+	}
+	if ticketWorkKey != nil {
+		session.WorkStorageKey = *ticketWorkKey
 	}
 	session.UserName = userName
 	session.ClosedAt = closedAt

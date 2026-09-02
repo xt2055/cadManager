@@ -48,7 +48,9 @@ type Repository interface {
 	Find(ctx context.Context, storageKey string) (Attachment, error)
 	FindByOwnerAndName(ctx context.Context, drawingNo, partNo, name string) (Attachment, error)
 	UpdateContent(ctx context.Context, storageKey string, size int64, mimeType, sha256 string) error
-	SetCurrentContent(ctx context.Context, sourceStorageKey, currentStorageKey, name string, size int64, mimeType, sha256 string) error
+	// SetCurrentVersion 将附件当前内容切换到新版本文件并同步版本号；
+	// 版本文件永远写入 history 版本目录，原始 storage_key 不被覆盖。
+	SetCurrentVersion(ctx context.Context, sourceStorageKey, currentStorageKey, name, version string, size int64, mimeType, sha256 string) error
 	ListByDrawing(ctx context.Context, drawingNo string) ([]Attachment, error)
 	ListAllExb(ctx context.Context) ([]Attachment, error)
 	ListAllCad(ctx context.Context) ([]Attachment, error)

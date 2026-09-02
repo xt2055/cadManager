@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"cadguanliq/internal/attachment"
@@ -47,11 +48,16 @@ type Service struct {
 	caxaBin     string
 	versions    interface {
 		CapturePath(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error)
+		EnsureInitialVersion(ctx context.Context, sourceKey, userID string) error
 	}
 	repository Repository
 	cfg        config.SMBConfig
 	drawings   DrawingLookup
 	reviews    ReviewAssigneeLookup
+	// syncLocks 按存储键串行化工作文件同步：Remove+Rename 的替换序列在 Windows 上
+	// 不允许并发执行（目标被其他 rename 占用时失败），多用户同时打开同一文件时必须互斥。
+	syncMu   sync.Mutex
+	syncLock map[string]*sync.Mutex
 }
 
 func NewService(sessionRepository Repository, attachmentRepository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service, smbConfig config.SMBConfig) *Service {
@@ -77,8 +83,50 @@ func (service *Service) SetPolicy(drawings DrawingLookup, reviews ReviewAssignee
 
 func (service *Service) SetVersioning(versions interface {
 	CapturePath(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error)
+	EnsureInitialVersion(ctx context.Context, sourceKey, userID string) error
 }) {
 	service.versions = versions
+}
+
+// resolveWorkKey 解析实际用于本地编辑的工作文件（当前版本 DWG）：
+// EXB 先经转换队列生成 v1.0 版本文件，其余附件优先使用当前指针。
+// 返回工作文件键，并保证 v1.0 初始版本已登记、当前指针已切换。
+func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, item attachment.Attachment) (string, error) {
+	ext := filepath.Ext(item.StorageKey)
+	if ext == "" {
+		ext = filepath.Ext(item.Name)
+	}
+	if strings.EqualFold(ext, ".exb") && service.converter != nil {
+		dwgKey, convErr := service.converter.EnsureDwg(ctx, item)
+		if convErr != nil {
+			return "", fmt.Errorf("将 EXB 转换为本地 DWG 失败: %w", convErr)
+		}
+		// 登记初始版本 v1.0（版本记录 + 当前指针切换）；失败时兜底更新指针，
+		// 保证本次编辑打开的仍是转换后的 DWG，不让版本登记问题阻塞编辑。
+		if service.versions != nil {
+			if ensureErr := service.versions.EnsureInitialVersion(ctx, item.StorageKey, user.ID); ensureErr != nil {
+				log.Printf("[编辑会话] 登记初始版本失败 storageKey=%s: %v", item.StorageKey, ensureErr)
+			}
+		}
+		if fresh, findErr := service.attachments.Find(ctx, item.StorageKey); findErr != nil || fresh.CurrentStorageKey != dwgKey {
+			dwgName := strings.TrimSuffix(item.Name, ext) + ".dwg"
+			if reader, info, openErr := service.storage.Open(ctx, dwgKey); openErr == nil {
+				_ = reader.Close()
+				_ = service.attachments.SetCurrentVersion(ctx, item.StorageKey, dwgKey, dwgName, "v1.0", info.Size, "application/acad", info.SHA256)
+			}
+		}
+		return dwgKey, nil
+	}
+
+	// 非 EXB：优先使用当前版本指针；当前文件已被物理清理时安全回退到原始 key。
+	if item.CurrentStorageKey != "" && item.CurrentStorageKey != item.StorageKey {
+		if reader, _, statErr := service.storage.Open(ctx, item.CurrentStorageKey); statErr == nil {
+			_ = reader.Close()
+			return item.CurrentStorageKey, nil
+		}
+		log.Printf("[编辑会话] 当前工作 key 不存在: %s，自动回退到原始 key: %s", item.CurrentStorageKey, item.StorageKey)
+	}
+	return item.StorageKey, nil
 }
 
 func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey string) (OpenResult, error) {
@@ -107,33 +155,9 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 		return OpenResult{}, err
 	}
 
-	actualStorageKey := item.StorageKey
-	// 本地编辑需求：统一转换为 DWG 后打开
-	ext := filepath.Ext(item.StorageKey)
-	if ext == "" {
-		ext = filepath.Ext(item.Name)
-	}
-	if strings.EqualFold(ext, ".exb") && service.converter != nil {
-		dwgKey, convErr := service.converter.EnsureDwg(ctx, item)
-		if convErr != nil {
-			return OpenResult{}, fmt.Errorf("将 EXB 转换为本地 DWG 失败: %w", convErr)
-		}
-		actualStorageKey = dwgKey
-		// 同步更新 attachments 表的 current_storage_key 为该 dwgKey
-		dwgName := strings.TrimSuffix(item.Name, ext) + ".dwg"
-		if reader, info, openErr := service.storage.Open(ctx, dwgKey); openErr == nil {
-			_ = reader.Close()
-			_ = service.attachments.SetCurrentContent(ctx, item.StorageKey, dwgKey, dwgName, info.Size, "application/acad", info.SHA256)
-		}
-	} else if item.CurrentStorageKey != "" {
-		// 校验当前 key 是否在对象存储中真实存在，若已被物理清理则安全回退到原始 key
-		if reader, _, statErr := service.storage.Open(ctx, item.CurrentStorageKey); statErr == nil {
-			_ = reader.Close()
-			actualStorageKey = item.CurrentStorageKey
-		} else {
-			log.Printf("[SMB编辑] 当前工作 key 不存在: %s，自动回退到原始 key: %s", item.CurrentStorageKey, item.StorageKey)
-			actualStorageKey = item.StorageKey
-		}
+	actualStorageKey, err := service.resolveWorkKey(ctx, user, item)
+	if err != nil {
+		return OpenResult{}, err
 	}
 
 	now := time.Now().UTC()
@@ -185,15 +209,16 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	}
 	expiresAt := now.Add(60 * time.Second)
 	session := Session{
-		ID:           sessionID,
-		AttachmentID: item.ID,
-		StorageKey:   item.StorageKey,
-		UserID:       user.ID,
-		UserName:     user.DisplayName,
-		UNCPath:      service.uncPath(actualStorageKey),
-		Status:       "active",
-		StartedAt:    now,
-		LastSeenAt:   now,
+		ID:             sessionID,
+		AttachmentID:   item.ID,
+		StorageKey:     item.StorageKey,
+		WorkStorageKey: actualStorageKey,
+		UserID:         user.ID,
+		UserName:       user.DisplayName,
+		UNCPath:        service.uncPath(actualStorageKey),
+		Status:         "active",
+		StartedAt:      now,
+		LastSeenAt:     now,
 	}
 	if err := service.repository.CreateSession(ctx, session); err != nil {
 		return OpenResult{}, err
@@ -288,29 +313,9 @@ func (service *Service) ReadOnlyOpen(ctx context.Context, user auth.AuthUser, st
 		return ReadOnlyOpenResult{}, errors.New("当前附件不是可打开的 CAD 文件")
 	}
 
-	actualStorageKey := item.StorageKey
-	ext := filepath.Ext(item.StorageKey)
-	if ext == "" {
-		ext = filepath.Ext(item.Name)
-	}
-	if strings.EqualFold(ext, ".exb") && service.converter != nil {
-		dwgKey, convErr := service.converter.EnsureDwg(ctx, item)
-		if convErr != nil {
-			return ReadOnlyOpenResult{}, fmt.Errorf("将 EXB 转换为 DWG 失败: %w", convErr)
-		}
-		actualStorageKey = dwgKey
-		dwgName := strings.TrimSuffix(item.Name, ext) + ".dwg"
-		if reader, info, openErr := service.storage.Open(ctx, dwgKey); openErr == nil {
-			_ = reader.Close()
-			_ = service.attachments.SetCurrentContent(ctx, item.StorageKey, dwgKey, dwgName, info.Size, "application/acad", info.SHA256)
-		}
-	} else if item.CurrentStorageKey != "" {
-		if reader, _, statErr := service.storage.Open(ctx, item.CurrentStorageKey); statErr == nil {
-			_ = reader.Close()
-			actualStorageKey = item.CurrentStorageKey
-		} else {
-			actualStorageKey = item.StorageKey
-		}
+	actualStorageKey, err := service.resolveWorkKey(ctx, user, item)
+	if err != nil {
+		return ReadOnlyOpenResult{}, err
 	}
 	// 只读打开同样仅提供可选提示；客户端负责在本机寻找 CAXA 或按文件关联启动。
 	caxaPath, caxaErr := converter.ResolveCaxaPath(service.caxaBin)
@@ -344,10 +349,6 @@ func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTi
 	if err != nil {
 		return ExchangeResult{}, err
 	}
-	item, err := service.attachments.Find(ctx, session.StorageKey)
-	if err != nil {
-		return ExchangeResult{}, err
-	}
 	// CAXA 由客户端在本机查找或按文件关联启动，与服务端互不干扰；
 	// 这里仅按 .env 的 CAD_CAXA_BIN 提供可选提示，找不到时返回空路径，不阻塞交换。
 	caxaPath, caxaErr := converter.ResolveCaxaPath(service.caxaBin)
@@ -356,11 +357,18 @@ func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTi
 		caxaPath = ""
 	}
 
-	actualStorageKey := item.StorageKey
-	if item.CurrentStorageKey != "" {
-		actualStorageKey = item.CurrentStorageKey
-	} else if strings.EqualFold(filepath.Ext(item.StorageKey), ".exb") {
-		actualStorageKey = strings.TrimSuffix(item.StorageKey, filepath.Ext(item.StorageKey)) + ".dwg"
+	// 优先使用会话记录的工作文件键（当前版本 DWG）；旧会话无记录时回退附件当前指针。
+	actualStorageKey := session.WorkStorageKey
+	if actualStorageKey == "" {
+		item, findErr := service.attachments.Find(ctx, session.StorageKey)
+		if findErr != nil {
+			return ExchangeResult{}, findErr
+		}
+		if item.CurrentStorageKey != "" {
+			actualStorageKey = item.CurrentStorageKey
+		} else {
+			actualStorageKey = item.StorageKey
+		}
 	}
 
 	fileName := filepath.Base(actualStorageKey)
@@ -391,9 +399,13 @@ func (service *Service) ListActive(ctx context.Context, user auth.AuthUser, draw
 	}
 	isAdminUser := isAdmin(user.Roles)
 	for i := range sessions {
-		actualKey := sessions[i].StorageKey
-		if strings.EqualFold(filepath.Ext(actualKey), ".exb") {
-			actualKey = strings.TrimSuffix(actualKey, filepath.Ext(actualKey)) + ".dwg"
+		// UNC 路径优先使用会话记录的工作文件键；旧会话无记录时按旧规则推算。
+		actualKey := sessions[i].WorkStorageKey
+		if actualKey == "" {
+			actualKey = sessions[i].StorageKey
+			if strings.EqualFold(filepath.Ext(actualKey), ".exb") {
+				actualKey = strings.TrimSuffix(actualKey, filepath.Ext(actualKey)) + ".dwg"
+			}
 		}
 		sessions[i].UNCPath = service.uncPath(actualKey)
 		sessions[i].IsCurrent = sessions[i].UserID == user.ID
@@ -413,47 +425,85 @@ func (service *Service) Heartbeat(ctx context.Context, user auth.AuthUser, sessi
 	return service.repository.Heartbeat(ctx, user.ID, sessionID, now)
 }
 
-func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID string) error {
+// Close 结束编辑：等待 SMB 工作文件写入稳定后捕获新版本（版本文件写入版本目录、
+// 事务内切换当前指针），全部成功后才关闭会话。
+// 捕获失败时保留编辑会话并返回错误，用户重试不会丢失工作内容；
+// 无改动时直接关闭会话，不产生重复版本。
+func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID string) (CloseResult, error) {
 	if service.repository == nil {
-		return errors.New("编辑会话数据库未配置")
+		return CloseResult{}, errors.New("编辑会话数据库未配置")
+	}
+	now := time.Now().UTC()
+	if err := service.repository.ExpireStale(ctx, now); err != nil {
+		return CloseResult{}, err
+	}
+	session, err := service.repository.FindActiveByID(ctx, sessionID)
+	if err != nil {
+		return CloseResult{}, err
+	}
+	isAdminUser := isAdmin(user.Roles)
+	if session.UserID != user.ID && !isAdminUser {
+		return CloseResult{}, errors.New("只能结束自己的编辑会话")
 	}
 
-	// 结束编辑时主动从工作区提取最新改动并捕获版本。
-	// CAD 编辑器保存是异步落盘的：若用户保存后立即结束会话，
-	// 工作文件可能仍在写入，必须等待文件稳定后再捕获，否则会回写旧内容或损坏内容。
-	if service.versions != nil {
-		activeList, err := service.repository.ListActiveSessions(ctx, time.Now().UTC(), "")
-		if err == nil {
-			for _, s := range activeList {
-				if s.ID == sessionID {
-					actualKey := s.StorageKey
-					ext := filepath.Ext(actualKey)
-					if strings.EqualFold(ext, ".exb") {
-						actualKey = strings.TrimSuffix(actualKey, ext) + ".dwg"
-					}
-					if path, pathErr := service.localPath(actualKey); pathErr == nil {
-						if waitErr := waitForFileStable(path, 15*time.Second); waitErr != nil {
-							log.Printf("[编辑关闭] 等待工作文件稳定失败 key=%s err=%v", s.StorageKey, waitErr)
-						}
-						if _, changed, capErr := service.captureWithRetry(ctx, s.StorageKey, path, user.ID); capErr != nil {
-							log.Printf("[编辑关闭] 捕获版本失败 key=%s err=%v", s.StorageKey, capErr)
-						} else if changed {
-							log.Printf("[编辑关闭] 已生成新版本并回写当前图纸 key=%s", s.StorageKey)
-						} else {
-							log.Printf("[编辑关闭] 工作文件无改动，未生成新版本 key=%s", s.StorageKey)
-						}
-					}
-					break
-				}
-			}
+	result := CloseResult{SessionID: sessionID}
+	forceByAdmin := session.UserID != user.ID
+
+	workKey := session.WorkStorageKey
+	if workKey == "" {
+		workKey = session.StorageKey
+		if strings.EqualFold(filepath.Ext(workKey), ".exb") {
+			workKey = strings.TrimSuffix(workKey, filepath.Ext(workKey)) + ".dwg"
 		}
 	}
+	if path, pathErr := service.localPath(workKey); pathErr == nil {
+		// CAD 编辑器保存是异步落盘的：若用户保存后立即结束会话，
+		// 工作文件可能仍在写入，必须等待文件稳定后再捕获，否则会归档旧内容或损坏内容。
+		if waitErr := waitForFileStable(path, 15*time.Second); waitErr != nil {
+			log.Printf("[编辑关闭] 等待工作文件稳定失败 key=%s err=%v", workKey, waitErr)
+		}
+		if version, changed, capErr := service.captureWithRetry(ctx, session.StorageKey, path, user.ID); capErr != nil {
+			if forceByAdmin {
+				// 管理员强制关闭他人会话：尽力归档但不阻塞锁释放，避免死锁文件。
+				log.Printf("[编辑关闭] 管理员强制关闭，捕获版本失败仍将关闭会话 key=%s err=%v", session.StorageKey, capErr)
+			} else if _, stillActiveErr := service.repository.FindActiveByID(ctx, sessionID); errors.Is(stillActiveErr, ErrSessionNotFound) {
+				// 会话已被并发关闭（如管理员强关导致工作文件被清理），
+				// 此时不再误报“保存失败”，与 repository.Close 的语义对齐。
+				return CloseResult{}, ErrSessionNotFound
+			} else {
+				// 捕获失败：保留编辑会话，旧版本不受影响，用户可重试。
+				return CloseResult{}, fmt.Errorf("保存编辑版本失败，请重试: %w", capErr)
+			}
+		} else {
+			result.Changed = changed
+			if changed {
+				result.Version = version.Version
+				result.CurrentStorageKey = version.StorageKey
+				result.CurrentName = filepath.Base(version.StorageKey)
+				log.Printf("[编辑关闭] 已生成新版本 %s key=%s", version.Version, version.StorageKey)
+			} else {
+				log.Printf("[编辑关闭] 工作文件无改动，未生成新版本 key=%s", session.StorageKey)
+			}
+		}
+	} else {
+		log.Printf("[编辑关闭] 解析工作文件路径失败 key=%s err=%v", workKey, pathErr)
+	}
 
-	isAdminUser := isAdmin(user.Roles)
-	return service.repository.Close(ctx, user.ID, sessionID, isAdminUser, time.Now().UTC())
+	if err := service.repository.Close(ctx, user.ID, sessionID, isAdminUser, time.Now().UTC()); err != nil {
+		return CloseResult{}, err
+	}
+
+	// 版本已成功归档，清理 SMB 工作文件（清理失败不影响关闭结果）。
+	if path, pathErr := service.localPath(workKey); pathErr == nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("[编辑关闭] 清理 SMB 工作文件失败 path=%s err=%v", path, err)
+		}
+	}
+	return result, nil
 }
 
 // captureWithRetry 捕获工作文件版本；文件可能被 CAD 进程短暂占用，失败后小间隔重试。
+// 工作文件已不存在（被并发关闭清理等）属于永久性错误，直接失败不重试。
 func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -467,6 +517,9 @@ func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourceP
 		version, created, err := service.versions.CapturePath(ctx, sourceKey, sourcePath, userID)
 		if err == nil {
 			return version, created, nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return versioning.Version{}, false, err
 		}
 		lastErr = err
 		log.Printf("[编辑关闭] 捕获版本第 %d 次失败 key=%s: %v", attempt+1, sourceKey, err)
@@ -532,7 +585,25 @@ func (service *Service) uncPath(storageKey string) string {
 	return service.smbRoot() + `\` + strings.ReplaceAll(storageKey, "/", `\`)
 }
 
+// lockWorkFile 取得该存储键的工作文件同步互斥锁，返回解锁函数。
+func (service *Service) lockWorkFile(storageKey string) func() {
+	service.syncMu.Lock()
+	if service.syncLock == nil {
+		service.syncLock = make(map[string]*sync.Mutex)
+	}
+	lock, ok := service.syncLock[storageKey]
+	if !ok {
+		lock = &sync.Mutex{}
+		service.syncLock[storageKey] = lock
+	}
+	service.syncMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
 func (service *Service) syncToWorkDirectory(ctx context.Context, storageKey string) error {
+	unlock := service.lockWorkFile(storageKey)
+	defer unlock()
 	path, err := service.localPath(storageKey)
 	if err != nil {
 		return err
@@ -545,7 +616,9 @@ func (service *Service) syncToWorkDirectory(ctx context.Context, storageKey stri
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("创建 SMB 工作目录失败: %w", err)
 	}
-	temporaryPath := path + ".cadguanliq.tmp"
+	// 临时文件名带纳秒时间戳：并发同步同一文件时各写各的临时文件，
+	// 避免互相覆盖产生损坏内容；最终以一次完整的原子替换落盘。
+	temporaryPath := fmt.Sprintf("%s.%d.cadguanliq.tmp", path, time.Now().UnixNano())
 	file, err := os.Create(temporaryPath)
 	if err != nil {
 		return fmt.Errorf("创建 SMB 工作临时文件失败: %w", err)

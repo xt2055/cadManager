@@ -88,6 +88,14 @@ export interface FileVersionInfo {
 
 export interface EditSessionControlResult {
   sessionId: string
+  /** 结束编辑是否产生新版本（false = 无改动直接关闭） */
+  changed?: boolean
+  /** 新版本号（如 v1.0-w001） */
+  version?: string
+  /** 新的当前版本文件存储键 */
+  currentStorageKey?: string
+  /** 新的当前版本文件名 */
+  currentName?: string
 }
 
 export interface DataProvider {

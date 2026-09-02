@@ -20,6 +20,10 @@ const domainStore = useDomainStore()
 
 const drawingId = computed(() => String(route.params.drawingId ?? ''))
 const fileId = computed(() => String(route.query.fileId ?? ''))
+// 历史版本在线浏览：携带 versionId/versionKey 时按版本精确加载该版本内容，
+// 不会误用当前最新文件，也不会把 EXB 版本直接丢给浏览器 CAD 引擎。
+const versionId = computed(() => String(route.query.versionId ?? ''))
+const versionKey = computed(() => String(route.query.versionKey ?? ''))
 
 const currentDrawing = computed(() => domainStore.currentDrawing)
 const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in currentDrawing.value))
@@ -85,36 +89,47 @@ async function loadTargetFile() {
 
   if (file) {
     const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
-    if (isCad) {
-      // 已废弃：Canvas DXF 预览请求参数保留，不再发送 /api/exb/preview。
-      // const params = new URLSearchParams()
-      // if (file.storageKey) params.set('storageKey', file.storageKey)
-      // if (file.drawingNo) params.set('drawingNo', file.drawingNo)
-      // if (file.partNo) params.set('partNo', file.partNo)
-      // params.set('fileName', file.name)
-      // params.set('_t', String(Date.now()))
-       const baseUrl = getApiBaseUrl()
-      // 已废弃：Canvas 渲染需要的 DXF 预览接口不再由前端调用。
-      // cadDxfUrl.value = `${baseUrl}/exb/preview?${params.toString()}`
-      if (file.storageKey) {
+    const storageKeyValue = file.storageKey || ''
+    if (isCad && (storageKeyValue || versionId.value)) {
+      const baseUrl = getApiBaseUrl()
+      if (storageKeyValue || versionId.value) {
         try {
           const token = getAccessToken()
           const cacheBuster = Date.now()
-          const response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(file.storageKey)}&_t=${cacheBuster}`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-            credentials: 'include',
-          })
+          // 历史版本按存储键精确读取该版本；无版本记录（旧数据）时回退当前文件源。
+          let response: Response | null = null
+          if (versionKey.value && storageKeyValue) {
+            response = await fetch(`${baseUrl}/file-versions/source?storageKey=${encodeURIComponent(storageKeyValue)}&_t=${cacheBuster}`, {
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+              credentials: 'include',
+            })
+            if (!response.ok) response = null
+          }
+          if (!response) {
+            if (versionId.value) {
+              response = await fetch(`${baseUrl}/file-versions/${encodeURIComponent(versionId.value)}/source?_t=${cacheBuster}`, {
+                headers: token ? { Authorization: `Bearer ${token}` } : {},
+                credentials: 'include',
+              })
+            } else if (storageKeyValue) {
+              response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(storageKeyValue)}&_t=${cacheBuster}`, {
+                headers: token ? { Authorization: `Bearer ${token}` } : {},
+                credentials: 'include',
+              })
+            }
+          }
+          if (!response) {
+            throw new Error('无法确定 CAD 源文件地址')
+          }
            if (!response.ok) throw new Error(`HTTP ${response.status}`)
-          const sourceName = file.name.toLowerCase().endsWith('.exb')
-            ? `${file.name.replace(/\.exb$/i, '')}.dwg`
-            : file.name
+          const sourceName = `${file.name.replace(/\.(exb|dxf|dwg)$/i, '')}.dwg`
           const contentType = response.headers.get('content-type') || ''
           if (contentType.includes('text/html') || contentType.includes('application/json')) {
             throw new Error(`渲染源接口返回了错误内容类型: ${contentType}`)
           }
            cadOriginalUrl.value = URL.createObjectURL(await response.blob())
            cadSourceFileName.value = sourceName
-           console.info('[DrawingViewerPage] 原始 CAD 已加载', { sourceName, storageKey: file.storageKey })
+           console.info('[DrawingViewerPage] 原始 CAD 已加载', { sourceName, storageKey: file.storageKey, versionId: versionId.value })
         } catch (error) {
           cadOriginalError.value = error instanceof Error ? error.message : String(error)
           console.warn('读取原始 CAD 文件失败，MLightCAD 将不可用', error)
@@ -122,6 +137,8 @@ async function loadTargetFile() {
       } else {
         cadOriginalError.value = '当前图纸没有 storageKey，无法读取原始 DWG'
       }
+    } else if (isCad) {
+      cadOriginalError.value = '当前图纸没有 storageKey，无法读取原始 DWG'
     } else {
       // 已废弃：Canvas DXF 地址清理逻辑保留，不再执行。
       // cadDxfUrl.value = null
@@ -202,7 +219,7 @@ onUnmounted(() => {
   revokeOriginalUrl()
 })
 
-watch([drawingId, fileId], () => {
+watch([drawingId, fileId, versionId, versionKey], () => {
   void loadTargetFile()
 })
 </script>

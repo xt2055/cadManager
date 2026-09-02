@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,72 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateInput, s
 
 func (repository *PGRepository) GetByID(ctx context.Context, versionID string) (Version, error) {
 	return repository.find(ctx, versionID)
+}
+
+// GetByStorageKey 按版本文件存储键精确查找版本记录（file_versions.storage_key 唯一）。
+func (repository *PGRepository) GetByStorageKey(ctx context.Context, storageKey string) (Version, error) {
+	query := versionSelect + ` WHERE v.storage_key = $1 AND v.deleted_at IS NULL LIMIT 1`
+	row := repository.pool.QueryRow(ctx, query, storageKey)
+	item, err := scanVersion(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Version{}, ErrNotFound
+	}
+	return item, err
+}
+
+// CreateWithPromotion 事务内完成：锁定附件行 → 插入版本记录 → 切换当前版本指针。
+// 任一步失败整体回滚，不会出现「版本已登记但当前指针未切换」或反向的中间状态。
+func (repository *PGRepository) CreateWithPromotion(ctx context.Context, input CreateInput, storageKey string) (Version, error) {
+	tx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		return Version{}, fmt.Errorf("开始版本登记事务失败: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 锁定附件行，串行化同一附件的并发版本写入（双击结束编辑等场景）。
+	var attachmentExists bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM attachments
+			WHERE storage_key = $1 AND deleted_at IS NULL
+			FOR UPDATE
+		)`, input.SourceStorageKey).Scan(&attachmentExists)
+	if err != nil {
+		return Version{}, fmt.Errorf("锁定附件失败: %w", err)
+	}
+	if !attachmentExists {
+		return Version{}, fmt.Errorf("附件不存在或已删除: %s", input.SourceStorageKey)
+	}
+
+	var id string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO file_versions (attachment_id, storage_key, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, expires_at)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10)
+		RETURNING id::text`, input.AttachmentID, storageKey, input.SourceStorageKey, input.Version, input.VersionKind,
+		input.Size, input.MimeType, input.SHA256, input.CreatedBy, input.ExpiresAt).Scan(&id)
+	if err != nil {
+		return Version{}, fmt.Errorf("保存文件版本失败: %w", err)
+	}
+
+	if strings.TrimSpace(input.CurrentName) != "" {
+		result, err := tx.Exec(ctx, `
+			UPDATE attachments
+			SET current_storage_key = $2, current_name = $3, current_size_bytes = $4,
+			    current_mime_type = $5, current_sha256 = $6, version = $7
+			WHERE storage_key = $1 AND deleted_at IS NULL`,
+			input.SourceStorageKey, storageKey, input.CurrentName, input.Size, input.MimeType, input.SHA256, input.Version)
+		if err != nil {
+			return Version{}, fmt.Errorf("切换附件当前版本失败: %w", err)
+		}
+		if result.RowsAffected() == 0 {
+			return Version{}, fmt.Errorf("附件不存在或已删除: %s", input.SourceStorageKey)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Version{}, fmt.Errorf("提交版本登记事务失败: %w", err)
+	}
+	return repository.find(ctx, id)
 }
 
 // PromoteInitial 将登记的初始版本标记为当前正式版本（不过期、置顶）。

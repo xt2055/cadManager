@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"time"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/audit"
@@ -58,8 +57,8 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	convService.Start(context.Background())
 	versionRepository := versioning.NewPGRepository(pool)
 	versionService := versioning.NewService(versionRepository, attachmentRepository, attachmentStorage)
-	versionWatcher := versioning.NewWatcher(attachmentRepository, attachmentStorage, versionService, cfg.SMB.LocalRoot, 10*time.Second)
-	versionWatcher.Start(context.Background())
+	// 版本捕获统一由「结束编辑」显式触发：SMB 工作文件稳定等待 + 哈希比对 + 事务切指针，
+	// 不再用后台 watcher 扫描文件变化自动捕获，避免与关闭流程竞争产生重复版本。
 	editingService := editing.NewService(editing.NewPGRepository(pool), attachmentRepository, attachmentStorage, convService, cfg.SMB)
 	editingService.SetVersioning(versionService)
 	editingService.SetPolicy(drawingRepository, reviewRepository)
@@ -70,7 +69,7 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/edit-sessions/", drawingHandler(handlers.EditSessionResource(editingService)))
 	mux.Handle("/api/editing/read-only", drawingHandler(handlers.EditReadOnly(editingService)))
 	mux.Handle("/api/file-versions", drawingHandler(versioning.List(versionService)))
-	mux.Handle("/api/file-versions/", drawingHandler(versioning.Resource(versionService)))
+	mux.Handle("/api/file-versions/", drawingHandler(versioning.Resource(versionService, convService)))
 
 	mux.Handle("/api/attachments", drawingHandler(handlers.UploadAttachment(attachmentRepository, attachmentStorage, convService, versionService, cfg.MaxUploadBytes)))
 	mux.Handle("/api/attachments/", drawingHandler(handlers.AttachmentResource(attachmentRepository, attachmentStorage)))

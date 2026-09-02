@@ -38,11 +38,18 @@ type CreateInput struct {
 	SHA256           string
 	CreatedBy        string
 	ExpiresAt        *time.Time
+	// CurrentName 版本登记成功后写入 attachments.current_name 的当前文件名；
+	// 为空时跳过指针切换（仅登记版本）。
+	CurrentName string
 }
 
 type Repository interface {
 	Create(ctx context.Context, input CreateInput, storageKey string) (Version, error)
+	// CreateWithPromotion 在同一数据库事务内插入版本记录并切换附件当前版本指针，
+	// 保证「版本存在」与「当前指针指向该版本」原子生效。
+	CreateWithPromotion(ctx context.Context, input CreateInput, storageKey string) (Version, error)
 	GetByID(ctx context.Context, versionID string) (Version, error)
+	GetByStorageKey(ctx context.Context, storageKey string) (Version, error)
 	ListByAttachment(ctx context.Context, attachmentID string) ([]Version, error)
 	LatestByAttachment(ctx context.Context, attachmentID string) (Version, error)
 	PromoteInitial(ctx context.Context, versionID string) error

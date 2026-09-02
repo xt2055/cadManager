@@ -415,18 +415,25 @@ async function doStopSession(targetId: string, targetFileName: string) {
   if (closingSessionIds.value.has(targetId)) return
   closingSessionIds.value.add(targetId)
   try {
-    await dataManager.closeEditSession(targetId)
+    const result = await dataManager.closeEditSession(targetId)
     myActiveSessions.value = myActiveSessions.value.filter((s) => s.sessionId !== targetId)
     persistLocalSessions()
     await refreshActiveSessions()
-    // 后端已完成文件稳定等待与版本捕获，给用户明确的“结束成功”反馈。
+    // 后端已完成文件稳定等待与版本捕获；有改动时后端已生成新版本并切换当前指针，
+    // 从后端重新加载业务文档，保证文件列表/版本号以服务端数据库为准。
     const successRecord = { sessionId: targetId, fileName: targetFileName, savedAt: new Date().toLocaleTimeString() }
     closedSessions.value = [...closedSessions.value, successRecord]
     window.setTimeout(() => {
       closedSessions.value = closedSessions.value.filter((item) => item.sessionId !== targetId)
     }, 5000)
-    uiStore.toast('编辑已结束，图纸版本已保存', 'ok')
+    if (result.changed && result.version) {
+      uiStore.toast(`编辑已结束，已保存新版本 ${result.version}`, 'ok')
+    } else {
+      uiStore.toast('编辑已结束，图纸无改动', 'ok')
+    }
+    void domainStore.reloadFromServer()
   } catch (error) {
+    // 捕获失败时后端保留编辑会话，用户可重试结束编辑，不会丢失工作内容。
     uiStore.toast(error instanceof Error ? error.message : '释放编辑会话失败', 'warn')
   } finally {
     closingSessionIds.value.delete(targetId)

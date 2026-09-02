@@ -186,14 +186,28 @@ func (s *Service) workerLoop(ctx context.Context) {
 	}
 }
 
+// versionDwgKey 计算附件 v1.0 初始版本的目标存储键：
+// {目录}/history/{文件名去后缀}/v1.0/{文件名去后缀}.dwg
+// 转换产物直接进入版本目录，不再堆放在原始文件旁边，原始文件永不被覆盖。
+func versionDwgKey(att attachment.Attachment) string {
+	folder := filepath.ToSlash(filepath.Dir(att.StorageKey))
+	base := filepath.Base(filepath.ToSlash(att.StorageKey))
+	ext := filepathExt(base)
+	baseNoExt := strings.TrimSuffix(base, ext)
+	return filepath.ToSlash(filepath.Join(folder, "history", baseNoExt, "v1.0", baseNoExt+".dwg"))
+}
+
 func (s *Service) processOne(ctx context.Context, att attachment.Attachment) error {
 	ext := filepathExt(att.StorageKey)
 	if ext == "" {
 		ext = filepathExt(att.Name)
 	}
+	if !strings.EqualFold(ext, ".exb") && !strings.EqualFold(ext, ".dwg") && !strings.EqualFold(ext, ".dxf") {
+		return nil
+	}
 
-	// 当前转换队列只负责生成 MLightCAD 使用的 DWG，不再以 DXF 是否存在作为完成条件。
-	dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
+	// 目标产物：v1.0 版本目录内的 DWG。已存在且非空则任务完成。
+	dwgKey := versionDwgKey(att)
 	if reader, info, err := s.storage.Open(ctx, dwgKey); err == nil {
 		reader.Close()
 		if info.Size > 0 {
@@ -202,29 +216,14 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 		_ = s.storage.Delete(ctx, dwgKey)
 	}
 
-	// 已废弃：旧队列曾检查并生成 DXF，代码保留以便后续回溯。
-	// dxfKey := strings.TrimSuffix(att.StorageKey, ext) + ".dxf"
-	// if reader, info, err := s.storage.Open(ctx, dxfKey); err == nil {
-	// 	reader.Close()
-	// 	if info.Size > 0 && !strings.EqualFold(ext, ".exb") {
-	// 		return nil
-	// 	}
-	// 	_ = s.storage.Delete(ctx, dxfKey)
-	// }
-	// if strings.EqualFold(ext, ".dxf") {
-	// 	return errors.New("DXF 文件为空，无法生成预览")
-	// }
-
 	tempDir := os.TempDir()
 	nowNano := time.Now().UnixNano()
 	tempDwg := filepath.Join(tempDir, fmt.Sprintf("caxa_out_%d.dwg", nowNano))
 	defer os.Remove(tempDwg)
 	defer os.Remove(tempDwg + ".done")
-	// 已废弃：DXF 临时文件仅由旧转换流程使用，现已停用。
-	// tempDxf := filepath.Join(tempDir, fmt.Sprintf("caxa_out_%d.dxf", nowNano))
-	// defer os.Remove(tempDxf)
 
-	if strings.EqualFold(ext, ".exb") {
+	switch {
+	case strings.EqualFold(ext, ".exb"):
 		if err := s.ensureCaxaRunning(ctx); err != nil {
 			return err
 		}
@@ -280,7 +279,6 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 			return errors.New("CAXA 转换超时或返回失败")
 		}
 
-		dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
 		dwgReader, err := os.Open(tempDwg)
 		if err != nil {
 			return fmt.Errorf("打开生成 DWG 失败: %w", err)
@@ -290,14 +288,21 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 		if putErr != nil {
 			return fmt.Errorf("保存 DWG 附件失败: %w", putErr)
 		}
-	} else if strings.EqualFold(ext, ".dwg") {
+	case strings.EqualFold(ext, ".dxf"):
+		if err := s.ensureCaxaRunning(ctx); err != nil {
+			return err
+		}
+
 		reader, _, err := s.storage.Open(ctx, att.StorageKey)
 		if err != nil {
-			return fmt.Errorf("读取原始 DWG 失败: %w", err)
+			return fmt.Errorf("读取原始 DXF 失败: %w", err)
 		}
 		defer reader.Close()
 
-		outFile, err := os.Create(tempDwg)
+		tempDxf := filepath.Join(tempDir, fmt.Sprintf("caxa_in_%d.dxf", nowNano))
+		defer os.Remove(tempDxf)
+
+		outFile, err := os.Create(tempDxf)
 		if err != nil {
 			return err
 		}
@@ -306,25 +311,37 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 			return err
 		}
 		outFile.Close()
-	} else {
-		return nil
+		if err := cadtext.NormalizeDxfFileForCaxa(tempDxf); err != nil {
+			return err
+		}
+
+		if err := s.runCaxaJob(ctx, tempDxf, tempDwg); err != nil {
+			return err
+		}
+
+		dwgReader, err := os.Open(tempDwg)
+		if err != nil {
+			return fmt.Errorf("打开生成 DWG 失败: %w", err)
+		}
+		_, putErr := s.storage.Put(ctx, dwgKey, dwgReader, "application/acad")
+		dwgReader.Close()
+		if putErr != nil {
+			return fmt.Errorf("保存 DWG 附件失败: %w", putErr)
+		}
+	default:
+		// DWG 本身已是目标格式：复制一份到 v1.0 版本目录登记为初始版本。
+		reader, _, err := s.storage.Open(ctx, att.StorageKey)
+		if err != nil {
+			return fmt.Errorf("读取原始 DWG 失败: %w", err)
+		}
+		defer reader.Close()
+
+		if _, err := s.storage.Put(ctx, dwgKey, reader, "application/acad"); err != nil {
+			return fmt.Errorf("复制 DWG 到版本目录失败: %w", err)
+		}
 	}
 
-	// 已废弃：转换队列不再执行 DWG -> DXF，也不再写入 DXF 对象。
-	// if err := s.convertDwgToDxf(ctx, tempDwg, tempDxf); err != nil {
-	// 	return fmt.Errorf("DWG 转 DXF 失败: %w", err)
-	// }
-	// dxfReader, err := os.Open(tempDxf)
-	// if err != nil {
-	// 	return fmt.Errorf("打开生成 DXF 失败: %w", err)
-	// }
-	// defer dxfReader.Close()
-	// _, err = s.storage.Put(ctx, dxfKey, dxfReader, "application/dxf")
-	// if err != nil {
-	// 	return fmt.Errorf("保存 DXF 附件失败: %w", err)
-	// }
-
-	log.Printf("[CAD Converter] 成功生成 DWG: %s -> %s", att.StorageKey, dwgKey)
+	log.Printf("[CAD Converter] 成功生成 v1.0 版本 DWG: %s -> %s", att.StorageKey, dwgKey)
 	return nil
 }
 
@@ -448,20 +465,17 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 	return errors.New("CAXA 转换任务超时")
 }
 
-// EnsureDwg 确保 EXB 已转换为可供浏览器 CAD 引擎读取的 DWG，并返回实际存储键。
+// EnsureDwg 确保 EXB/DXF/DWG 在 v1.0 版本目录中有对应的 DWG，并返回该版本存储键。
 func (s *Service) EnsureDwg(ctx context.Context, att attachment.Attachment) (string, error) {
 	ext := filepathExt(att.StorageKey)
 	if ext == "" {
 		ext = filepathExt(att.Name)
 	}
-	if strings.EqualFold(ext, ".dwg") {
-		return att.StorageKey, nil
-	}
-	if !strings.EqualFold(ext, ".exb") {
+	if !strings.EqualFold(ext, ".exb") && !strings.EqualFold(ext, ".dwg") && !strings.EqualFold(ext, ".dxf") {
 		return "", fmt.Errorf("文件格式不支持 DWG 渲染源: %s", att.Name)
 	}
 
-	dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
+	dwgKey := versionDwgKey(att)
 	if reader, info, err := s.storage.Open(ctx, dwgKey); err == nil {
 		reader.Close()
 		if info.Size > 0 {
@@ -635,12 +649,10 @@ func (s *Service) ensureSentinelDrawing(ctx context.Context) string {
 	return sentinel
 }
 
-// nudgeSentinel 让已运行的 CAXA 再打开一次哨兵图纸：插件只在打开图纸后消费转换任务，
-// 若 CAXA 启动后一直停在空界面，任务文件会无人处理，需要补一次打开动作激活插件。
+// nudgeSentinel 让已运行的 CAXA 再打开一次哨兵图纸：插件只在打开图纸后消费转换任务。
+// 注意不能因为 isCaxaRunning() 为 true 就跳过——CAXA 常见停在空界面（进程在、插件未激活），
+// 此时恰恰需要补开哨兵图纸，否则任务永远无人处理。
 func (s *Service) nudgeSentinel(ctx context.Context) {
-	if isCaxaRunning() {
-		return
-	}
 	binPath, err := ResolveCaxaPath(s.caxaBin)
 	if err != nil {
 		return
@@ -850,7 +862,7 @@ func (s *Service) cronScanner(ctx context.Context) {
 func (s *Service) scanMissingDwg(ctx context.Context) {
 	list, err := s.repo.ListAllCad(ctx)
 	if err != nil {
-		log.Printf("[CAD Converter] 定时扫描 DWG 列表失败: %v", err)
+		log.Printf("[CAD Converter] 定时扫描 CAD 列表失败: %v", err)
 		return
 	}
 
@@ -859,12 +871,13 @@ func (s *Service) scanMissingDwg(ctx context.Context) {
 		if ext == "" {
 			ext = filepathExt(att.Name)
 		}
-		if !strings.EqualFold(ext, ".exb") {
+		if !strings.EqualFold(ext, ".exb") && !strings.EqualFold(ext, ".dwg") && !strings.EqualFold(ext, ".dxf") {
 			continue
 		}
-		dwgKey := strings.TrimSuffix(att.StorageKey, ext) + ".dwg"
+		// 扫描依据：附件是否缺少 v1.0 版本目录文件（初始版本 DWG），
+		// 缺少则进入低优先级后台队列补建；不再扫描“原始文件旁边有没有 DWG”。
+		dwgKey := versionDwgKey(att)
 		if _, _, err := s.storage.Open(ctx, dwgKey); err != nil {
-			// DWG 还不存在，加入低优先级后台转换队列
 			s.PushJob(att, PriorityLow)
 		}
 	}

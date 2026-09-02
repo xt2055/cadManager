@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { dataManager } from '@/services/data-manager'
 import type { FileVersionInfo } from '@/services/data-manager/data-provider'
@@ -13,6 +14,7 @@ defineOptions({ name: 'DrawingVersionsTab' })
 const domainStore = useDomainStore()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+const router = useRouter()
 
 const isAdmin = computed(() => authStore.hasRole('admin'))
 
@@ -136,6 +138,17 @@ async function restoreVersion(version: FileVersionInfo) {
     busyVersionId.value = ''
   }
 }
+
+// 在线浏览该历史版本：按版本 ID 精确读取该版本 DWG，不影响当前版本指针。
+function viewVersion(version: FileVersionInfo) {
+  const drawingId = currentNo.value
+  if (!drawingId || !selectedFile.value) return
+  router.push({
+    name: 'drawing-viewer',
+    params: { drawingId },
+    query: { fileId: selectedFile.value.id, versionId: version.id },
+  })
+}
 </script>
 
 <template>
@@ -179,6 +192,9 @@ async function restoreVersion(version: FileVersionInfo) {
             提交：{{ version.createdByName || '未知' }} · {{ formatTime(version.createdAt) }}
           </div>
           <div class="tl-actions">
+            <button class="btn sm" type="button" :disabled="busyVersionId === version.id" @click="viewVersion(version)">
+              <DemoIcon name="eye" :size="13" />在线浏览
+            </button>
             <button class="btn sm" type="button" :disabled="busyVersionId === version.id" @click="downloadVersion(version)">
               <DemoIcon name="download" :size="13" />下载
             </button>

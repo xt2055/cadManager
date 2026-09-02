@@ -171,14 +171,15 @@ func (repository *PGRepository) UpdateContent(ctx context.Context, storageKey st
 	return nil
 }
 
-func (repository *PGRepository) SetCurrentContent(ctx context.Context, sourceStorageKey, currentStorageKey, name string, size int64, mimeType, sha256 string) error {
+// SetCurrentVersion 切换当前版本文件并同步版本号，同时保留原始文件元数据不动。
+func (repository *PGRepository) SetCurrentVersion(ctx context.Context, sourceStorageKey, currentStorageKey, name, version string, size int64, mimeType, sha256 string) error {
 	result, err := repository.pool.Exec(ctx, `
 		UPDATE attachments
 		SET current_storage_key = $2, current_name = $3, current_size_bytes = $4,
-		    current_mime_type = $5, current_sha256 = $6
-		WHERE storage_key = $1 AND deleted_at IS NULL`, sourceStorageKey, currentStorageKey, name, size, mimeType, sha256)
+		    current_mime_type = $5, current_sha256 = $6, version = $7
+		WHERE storage_key = $1 AND deleted_at IS NULL`, sourceStorageKey, currentStorageKey, name, size, mimeType, sha256, version)
 	if err != nil {
-		return fmt.Errorf("更新当前 CAD 文件元数据失败: %w", err)
+		return fmt.Errorf("更新当前 CAD 版本元数据失败: %w", err)
 	}
 	if result.RowsAffected() == 0 {
 		return ErrNotFound

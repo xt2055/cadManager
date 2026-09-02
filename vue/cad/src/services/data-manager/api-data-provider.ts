@@ -271,8 +271,18 @@ export class ApiDataProvider implements DataProvider {
   }
 
   async closeEditSession(sessionId: string): Promise<EditSessionControlResult> {
-    await this.request(`/edit-sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' })
-    return { sessionId }
+    const body = await this.request<unknown>(`/edit-sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' })
+    const payload = isRecord(body) && 'data' in body ? body.data : body
+    if (!isRecord(payload) || typeof payload.sessionId !== 'string') {
+      return { sessionId }
+    }
+    return {
+      sessionId: payload.sessionId,
+      changed: typeof payload.changed === 'boolean' ? payload.changed : undefined,
+      version: typeof payload.version === 'string' ? payload.version : undefined,
+      currentStorageKey: typeof payload.currentStorageKey === 'string' ? payload.currentStorageKey : undefined,
+      currentName: typeof payload.currentName === 'string' ? payload.currentName : undefined,
+    }
   }
 
   async listFileVersions(storageKey: string): Promise<FileVersionInfo[]> {

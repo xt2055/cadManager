@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"cadguanliq/internal/attachment"
@@ -22,15 +23,40 @@ type Service struct {
 	versions    Repository
 	attachments attachment.Repository
 	storage     storage.ObjectStorage
+	// captureLocks 按附件串行化版本捕获：本人结束编辑与管理员强制关闭可能并发触发
+	// 同一附件的 CapturePath，无互斥时会生成相同版本号，失败方清理版本对象时
+	// 会误删成功方刚写入的版本文件。单实例部署下进程内互斥即可消除该竞态。
+	captureMu   sync.Mutex
+	captureLock map[string]*sync.Mutex
 }
 
 func NewService(repository Repository, attachments attachment.Repository, objectStorage storage.ObjectStorage) *Service {
-	return &Service{versions: repository, attachments: attachments, storage: objectStorage}
+	return &Service{versions: repository, attachments: attachments, storage: objectStorage, captureLock: make(map[string]*sync.Mutex)}
 }
 
-// EnsureInitialVersion 在附件上传后登记 v1.0 初始版本（引用当前内容，不复制文件），
-// 作为可回退的基线；已有任何版本记录时跳过。
+// lockAttachment 取得该附件的捕获互斥锁，返回解锁函数。
+func (service *Service) lockAttachment(sourceKey string) func() {
+	service.captureMu.Lock()
+	if service.captureLock == nil {
+		service.captureLock = make(map[string]*sync.Mutex)
+	}
+	lock, ok := service.captureLock[sourceKey]
+	if !ok {
+		lock = &sync.Mutex{}
+		service.captureLock[sourceKey] = lock
+	}
+	service.captureMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
+// EnsureInitialVersion 登记上传后生成的 v1.0 初始版本（转换/复制的 DWG，位于版本目录），
+// 并将附件当前指针切换到该版本；已有任何版本记录时跳过。
+// 调用方负责先通过转换队列把 v1.0 版本文件写入版本目录（EXB/DXF 转换、DWG 复制）。
 func (service *Service) EnsureInitialVersion(ctx context.Context, sourceKey, userID string) error {
+	unlock := service.lockAttachment(sourceKey)
+	defer unlock()
+
 	attachmentItem, err := service.attachments.Find(ctx, sourceKey)
 	if err != nil {
 		return err
@@ -43,13 +69,23 @@ func (service *Service) EnsureInitialVersion(ctx context.Context, sourceKey, use
 		return latestErr
 	}
 
-	activeKey := attachmentItem.CurrentStorageKey
-	if activeKey == "" {
-		activeKey = attachmentItem.StorageKey
-	}
-	reader, info, err := service.storage.Open(ctx, activeKey)
+	// v1.0 内容 = 版本目录中的 DWG（EXB/DXF 的转换产物或 DWG 原件副本）。
+	// 存量数据没有版本目录文件时兼容引用已有当前文件，避免重复转换。
+	folder := filepath.Dir(attachmentItem.StorageKey)
+	dwgName := strings.TrimSuffix(attachmentItem.Name, filepath.Ext(attachmentItem.Name)) + ".dwg"
+	initialKey := buildVersionStorageKey(folder, dwgName, "v1.0")
+	reader, info, err := service.storage.Open(ctx, initialKey)
 	if err != nil {
-		return fmt.Errorf("打开初始版本内容失败: %w", err)
+		if fallback := attachmentItem.CurrentStorageKey; fallback != "" && fallback != attachmentItem.StorageKey {
+			fallbackReader, fallbackInfo, fallbackErr := service.storage.Open(ctx, fallback)
+			if fallbackErr != nil {
+				return fmt.Errorf("打开初始版本内容失败: %w", err)
+			}
+			reader, info = fallbackReader, fallbackInfo
+			initialKey = fallback
+		} else {
+			return fmt.Errorf("打开初始版本内容失败: %w", err)
+		}
 	}
 	sourceHash, err := hashReader(reader)
 	closeErr := reader.Close()
@@ -60,20 +96,17 @@ func (service *Service) EnsureInitialVersion(ctx context.Context, sourceKey, use
 		return fmt.Errorf("关闭初始版本内容失败: %w", closeErr)
 	}
 
-	baseVersion := strings.TrimSpace(attachmentItem.Version)
-	if baseVersion == "" {
-		baseVersion = "v1.0"
-	}
-	created, err := service.versions.Create(ctx, CreateInput{
+	created, err := service.versions.CreateWithPromotion(ctx, CreateInput{
 		AttachmentID:     attachmentItem.ID,
 		SourceStorageKey: attachmentItem.StorageKey,
-		Version:          baseVersion,
+		Version:          "v1.0",
 		VersionKind:      "release",
 		Size:             info.Size,
 		MimeType:         info.MimeType,
 		SHA256:           sourceHash,
 		CreatedBy:        userID,
-	}, activeKey)
+		CurrentName:      filepath.Base(initialKey),
+	}, initialKey)
 	if err != nil {
 		return err
 	}
@@ -93,8 +126,22 @@ func (service *Service) OpenVersionContent(ctx context.Context, versionID string
 	return reader, version, nil
 }
 
-// Restore 仅管理员可用：以目标版本内容生成一个新工作版本并设为当前内容，
-// 历史版本原样保留，可再次回退。
+// OpenVersionSourceByStorageKey 按版本文件存储键读取版本内容，用于历史版本在线浏览。
+// 存储键无版本记录时（旧数据/当前指针未登记）返回 ErrNotFound，由调用方回退当前文件。
+func (service *Service) OpenVersionSourceByStorageKey(ctx context.Context, storageKey string) (io.ReadCloser, Version, error) {
+	version, err := service.versions.GetByStorageKey(ctx, storageKey)
+	if err != nil {
+		return nil, Version{}, err
+	}
+	reader, _, err := service.storage.Open(ctx, version.StorageKey)
+	if err != nil {
+		return nil, Version{}, fmt.Errorf("读取版本文件失败: %w", err)
+	}
+	return reader, version, nil
+}
+
+// Restore 仅管理员可用：把目标版本内容复制为新工作版本并切换当前指针，
+// 历史版本原样保留，当前文件不再被覆盖写入。
 func (service *Service) Restore(ctx context.Context, user auth.AuthUser, versionID string) (Version, error) {
 	if !isAdminUser(user) {
 		return Version{}, errors.New("只有管理员可以回退版本")
@@ -106,6 +153,8 @@ func (service *Service) Restore(ctx context.Context, user auth.AuthUser, version
 	if version.DeletedAt != nil {
 		return Version{}, ErrNotFound
 	}
+	unlock := service.lockAttachment(version.SourceStorageKey)
+	defer unlock()
 	attachmentItem, err := service.attachments.Find(ctx, version.SourceStorageKey)
 	if err != nil {
 		return Version{}, err
@@ -117,9 +166,11 @@ func (service *Service) Restore(ctx context.Context, user auth.AuthUser, version
 		return Version{}, err
 	}
 
+	// 回退版本写入独立版本目录，扩展名跟随目标版本文件，保证格式一致。
 	folder := filepath.Dir(attachmentItem.StorageKey)
 	baseNoExt := strings.TrimSuffix(filepath.Base(version.StorageKey), filepath.Ext(version.StorageKey))
-	historyKey := buildHistoryStorageKey(folder, baseNoExt+filepath.Ext(version.StorageKey), newVersionNo)
+	activeName := baseNoExt + filepath.Ext(version.StorageKey)
+	historyKey := buildVersionStorageKey(folder, activeName, newVersionNo)
 
 	reader, _, err := service.storage.Open(ctx, version.StorageKey)
 	if err != nil {
@@ -131,23 +182,7 @@ func (service *Service) Restore(ctx context.Context, user auth.AuthUser, version
 	}
 	reader.Close()
 
-	// 回写当前内容；存储键扩展名跟随版本文件，保证格式一致。
-	currentKey := attachmentItem.CurrentStorageKey
-	if currentKey == "" {
-		currentKey = attachmentItem.StorageKey
-	}
-	currentKey = strings.TrimSuffix(currentKey, filepath.Ext(currentKey)) + filepath.Ext(version.StorageKey)
-	if err := service.restoreCurrent(ctx, version.StorageKey, currentKey, version.MimeType); err != nil {
-		_ = service.storage.Delete(ctx, historyKey)
-		return Version{}, err
-	}
-
-	newName := baseNoExt + filepath.Ext(version.StorageKey)
-	if err := service.attachments.SetCurrentContent(ctx, attachmentItem.StorageKey, currentKey, newName, version.Size, version.MimeType, version.SHA256); err != nil {
-		_ = service.attachments.UpdateContent(ctx, attachmentItem.StorageKey, version.Size, version.MimeType, version.SHA256)
-	}
-
-	created, err := service.versions.Create(ctx, CreateInput{
+	created, err := service.versions.CreateWithPromotion(ctx, CreateInput{
 		AttachmentID:     attachmentItem.ID,
 		SourceStorageKey: attachmentItem.StorageKey,
 		Version:          newVersionNo,
@@ -156,24 +191,13 @@ func (service *Service) Restore(ctx context.Context, user auth.AuthUser, version
 		MimeType:         version.MimeType,
 		SHA256:           version.SHA256,
 		CreatedBy:        user.ID,
+		CurrentName:      activeName,
 	}, historyKey)
 	if err != nil {
 		_ = service.storage.Delete(ctx, historyKey)
 		return Version{}, err
 	}
 	return created, nil
-}
-
-func (service *Service) restoreCurrent(ctx context.Context, versionKey, currentKey, mimeType string) error {
-	reader, _, err := service.storage.Open(ctx, versionKey)
-	if err != nil {
-		return fmt.Errorf("读取回退目标版本失败: %w", err)
-	}
-	defer reader.Close()
-	if _, err := service.storage.Put(ctx, currentKey, reader, mimeType); err != nil {
-		return fmt.Errorf("回写当前 CAD 文件失败: %w", err)
-	}
-	return nil
 }
 
 func isAdminUser(user auth.AuthUser) bool {
@@ -185,70 +209,12 @@ func isAdminUser(user auth.AuthUser) bool {
 	return false
 }
 
-func (service *Service) Capture(ctx context.Context, sourceKey, userID string) (Version, bool, error) {	attachmentItem, err := service.attachments.Find(ctx, sourceKey)
-	if err != nil {
-		return Version{}, false, err
-	}
-	reader, _, err := service.storage.Open(ctx, sourceKey)
-	if err != nil {
-		return Version{}, false, err
-	}
-	sourceHash, err := hashReader(reader)
-	closeErr := reader.Close()
-	if err != nil {
-		return Version{}, false, fmt.Errorf("计算 CAD 文件哈希失败: %w", err)
-	}
-	if closeErr != nil {
-		return Version{}, false, fmt.Errorf("关闭 CAD 文件失败: %w", closeErr)
-	}
-	latest, latestErr := service.versions.LatestByAttachment(ctx, attachmentItem.ID)
-	if latestErr == nil && latest.SHA256 == sourceHash {
-		return latest, false, nil
-	}
-	version, err := nextWorkingVersion(latest, attachmentItem.Version)
-	if err != nil {
-		return Version{}, false, err
-	}
-	reader, info, err := service.storage.Open(ctx, sourceKey)
-	if err != nil {
-		return Version{}, false, err
-	}
-	key := filepath.ToSlash(filepath.Join("versions", attachmentItem.ID, "working", version+"-"+filepath.Base(attachmentItem.Name)))
-	object, err := service.storage.Put(ctx, key, reader, info.MimeType)
-	closeErr = reader.Close()
-	if closeErr != nil && err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return Version{}, false, err
-	}
-	expiresAt := time.Now().UTC().Add(90 * 24 * time.Hour)
-	created, err := service.versions.Create(ctx, CreateInput{
-		AttachmentID: attachmentItem.ID, SourceStorageKey: sourceKey, Version: version,
-		VersionKind: "working", Size: object.Size, MimeType: object.MimeType, SHA256: object.SHA256,
-		CreatedBy: userID, ExpiresAt: &expiresAt,
-	}, key)
-	if err != nil {
-		_ = service.storage.Delete(ctx, key)
-		return Version{}, false, err
-	}
-	return created, true, nil
-}
-
-func (service *Service) syncPathToStorage(ctx context.Context, sourcePath, storageKey, mimeType string) (storage.ObjectInfo, error) {
-	reader, err := os.Open(sourcePath)
-	if err != nil {
-		return storage.ObjectInfo{}, fmt.Errorf("打开待回写的 SMB 文件失败: %w", err)
-	}
-	defer reader.Close()
-	object, err := service.storage.Put(ctx, storageKey, reader, mimeType)
-	if err != nil {
-		return storage.ObjectInfo{}, err
-	}
-	return object, nil
-}
-
 func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, userID string) (Version, bool, error) {
+	// 同一附件的捕获全程互斥：版本号计算、对象写入、事务登记必须串行，
+	// 否则并发方会生成相同版本号并在失败清理时误删对方的版本对象。
+	unlock := service.lockAttachment(sourceKey)
+	defer unlock()
+
 	attachmentItem, err := service.attachments.Find(ctx, sourceKey)
 	if err != nil {
 		return Version{}, false, err
@@ -284,13 +250,17 @@ func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, 
 		return Version{}, false, err
 	}
 
-	// 方案 A：语义化历史版本路径 -> drawings/项目目录/history/图号/图号_版本_时间戳.dwg
+	// 语义化版本路径：每个版本一个独立子目录 -> 目录/history/文件名/版本号/文件名.dwg
+	// 工作文件必为 DWG（EXB 已在打开编辑时转换），版本文件名与当前文件保持一致。
 	folder := filepath.Dir(attachmentItem.StorageKey)
 	activeName := attachmentItem.CurrentName
 	if activeName == "" {
 		activeName = attachmentItem.Name
 	}
-	historyKey := buildHistoryStorageKey(folder, activeName, version)
+	if strings.EqualFold(filepath.Ext(activeName), ".exb") {
+		activeName = strings.TrimSuffix(activeName, filepath.Ext(activeName)) + ".dwg"
+	}
+	historyKey := buildVersionStorageKey(folder, activeName, version)
 
 	reader, err = os.Open(sourcePath)
 	if err != nil {
@@ -306,26 +276,10 @@ func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, 
 		return Version{}, false, fmt.Errorf("保存 SMB 历史归档版本失败: %w", err)
 	}
 
-	// 先回写当前工作文件并更新附件元数据，全部成功后才登记版本记录；
-	// 否则回写失败触发重试时会因时间戳不同产生重复版本。
-	currentKey := attachmentItem.CurrentStorageKey
-	if currentKey == "" {
-		currentKey = strings.TrimSuffix(attachmentItem.StorageKey, filepath.Ext(attachmentItem.StorageKey)) + ".dwg"
-	}
-	currentObject, err := service.syncPathToStorage(ctx, sourcePath, currentKey, "application/acad")
-	if err != nil {
-		_ = service.storage.Delete(ctx, historyKey)
-		return Version{}, false, fmt.Errorf("回写当前 CAD 文件失败: %w", err)
-	}
-
-	dwgName := strings.TrimSuffix(attachmentItem.Name, filepath.Ext(attachmentItem.Name)) + ".dwg"
-	if err := service.attachments.SetCurrentContent(ctx, attachmentItem.StorageKey, currentKey, dwgName, currentObject.Size, currentObject.MimeType, currentObject.SHA256); err != nil {
-		// 尝试更新通用内容
-		_ = service.attachments.UpdateContent(ctx, attachmentItem.StorageKey, currentObject.Size, currentObject.MimeType, currentObject.SHA256)
-	}
-
+	// 事务内登记版本并切换当前指针；不覆盖任何已有文件。
+	// 失败时删除刚写入的版本对象，旧当前版本保持不变，编辑会话保留等待重试。
 	expiresAt := time.Now().UTC().Add(90 * 24 * time.Hour)
-	created, err := service.versions.Create(ctx, CreateInput{
+	created, err := service.versions.CreateWithPromotion(ctx, CreateInput{
 		AttachmentID:     attachmentItem.ID,
 		SourceStorageKey: sourceKey,
 		Version:          version,
@@ -335,6 +289,7 @@ func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, 
 		SHA256:           historyObject.SHA256,
 		CreatedBy:        userID,
 		ExpiresAt:        &expiresAt,
+		CurrentName:      activeName,
 	}, historyKey)
 	if err != nil {
 		_ = service.storage.Delete(ctx, historyKey)
@@ -343,15 +298,17 @@ func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, 
 	return created, true, nil
 }
 
-func buildHistoryStorageKey(folder, fileName, version string) string {
+// buildVersionStorageKey 生成版本文件的独立目录路径：
+// {folder}/history/{文件名去后缀}/{版本号}/{文件名去后缀}{ext}
+// 每个版本一个子文件夹，文件名保持干净（不带版本号、不带时间戳），
+// 同版本重试不会因时间戳漂移产生重复版本，路径本身即含版本语义。
+func buildVersionStorageKey(folder, fileName, version string) string {
 	baseNoExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
 	ext := filepath.Ext(fileName)
 	if ext == "" {
 		ext = ".dwg"
 	}
-	timeTag := time.Now().Format("20060102_150405")
-	histName := fmt.Sprintf("%s_%s_%s%s", baseNoExt, version, timeTag, ext)
-	return filepath.ToSlash(filepath.Join(folder, "history", baseNoExt, histName))
+	return filepath.ToSlash(filepath.Join(folder, "history", baseNoExt, version, baseNoExt+ext))
 }
 
 func (service *Service) List(ctx context.Context, attachmentID string) ([]Version, error) {

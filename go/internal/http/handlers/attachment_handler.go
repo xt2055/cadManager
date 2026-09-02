@@ -171,9 +171,31 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 			return
 		}
 
-		// 上传阶段只保存原始附件。DWG 转换属于预览/本地编辑按需操作，避免用户取消创建时产生后台转换副本。
+		// CAD 附件：上传即生成 v1.0 初始版本（EXB/DXF 经 CAXA 转换、DWG 复制进版本目录），
+		// 等待完成后登记版本并切换当前指针，保证前端拿到成功响应时 v1.0 已可用；
+		// 转换失败则回滚附件记录与原始对象，不返回“上传成功”，避免产生后续查看必然失败的坏状态。
+		ext := filepathExt(item.StorageKey)
+		if ext == "" {
+			ext = filepathExt(item.Name)
+		}
+		isCAD := strings.EqualFold(ext, ".exb") || strings.EqualFold(ext, ".dwg") || strings.EqualFold(ext, ".dxf")
+		if isCAD {
+			if convService == nil {
+				_ = objectStorage.Delete(request.Context(), key)
+				_ = repository.Delete(request.Context(), key, user.ID)
+				response.WriteError(writer, http.StatusInternalServerError, "CAD 转换服务未配置，无法生成初始版本")
+				return
+			}
+			if _, convErr := convService.EnsureDwg(request.Context(), item); convErr != nil {
+				_ = objectStorage.Delete(request.Context(), key)
+				_ = repository.Delete(request.Context(), key, user.ID)
+				log.Printf("[版本] 上传后初始版本转换失败，已回滚 storageKey=%s err=%v", item.StorageKey, convErr)
+				response.WriteError(writer, http.StatusUnprocessableEntity, "CAD 初始版本转换失败："+convErr.Error())
+				return
+			}
+		}
 
-		// 登记初始版本（v1.0 基线），保证后续编辑版本可回退。
+		// 登记初始版本（v1.0 基线 + 当前指针），保证后续编辑版本可回退。
 		if versions != nil {
 			if err := versions.EnsureInitialVersion(request.Context(), item.StorageKey, user.ID); err != nil {
 				log.Printf("[版本] 登记初始版本失败 storageKey=%s: %v", item.StorageKey, err)

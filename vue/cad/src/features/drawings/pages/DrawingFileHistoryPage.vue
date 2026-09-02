@@ -130,10 +130,16 @@ function selectNode(node: HistoryTreeNode) {
 
 function openViewer(node: HistoryTreeNode) {
   if (!targetFile.value) return
+  // 历史版本节点按其版本文件存储键精确在线浏览（后端按 file_versions.storage_key 定位）；
+  // 当前生效节点仍走当前文件源。fileId 统一用逻辑文件 ID 保证 viewer 能找到文件信息。
+  const query: Record<string, string> = { fileId: targetFile.value.id }
+  if (!node.isCurrent && node.storageKey) {
+    query.versionKey = node.storageKey
+  }
   router.push({
     name: 'drawing-viewer',
     params: { drawingId: drawingId.value },
-    query: { fileId: node.id },
+    query,
   })
 }
 

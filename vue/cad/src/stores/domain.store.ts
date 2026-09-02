@@ -317,6 +317,36 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
+  function applyDocument(document: DataDocument): void {
+    drawings.value = document.drawings
+    attributes.value = document.attributes ?? []
+    structure.value = document.structure
+    versions.value = document.versions
+    branches.value = document.branches
+    borrows.value = document.borrows
+    bomItems.value = document.bom
+    craftFiles.value = document.crafts
+    logs.value = document.logs
+    reviewCases.value = document.reviewCases
+    myReviews.value = document.myReviews
+    completedReviews.value = document.completedReviews
+    users.value = document.users
+    flows.value = document.flows
+    hiddenList.value = document.hiddenList
+    adminLogs.value = document.adminLogs
+  }
+
+  // 从后端重新加载业务文档：本地编辑结束生成新版本后调用，
+  // 保证前端文件列表/版本号以后端数据库为准，不用旧数据覆盖服务端状态。
+  async function reloadFromServer(): Promise<void> {
+    try {
+      const document = await dataManager.load()
+      applyDocument(document)
+    } catch (loadError) {
+      console.warn('刷新业务数据失败', loadError)
+    }
+  }
+
   function initialize(): Promise<void> {
     if (initialized.value) return Promise.resolve()
     if (initializationPromise) return initializationPromise
@@ -326,25 +356,10 @@ export const useDomainStore = defineStore('domain', () => {
     initializationPromise = (async () => {
       try {
         const document = await dataManager.load()
-        drawings.value = document.drawings
-        attributes.value = document.attributes ?? []
-        structure.value = document.structure
-        versions.value = document.versions
-        branches.value = document.branches
-        borrows.value = document.borrows
-        bomItems.value = document.bom
-        craftFiles.value = document.crafts
-        logs.value = document.logs
-        reviewCases.value = document.reviewCases
-        myReviews.value = document.myReviews
-        completedReviews.value = document.completedReviews
-        users.value = document.users
+        applyDocument(document)
         if (authStore.hasRole('admin')) {
           users.value = await dataManager.listUsers()
         }
-        flows.value = document.flows
-        hiddenList.value = document.hiddenList
-        adminLogs.value = document.adminLogs
         await scanUnscannedCraftFiles()
         await loadRemoteActivityLogs()
         await refreshReviewData()
@@ -2160,6 +2175,7 @@ export const useDomainStore = defineStore('domain', () => {
     reviewCount,
     drawingStats,
     initialize,
+    reloadFromServer,
     refreshDrawingDesigner,
     recordActivity,
     recordActivityAndPersist,
