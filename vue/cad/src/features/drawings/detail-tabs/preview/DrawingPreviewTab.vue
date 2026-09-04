@@ -3,8 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { dataManager } from '@/services/data-manager'
-import { editingService } from '@/app/container'
+import { drawingFileService, editingService } from '@/app/container'
 import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/services/data-manager/data-provider'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDomainStore } from '@/stores/domain.store'
@@ -878,7 +877,7 @@ async function executeDownload() {
       }
       usedNames.add(`${folder}/${fileName}`)
       try {
-        const content = await dataManager.readAttachment(key)
+        const content = await drawingFileService.read(key)
         zip.file(`${folder}/${fileName}`, content)
       } catch {
         failed += 1
@@ -977,7 +976,7 @@ async function onPartFilesChange(event: Event) {
         continue
       }
 
-      const identity = await dataManager.identifyDrawingFile(file, file.name)
+      const identity = await drawingFileService.identify(file, file.name)
       const parsed = parseDrawingNumber(identity.partNo)
       const material = identity.material || identity.titleBlock?.['材料名称'] || identity.titleBlock?.['材料'] || identity.titleBlock?.['材质'] || '—'
       const isBorrowed = parsed.rootNo !== rootNo
@@ -1086,8 +1085,8 @@ async function reidentifyAllPartFiles() {
     const failures: string[] = []
     for (const file of cadFiles) {
       try {
-        const content = await dataManager.readAttachment(file.storageKey as string)
-        const identity = await dataManager.identifyDrawingFile(content, file.name)
+        const content = await drawingFileService.read(file.storageKey as string)
+        const identity = await drawingFileService.identify(content, file.name)
         const identifiedNo = identity.partNo.trim()
 
         // 过滤：如果识别出的图号与总图号完全相同，说明是附属文件或总图明细，跳过

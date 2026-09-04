@@ -3,7 +3,16 @@ import type {
   EditSessionControlResult,
   EditSessionOpenResult,
 } from '@/services/data-manager/data-provider'
-import type { NativeEditOpenPayload, ReadonlyOpenPayload } from '@/services/tauri/cad-edit.service'
+
+export interface NativeEditOpenPayload {
+  sessionId: string
+  openUrl: string
+  expiresAt: string
+}
+
+export interface ReadonlyOpenPayload {
+  storageKey: string
+}
 
 export interface EditingApiGateway {
   listEditSessions(drawingNo?: string): Promise<ActiveEditSessionInfo[]>

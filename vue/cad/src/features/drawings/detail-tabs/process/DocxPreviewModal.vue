@@ -3,7 +3,7 @@ import { nextTick, ref, watch } from 'vue'
 import { renderAsync } from 'docx-preview'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { dataManager } from '@/services/data-manager'
+import { drawingFileService } from '@/app/container'
 
 interface Props {
   visible: boolean
@@ -35,7 +35,7 @@ async function loadDocument() {
   isPdf.value = (props.fileName || '').toLowerCase().endsWith('.pdf')
 
   try {
-    const blob = await dataManager.readAttachment(props.storageKey)
+    const blob = await drawingFileService.read(props.storageKey)
     if (isPdf.value) {
       if (pdfUrl.value) {
         URL.revokeObjectURL(pdfUrl.value)

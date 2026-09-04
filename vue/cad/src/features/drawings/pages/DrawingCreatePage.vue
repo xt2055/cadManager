@@ -7,9 +7,9 @@ import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue
 import { useAuthStore } from '@/stores/auth.store'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import { dataManager } from '@/services/data-manager'
-import { appContainer } from '@/app/container'
+import { appContainer, drawingFileService } from '@/app/container'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
+import type { DrawingFileIdentity } from '@/modules/drawing'
 import type { UploadSessionSnapshot } from '@/services/data-manager/data-provider'
 import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 
@@ -174,7 +174,7 @@ async function handleAssemblySelected(file: File) {
   }
   if (file && supportsDrawingNumberIdentification(file.name)) {
     try {
-      const identity = await dataManager.identifyDrawingFile(file, file.name)
+      const identity = await drawingFileService.identify(file, file.name)
       if (sequence !== assemblyIdentifySequence) return
       if (identity.partNoSource !== 'filename' || !identity.partNo.trim()) {
         assemblyIdentifyMessage.value = '文件名中未识别到总图图号，请核对后手动填写。'
@@ -418,10 +418,10 @@ async function performCreate() {
     if (!part.file) throw new Error(`零件文件「${part.name}」缺少文件内容`)
 
     createStatus.value = `正在识别零件图号（${index + 1}/${partFiles.value.length}）`
-    let identity: Awaited<ReturnType<typeof dataManager.identifyDrawingFile>> | null = null
+    let identity: DrawingFileIdentity | null = null
     if (supportsDrawingNumberIdentification(part.name) && !isDetailListFile(part.name)) {
       try {
-        identity = await dataManager.identifyDrawingFile(part.file, part.name)
+        identity = await drawingFileService.identify(part.file, part.name)
       } catch (error) {
         console.warn(`读取零件图号失败，改用文件名：${part.name}`, error)
       }

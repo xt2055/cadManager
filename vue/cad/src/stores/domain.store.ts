@@ -7,11 +7,9 @@ import { readDocxAuthor } from '@/utils/docx-metadata'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-number-parser'
 import { useAuthStore } from '@/stores/auth.store'
-import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
 import type { ApiReviewCase } from '@/modules/review'
-import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
 import { formatReadableDateTime } from '@/utils/date-time'
-import { appContainer, attachmentUploader, drawingCommandService, drawingUploadCoordinator, editingService, reviewService } from '@/app/container'
+import { adminService, appContainer, attributeService, attachmentUploader, auditService, drawingCommandService, drawingUploadCoordinator, editingService, reviewService } from '@/app/container'
 import { signerRoleForNode } from '@/modules/review'
 import type { PendingDrawingUploadEntry } from '@/modules/upload'
 import type {
@@ -223,7 +221,7 @@ export const useDomainStore = defineStore('domain', () => {
       ...(input.detail ? { detail: input.detail } : {}),
     }
     logs.value.unshift(activity)
-    void createDrawingOperationLog({
+    void auditService.record({
       drawingNo: activity.drawingNo,
       drawingName: activity.drawingName,
       targetType: activity.targetType,
@@ -237,7 +235,7 @@ export const useDomainStore = defineStore('domain', () => {
 
   async function loadRemoteActivityLogs(): Promise<void> {
     try {
-      const page = await listDrawingOperationLogs({ page: 1, pageSize: 100 })
+      const page = await auditService.listDrawing({ page: 1, pageSize: 100 })
       logs.value = page.list
     } catch {
       // 调试模式使用本地 JSON 数据时没有后端日志接口，保留本地记录。
@@ -522,7 +520,7 @@ export const useDomainStore = defineStore('domain', () => {
 	          }
 	        }
         if (authStore.hasRole('admin')) {
-          users.value = await dataManager.listUsers()
+          users.value = await adminService.listUsers()
         }
         await scanUnscannedCraftFiles()
         await loadRemoteActivityLogs()
@@ -788,28 +786,18 @@ export const useDomainStore = defineStore('domain', () => {
 
   // ---------- 图纸属性（平铺属性 + 字段选项） ----------
 
-  const sortedAttributes = computed(() => attributes.value
-    .filter((attribute) => attribute.enabled)
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'zh-CN')))
+  const sortedAttributes = computed(() => attributeService.sort(attributes.value))
 
   function attributeName(id: string): string {
-    return attributes.value.find((attribute) => attribute.id === id)?.name ?? ''
+    return attributeService.name(attributes.value, id)
   }
 
   function attributeFieldName(attributeId: string, fieldId?: string): string {
-    if (!fieldId) return ''
-    return attributes.value.find((attribute) => attribute.id === attributeId)?.fields.find((field) => field.id === fieldId)?.name ?? ''
+    return attributeService.fieldName(attributes.value, attributeId, fieldId)
   }
 
   function validateAttributeValues(values: Record<string, string> = {}): string[] {
-    return sortedAttributes.value.flatMap((attribute) => {
-      const value = values[attribute.id] ?? ''
-      if (attribute.required && !value) return [`请填写属性「${attribute.name}」`]
-      if (value && !attribute.fields.some((field) => field.enabled && field.id === value)) {
-        return [`属性「${attribute.name}」的字段选项无效`]
-      }
-      return []
-    })
+    return attributeService.validate(attributes.value, values)
   }
 
   async function addAttribute(name: string, required = false): Promise<DrawingAttribute> {
@@ -2122,8 +2110,8 @@ export const useDomainStore = defineStore('domain', () => {
     const target = findDrawingOrPart(drawingNo)
     if (!target) throw new Error(`未找到图纸：${drawingNo}`)
     const item = archived
-      ? await drawingLifecycleService.archive(drawingNo)
-      : await drawingLifecycleService.unarchive(drawingNo)
+      ? await drawingCommandService.archive(drawingNo)
+      : await drawingCommandService.unarchive(drawingNo)
     target.status = (item.status as Drawing['status']) ?? (archived ? 'archived' : 'published')
     recordActivity({
       drawingNo,
@@ -2280,7 +2268,7 @@ export const useDomainStore = defineStore('domain', () => {
   async function refreshUsers(): Promise<void> {
     if (!authStore.hasRole('admin')) return
     try {
-      users.value = await dataManager.listUsers()
+      users.value = await adminService.listUsers()
     } catch (error) {
       console.warn('刷新账号列表失败', error)
     }
@@ -2305,7 +2293,7 @@ export const useDomainStore = defineStore('domain', () => {
       throw new Error(`账号已存在：${normalizedAccount}`)
     }
 
-    const user = await dataManager.createUser({
+    const user = await adminService.createUser({
       account: normalizedAccount,
       displayName: normalizedName,
       password: normalizedPassword,
@@ -2320,7 +2308,7 @@ export const useDomainStore = defineStore('domain', () => {
     if (!user) throw new Error('未找到目标账号')
     const normalizedPassword = password.trim()
     if (!normalizedPassword) throw new Error('请输入新密码')
-    const updated = await dataManager.updateUser(userId, {
+    const updated = await adminService.updateUser(userId, {
       account: user.account,
       displayName: user.displayName,
       password: normalizedPassword,
@@ -2339,7 +2327,7 @@ export const useDomainStore = defineStore('domain', () => {
       if (activeAdminCount <= 1) throw new Error('不能禁用最后一个管理员账号')
     }
 
-    const updated = await dataManager.updateUser(userId, {
+    const updated = await adminService.updateUser(userId, {
       account: user.account,
       displayName: user.displayName,
       roles: user.roles,

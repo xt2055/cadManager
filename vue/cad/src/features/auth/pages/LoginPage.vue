@@ -8,7 +8,7 @@ import { windowService } from '@/services/tauri/window.service'
 import { useUserPreferenceStore } from '@/stores/user-preference.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { readDebugMode, writeDebugMode } from '@/services/runtime-config.service'
-import { dataManager } from '@/services/data-manager'
+import { appContainer } from '@/app/container'
 
 defineOptions({
   name: 'LoginPage',
@@ -523,7 +523,7 @@ function waitForViewportStable(): Promise<void> {
 async function applyDebugMode() {
   try {
     await writeDebugMode(debugMode.value)
-    dataManager.resetProvider()
+    appContainer.resetDataProvider()
     authStore.resetProvider()
   } catch (error) {
     debugMode.value = !debugMode.value

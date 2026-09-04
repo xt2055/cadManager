@@ -2,22 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import {
-  deleteAdminDrawing,
-  deleteAdminAttachment,
-  closeAdminEditSession,
-  downloadAdminVersion,
-  restoreAdminVersion,
-  getAdminDrawing,
-  listAdminDrawings,
-  setAdminDrawingStatus,
-  setAdminPartStatus,
-  type AdminAttachment,
-  type AdminDrawingSummary,
-  type AdminDrawingDetail,
-  type AdminDrawingPage,
-  type AdminPartSummary,
-} from '@/services/admin-drawing.service'
+import { adminService } from '@/app/container'
+import type {
+  AdminAttachment,
+  AdminDrawingSummary,
+  AdminDrawingDetail,
+  AdminDrawingPage,
+  AdminPartSummary,
+} from '@/modules/admin'
 import { useUiStore } from '@/stores/ui.store'
 import { useDomainStore } from '@/stores/domain.store'
 
@@ -66,7 +58,7 @@ async function load() {
   loading.value = true
   errorMessage.value = ''
   try {
-    result.value = await listAdminDrawings({ page: page.value, pageSize: pageSize.value, keyword: keyword.value.trim() || undefined, status: status.value || undefined, kind: mode.value })
+    result.value = await adminService.listDrawings({ page: page.value, pageSize: pageSize.value, keyword: keyword.value.trim() || undefined, status: status.value || undefined, kind: mode.value })
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '后台图纸列表读取失败'
     result.value = { list: [], total: 0, page: page.value, pageSize: pageSize.value }
@@ -82,7 +74,7 @@ function switchMode(next: 'drawing' | 'part') { mode.value = next; page.value = 
 
 async function openDetail(item: { id: string }) {
   detailLoading.value = true
-  try { detail.value = await getAdminDrawing(item.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '图纸详情读取失败', 'warn') } finally { detailLoading.value = false }
+  try { detail.value = await adminService.getDrawing(item.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '图纸详情读取失败', 'warn') } finally { detailLoading.value = false }
 }
 
 function closeDetail() { detail.value = null }
@@ -94,7 +86,7 @@ async function toggleDrawing(item: { id: string; no: string; status: string }) {
   const confirmed = window.confirm(`确定要${action}图纸「${item.no}」吗？${nextStatus === 'disabled' ? '\n禁用后普通图纸库将不再显示。' : ''}`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await setAdminDrawingStatus(item.id, nextStatus); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`图纸「${item.no}」已${action}`, 'ok'); if (detail.value?.drawing.id === item.id) detail.value = await getAdminDrawing(item.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : `图纸${action}失败`, 'warn') } finally { busyId.value = '' }
+  try { await adminService.setDrawingStatus(item.id, nextStatus); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`图纸「${item.no}」已${action}`, 'ok'); if (detail.value?.drawing.id === item.id) detail.value = await adminService.getDrawing(item.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : `图纸${action}失败`, 'warn') } finally { busyId.value = '' }
 }
 
 async function togglePart(item: AdminPartSummary) {
@@ -104,7 +96,7 @@ async function togglePart(item: AdminPartSummary) {
   const confirmed = window.confirm(`确定要${action}零件「${item.no}」吗？`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await setAdminPartStatus(item.id, nextStatus); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`零件「${item.no}」已${action}`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : `零件${action}失败`, 'warn') } finally { busyId.value = '' }
+  try { await adminService.setPartStatus(item.id, nextStatus); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`零件「${item.no}」已${action}`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : `零件${action}失败`, 'warn') } finally { busyId.value = '' }
 }
 
 async function hardDelete(item: { id: string; no: string }) {
@@ -112,25 +104,25 @@ async function hardDelete(item: { id: string; no: string }) {
   const confirmed = window.confirm(`确定永久删除图纸「${item.no}」吗？\n\n这将同时删除其零件、附件、CAD 版本和物理文件，无法恢复。`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await deleteAdminDrawing(item.id); closeDetail(); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`图纸「${item.no}」已永久删除`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : '图纸永久删除失败', 'warn') } finally { busyId.value = '' }
+  try { await adminService.deleteDrawing(item.id); closeDetail(); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`图纸「${item.no}」已永久删除`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : '图纸永久删除失败', 'warn') } finally { busyId.value = '' }
 }
 
 async function removeAttachment(item: AdminAttachment) {
   if (busyId.value) return
   if (!window.confirm(`确定永久删除附件「${attachmentName(item)}」吗？\n\n对应的所有文件版本和物理文件都会被删除，无法恢复。`)) return
   busyId.value = item.id
-  try { await deleteAdminAttachment(item.id); uiStore.toast(`附件「${attachmentName(item)}」已删除`, 'ok'); if (detail.value) detail.value = await getAdminDrawing(detail.value.drawing.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '附件删除失败', 'warn') } finally { busyId.value = '' }
+  try { await adminService.deleteAttachment(item.id); uiStore.toast(`附件「${attachmentName(item)}」已删除`, 'ok'); if (detail.value) detail.value = await adminService.getDrawing(detail.value.drawing.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '附件删除失败', 'warn') } finally { busyId.value = '' }
 }
 
 async function downloadVersion(item: AdminDrawingDetail['versions'][number]) {
-  try { const blob = await downloadAdminVersion(item.id); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = item.storageKey.split('/').pop() || `${item.version}.dwg`; anchor.click(); URL.revokeObjectURL(url) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '版本下载失败', 'warn') }
+  try { const blob = await adminService.downloadVersion(item.id); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = item.storageKey.split('/').pop() || `${item.version}.dwg`; anchor.click(); URL.revokeObjectURL(url) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '版本下载失败', 'warn') }
 }
 
 async function restoreVersion(item: AdminDrawingDetail['versions'][number]) {
   if (!detail.value || busyId.value) return
   if (!window.confirm(`确定以版本 ${item.version} 生成新的当前版本吗？`)) return
   busyId.value = item.id
-  try { await restoreAdminVersion(item.id); uiStore.toast(`已从 ${item.version} 生成新版本`, 'ok'); detail.value = await getAdminDrawing(detail.value.drawing.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '版本回退失败', 'warn') } finally { busyId.value = '' }
+  try { await adminService.restoreVersion(item.id); uiStore.toast(`已从 ${item.version} 生成新版本`, 'ok'); detail.value = await adminService.getDrawing(detail.value.drawing.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '版本回退失败', 'warn') } finally { busyId.value = '' }
 }
 
 async function closeSession(item: Record<string, unknown>) {
@@ -138,7 +130,7 @@ async function closeSession(item: Record<string, unknown>) {
   if (!id || busyId.value) return
   if (!window.confirm(`确定强制结束「${String(item.fileName || '未命名文件')}」的编辑会话吗？`)) return
   busyId.value = id
-  try { await closeAdminEditSession(id); uiStore.toast('编辑会话已结束', 'ok'); if (detail.value) detail.value = await getAdminDrawing(detail.value.drawing.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '结束编辑会话失败', 'warn') } finally { busyId.value = '' }
+  try { await adminService.closeEditSession(id); uiStore.toast('编辑会话已结束', 'ok'); if (detail.value) detail.value = await adminService.getDrawing(detail.value.drawing.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '结束编辑会话失败', 'warn') } finally { busyId.value = '' }
 }
 
 onMounted(() => { void load() })

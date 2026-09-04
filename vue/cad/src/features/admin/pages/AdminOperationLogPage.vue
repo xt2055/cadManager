@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { listAdminOperationLogs, type OperationLogPage } from '@/services/drawing-operation-log.service'
+import { auditService } from '@/app/container'
+import type { OperationLogPage } from '@/services/drawing-operation-log.service'
 import { useDomainStore } from '@/stores/domain.store'
 import { ACTIVITY_LABELS, type ActivityLog, type ActivityResult, type ActivityTargetType, type ActivityType } from '@/types/domain.types'
 
@@ -57,7 +58,7 @@ async function loadLogs() {
   loading.value = true
   errorMessage.value = ''
   try {
-    resultPage.value = await listAdminOperationLogs({
+    resultPage.value = await auditService.listAdmin({
       page: page.value,
       pageSize: pageSize.value,
       keyword: query.value.trim() || undefined,

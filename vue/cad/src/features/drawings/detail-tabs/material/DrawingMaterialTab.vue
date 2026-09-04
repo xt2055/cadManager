@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx'
 import { invoke } from '@tauri-apps/api/core'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { dataManager } from '@/services/data-manager'
+import { drawingFileService } from '@/app/container'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { BomItem, MaterialFile } from '@/types/domain.types'
@@ -201,7 +201,7 @@ async function createPrintableFile(): Promise<{ bytes: Uint8Array; drawingNo: st
   const storageKey = source?.storageKey || ''
 
   try {
-    const blob = await dataManager.exportBOM(drawingNo, storageKey, localBom.value)
+    const blob = await drawingFileService.exportBOM(drawingNo, storageKey, localBom.value)
     const arrayBuffer = await blob.arrayBuffer()
     return {
       bytes: new Uint8Array(arrayBuffer),

@@ -2,13 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import {
-  fetchSystemLogFiles,
-  fetchSystemLogs,
-  systemLogDownloadUrl,
-  type SystemLogFile,
-  type SystemLogLine,
-} from '@/services/admin.service'
+import { adminService } from '@/app/container'
+import type { SystemLogFile, SystemLogLine } from '@/modules/admin'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'SystemLogPage' })
@@ -39,8 +34,8 @@ async function load(showError = false) {
   loading.value = true
   try {
     const [logResult, fileResult] = await Promise.all([
-      fetchSystemLogs(500, keyword.value.trim()),
-      fetchSystemLogFiles(),
+      adminService.fetchSystemLogs(500, keyword.value.trim()),
+      adminService.fetchSystemLogFiles(),
     ])
     lines.value = logResult
     files.value = fileResult
@@ -79,7 +74,7 @@ onBeforeUnmount(() => {
           <input v-model="autoRefresh" type="checkbox" @change="toggleAuto" />
           <span>2 秒自动刷新</span>
         </label>
-        <a class="ghost-btn" :href="latestFile ? systemLogDownloadUrl(latestFile.name) : undefined" :class="{ disabled: !latestFile }">
+        <a class="ghost-btn" :href="latestFile ? adminService.systemLogDownloadUrl(latestFile.name) : undefined" :class="{ disabled: !latestFile }">
           <DemoIcon name="download" :size="14" /><span>下载最新日志</span>
         </a>
         <button class="ghost-btn" type="button" @click="load(true)"><DemoIcon name="refresh-cw" :size="14" /><span>刷新</span></button>
@@ -119,7 +114,7 @@ onBeforeUnmount(() => {
             <td class="mono">{{ file.name }}</td>
             <td>{{ formatSize(file.size) }}</td>
             <td>{{ file.modTime }}</td>
-            <td><a class="ghost-btn" :href="systemLogDownloadUrl(file.name)"><DemoIcon name="download" :size="13" /><span>下载</span></a></td>
+            <td><a class="ghost-btn" :href="adminService.systemLogDownloadUrl(file.name)"><DemoIcon name="download" :size="13" /><span>下载</span></a></td>
           </tr>
         </tbody>
       </table>
