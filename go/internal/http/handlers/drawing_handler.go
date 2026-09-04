@@ -235,7 +235,7 @@ func writeDrawingError(writer http.ResponseWriter, err error, fallback string) {
 
 func validStatus(status drawing.Status) bool {
 	switch status {
-	case drawing.StatusPublished, drawing.StatusReviewing, drawing.StatusDraft, drawing.StatusHidden, drawing.StatusDisabled, drawing.StatusArchived:
+	case drawing.StatusPublished, drawing.StatusReviewing, drawing.StatusDraft, drawing.StatusDisabled, drawing.StatusArchived:
 		return true
 	default:
 		return false

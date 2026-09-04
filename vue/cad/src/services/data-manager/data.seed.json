@@ -1,5 +1,4 @@
 {
-  "version": 2,
   "attributes": [],
   "drawings": [],
   "structure": [],
@@ -24,7 +23,5 @@
       "lastLoginAt": null
     }
   ],
-  "flows": [],
-  "hiddenList": [],
-  "adminLogs": []
+  "flows": []
 }

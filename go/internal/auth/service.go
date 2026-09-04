@@ -140,10 +140,6 @@ func (service *Service) UpdateUser(ctx context.Context, userID string, input Use
 	return service.repository.UpdateUser(ctx, userID, input)
 }
 
-func (service *Service) MigrateLegacyUsers(ctx context.Context) error {
-	return service.repository.MigrateLegacyUsers(ctx)
-}
-
 func normalizeRoles(roles []string) []string {
 	seen := make(map[string]struct{}, len(roles))
 	result := make([]string, 0, len(roles))

@@ -3,10 +3,7 @@ export {
   createDataProvider,
   dataManager,
   DefaultDataManager,
-  emptyDataDocument,
 } from './data-manager'
 export { JsonDataProvider } from './json-data-provider'
-export { createEmptyDataDocument, normalizeDataDocument } from './data.types'
-export type { DataDocument } from './data.types'
 export type { DataManager } from './data-manager'
-export type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionOpenResult, ReidentifyDrawingFileResult, UserManagementInput } from './data-provider'
+export type { DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionOpenResult, ReidentifyDrawingFileResult, UserManagementInput, StoredAttachment } from './data-provider'

@@ -1,4 +1,4 @@
-export type DrawingStatus = 'published' | 'reviewing' | 'draft' | 'hidden' | 'disabled' | 'archived'
+export type DrawingStatus = 'published' | 'reviewing' | 'draft' | 'disabled' | 'archived'
 
 export type ActivityType = 'view' | 'create' | 'edit' | 'branch' | 'upload' | 'download' | 'delete' | 'check' | 'parse'
 
@@ -39,8 +39,8 @@ export interface DrawingFileHistoryItem {
   replaceReason?: string
   storageKey?: string
   mimeType?: string
-  previewable: boolean
-}
+	previewable: boolean
+	}
 
 export interface DrawingFile {
   id: string
@@ -57,7 +57,8 @@ export interface DrawingFile {
   rawStorageKey?: string
   currentStorageKey?: string
   mimeType?: string
-  previewable: boolean
+	previewable: boolean
+	revision?: number
   replaceReason?: string
   replacedBy?: string
   replacedAt?: string
@@ -74,7 +75,8 @@ export interface MaterialFile {
   uploadedAt: string
   storageKey?: string
   mimeType?: string
-  author?: string
+	author?: string
+	revision?: number
 }
 
 export interface CraftFile {
@@ -90,7 +92,8 @@ export interface CraftFile {
   mimeType?: string
   previewable: boolean
   author?: string
-  scanned: boolean
+	 scanned: boolean
+	revision?: number
 }
 
 export interface DrawingAttributeField {
@@ -147,11 +150,14 @@ export interface ActivityLog {
   targetType: ActivityTargetType
   userId?: string
   user: string
+  userAccount?: string
   act: ActivityType
   txt: string
   time: string
   occurredAt: string
   result: ActivityResult
+  ipAddress?: string
+  userAgent?: string
   detail?: Record<string, unknown>
 }
 
@@ -316,14 +322,6 @@ export interface ReviewFlow {
   createdBy?: string
   createdAt?: string
   nodeList?: Array<{ name: string; user: string; required: boolean; candidateRole?: UserRole; signerRole?: string; order?: number }>
-}
-
-export interface HiddenObject {
-  no: string
-  name: string
-  op: string
-  by: string
-  date: string
 }
 
 export interface AdminLog {

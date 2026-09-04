@@ -24,8 +24,8 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 func (repository *PGRepository) Create(ctx context.Context, input CreateInput, storageKey string) (Version, error) {
 	var id string
 	err := repository.pool.QueryRow(ctx, `
-		INSERT INTO file_versions (attachment_id, storage_key, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, expires_at)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10)
+		INSERT INTO file_versions (attachment_id, storage_key, blob_id, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, expires_at)
+		VALUES ($1::uuid, $2, (SELECT id FROM file_blobs WHERE storage_key = $2 LIMIT 1), $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10)
 		RETURNING id::text`, input.AttachmentID, storageKey, input.SourceStorageKey, input.Version, input.VersionKind,
 		input.Size, input.MimeType, input.SHA256, input.CreatedBy, input.ExpiresAt).Scan(&id)
 	if err != nil {
@@ -40,7 +40,7 @@ func (repository *PGRepository) GetByID(ctx context.Context, versionID string) (
 
 // GetByStorageKey 按版本文件存储键精确查找版本记录（file_versions.storage_key 唯一）。
 func (repository *PGRepository) GetByStorageKey(ctx context.Context, storageKey string) (Version, error) {
-	query := versionSelect + ` WHERE v.storage_key = $1 AND v.deleted_at IS NULL LIMIT 1`
+	query := versionSelect + ` WHERE (v.storage_key = $1 OR b.storage_key = $1) AND v.deleted_at IS NULL LIMIT 1`
 	row := repository.pool.QueryRow(ctx, query, storageKey)
 	item, err := scanVersion(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -62,8 +62,11 @@ func (repository *PGRepository) CreateWithPromotion(ctx context.Context, input C
 	var attachmentExists bool
 	err = tx.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM attachments
-			WHERE storage_key = $1 AND deleted_at IS NULL
+			SELECT 1
+			FROM attachments a
+			LEFT JOIN file_blobs b ON b.id = COALESCE(a.current_blob_id, a.blob_id)
+			WHERE (a.storage_key = $1 OR a.current_storage_key = $1 OR b.storage_key = $1)
+			  AND a.deleted_at IS NULL
 			FOR UPDATE
 		)`, input.SourceStorageKey).Scan(&attachmentExists)
 	if err != nil {
@@ -75,8 +78,8 @@ func (repository *PGRepository) CreateWithPromotion(ctx context.Context, input C
 
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO file_versions (attachment_id, storage_key, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, expires_at)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10)
+		INSERT INTO file_versions (attachment_id, storage_key, blob_id, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, expires_at)
+		VALUES ($1::uuid, $2, (SELECT id FROM file_blobs WHERE storage_key = $2 LIMIT 1), $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10)
 		RETURNING id::text`, input.AttachmentID, storageKey, input.SourceStorageKey, input.Version, input.VersionKind,
 		input.Size, input.MimeType, input.SHA256, input.CreatedBy, input.ExpiresAt).Scan(&id)
 	if err != nil {
@@ -86,9 +89,12 @@ func (repository *PGRepository) CreateWithPromotion(ctx context.Context, input C
 	if strings.TrimSpace(input.CurrentName) != "" {
 		result, err := tx.Exec(ctx, `
 			UPDATE attachments
-			SET current_storage_key = $2, current_name = $3, current_size_bytes = $4,
-			    current_mime_type = $5, current_sha256 = $6, version = $7
-			WHERE storage_key = $1 AND deleted_at IS NULL`,
+			SET current_storage_key = $2, current_blob_id = (SELECT id FROM file_blobs WHERE storage_key = $2 LIMIT 1),
+			    current_name = $3, current_size_bytes = $4, current_mime_type = $5,
+			    current_sha256 = $6, version = $7
+			WHERE (storage_key = $1 OR current_storage_key = $1
+			       OR current_blob_id IN (SELECT id FROM file_blobs WHERE storage_key = $1))
+			  AND deleted_at IS NULL`,
 			input.SourceStorageKey, storageKey, input.CurrentName, input.Size, input.MimeType, input.SHA256, input.Version)
 		if err != nil {
 			return Version{}, fmt.Errorf("切换附件当前版本失败: %w", err)
@@ -236,13 +242,14 @@ func (repository *PGRepository) updateProtection(ctx context.Context, versionID,
 }
 
 const versionSelect = `
-	SELECT v.id::text, v.attachment_id::text, v.storage_key, v.source_storage_key, v.version, v.version_kind,
+		SELECT v.id::text, v.attachment_id::text, COALESCE(b.storage_key, v.storage_key), v.source_storage_key, v.version, v.version_kind,
 	       v.size_bytes, v.mime_type, v.sha256, COALESCE(v.created_by::text, ''),
 	       COALESCE(cu.display_name, cu.account, ''), v.created_at, v.expires_at,
 	       v.is_pinned, COALESCE(v.pinned_by::text, ''), v.pinned_at, COALESCE(v.released_by::text, ''),
 	       v.released_at, v.is_current_release, v.deleted_at
-	FROM file_versions v
-	LEFT JOIN users cu ON cu.id = v.created_by`
+		FROM file_versions v
+		LEFT JOIN users cu ON cu.id = v.created_by
+		LEFT JOIN file_blobs b ON b.id = v.blob_id`
 
 type rowScanner interface {
 	Scan(dest ...any) error

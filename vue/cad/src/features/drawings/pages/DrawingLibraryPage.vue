@@ -5,7 +5,6 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { useAuthStore } from '@/stores/auth.store'
-import { useUiStore } from '@/stores/ui.store'
 import type { DrawingStatus, StructurePart } from '@/types/domain.types'
 
 defineOptions({ name: 'DrawingLibraryPage' })
@@ -13,7 +12,6 @@ defineOptions({ name: 'DrawingLibraryPage' })
 const domainStore = useDomainStore()
 const authStore = useAuthStore()
 const router = useRouter()
-const uiStore = useUiStore()
 
 const query = ref('')
 const status = ref<DrawingStatus | ''>('')
@@ -78,7 +76,7 @@ const rows = computed(() => {
   const q = query.value.trim().toLowerCase()
   const st = status.value
   return domainStore.drawings.filter((drawing) => {
-    if (domainStore.hiddenList.some((item) => item.no === drawing.no)) return false
+    if (drawing.status === 'disabled') return false
     if (st && drawing.status !== st) return false
 
     const attributeText = domainStore.sortedAttributes.flatMap((attribute) => [
@@ -109,7 +107,7 @@ const partRows = computed(() => {
   const q = query.value.trim().toLowerCase()
   const st = status.value
   return domainStore.structure.filter((part) => {
-    if (domainStore.hiddenList.some((item) => item.no === part.no)) return false
+    if (part.status === 'disabled') return false
     if (st && part.status !== st) return false
     return matchesPartSearch(part, q)
   })
@@ -145,13 +143,9 @@ function toggleMenu(drawingNo: string) {
   menuFor.value = menuFor.value === drawingNo ? null : drawingNo
 }
 
-function menuAction(action: 'detail' | 'hide', drawingNo: string) {
+function menuAction(action: 'detail', drawingNo: string) {
   menuFor.value = null
   if (action === 'detail') openDetail(drawingNo)
-  if (action === 'hide') {
-    domainStore.hideDrawing(drawingNo)
-    uiStore.toast(`图纸「${drawingNo}」已隐藏`, 'ok')
-  }
 }
 
 onMounted(() => {
@@ -243,9 +237,9 @@ onMounted(() => {
           </button>
         </label>
         <div class="toolbar-right">
-          <select v-model="status" class="inp status-select">
-            <option value="">全部状态</option>
-            <option v-for="(item, key) in STATUS" :key="key" :value="key">{{ item.t }}</option>
+           <select v-model="status" class="inp status-select">
+             <option value="">全部状态</option>
+             <option v-for="(item, key) in STATUS" :key="key" :value="key">{{ item.t }}</option>
           </select>
         </div>
       </div>
@@ -313,7 +307,6 @@ onMounted(() => {
                   </button>
                   <div v-if="menuFor === drawing.no" class="dropdown row-dropdown">
                     <button class="dd-item" type="button" @click="menuAction('detail', drawing.no)">查看详情</button>
-                    <button class="dd-item danger" type="button" @click="menuAction('hide', drawing.no)">隐藏图纸</button>
                   </div>
                 </td>
               </tr>

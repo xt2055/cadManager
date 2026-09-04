@@ -31,7 +31,7 @@ export const RouteName = {
   Admin: 'admin',
   AdminAccounts: 'admin-accounts',
   AdminReviewFlows: 'admin-review-flows',
-  AdminDrawingControl: 'admin-drawing-control',
+  AdminDrawings: 'admin-drawings',
   AdminLogs: 'admin-logs',
   AdminSystemLogs: 'admin-system-logs',
   AdminUpdates: 'admin-updates',

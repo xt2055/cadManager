@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,13 +13,6 @@ import (
 )
 
 var ErrUserNotFound = errors.New("user not found")
-
-type legacyUser struct {
-	Account     string   `json:"account"`
-	DisplayName string   `json:"displayName"`
-	Password    string   `json:"password"`
-	Roles       []string `json:"roles"`
-}
 
 type PGRepository struct {
 	pool *pgxpool.Pool
@@ -305,99 +297,6 @@ func (repository *PGRepository) UpdateUser(ctx context.Context, userID string, i
 		return AuthUser{}, fmt.Errorf("提交修改账号失败: %w", err)
 	}
 	return toAuthUser(user), nil
-}
-
-func (repository *PGRepository) MigrateLegacyUsers(ctx context.Context) error {
-	if repository == nil || repository.pool == nil {
-		return errors.New("数据库连接未配置")
-	}
-	tx, err := repository.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("迁移历史账号事务失败: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	var raw []byte
-	err = tx.QueryRow(ctx, `
-		SELECT document
-		FROM data_documents
-		WHERE document_key = 'default'
-		FOR UPDATE`).Scan(&raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("读取历史账号失败: %w", err)
-	}
-	var document struct {
-		Users []legacyUser `json:"users"`
-	}
-	if err := json.Unmarshal(raw, &document); err != nil {
-		return fmt.Errorf("解析历史账号失败: %w", err)
-	}
-	for _, item := range document.Users {
-		account := NormalizeAccount(item.Account)
-		password := strings.TrimSpace(item.Password)
-		if account == "" || password == "" {
-			continue
-		}
-		name := strings.TrimSpace(item.DisplayName)
-		if name == "" {
-			name = account
-		}
-		var userID string
-		err := tx.QueryRow(ctx, `
-			INSERT INTO users (account, display_name, password_hash, status)
-			VALUES ($1, $2, crypt($3, gen_salt('bf')), 'active')
-			ON CONFLICT (account) DO NOTHING
-			RETURNING id::text`, account, name, password).Scan(&userID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("迁移账号 %s 失败: %w", account, err)
-		}
-		roles := normalizeLegacyRoles(item.Roles)
-		for _, role := range roles {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO user_roles (user_id, role)
-				VALUES ($1::uuid, $2)
-				ON CONFLICT (user_id, role) DO NOTHING`, userID, role); err != nil {
-				return fmt.Errorf("迁移账号 %s 角色失败: %w", account, err)
-			}
-		}
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE data_documents
-		SET document = document - 'users', updated_at = now()
-		WHERE document_key = 'default'`); err != nil {
-		return fmt.Errorf("清理历史账号数据失败: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("提交历史账号迁移失败: %w", err)
-	}
-	return nil
-}
-
-func normalizeLegacyRoles(roles []string) []string {
-	if len(roles) == 0 {
-		return []string{"designer"}
-	}
-	result := make([]string, 0, len(roles))
-	seen := make(map[string]struct{}, len(roles))
-	for _, role := range roles {
-		if role != "admin" && role != "designer" && role != "reviewer" {
-			continue
-		}
-		if _, ok := seen[role]; ok {
-			continue
-		}
-		seen[role] = struct{}{}
-		result = append(result, role)
-	}
-	if len(result) == 0 {
-		return []string{"designer"}
-	}
-	return result
 }
 
 type txQuerier interface {

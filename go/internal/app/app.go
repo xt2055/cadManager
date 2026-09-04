@@ -14,6 +14,7 @@ import (
 	"cadguanliq/internal/setup"
 	"cadguanliq/internal/smb"
 	"cadguanliq/internal/storage"
+	"cadguanliq/internal/upload"
 	"cadguanliq/internal/versioning"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -41,9 +42,6 @@ func Run(cfg config.Config) error {
 	}
 	defer pool.Close()
 	authService := auth.NewService(auth.NewPGRepository(pool))
-	if err := authService.MigrateLegacyUsers(context.Background()); err != nil {
-		return err
-	}
 	// 增量字段尝试由应用补全（如果连接账号为表属主或有 DDL 权限；若无权限则跳过由管理员迁移脚本维护）
 	if _, migErr := pool.Exec(context.Background(), `
 		DO $$
@@ -73,11 +71,15 @@ func Run(cfg config.Config) error {
 		logging.Infof("[DB Migration] attachments 表增量字段迁移检查完成")
 	}
 	if _, migErr := pool.Exec(context.Background(), `
-		ALTER TABLE update_manifests ADD COLUMN IF NOT EXISTS file_name VARCHAR(255) NOT NULL DEFAULT '';
-		ALTER TABLE update_manifests ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0;
-	`); migErr != nil {
+			ALTER TABLE update_manifests ADD COLUMN IF NOT EXISTS file_name VARCHAR(255) NOT NULL DEFAULT '';
+			ALTER TABLE update_manifests ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0;
+		`); migErr != nil {
 		logging.Warnf("[DB Migration] update_manifests 增量字段检查略过: %v", migErr)
 	}
+	if err := ensureUploadSchema(context.Background(), pool); err != nil {
+		return err
+	}
+	logging.Infof("[DB Migration] 上传模块数据库结构检查完成")
 	attachmentRepository := attachment.NewPGRepository(pool)
 	attachmentStorage, err := storage.NewLocalStorage(cfg.StorageRoot)
 	if err != nil {
@@ -85,6 +87,11 @@ func Run(cfg config.Config) error {
 	}
 	versionService := versioning.NewService(versioning.NewPGRepository(pool), attachmentRepository, attachmentStorage)
 	versionService.StartCleanup(context.Background())
+	// 将已有附件/版本按既有 SHA-256 回填到内容对象表，避免历史数据永远绕过去重链路。
+	legacyUploadService := upload.NewService(pool, attachmentStorage, nil, cfg.UploadSessionTTL)
+	if err := legacyUploadService.BackfillLegacyBlobs(context.Background()); err != nil {
+		logging.Warnf("[Upload] 历史附件内容对象回填略过: %v", err)
+	}
 
 	logging.Infof("[启动] 服务监听 %s", cfg.Addr)
 	return http.ListenAndServe(cfg.Addr, NewHandler(cfg, pool, authService))

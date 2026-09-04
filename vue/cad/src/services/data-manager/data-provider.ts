@@ -1,21 +1,106 @@
-import type { DataDocument } from './data.types'
+import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart } from '@/types/domain.types'
 import type { UserAccount, UserRole, UserStatus } from '@/types/domain.types'
 
-export interface AttachmentMetadata {
-  name: string
-  mimeType?: string
-  storageKey?: string
-  drawingNo?: string
-  partNo?: string
-  role?: 'assembly' | 'part' | 'material' | 'craft' | 'other'
-  version?: string
-  previewable?: boolean
+export interface UploadSession {
+  id: string
+  kind: 'attachment' | 'drawing-create'
+  idempotencyKey: string
+  status: 'open' | 'committing' | 'committed' | 'cancelled' | 'expired' | 'failed' | string
+  metadata: Record<string, unknown>
+  createdAt: string
+  lastActivityAt: string
+  expiresAt: string
+  absoluteExpiresAt: string
+  errorMessage?: string
 }
 
-export interface AttachmentResult {
-  storageKey: string
-  size: number
+export interface UploadSessionItem {
+  id: string
+  clientRef: string
+  attachmentId?: string
+  drawingNo: string
+  partNo: string
+  role: 'assembly' | 'part' | 'material' | 'craft' | 'other'
+  originalName: string
   mimeType: string
+  expectedRevision?: number
+  status: 'pending' | 'uploading' | 'ready' | 'failed' | 'committed' | string
+  size: number
+  sha256?: string
+  attempts: number
+  errorMessage?: string
+  updatedAt: string
+}
+
+export interface UploadSessionSnapshot {
+  session: UploadSession
+  items: UploadSessionItem[]
+}
+
+export interface UploadHashCheckResult {
+  exists: boolean
+  sha256: string
+  size: number
+  blobId?: string
+  storageKey?: string
+  mimeType?: string
+}
+
+export interface UploadChunkManifest {
+  totalSize: number
+  chunkSize: number
+  sha256: string
+}
+
+export interface UploadChunkInfo {
+  partNumber: number
+  offset: number
+  size: number
+  sha256: string
+}
+
+export interface UploadChunkSnapshot {
+  manifest: UploadChunkManifest
+  parts: UploadChunkInfo[]
+}
+
+export interface CreateUploadSessionInput {
+  kind: UploadSession['kind']
+  idempotencyKey: string
+  metadata?: Record<string, unknown>
+}
+
+export interface CreateUploadSessionItemInput {
+  clientRef: string
+  attachmentId?: string
+  drawingNo: string
+  partNo?: string
+  role: UploadSessionItem['role']
+  originalName: string
+  mimeType?: string
+	expectedRevision?: number
+	sha256?: string
+	size?: number
+	blobId?: string
+}
+
+export interface StoredAttachment {
+	  id: string
+	  name: string
+	  storageKey: string
+	  size: number
+	  mimeType: string
+  currentName?: string
+  currentStorageKey?: string
+  currentMimeType?: string
+	currentSize?: number
+	revision?: number
+  drawingNo: string
+  partNo?: string
+  role: 'assembly' | 'part' | 'material' | 'craft' | 'other'
+  version: string
+  previewable: boolean
+  uploadedBy?: string
   createdAt?: string
 }
 
@@ -99,9 +184,35 @@ export interface EditSessionControlResult {
 }
 
 export interface DataProvider {
-  load(): Promise<DataDocument>
-  save(document: DataDocument): Promise<void>
-  uploadAttachment(file: Blob, metadata: AttachmentMetadata): Promise<AttachmentResult>
+  loadDrawings(): Promise<Drawing[]>
+  saveDrawings(items: Drawing[]): Promise<void>
+  loadStructure(): Promise<StructurePart[]>
+  saveStructure(items: StructurePart[]): Promise<void>
+  loadAttributes(): Promise<DrawingAttribute[]>
+  saveAttributes(items: DrawingAttribute[]): Promise<void>
+  loadVersions(): Promise<DrawingVersion[]>
+  saveVersions(items: DrawingVersion[]): Promise<void>
+  loadBranches(): Promise<Branch[]>
+  saveBranches(items: Branch[]): Promise<void>
+  loadBorrows(): Promise<BorrowRecord[]>
+  saveBorrows(items: BorrowRecord[]): Promise<void>
+  loadBom(): Promise<BomItem[]>
+  saveBom(items: BomItem[]): Promise<void>
+  loadCrafts(): Promise<CraftFile[]>
+  saveCrafts(items: CraftFile[]): Promise<void>
+  loadAttachments(): Promise<StoredAttachment[]>
+  createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession>
+	createUploadSessionItem(sessionId: string, input: CreateUploadSessionItemInput): Promise<UploadSessionItem>
+	checkUploadHash(file: Blob): Promise<UploadHashCheckResult>
+	initUploadChunks(sessionId: string, itemId: string, manifest: UploadChunkManifest): Promise<UploadChunkSnapshot>
+	listUploadChunks(sessionId: string, itemId: string): Promise<UploadChunkSnapshot>
+	uploadSessionChunk(sessionId: string, itemId: string, partNumber: number, chunk: Blob): Promise<UploadChunkInfo>
+	completeUploadChunks(sessionId: string, itemId: string): Promise<UploadSessionItem>
+  uploadSessionItem(sessionId: string, itemId: string, file: Blob, name?: string): Promise<UploadSessionItem>
+  retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem>
+  getUploadSession(sessionId: string): Promise<UploadSessionSnapshot>
+  commitUploadSession(sessionId: string): Promise<Record<string, unknown>>
+  cancelUploadSession(sessionId: string): Promise<void>
   deleteAttachment(storageKey: string): Promise<void>
   readAttachment(storageKey: string): Promise<Blob>
   exportBOM?(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>

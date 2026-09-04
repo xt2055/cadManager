@@ -124,6 +124,48 @@ func (storage *LocalStorage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// List returns a read-only inventory of physical objects under the local
+// storage root. Temporary files are excluded because they are not addressable
+// storage keys and may be left briefly during an atomic write.
+func (storage *LocalStorage) List(ctx context.Context) ([]ObjectInfo, error) {
+	if storage == nil {
+		return nil, errors.New("附件存储未配置")
+	}
+	root, err := filepath.Abs(storage.root)
+	if err != nil {
+		return nil, fmt.Errorf("解析附件根目录失败: %w", err)
+	}
+	objects := make([]ObjectInfo, 0)
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		objects = append(objects, ObjectInfo{Key: filepath.ToSlash(relative), Size: info.Size(), ModTime: info.ModTime()})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("扫描附件物理对象失败: %w", err)
+	}
+	return objects, nil
+}
+
 func (storage *LocalStorage) objectPath(key string) (string, error) {
 	if strings.TrimSpace(key) == "" {
 		return "", errors.New("附件存储键不能为空")

@@ -431,7 +431,7 @@ async function doStopSession(targetId: string, targetFileName: string) {
     } else {
       uiStore.toast('编辑已结束，图纸无改动', 'ok')
     }
-    void domainStore.reloadFromServer()
+    await domainStore.reloadFromServer()
   } catch (error) {
     // 捕获失败时后端保留编辑会话，用户可重试结束编辑，不会丢失工作内容。
     uiStore.toast(error instanceof Error ? error.message : '释放编辑会话失败', 'warn')

@@ -98,8 +98,8 @@ async function loadTargetFile() {
           const cacheBuster = Date.now()
           // 历史版本按存储键精确读取该版本；无版本记录（旧数据）时回退当前文件源。
           let response: Response | null = null
-          if (versionKey.value && storageKeyValue) {
-            response = await fetch(`${baseUrl}/file-versions/source?storageKey=${encodeURIComponent(storageKeyValue)}&_t=${cacheBuster}`, {
+          if (versionKey.value) {
+            response = await fetch(`${baseUrl}/file-versions/source?storageKey=${encodeURIComponent(versionKey.value)}&_t=${cacheBuster}`, {
               headers: token ? { Authorization: `Bearer ${token}` } : {},
               credentials: 'include',
             })

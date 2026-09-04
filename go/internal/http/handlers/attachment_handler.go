@@ -295,6 +295,8 @@ func writeAttachmentError(writer http.ResponseWriter, err error) {
 		response.WriteError(writer, http.StatusNotFound, "附件不存在")
 	case errors.Is(err, attachment.ErrConflict):
 		response.WriteError(writer, http.StatusConflict, "附件已存在")
+	case strings.Contains(err.Error(), "SQLSTATE 23505") || strings.Contains(err.Error(), "重复键违反唯一约束"):
+		response.WriteError(writer, http.StatusConflict, "附件存储键已存在")
 	default:
 		response.WriteError(writer, http.StatusInternalServerError, "附件处理失败")
 	}

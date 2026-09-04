@@ -12,7 +12,7 @@ defineProps<{
   <div class="admin-tabs">
     <RouterLink class="subtab" :class="{ 'router-link-active': active === 'users' }" :to="{ name: 'admin-accounts' }"><DemoIcon name="user-plus" :size="14" />账号管理</RouterLink>
     <RouterLink class="subtab" :class="{ 'router-link-active': active === 'flows' }" :to="{ name: 'admin-review-flows' }"><DemoIcon name="workflow" :size="14" />审核流程</RouterLink>
-    <RouterLink class="subtab" :class="{ 'router-link-active': active === 'mgmt' }" :to="{ name: 'admin-drawing-control' }"><DemoIcon name="folder-lock" :size="14" />图纸管控</RouterLink>
+    <RouterLink class="subtab" :class="{ 'router-link-active': active === 'mgmt' }" :to="{ name: 'admin-drawings' }"><DemoIcon name="layers" :size="14" />图纸管理</RouterLink>
     <RouterLink class="subtab" :class="{ 'router-link-active': active === 'logs' }" :to="{ name: 'admin-logs' }"><DemoIcon name="scroll-text" :size="14" />操作日志</RouterLink>
   </div>
 </template>

@@ -91,10 +91,6 @@ func (repository *memoryRepository) UpdateUser(_ context.Context, _ string, _ Us
 	return AuthUser{}, nil
 }
 
-func (repository *memoryRepository) MigrateLegacyUsers(_ context.Context) error {
-	return nil
-}
-
 func TestServiceLoginAndLogout(t *testing.T) {
 	hash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.DefaultCost)
 	if err != nil {

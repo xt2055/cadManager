@@ -1,15 +1,40 @@
 import { ApiDataProvider } from './api-data-provider'
-import { createEmptyDataDocument, normalizeDataDocument, type DataDocument } from './data.types'
 import type { DataProvider } from './data-provider'
-import type { AttachmentMetadata, AttachmentResult, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, UserManagementInput } from './data-provider'
-import type { UserAccount } from '@/types/domain.types'
+import type { DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, UserManagementInput, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo } from './data-provider'
+import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart, UserAccount } from '@/types/domain.types'
 import { JsonDataProvider } from './json-data-provider'
 import { readDebugMode } from '@/services/runtime-config.service'
 
 export interface DataManager {
-  load(): Promise<DataDocument>
-  save(document: DataDocument): Promise<void>
-  uploadAttachment(file: Blob, metadata: AttachmentMetadata): Promise<AttachmentResult>
+  loadDrawings(): Promise<Drawing[]>
+  saveDrawings(items: Drawing[]): Promise<void>
+  loadStructure(): Promise<StructurePart[]>
+  saveStructure(items: StructurePart[]): Promise<void>
+  loadAttributes(): Promise<DrawingAttribute[]>
+  saveAttributes(items: DrawingAttribute[]): Promise<void>
+  loadVersions(): Promise<DrawingVersion[]>
+  saveVersions(items: DrawingVersion[]): Promise<void>
+  loadBranches(): Promise<Branch[]>
+  saveBranches(items: Branch[]): Promise<void>
+  loadBorrows(): Promise<BorrowRecord[]>
+  saveBorrows(items: BorrowRecord[]): Promise<void>
+  loadBom(): Promise<BomItem[]>
+  saveBom(items: BomItem[]): Promise<void>
+  loadCrafts(): Promise<CraftFile[]>
+  saveCrafts(items: CraftFile[]): Promise<void>
+  loadAttachments(): Promise<StoredAttachment[]>
+  createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession>
+	createUploadSessionItem(sessionId: string, input: CreateUploadSessionItemInput): Promise<UploadSessionItem>
+	checkUploadHash(file: Blob): Promise<UploadHashCheckResult>
+	initUploadChunks(sessionId: string, itemId: string, manifest: UploadChunkManifest): Promise<UploadChunkSnapshot>
+	listUploadChunks(sessionId: string, itemId: string): Promise<UploadChunkSnapshot>
+	uploadSessionChunk(sessionId: string, itemId: string, partNumber: number, chunk: Blob): Promise<UploadChunkInfo>
+	completeUploadChunks(sessionId: string, itemId: string): Promise<UploadSessionItem>
+  uploadSessionItem(sessionId: string, itemId: string, file: Blob, name?: string): Promise<UploadSessionItem>
+  retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem>
+  getUploadSession(sessionId: string): Promise<UploadSessionSnapshot>
+  commitUploadSession(sessionId: string): Promise<Record<string, unknown>>
+  cancelUploadSession(sessionId: string): Promise<void>
   deleteAttachment(storageKey: string): Promise<void>
   readAttachment(storageKey: string): Promise<Blob>
   exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
@@ -55,16 +80,59 @@ export class DefaultDataManager implements DataManager {
     return this.provider
   }
 
-  async load(): Promise<DataDocument> {
-    return normalizeDataDocument(await (await this.getProvider()).load())
-  }
+  loadDrawings(): Promise<Drawing[]> { return this.getProvider().then((provider) => provider.loadDrawings()) }
+  saveDrawings(items: Drawing[]): Promise<void> { return this.getProvider().then((provider) => provider.saveDrawings(items)) }
+  loadStructure(): Promise<StructurePart[]> { return this.getProvider().then((provider) => provider.loadStructure()) }
+  saveStructure(items: StructurePart[]): Promise<void> { return this.getProvider().then((provider) => provider.saveStructure(items)) }
+  loadAttributes(): Promise<DrawingAttribute[]> { return this.getProvider().then((provider) => provider.loadAttributes()) }
+  saveAttributes(items: DrawingAttribute[]): Promise<void> { return this.getProvider().then((provider) => provider.saveAttributes(items)) }
+  loadVersions(): Promise<DrawingVersion[]> { return this.getProvider().then((provider) => provider.loadVersions()) }
+  saveVersions(items: DrawingVersion[]): Promise<void> { return this.getProvider().then((provider) => provider.saveVersions(items)) }
+  loadBranches(): Promise<Branch[]> { return this.getProvider().then((provider) => provider.loadBranches()) }
+  saveBranches(items: Branch[]): Promise<void> { return this.getProvider().then((provider) => provider.saveBranches(items)) }
+  loadBorrows(): Promise<BorrowRecord[]> { return this.getProvider().then((provider) => provider.loadBorrows()) }
+  saveBorrows(items: BorrowRecord[]): Promise<void> { return this.getProvider().then((provider) => provider.saveBorrows(items)) }
+  loadBom(): Promise<BomItem[]> { return this.getProvider().then((provider) => provider.loadBom()) }
+  saveBom(items: BomItem[]): Promise<void> { return this.getProvider().then((provider) => provider.saveBom(items)) }
+  loadCrafts(): Promise<CraftFile[]> { return this.getProvider().then((provider) => provider.loadCrafts()) }
+  saveCrafts(items: CraftFile[]): Promise<void> { return this.getProvider().then((provider) => provider.saveCrafts(items)) }
+  loadAttachments(): Promise<StoredAttachment[]> { return this.getProvider().then((provider) => provider.loadAttachments()) }
 
-  async save(document: DataDocument): Promise<void> {
-    await (await this.getProvider()).save(normalizeDataDocument(document))
+  createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession> {
+    return this.getProvider().then((provider) => provider.createUploadSession(input))
   }
-
-  uploadAttachment(file: Blob, metadata: AttachmentMetadata): Promise<AttachmentResult> {
-    return this.getProvider().then((provider) => provider.uploadAttachment(file, metadata))
+	createUploadSessionItem(sessionId: string, input: CreateUploadSessionItemInput): Promise<UploadSessionItem> {
+		return this.getProvider().then((provider) => provider.createUploadSessionItem(sessionId, input))
+	}
+	checkUploadHash(file: Blob): Promise<UploadHashCheckResult> {
+		return this.getProvider().then((provider) => provider.checkUploadHash(file))
+	}
+	initUploadChunks(sessionId: string, itemId: string, manifest: UploadChunkManifest): Promise<UploadChunkSnapshot> {
+		return this.getProvider().then((provider) => provider.initUploadChunks(sessionId, itemId, manifest))
+	}
+	listUploadChunks(sessionId: string, itemId: string): Promise<UploadChunkSnapshot> {
+		return this.getProvider().then((provider) => provider.listUploadChunks(sessionId, itemId))
+	}
+	uploadSessionChunk(sessionId: string, itemId: string, partNumber: number, chunk: Blob): Promise<UploadChunkInfo> {
+		return this.getProvider().then((provider) => provider.uploadSessionChunk(sessionId, itemId, partNumber, chunk))
+	}
+	completeUploadChunks(sessionId: string, itemId: string): Promise<UploadSessionItem> {
+		return this.getProvider().then((provider) => provider.completeUploadChunks(sessionId, itemId))
+	}
+  uploadSessionItem(sessionId: string, itemId: string, file: Blob, name?: string): Promise<UploadSessionItem> {
+    return this.getProvider().then((provider) => provider.uploadSessionItem(sessionId, itemId, file, name))
+  }
+  retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem> {
+    return this.getProvider().then((provider) => provider.retryUploadSessionItem(sessionId, itemId))
+  }
+  getUploadSession(sessionId: string): Promise<UploadSessionSnapshot> {
+    return this.getProvider().then((provider) => provider.getUploadSession(sessionId))
+  }
+  commitUploadSession(sessionId: string): Promise<Record<string, unknown>> {
+    return this.getProvider().then((provider) => provider.commitUploadSession(sessionId))
+  }
+  cancelUploadSession(sessionId: string): Promise<void> {
+    return this.getProvider().then((provider) => provider.cancelUploadSession(sessionId))
   }
 
   deleteAttachment(storageKey: string): Promise<void> {
@@ -179,7 +247,3 @@ export class DefaultDataManager implements DataManager {
 }
 
 export const dataManager: DataManager = new DefaultDataManager()
-
-export function emptyDataDocument(): DataDocument {
-  return createEmptyDataDocument()
-}

@@ -11,7 +11,6 @@ import (
 	"cadguanliq/internal/auth"
 	"cadguanliq/internal/config"
 	"cadguanliq/internal/converter"
-	"cadguanliq/internal/data"
 	"cadguanliq/internal/drawing"
 	"cadguanliq/internal/editing"
 	"cadguanliq/internal/http/handlers"
@@ -19,6 +18,7 @@ import (
 	"cadguanliq/internal/review"
 	"cadguanliq/internal/storage"
 	"cadguanliq/internal/update"
+	"cadguanliq/internal/upload"
 	"cadguanliq/internal/versioning"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -42,13 +42,12 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/review-cases", protectedUsers(handlers.ReviewCases(reviewRepository)))
 	mux.Handle("/api/review-cases/", protectedUsers(handlers.ReviewCaseResource(reviewRepository)))
 	attachmentRepository := attachment.NewPGRepository(pool)
-	dataHandler := middleware.RequireAuth(authService)(handlers.DataDocument(data.NewDocumentRepository(pool), attachmentRepository))
-	mux.Handle("/api/data/document", dataHandler)
 	drawingRepository := drawing.NewPGRepository(pool)
 	drawingHandler := middleware.RequireAuth(authService)
 	mux.Handle("/api/drawings", drawingHandler(handlers.Drawings(drawingRepository)))
 	mux.Handle("/api/drawings/", drawingHandler(handlers.DrawingResource(drawingRepository)))
 	mux.Handle("/api/parts/", drawingHandler(handlers.PartResource(drawingRepository)))
+	mux.Handle("/api/data/", drawingHandler(handlers.DataModules(pool)))
 	attachmentStorage, storageErr := storage.NewLocalStorage(cfg.StorageRoot)
 	if storageErr != nil {
 		panic(storageErr)
@@ -57,6 +56,8 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	convService.Start(context.Background())
 	versionRepository := versioning.NewPGRepository(pool)
 	versionService := versioning.NewService(versionRepository, attachmentRepository, attachmentStorage)
+	uploadService := upload.NewService(pool, attachmentStorage, convService, cfg.UploadSessionTTL)
+	uploadService.StartCleanup(context.Background())
 	// 版本捕获统一由「结束编辑」显式触发：SMB 工作文件稳定等待 + 哈希比对 + 事务切指针，
 	// 不再用后台 watcher 扫描文件变化自动捕获，避免与关闭流程竞争产生重复版本。
 	editingService := editing.NewService(editing.NewPGRepository(pool), attachmentRepository, attachmentStorage, convService, cfg.SMB)
@@ -71,8 +72,10 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/file-versions", drawingHandler(versioning.List(versionService)))
 	mux.Handle("/api/file-versions/", drawingHandler(versioning.Resource(versionService, convService)))
 
-	mux.Handle("/api/attachments", drawingHandler(handlers.UploadAttachment(attachmentRepository, attachmentStorage, convService, versionService, cfg.MaxUploadBytes)))
 	mux.Handle("/api/attachments/", drawingHandler(handlers.AttachmentResource(attachmentRepository, attachmentStorage)))
+	mux.Handle("/api/upload-sessions", drawingHandler(handlers.UploadSessions(uploadService)))
+	mux.Handle("/api/upload-sessions/hash-check", drawingHandler(handlers.UploadSessionHashCheck(uploadService)))
+	mux.Handle("/api/upload-sessions/", drawingHandler(handlers.UploadSessionResource(uploadService)))
 	mux.Handle("/api/bom/export", drawingHandler(handlers.ExportBOM(attachmentRepository, attachmentStorage)))
 	mux.Handle("/api/exb/parse", drawingHandler(handlers.ParseEXB(attachmentRepository, attachmentStorage)))
 	mux.Handle("/api/exb/identify", drawingHandler(handlers.IdentifyDrawingFile(convService)))
@@ -90,6 +93,13 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	adminGuard := func(next http.Handler) http.Handler {
 		return protectedUsers(middleware.RequireAdmin(next))
 	}
+	mux.Handle("/api/admin/audit-logs", adminGuard(handlers.AdminOperationLogs(auditRepository)))
+	mux.Handle("/api/admin/upload-reconciliation", adminGuard(handlers.UploadReconciliation(uploadService)))
+	mux.Handle("/api/admin/drawings", adminGuard(handlers.AdminDrawings(pool)))
+	mux.Handle("/api/admin/drawings/", adminGuard(handlers.AdminDrawingResource(pool, attachmentStorage, auditRepository)))
+	mux.Handle("/api/admin/parts/", adminGuard(handlers.AdminPartResource(pool, attachmentStorage, auditRepository)))
+	mux.Handle("/api/admin/attachments/", adminGuard(handlers.AdminAttachmentResource(pool, attachmentStorage, auditRepository)))
+	mux.Handle("/api/admin/edit-sessions/", adminGuard(handlers.AdminEditSessionResource(editingService, auditRepository)))
 	mux.Handle("/api/system/logs", adminGuard(handlers.SystemLogs()))
 	mux.Handle("/api/system/logs/files", adminGuard(handlers.SystemLogFiles()))
 	mux.Handle("/api/system/logs/download", adminGuard(handlers.SystemLogDownload()))

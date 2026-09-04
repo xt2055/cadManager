@@ -1,5 +1,6 @@
-import { normalizeDataDocument, type DataDocument } from './data.types'
-import type { AttachmentMetadata, AttachmentResult, DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult } from './data-provider'
+import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart } from '@/types/domain.types'
+import { normalizeAttributes, normalizeBom, normalizeBranches, normalizeBorrows, normalizeCraftFile, normalizeDrawings, normalizeStructure, normalizeVersions } from './data.types'
+import type { DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import type { UserManagementInput } from './data-provider'
 import { getApiBaseUrl } from '@/services/api-base.service'
@@ -31,85 +32,134 @@ export class ApiDataProvider implements DataProvider {
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 
-  async load(): Promise<DataDocument> {
-    const response = await this.request<unknown>('/data/document', {
-      method: 'GET',
-      onResponse: (resolved) => {
-        if (!resolved.ok) return
-        const stamp = resolved.headers.get('X-Document-UpdatedAt')
-        if (stamp) this.documentStamp = stamp
-      },
-    })
-    return normalizeDataDocument(response)
+  private async loadModule<T>(name: string): Promise<T> {
+    return this.request<T>(`/data/${name}`, { method: 'GET' })
   }
 
-  async save(document: DataDocument): Promise<void> {
-    const { users: _users, ...businessDocument } = document
-    const payload = { ...businessDocument, logs: [] }
-    await this.request('/data/document', {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-      headers: this.documentStamp ? { 'X-Expected-UpdatedAt': this.documentStamp } : {},
-      onResponse: (resolved) => {
-        if (!resolved.ok) return
-        const stamp = resolved.headers.get('X-Document-UpdatedAt')
-        if (stamp) this.documentStamp = stamp
-      },
+  private async saveModule<T>(name: string, items: T[]): Promise<void> {
+    await this.request(`/data/${name}`, { method: 'PUT', body: JSON.stringify(items) })
+  }
+
+  async loadDrawings(): Promise<Drawing[]> { return normalizeDrawings(await this.loadModule<unknown>('drawings')) }
+  saveDrawings(items: Drawing[]): Promise<void> { return this.saveModule('drawings', items) }
+  async loadStructure(): Promise<StructurePart[]> { return normalizeStructure(await this.loadModule<unknown>('structure')) }
+  saveStructure(items: StructurePart[]): Promise<void> { return this.saveModule('structure', items) }
+  async loadAttributes(): Promise<DrawingAttribute[]> { return normalizeAttributes(await this.loadModule<unknown>('attributes')) }
+  saveAttributes(items: DrawingAttribute[]): Promise<void> { return this.saveModule('attributes', items) }
+  async loadVersions(): Promise<DrawingVersion[]> { return normalizeVersions(await this.loadModule<unknown>('versions').catch(() => [])) }
+  saveVersions(_items: DrawingVersion[]): Promise<void> { return Promise.resolve() }
+  async loadBranches(): Promise<Branch[]> { return normalizeBranches(await this.loadModule<unknown>('branches')) }
+  saveBranches(items: Branch[]): Promise<void> { return this.saveModule('branches', items) }
+  async loadBorrows(): Promise<BorrowRecord[]> { return normalizeBorrows(await this.loadModule<unknown>('borrows')) }
+  saveBorrows(items: BorrowRecord[]): Promise<void> { return this.saveModule('borrows', items) }
+  async loadBom(): Promise<BomItem[]> { return normalizeBom(await this.loadModule<unknown>('bom')) }
+  saveBom(items: BomItem[]): Promise<void> { return this.saveModule('bom', items) }
+  async loadCrafts(): Promise<CraftFile[]> {
+    const items = await this.loadModule<unknown>('crafts').catch(() => [])
+    return Array.isArray(items) ? items.map((item) => normalizeCraftFile(item, '')) : []
+  }
+  saveCrafts(_items: CraftFile[]): Promise<void> { return Promise.resolve() }
+  loadAttachments(): Promise<StoredAttachment[]> { return this.loadModule<StoredAttachment[]>('attachments') }
+
+  async deleteAttachment(storageKey: string): Promise<void> {
+    await this.request(`/attachments/${encodeURIComponent(storageKey)}`, { method: 'DELETE' })
+  }
+
+  async createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession> {
+    return this.request<UploadSession>('/upload-sessions', {
+      method: 'POST',
+      body: JSON.stringify(input),
     })
   }
 
-  async uploadAttachment(file: Blob, metadata: AttachmentMetadata): Promise<AttachmentResult> {
+	async createUploadSessionItem(sessionId: string, input: CreateUploadSessionItemInput): Promise<UploadSessionItem> {
+    return this.request<UploadSessionItem>(`/upload-sessions/${encodeURIComponent(sessionId)}/items`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+	}
+
+	async checkUploadHash(file: Blob): Promise<UploadHashCheckResult> {
+		if (!globalThis.crypto?.subtle) throw new Error('当前浏览器不支持 SHA-256 计算')
+		const digest = await globalThis.crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+		const sha256 = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('')
+		const result = await this.request<UploadHashCheckResult>('/upload-sessions/hash-check', {
+			method: 'POST',
+			body: JSON.stringify({ sha256, size: file.size, mimeType: file.type || 'application/octet-stream' }),
+		})
+		return { ...result, sha256, size: file.size }
+	}
+
+	initUploadChunks(sessionId: string, itemId: string, manifest: UploadChunkManifest): Promise<UploadChunkSnapshot> {
+		return this.request<UploadChunkSnapshot>(`/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(itemId)}/chunks/init`, {
+			method: 'POST', body: JSON.stringify(manifest),
+		})
+	}
+
+	listUploadChunks(sessionId: string, itemId: string): Promise<UploadChunkSnapshot> {
+		return this.request<UploadChunkSnapshot>(`/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(itemId)}/chunks`, { method: 'GET' })
+	}
+
+	async uploadSessionChunk(sessionId: string, itemId: string, partNumber: number, chunk: Blob): Promise<UploadChunkInfo> {
+			const headers: Record<string, string> = { 'Content-Type': 'application/octet-stream', Accept: 'application/json' }
+			if (!globalThis.crypto?.subtle) throw new Error('当前浏览器不支持 SHA-256 计算')
+			const digest = await globalThis.crypto.subtle.digest('SHA-256', await chunk.arrayBuffer())
+			headers['X-Chunk-SHA256'] = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('')
+		const token = getAccessToken()
+		if (token) headers.Authorization = `Bearer ${token}`
+		const response = await fetch(`${this.baseUrl}/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(itemId)}/chunks/${partNumber}`, {
+			method: 'PUT', headers, body: chunk, credentials: 'include',
+		})
+		const body: unknown = await response.json().catch(() => undefined)
+		if (!response.ok) {
+			const message = isRecord(body) && typeof body.message === 'string' ? body.message : `HTTP ${response.status}`
+			throw new Error(`分片上传失败：${message}`)
+		}
+		const payload = unwrapResponseData(body)
+		if (!isRecord(payload) || typeof payload.partNumber !== 'number') throw new Error('分片接口返回格式无效')
+		return payload as unknown as UploadChunkInfo
+	}
+
+	completeUploadChunks(sessionId: string, itemId: string): Promise<UploadSessionItem> {
+		return this.request<UploadSessionItem>(`/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(itemId)}/chunks/complete`, { method: 'POST' })
+	}
+
+  async uploadSessionItem(sessionId: string, itemId: string, file: Blob, name?: string): Promise<UploadSessionItem> {
     const formData = new FormData()
-    formData.append('file', file, metadata.name)
-    if (metadata.storageKey) formData.append('storageKey', metadata.storageKey)
-    if (metadata.drawingNo) formData.append('drawingNo', metadata.drawingNo)
-    if (metadata.partNo) formData.append('partNo', metadata.partNo)
-    if (metadata.role) formData.append('role', metadata.role)
-    if (metadata.version) formData.append('version', metadata.version)
-    if (metadata.previewable !== undefined) formData.append('previewable', String(metadata.previewable))
-
+    formData.append('file', file, name)
     const headers: Record<string, string> = { Accept: 'application/json' }
     const token = getAccessToken()
     if (token) headers.Authorization = `Bearer ${token}`
-
-    const response = await fetch(`${this.baseUrl}/attachments`, {
+    const response = await fetch(`${this.baseUrl}/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(itemId)}`, {
       method: 'POST',
       headers,
       body: formData,
       credentials: 'include',
     })
+    const body: unknown = await response.json().catch(() => undefined)
     if (!response.ok) {
-      let message = `附件上传失败：HTTP ${response.status}`
-      try {
-        const errorBody: unknown = await response.json()
-        if (isRecord(errorBody) && typeof errorBody.message === 'string' && errorBody.message.trim()) {
-          message = `附件上传失败：${errorBody.message}`
-        }
-      } catch {
-        // 非 JSON 错误响应使用默认 HTTP 错误信息。
-      }
-      throw new Error(message)
+      const message = isRecord(body) && typeof body.message === 'string' ? body.message : `HTTP ${response.status}`
+      throw new Error(`文件上传失败：${message}`)
     }
-
-    const body: unknown = await response.json()
-    if (isRecord(body) && typeof body.code === 'number' && body.code !== 0 && body.code !== 200) {
-      throw new Error(typeof body.message === 'string' ? body.message : '附件上传接口返回失败')
-    }
-    const payload = isRecord(body) && typeof body.code === 'number' && 'data' in body ? body.data : body
-    if (!isRecord(payload) || typeof payload.storageKey !== 'string') {
-      throw new Error('附件上传接口未返回有效 storageKey')
-    }
-
-    return {
-      storageKey: payload.storageKey,
-      size: typeof payload.size === 'number' ? payload.size : file.size,
-      mimeType: typeof payload.mimeType === 'string' ? payload.mimeType : file.type || 'application/octet-stream',
-      createdAt: typeof payload.createdAt === 'string' ? payload.createdAt : undefined,
-    }
+    const payload = unwrapResponseData(body)
+    if (!isRecord(payload) || typeof payload.id !== 'string') throw new Error('上传文件项返回格式无效')
+    return payload as unknown as UploadSessionItem
   }
 
-  async deleteAttachment(storageKey: string): Promise<void> {
-    await this.request(`/attachments/${encodeURIComponent(storageKey)}`, { method: 'DELETE' })
+  retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem> {
+    return this.request<UploadSessionItem>(`/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(itemId)}?action=retry`, { method: 'POST' })
+  }
+
+  getUploadSession(sessionId: string): Promise<UploadSessionSnapshot> {
+    return this.request<UploadSessionSnapshot>(`/upload-sessions/${encodeURIComponent(sessionId)}`, { method: 'GET' })
+  }
+
+  commitUploadSession(sessionId: string): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(`/upload-sessions/${encodeURIComponent(sessionId)}/commit`, { method: 'POST' })
+  }
+
+  async cancelUploadSession(sessionId: string): Promise<void> {
+    await this.request(`/upload-sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
   }
 
   async readAttachment(storageKey: string): Promise<Blob> {

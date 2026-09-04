@@ -57,5 +57,4 @@ type Repository interface {
 	ListActiveUsersByRole(ctx context.Context, role string) ([]AuthUser, error)
 	CreateUser(ctx context.Context, input UserInput) (AuthUser, error)
 	UpdateUser(ctx context.Context, userID string, input UserInput) (AuthUser, error)
-	MigrateLegacyUsers(ctx context.Context) error
 }

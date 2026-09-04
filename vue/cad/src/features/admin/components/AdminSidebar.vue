@@ -17,7 +17,7 @@ const uiStore = useUiStore()
 const items = [
   { name: RouteName.AdminAccounts, label: '账号管理', icon: 'user-plus' },
   { name: RouteName.AdminReviewFlows, label: '审核流程', icon: 'workflow' },
-  { name: RouteName.AdminDrawingControl, label: '图纸管控', icon: 'folder-lock' },
+  { name: RouteName.AdminDrawings, label: '图纸管理', icon: 'layers' },
   { name: RouteName.AdminLogs, label: '操作日志', icon: 'scroll-text' },
   { name: RouteName.AdminAttributes, label: '图纸属性', icon: 'sliders-horizontal' },
   { name: RouteName.AdminSystemLogs, label: '系统日志', icon: 'file-terminal' },

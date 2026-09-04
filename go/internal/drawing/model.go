@@ -8,7 +8,6 @@ const (
 	StatusPublished Status = "published"
 	StatusReviewing Status = "reviewing"
 	StatusDraft     Status = "draft"
-	StatusHidden    Status = "hidden"
 	StatusDisabled  Status = "disabled"
 	StatusArchived  Status = "archived"
 )

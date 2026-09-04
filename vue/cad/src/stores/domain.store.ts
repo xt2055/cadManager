@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { dataManager } from '@/services/data-manager'
+import { deleteUploadRecoverySession, loadUploadRecoveryFile, saveUploadRecoveryFile } from '@/services/upload-file-storage'
 import { readDocxAuthor } from '@/utils/docx-metadata'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-number-parser'
@@ -11,7 +12,6 @@ import { reviewFlowService, signerRoleForNode } from '@/services/review-flow.ser
 import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.service'
 import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
 import { ensureSmbCredential } from '@/services/tauri/cad-edit.service'
-import type { DataDocument } from '@/services/data-manager'
 import type {
   ActivityLog,
   ActivityResult,
@@ -29,7 +29,6 @@ import type {
   DrawingFile,
   DrawingSigners,
   DrawingVersion,
-  HiddenObject,
   MaterialFile,
   MyReview,
   ReviewCase,
@@ -45,7 +44,6 @@ export const STATUS = {
   published: { t: '生产中', c: 'ok' },
   reviewing: { t: '审核中', c: 'info' },
   draft: { t: '草稿', c: 'mute' },
-  hidden: { t: '已隐藏', c: 'danger' },
   disabled: { t: '已禁用', c: 'danger' },
   archived: { t: '已存档', c: 'warn' },
 } as const
@@ -53,6 +51,12 @@ export const STATUS = {
 interface AttachmentInput {
   id: string
   content: Blob
+}
+
+interface DrawingCreateTransactionContext {
+  bom?: BomItem[]
+  borrows?: BorrowRecord[]
+  branches?: Branch[]
 }
 
 interface MaterialUploadResult {
@@ -111,7 +115,6 @@ export const useDomainStore = defineStore('domain', () => {
   const completedReviews = ref<CompletedReview[]>([])
   const users = ref<UserAccount[]>([])
   const flows = ref<ReviewFlow[]>([])
-  const hiddenList = ref<HiddenObject[]>([])
   const adminLogs = ref<AdminLog[]>([])
 
   const currentDrawing = ref<Drawing | StructurePart | null>(null)
@@ -163,6 +166,29 @@ export const useDomainStore = defineStore('domain', () => {
 
   let initializationPromise: Promise<void> | null = null
   let saveQueue: Promise<void> = Promise.resolve()
+  const pendingDrawingUploads = new Map<string, Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile; content: Blob }>>()
+  const pendingUploadSessionId = ref<string | null>(null)
+  const uploadProgress = ref<Record<string, number>>({})
+  let persistedSnapshots = {
+    drawings: '', structure: '', attributes: '', versions: '', branches: '', borrows: '', bom: '', crafts: '',
+  }
+
+  function moduleSnapshot(value: unknown): string {
+    return JSON.stringify(value)
+  }
+
+  function refreshPersistedSnapshots(): void {
+    persistedSnapshots = {
+      drawings: moduleSnapshot(drawings.value),
+      structure: moduleSnapshot(structure.value),
+      attributes: moduleSnapshot(attributes.value),
+      versions: moduleSnapshot(versions.value),
+      branches: moduleSnapshot(branches.value),
+      borrows: moduleSnapshot(borrows.value),
+      bom: moduleSnapshot(bomItems.value),
+      crafts: moduleSnapshot(craftFiles.value),
+    }
+  }
 
   function recordActivity(input: {
     drawingNo: string
@@ -212,37 +238,27 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
-  function toDocument(): DataDocument {
-    return {
-      version: 2,
-      attributes: attributes.value,
-      drawings: drawings.value,
-      structure: structure.value,
-      versions: versions.value,
-      branches: branches.value,
-      borrows: borrows.value,
-      bom: bomItems.value,
-      crafts: craftFiles.value,
-      logs: logs.value,
-      reviewCases: reviewCases.value,
-      myReviews: myReviews.value,
-      completedReviews: completedReviews.value,
-      users: users.value,
-      flows: flows.value,
-      hiddenList: hiddenList.value,
-      adminLogs: adminLogs.value,
-    }
-  }
-
   function persist(): Promise<void> {
     const saveOperation = saveQueue
       .catch(() => undefined)
-      .then(() => dataManager.save(toDocument()))
+      .then(async () => {
+        const operations: Promise<void>[] = []
+        if (moduleSnapshot(drawings.value) !== persistedSnapshots.drawings) operations.push(dataManager.saveDrawings(drawings.value))
+        if (moduleSnapshot(structure.value) !== persistedSnapshots.structure) operations.push(dataManager.saveStructure(structure.value))
+        if (moduleSnapshot(attributes.value) !== persistedSnapshots.attributes) operations.push(dataManager.saveAttributes(attributes.value))
+        if (moduleSnapshot(versions.value) !== persistedSnapshots.versions) operations.push(dataManager.saveVersions(versions.value))
+        if (moduleSnapshot(branches.value) !== persistedSnapshots.branches) operations.push(dataManager.saveBranches(branches.value))
+        if (moduleSnapshot(borrows.value) !== persistedSnapshots.borrows) operations.push(dataManager.saveBorrows(borrows.value))
+        if (moduleSnapshot(bomItems.value) !== persistedSnapshots.bom) operations.push(dataManager.saveBom(bomItems.value))
+        if (moduleSnapshot(craftFiles.value) !== persistedSnapshots.crafts) operations.push(dataManager.saveCrafts(craftFiles.value))
+        await Promise.all(operations)
+        refreshPersistedSnapshots()
+      })
     saveQueue = saveOperation.catch(() => undefined)
 
     return saveOperation.catch((saveError: unknown) => {
       error.value = saveError instanceof Error ? saveError.message : String(saveError)
-      console.error('保存业务数据失败', saveError)
+      console.error('保存业务模块失败', saveError)
       throw saveError
     })
   }
@@ -317,31 +333,130 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
-  function applyDocument(document: DataDocument): void {
-    drawings.value = document.drawings
-    attributes.value = document.attributes ?? []
-    structure.value = document.structure
-    versions.value = document.versions
-    branches.value = document.branches
-    borrows.value = document.borrows
-    bomItems.value = document.bom
-    craftFiles.value = document.crafts
-    logs.value = document.logs
-    reviewCases.value = document.reviewCases
-    myReviews.value = document.myReviews
-    completedReviews.value = document.completedReviews
-    users.value = document.users
-    flows.value = document.flows
-    hiddenList.value = document.hiddenList
-    adminLogs.value = document.adminLogs
+  function applyStoredAttachments(items: Array<{
+    id: string
+    name: string
+    currentName?: string
+    storageKey: string
+    currentStorageKey?: string
+    drawingNo: string
+    partNo?: string
+    role: 'assembly' | 'part' | 'material' | 'craft' | 'other'
+    size: number
+    mimeType: string
+    version: string
+		previewable: boolean
+		revision?: number
+    uploadedBy?: string
+    createdAt?: string
+  }>): void {
+    if (!items.length) return
+    const drawingByNo = new Map(drawings.value.map((drawing) => [drawing.no, drawing]))
+    const partByNo = new Map(structure.value.map((part) => [part.no, part]))
+    for (const drawing of drawings.value) {
+      drawing.files = []
+      drawing.otherFiles = []
+      drawing.materialFiles = []
+      drawing.craftFiles = []
+      drawing.hasFile = false
+    }
+    for (const part of structure.value) {
+      part.files = []
+      part.otherFiles = []
+      part.materialFiles = []
+      part.craftFiles = []
+      part.hasFile = false
+    }
+    craftFiles.value = []
+    for (const item of items) {
+      const owner = item.partNo ? partByNo.get(item.partNo) : drawingByNo.get(item.drawingNo)
+      if (!owner) continue
+      const name = item.currentName || item.name
+      const file: DrawingFile = {
+        id: item.id,
+        name,
+        rawName: item.name !== name ? item.name : undefined,
+        size: formatFileSize(item.size),
+        role: item.role === 'assembly' || item.role === 'part' ? item.role : 'other',
+        drawingNo: item.drawingNo,
+        ...(item.partNo ? { partNo: item.partNo } : {}),
+        version: item.version,
+        uploadedBy: item.uploadedBy || '未知用户',
+        uploadedAt: item.createdAt || '历史记录',
+        storageKey: item.currentStorageKey || item.storageKey,
+        rawStorageKey: item.storageKey,
+        currentStorageKey: item.currentStorageKey,
+        mimeType: item.mimeType,
+		previewable: item.previewable,
+		revision: item.revision,
+      }
+      if (item.role === 'material') {
+        const material: MaterialFile = {
+          id: item.id,
+          drawingNo: item.drawingNo,
+          name,
+          size: formatFileSize(item.size),
+          version: item.version,
+          uploadedBy: item.uploadedBy || '未知用户',
+          uploadedAt: item.createdAt || '历史记录',
+          storageKey: item.currentStorageKey || item.storageKey,
+			mimeType: item.mimeType,
+			revision: item.revision,
+        }
+        owner.materialFiles = [...(owner.materialFiles ?? []).filter((file) => file.id !== material.id), material]
+      } else if (item.role === 'craft') {
+        const craft: CraftFile = {
+          id: item.id,
+          drawingNo: item.drawingNo,
+          name,
+          op: '未分类工艺',
+          ver: item.version,
+          by: item.uploadedBy || '未知用户',
+          date: item.createdAt || '历史记录',
+          size: formatFileSize(item.size),
+          storageKey: item.currentStorageKey || item.storageKey,
+          mimeType: item.mimeType,
+          previewable: item.previewable,
+			scanned: false,
+			revision: item.revision,
+        }
+        owner.craftFiles = [...(owner.craftFiles ?? []).filter((file) => file.id !== craft.id), craft]
+        craftFiles.value.push(craft)
+      } else if (item.role === 'assembly' && 'kind' in owner) {
+        owner.files = [...(owner.files ?? []).filter((candidate) => candidate.id !== file.id), file]
+      } else {
+        owner.otherFiles = [...(owner.otherFiles ?? []).filter((candidate) => candidate.id !== file.id), file]
+      }
+      owner.hasFile = (owner.files ?? []).length > 0
+    }
   }
 
   // 从后端重新加载业务文档：本地编辑结束生成新版本后调用，
   // 保证前端文件列表/版本号以后端数据库为准，不用旧数据覆盖服务端状态。
   async function reloadFromServer(): Promise<void> {
     try {
-      const document = await dataManager.load()
-      applyDocument(document)
+      const [loadedDrawings, loadedStructure, loadedAttributes, loadedVersions, loadedBranches, loadedBorrows, loadedBom, loadedCrafts, loadedAttachments] = await Promise.all([
+        dataManager.loadDrawings(),
+        dataManager.loadStructure(),
+        dataManager.loadAttributes(),
+        dataManager.loadVersions(),
+        dataManager.loadBranches(),
+        dataManager.loadBorrows(),
+        dataManager.loadBom(),
+        dataManager.loadCrafts(),
+        dataManager.loadAttachments(),
+      ])
+      drawings.value = loadedDrawings
+      structure.value = loadedStructure
+      attributes.value = loadedAttributes
+      versions.value = loadedVersions
+      branches.value = loadedBranches
+      borrows.value = loadedBorrows
+      bomItems.value = loadedBom
+      craftFiles.value = loadedCrafts
+      applyStoredAttachments(loadedAttachments)
+      currentDrawing.value = currentDrawing.value ? findDrawingOrPart(currentDrawing.value.no) : null
+      refreshPersistedSnapshots()
     } catch (loadError) {
       console.warn('刷新业务数据失败', loadError)
     }
@@ -355,8 +470,64 @@ export const useDomainStore = defineStore('domain', () => {
     error.value = null
     initializationPromise = (async () => {
       try {
-        const document = await dataManager.load()
-        applyDocument(document)
+        const [loadedDrawings, loadedStructure, loadedAttributes, loadedVersions, loadedBranches, loadedBorrows, loadedBom, loadedCrafts, loadedAttachments] = await Promise.all([
+          dataManager.loadDrawings(),
+          dataManager.loadStructure(),
+          dataManager.loadAttributes(),
+          dataManager.loadVersions(),
+          dataManager.loadBranches(),
+          dataManager.loadBorrows(),
+          dataManager.loadBom(),
+          dataManager.loadCrafts(),
+          dataManager.loadAttachments(),
+        ])
+        drawings.value = loadedDrawings
+        structure.value = loadedStructure
+        attributes.value = loadedAttributes
+        versions.value = loadedVersions
+        branches.value = loadedBranches
+        borrows.value = loadedBorrows
+        bomItems.value = loadedBom
+        craftFiles.value = loadedCrafts
+	        applyStoredAttachments(loadedAttachments)
+	        refreshPersistedSnapshots()
+	        const lastSessionId = window.localStorage.getItem('cad:last-upload-session')
+	        if (lastSessionId) {
+	          try {
+	            const snapshot = await dataManager.getUploadSession(lastSessionId)
+	            if (snapshot.session.status === 'open' || snapshot.session.status === 'failed') {
+	              pendingUploadSessionId.value = lastSessionId
+	              const entries = new Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile; content: Blob }>()
+	              for (const item of snapshot.items) {
+	                const content = await loadUploadRecoveryFile(lastSessionId, item.clientRef).catch(() => null)
+	                if (!content) continue
+	                entries.set(item.clientRef, {
+	                  itemId: item.id,
+	                  file: {
+	                    id: item.clientRef,
+	                    name: item.originalName,
+	                    size: formatFileSize(item.size),
+	                    role: item.role === 'assembly' || item.role === 'part' ? item.role : 'other',
+	                    drawingNo: item.drawingNo,
+	                    ...(item.partNo ? { partNo: item.partNo } : {}),
+	                    version: 'v1.0',
+	                    uploadedBy: '恢复上传',
+	                    uploadedAt: item.updatedAt,
+	                    previewable: true,
+	                  } as DrawingFile,
+
+	                  content,
+
+	                })
+	              }
+	              if (entries.size) pendingDrawingUploads.set(lastSessionId, entries)
+	            } else {
+	              window.localStorage.removeItem('cad:last-upload-session')
+	            }
+	          } catch {
+	            window.localStorage.removeItem('cad:last-upload-session')
+	          }
+	        }
         if (authStore.hasRole('admin')) {
           users.value = await dataManager.listUsers()
         }
@@ -586,34 +757,121 @@ export const useDomainStore = defineStore('domain', () => {
     return { materialFiles: target.materialFiles, craftFiles: target.craftFiles }
   }
 
-  async function saveAttachmentContent(file: DrawingFile | MaterialFile | CraftFile, content: Blob | undefined): Promise<string | undefined> {
-    if (!content) {
-      if (file.storageKey) return file.storageKey
-      throw new Error(`文件「${file.name}」缺少真实内容，无法保存`)
-    }
-    const result = await dataManager.uploadAttachment(content, {
-      name: file.name,
-      mimeType: content.type,
-      storageKey: file.storageKey,
-      drawingNo: file.drawingNo,
-      ...(isDrawingFile(file)
-        ? { partNo: file.partNo, role: file.role, version: file.version, previewable: file.previewable }
-        : 'op' in file
-          ? { role: 'craft' as const, version: file.ver, previewable: file.previewable }
-          : { role: 'material' as const, version: file.version, previewable: true }),
-    })
-    file.storageKey = result.storageKey
-    file.mimeType = result.mimeType
-    if (isDrawingFile(file)) {
-      // 后端以 attachments.created_at 为准；本地模式没有后端时间时使用上传完成时刻。
-      file.uploadedAt = result.createdAt || nowLabel()
-    }
-    return result.storageKey
-  }
+	async function uploadSessionFile(sessionId: string, itemId: string, content: Blob, name: string, sha256: string): Promise<void> {
+		const chunkSize = 8 * 1024 * 1024
+		uploadProgress.value = { ...uploadProgress.value, [itemId]: 0 }
+		if (!sha256 || content.size < chunkSize) {
+			await dataManager.uploadSessionItem(sessionId, itemId, content, name)
+			uploadProgress.value = { ...uploadProgress.value, [itemId]: 100 }
+			return
+		}
+		const snapshot = await dataManager.initUploadChunks(sessionId, itemId, {
+			totalSize: content.size,
+			chunkSize,
+			sha256,
+		})
+		const uploaded = new Set(snapshot.parts.map((part) => part.partNumber))
+		const partCount = Math.ceil(content.size / chunkSize)
+		uploadProgress.value = { ...uploadProgress.value, [itemId]: Math.round((uploaded.size / partCount) * 100) }
+		for (let partNumber = 0; partNumber < partCount; partNumber += 1) {
+			if (uploaded.has(partNumber)) continue
+			const start = partNumber * chunkSize
+			const end = Math.min(content.size, start + chunkSize)
+			await dataManager.uploadSessionChunk(sessionId, itemId, partNumber, content.slice(start, end))
+			uploadProgress.value = { ...uploadProgress.value, [itemId]: Math.round(((uploaded.size + 1) / partCount) * 100) }
+			uploaded.add(partNumber)
+		}
+		await dataManager.completeUploadChunks(sessionId, itemId)
+		uploadProgress.value = { ...uploadProgress.value, [itemId]: 100 }
+	}
 
-  function isDrawingFile(file: DrawingFile | MaterialFile | CraftFile): file is DrawingFile {
-    return 'role' in file
-  }
+	async function uploadReplacementSession(
+		drawingNo: string,
+		file: { id: string; name: string; revision?: number; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string },
+		content: Blob,
+	): Promise<Record<string, unknown>> {
+		const uploadName = content instanceof File ? content.name : file.name
+		let hash: Awaited<ReturnType<typeof dataManager.checkUploadHash>>
+		try {
+			hash = await dataManager.checkUploadHash(content)
+		} catch (error) {
+			console.warn(`文件「${uploadName}」哈希预检失败，改为完整上传`, error)
+			hash = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
+		}
+		const session = await dataManager.createUploadSession({
+			kind: 'attachment',
+			idempotencyKey: `attachment-replace:${file.id}:${file.revision ?? 1}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+			metadata: { drawingNo, attachmentId: file.id, expectedRevision: file.revision ?? 1 },
+		})
+		try {
+			const item = await dataManager.createUploadSessionItem(session.id, {
+				clientRef: file.id,
+				attachmentId: file.id,
+				drawingNo,
+				...(file.partNo ? { partNo: file.partNo } : {}),
+				role: file.role,
+				originalName: uploadName,
+				mimeType: content.type || 'application/octet-stream',
+				expectedRevision: file.revision ?? 1,
+				sha256: hash.sha256,
+				size: content.size,
+				...(!isCADFileName(uploadName) && hash.exists && hash.blobId ? { blobId: hash.blobId } : {}),
+			})
+			if (item.status !== 'ready') await uploadSessionFile(session.id, item.id, content, uploadName, hash.sha256)
+			else uploadProgress.value = { ...uploadProgress.value, [item.id]: 100 }
+			return await dataManager.commitUploadSession(session.id)
+		} catch (error) {
+			await dataManager.cancelUploadSession(session.id).catch(() => undefined)
+			throw error
+		}
+	}
+
+	async function uploadNewAttachmentSession(
+		drawingNo: string,
+		file: { id: string; name: string; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string },
+		content: Blob,
+	): Promise<Record<string, unknown>> {
+		const uploadName = content instanceof File ? content.name : file.name
+		let hash: Awaited<ReturnType<typeof dataManager.checkUploadHash>>
+		try {
+			hash = await dataManager.checkUploadHash(content)
+		} catch (error) {
+			console.warn(`文件「${uploadName}」哈希预检失败，改为完整上传`, error)
+			hash = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
+		}
+		const session = await dataManager.createUploadSession({
+			kind: 'attachment',
+			idempotencyKey: `attachment-create:${file.id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+			metadata: { drawingNo, partNo: file.partNo || '', role: file.role },
+		})
+		try {
+			const item = await dataManager.createUploadSessionItem(session.id, {
+				clientRef: file.id,
+				drawingNo,
+				...(file.partNo ? { partNo: file.partNo } : {}),
+				role: file.role,
+				originalName: uploadName,
+				mimeType: content.type || 'application/octet-stream',
+				sha256: hash.sha256,
+				size: content.size,
+				...(!isCADFileName(uploadName) && hash.exists && hash.blobId ? { blobId: hash.blobId } : {}),
+			})
+			if (item.status !== 'ready') await uploadSessionFile(session.id, item.id, content, uploadName, hash.sha256)
+			else uploadProgress.value = { ...uploadProgress.value, [item.id]: 100 }
+			return await dataManager.commitUploadSession(session.id)
+		} catch (error) {
+			await dataManager.cancelUploadSession(session.id).catch(() => undefined)
+			throw error
+		}
+	}
+
+	function isDrawingFile(file: DrawingFile | MaterialFile | CraftFile): file is DrawingFile {
+		return 'role' in file
+	}
+
+	function isCADFileName(name: string): boolean {
+		return ['.exb', '.dwg', '.dxf'].includes(name.slice(name.lastIndexOf('.')).toLowerCase())
+	}
 
   function openDrawing(no: string) {
     if (currentDrawing.value?.no === no) return
@@ -767,74 +1025,284 @@ export const useDomainStore = defineStore('domain', () => {
     await persist()
   }
 
-  async function addDrawing(
-    drawing: Drawing,
-    structureParts: StructurePart[] = [],
-    attachments: AttachmentInput[] = [],
-  ): Promise<void> {
+	  async function addDrawing(
+	    drawing: Drawing,
+	    structureParts: StructurePart[] = [],
+	    attachments: AttachmentInput[] = [],
+	    transactionContext: DrawingCreateTransactionContext = {},
+	  ): Promise<void> {
     await initialize()
     if (drawings.value.some((item) => item.no === drawing.no)) {
       throw new Error(`总图图号「${drawing.no}」已存在，请确认总图图号；项目号与总图图号是两个不同字段`)
     }
 
     const attachmentMap = new Map(attachments.map((item) => [item.id, item.content]))
-    const uploadedKeys: string[] = []
-    const allFiles = [
-      ...(drawing.files ?? []),
-      ...(drawing.otherFiles ?? []),
-      ...structureParts.flatMap((part) => part.files ?? []),
-      ...structureParts.flatMap((part) => part.otherFiles ?? []),
+	    const allFiles = [
+	      ...(drawing.files ?? []),
+	      ...(drawing.otherFiles ?? []),
+	      ...(drawing.materialFiles ?? []),
+	      ...(drawing.craftFiles ?? []),
+	      ...structureParts.flatMap((part) => part.files ?? []),
+	      ...structureParts.flatMap((part) => part.otherFiles ?? []),
+	      ...structureParts.flatMap((part) => part.materialFiles ?? []),
+	      ...structureParts.flatMap((part) => part.craftFiles ?? []),
     ]
 
-    const originalDrawings = [...drawings.value]
-    const originalStructure = [...structure.value]
-    let activityLog: ActivityLog | null = null
-    try {
-      drawing.files = drawing.files ?? []
-      drawing.hasFile = drawing.files.length > 0
-      const structurePartNos = new Set(structureParts.map((part) => part.no))
-      for (const part of structureParts) {
-        if (!part.parentNo || (part.parentNo !== drawing.no && !structurePartNos.has(part.parentNo) && !part.parentNo.startsWith(`${drawing.no}-`))) {
-          throw new Error(`零件 ${part.no} 未正确关联到总图 ${drawing.no} 或其子级结构`)
-        }
-        if (structureParts.some((candidate) => candidate !== part && candidate.no === part.no)) {
-          throw new Error(`零件编号已重复：${part.no}`)
-        }
-        part.files = part.files ?? []
-        part.hasFile = part.files.length > 0
-         part.project = part.project || drawing.project
+    drawing.files = drawing.files ?? []
+    drawing.hasFile = drawing.files.length > 0
+    const structurePartNos = new Set(structureParts.map((part) => part.no))
+    for (const part of structureParts) {
+      if (!part.parentNo || (part.parentNo !== drawing.no && !structurePartNos.has(part.parentNo) && !part.parentNo.startsWith(`${drawing.no}-`))) {
+        throw new Error(`零件 ${part.no} 未正确关联到总图 ${drawing.no} 或其子级结构`)
       }
-
-      drawings.value.unshift(drawing)
-      structure.value.push(...structureParts)
-      await persist()
-
-      for (const file of allFiles) {
-        const storageKey = await saveAttachmentContent(file, attachmentMap.get(file.id))
-        if (storageKey) uploadedKeys.push(storageKey)
+      if (structureParts.some((candidate) => candidate !== part && candidate.no === part.no)) {
+        throw new Error(`零件编号已重复：${part.no}`)
       }
-      await persist()
-      activityLog = recordActivity({
-        drawingNo: drawing.no,
-        drawingName: drawing.name,
-        targetType: 'drawing',
-        act: 'create',
-        text: `新建图纸 ${drawing.no}`,
-        detail: { partCount: structureParts.length, fileCount: allFiles.length },
-      })
-      await persist()
-    } catch (saveError) {
-      drawings.value = originalDrawings
-      structure.value = originalStructure
-      const failedActivityId = activityLog?.id
-      if (failedActivityId) logs.value = logs.value.filter((item) => item.id !== failedActivityId)
-      await persist().catch(() => undefined)
-      await Promise.all(uploadedKeys.map((storageKey) => dataManager.deleteAttachment(storageKey).catch(() => undefined)))
-      throw saveError
+      part.files = part.files ?? []
+      part.hasFile = part.files.length > 0
+      part.project = part.project || drawing.project
     }
+
+    const idempotencyKey = `drawing-create:${drawing.no}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
+    const session = await dataManager.createUploadSession({
+      kind: 'drawing-create',
+      idempotencyKey,
+      metadata: {
+        drawing: {
+          no: drawing.no,
+          name: drawing.name,
+          kind: drawing.kind,
+          project: drawing.project,
+          material: drawing.material,
+          vendor: drawing.vendor,
+          status: drawing.status,
+          ver: drawing.ver,
+          borrowFrom: drawing.borrowFrom,
+          remark: drawing.remark,
+          signers: drawing.signers,
+          attributeValues: drawing.attributeValues,
+        },
+	        parts: structureParts.map((part) => ({
+          no: part.no,
+          name: part.name,
+          parentNo: part.parentNo,
+          project: part.project,
+          material: part.material,
+          spec: part.spec,
+          weight: part.weight,
+          surfaceTreatment: part.surfaceTreatment,
+          partType: part.partType,
+          qty: part.qty,
+          status: part.status,
+          ver: part.ver,
+          vendor: part.vendor,
+          borrowFrom: part.borrowFrom,
+          remark: part.remark,
+	          signers: part.signers,
+	        })),
+	        bom: (transactionContext.bom ?? bomItems.value)
+	          .filter((item) => item.drawingNo === drawing.no || structurePartNos.has(item.drawingNo))
+	          .map((item) => ({
+	            ...item,
+	            drawingNo: drawing.no,
+	            ...(structurePartNos.has(item.drawingNo) ? { partNo: item.drawingNo } : {}),
+	          })),
+		borrows: [
+			...(transactionContext.borrows ?? borrows.value)
+				.filter((item) => !item.targetDrawingNo || item.targetDrawingNo === drawing.no)
+				.map((item) => ({
+					direction: item.dir,
+					sourceDrawingNo: item.sourceDrawingNo || item.project,
+					sourcePartNo: item.dir === 'in' ? item.partNo : undefined,
+					targetPartNo: item.dir === 'in' ? item.partNo : undefined,
+					status: item.status === '已归档' ? 'archived' : 'active',
+				})),
+	          ...structureParts.filter((part) => part.borrowFrom).map((part) => ({
+	            direction: 'in',
+	            sourceDrawingNo: part.borrowFrom,
+	            targetPartNo: part.no,
+	            status: 'active',
+	          })),
+	        ],
+	        branches: transactionContext.branches ?? [],
+	      },
+	    })
+	    window.localStorage.setItem('cad:last-upload-session', session.id)
+	    const recoveryEntries = new Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile; content: Blob }>()
+	    pendingDrawingUploads.set(session.id, recoveryEntries)
+	    pendingUploadSessionId.value = session.id
+
+	    const uploadItems = new Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile }>()
+	    for (const file of allFiles) {
+		        const content = attachmentMap.get(file.id)
+		        if (!content) throw new Error(`文件「${file.name}」缺少文件内容（上传会话：${session.id}）`)
+	        await saveUploadRecoveryFile(session.id, file.id, content, file.name).catch((error) => {
+	          console.warn(`保存文件「${file.name}」的刷新恢复副本失败`, error)
+	        })
+	        const isDrawing = isDrawingFile(file)
+	        const role = isDrawing ? file.role : ('op' in file ? 'craft' : 'material')
+	        // 客户端先算 SHA-256 做预检；预检失败时降级为普通上传，不能阻断业务。
+	        let hashCheck: Awaited<ReturnType<typeof dataManager.checkUploadHash>>
+	        try {
+	          hashCheck = await dataManager.checkUploadHash(content)
+	        } catch (hashError) {
+	          console.warn(`文件「${file.name}」哈希预检失败，改为完整上传`, hashError)
+	          hashCheck = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
+	        }
+	        const item = await dataManager.createUploadSessionItem(session.id, {
+        clientRef: file.id,
+        drawingNo: drawing.no,
+        ...(isDrawing && file.partNo ? { partNo: file.partNo } : {}),
+	          role,
+	          originalName: file.name,
+	          mimeType: content.type || 'application/octet-stream',
+	          sha256: hashCheck.sha256,
+	          size: content.size,
+	          // CAD 需要服务端生成处理对象，不能直接复用原始内容对象。
+	          ...(!isCADFileName(file.name) && hashCheck.exists && hashCheck.blobId ? { blobId: hashCheck.blobId } : {}),
+	      })
+	      uploadItems.set(file.id, { itemId: item.id, file })
+	      recoveryEntries.set(file.id, { itemId: item.id, file, content })
+	    }
+
+	    const failedFiles: string[] = []
+    const queue = [...uploadItems.values()]
+    const worker = async (): Promise<void> => {
+      while (queue.length) {
+        const entry = queue.shift()
+        if (!entry) return
+        const content = attachmentMap.get(entry.file.id)
+	        if (!content) {
+	          failedFiles.push(entry.file.name)
+	          continue
+	        }
+		        const sessionItem = uploadItems.get(entry.file.id)
+		        if (sessionItem && (await dataManager.getUploadSession(session.id)).items.find((item) => item.id === sessionItem.itemId)?.status === 'ready') {
+		          uploadProgress.value = { ...uploadProgress.value, [sessionItem.itemId]: 100 }
+		          continue
+		        }
+	        try {
+					let hash = ''
+					try {
+						hash = (await dataManager.checkUploadHash(content)).sha256
+					} catch (hashError) {
+						console.warn(`文件「${entry.file.name}」哈希预检失败，改为完整上传`, hashError)
+					}
+					await uploadSessionFile(session.id, entry.itemId, content, entry.file.name, hash)
+        } catch (uploadError) {
+          failedFiles.push(`${entry.file.name}：${uploadError instanceof Error ? uploadError.message : String(uploadError)}`)
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, Math.max(queue.length, 1)) }, () => worker()))
+    if (failedFiles.length) {
+      throw new Error(`有 ${failedFiles.length} 个文件上传失败，可使用会话 ${session.id} 查询并单独重试：${failedFiles.join('；')}`)
+    }
+
+    await dataManager.commitUploadSession(session.id)
+	    pendingDrawingUploads.delete(session.id)
+	    await deleteUploadRecoverySession(session.id).catch(() => undefined)
+    pendingUploadSessionId.value = null
+    window.localStorage.removeItem('cad:last-upload-session')
+    await reloadFromServer()
+    recordActivity({
+      drawingNo: drawing.no,
+      drawingName: drawing.name,
+      targetType: 'drawing',
+      act: 'create',
+      text: `新建图纸 ${drawing.no}`,
+      detail: { partCount: structureParts.length, fileCount: allFiles.length, uploadSessionId: session.id },
+    })
+    await persist()
   }
 
-  async function forkDrawing(
+	  async function retryFailedDrawingUpload(): Promise<string> {
+    const sessionId = pendingUploadSessionId.value
+    if (!sessionId) throw new Error('没有可恢复的上传会话')
+    const entries = pendingDrawingUploads.get(sessionId)
+    if (!entries) throw new Error('当前页面已无法恢复文件内容，请重新选择文件上传')
+    const snapshot = await dataManager.getUploadSession(sessionId)
+    const failed = snapshot.items.filter((item) => item.status === 'failed')
+    if (!failed.length) {
+      if (snapshot.items.some((item) => item.status !== 'ready')) throw new Error('仍有文件未准备完成')
+	}
+
+	    const errors: string[] = []
+    for (const item of failed) {
+      const entry = [...entries.values()].find((candidate) => candidate.itemId === item.id)
+      if (!entry) {
+        errors.push(`${item.originalName}：浏览器中已找不到原始文件`)
+        continue
+      }
+		try {
+			await dataManager.retryUploadSessionItem(sessionId, item.id)
+			let hash = ''
+			try {
+				hash = (await dataManager.checkUploadHash(entry.content)).sha256
+			} catch {
+				// 服务端预检暂时不可用时，仍允许整文件重试；服务端会校验已登记的摘要。
+			}
+			await uploadSessionFile(sessionId, item.id, entry.content, entry.file.name, hash)
+      } catch (retryError) {
+        errors.push(`${entry.file.name}：${retryError instanceof Error ? retryError.message : String(retryError)}`)
+      }
+    }
+    if (errors.length) throw new Error(`仍有 ${errors.length} 个文件上传失败：${errors.join('；')}`)
+    const updated = await dataManager.getUploadSession(sessionId)
+    if (updated.items.some((item) => item.status !== 'ready')) throw new Error('仍有文件未准备完成，请继续重试失败项')
+    const result = await dataManager.commitUploadSession(sessionId)
+	    pendingDrawingUploads.delete(sessionId)
+	    await deleteUploadRecoverySession(sessionId).catch(() => undefined)
+    pendingUploadSessionId.value = null
+    window.localStorage.removeItem('cad:last-upload-session')
+    await reloadFromServer()
+    const drawingNo = typeof result.drawingNo === 'string' ? result.drawingNo : ''
+    if (!drawingNo) throw new Error('项目提交成功但未返回图号')
+	    return drawingNo
+	  }
+
+	  async function retryFailedDrawingUploadItem(itemId: string): Promise<void> {
+	    const sessionId = pendingUploadSessionId.value
+	    if (!sessionId) throw new Error('没有可恢复的上传会话')
+	    const entries = pendingDrawingUploads.get(sessionId)
+	    if (!entries) throw new Error('当前页面已无法恢复文件内容，请重新选择文件上传')
+	    const snapshot = await dataManager.getUploadSession(sessionId)
+	    const item = snapshot.items.find((candidate) => candidate.id === itemId)
+	    if (!item) throw new Error('上传文件项不存在')
+	    if (item.status === 'ready' || item.status === 'committed') return
+	    const entry = [...entries.values()].find((candidate) => candidate.itemId === itemId)
+	    if (!entry) throw new Error(`浏览器中已找不到原始文件：${item.originalName}`)
+	    await dataManager.retryUploadSessionItem(sessionId, itemId)
+	    let hash = ''
+	    try {
+	      hash = (await dataManager.checkUploadHash(entry.content)).sha256
+	    } catch {
+	      // 哈希预检不可用时继续整文件/分片上传，服务端仍会按会话中登记的摘要校验。
+	    }
+	    await uploadSessionFile(sessionId, itemId, entry.content, entry.file.name, hash)
+	  }
+
+		async function dismissPendingUploadSession(): Promise<void> {
+			const sessionId = pendingUploadSessionId.value || window.localStorage.getItem('cad:last-upload-session')
+			if (!sessionId) return
+			pendingDrawingUploads.delete(sessionId)
+			pendingUploadSessionId.value = null
+			window.localStorage.removeItem('cad:last-upload-session')
+			uploadProgress.value = {}
+			await deleteUploadRecoverySession(sessionId).catch(() => undefined)
+		}
+
+		async function cancelPendingUploadSession(): Promise<void> {
+			const sessionId = pendingUploadSessionId.value
+			if (!sessionId) return
+			try {
+				await dataManager.cancelUploadSession(sessionId)
+			} finally {
+				await dismissPendingUploadSession()
+			}
+		}
+
+	  async function forkDrawing(
     sourceNo: string,
     newDrawingNo: string,
     newProjectName: string,
@@ -855,7 +1323,6 @@ export const useDomainStore = defineStore('domain', () => {
     const sourceParts = structure.value.filter((part) =>
       !part.borrowFrom && (part.no.startsWith(`${sourceNo}-`) || part.parentNo === sourceNo || isSameDrawingFamily(part.no, sourceNo)))
     const partNoMap = new Map<string, string>()
-    const uploadedKeys: string[] = []
 
     // 零件号映射：兼容前缀规则（JG-001-01）与族基座规则
     // （总图 JG9055e-50/32-00 的零件为去斜杠变体 JG9055e-5032-01，子件 JG9055e-5032-01-1）。
@@ -887,6 +1354,7 @@ export const useDomainStore = defineStore('domain', () => {
         else delete clone.partNo
       }
       delete clone.storageKey
+      if ('currentStorageKey' in clone) delete clone.currentStorageKey
       return clone
     }
 
@@ -952,16 +1420,7 @@ export const useDomainStore = defineStore('domain', () => {
       desc: `从 ${sourceNo} 分叉生成全新项目工程`,
     }
 
-    const activityLog = recordActivity({
-      drawingNo: newDrawingNo,
-      drawingName: forkedDrawing.name,
-      targetType: 'branch',
-      act: 'branch',
-      text: `从图纸 <b>${sourceNo}</b> 分叉创建了新项目 <b>${newDrawingNo}</b>`,
-      detail: { sourceDrawingNo: sourceNo, newDrawingNo, partCount: forkedParts.length },
-    })
-
-    // 克隆文件清单：源文件内容将逐个复制为新项目的附件。
+	    // 克隆文件清单：源文件内容将逐个复制为新项目的附件。
     const fileCopies = [
       ...(sourceDrawing.files ?? []).map((source, index) => ({ source, target: forkedDrawing.files?.[index] })),
       ...(sourceDrawing.otherFiles ?? []).map((source, index) => ({ source, target: forkedDrawing.otherFiles?.[index] })),
@@ -979,39 +1438,31 @@ export const useDomainStore = defineStore('domain', () => {
       }),
     ]
 
-    const drawingsSnapshot = JSON.parse(JSON.stringify(drawings.value))
-    const structureSnapshot = JSON.parse(JSON.stringify(structure.value))
-    const branchesSnapshot = JSON.parse(JSON.stringify(branches.value))
-    const logsSnapshot = JSON.parse(JSON.stringify(logs.value))
-
-    // 先落库建档：附件上传时 FolderForDrawing 需要能在 drawings 表查到新图号，
-    // 否则全新图号的上传会 404「附件不存在」。
-    drawings.value.unshift(forkedDrawing)
-    structure.value.push(...forkedParts)
-    branches.value.unshift(branchRecord)
-
-    try {
-      await persist()
-      for (const copy of fileCopies) {
-        if (!copy.target || !copy.source.storageKey) continue
-        const content = await dataManager.readAttachment(copy.source.storageKey)
-        const storageKey = await saveAttachmentContent(copy.target, content)
-        if (storageKey) uploadedKeys.push(storageKey)
-      }
-      await persist()
-    } catch (saveError) {
-      // 失败：整体恢复内存快照并重试回滚保存，避免半提交状态残留到数据库。
-      drawings.value = drawingsSnapshot
-      structure.value = structureSnapshot
-      branches.value = branchesSnapshot
-      logs.value = logsSnapshot
-      let rollbackSaved = false
-      for (let attempt = 0; attempt < 3 && !rollbackSaved; attempt += 1) {
-        rollbackSaved = await persist().then(() => true).catch(() => false)
-      }
-      await Promise.all(uploadedKeys.map((key) => dataManager.deleteAttachment(key).catch(() => undefined)))
-      throw saveError
-    }
+	    // 先读源文件内容，再交给 drawing-create 会话；项目元数据、结构和附件
+	    // 将由同一个后端事务提交，避免旧的“先建档、再逐文件复制”残留半项目。
+	    const forkAttachments: AttachmentInput[] = []
+	    for (const copy of fileCopies) {
+		      const sourceKey = ('currentStorageKey' in copy.source ? copy.source.currentStorageKey : undefined) || copy.source.storageKey
+		      if (!copy.target || !sourceKey) continue
+		      const content = await dataManager.readAttachment(sourceKey)
+		      forkAttachments.push({ id: copy.target.id, content })
+		    }
+		    await addDrawing(forkedDrawing, forkedParts, forkAttachments, {
+		      branches: [branchRecord],
+		      bom: bomItems.value
+		        .filter((item) => item.drawingNo === sourceNo || sourceParts.some((part) => part.no === item.drawingNo))
+		        .map((item) => ({ ...item, drawingNo: newDrawingNo })),
+		    })
+	    branches.value.unshift(branchRecord)
+	    recordActivity({
+	      drawingNo: newDrawingNo,
+	      drawingName: forkedDrawing.name,
+	      targetType: 'branch',
+	      act: 'branch',
+	      text: `从图纸 <b>${sourceNo}</b> 分叉创建了新项目 <b>${newDrawingNo}</b>`,
+	      detail: { sourceDrawingNo: sourceNo, newDrawingNo, partCount: forkedParts.length },
+	    })
+	    await persist()
   }
 
   async function createPartWithFile(
@@ -1028,7 +1479,11 @@ export const useDomainStore = defineStore('domain', () => {
 
     let storageKey: string | undefined
     try {
-      storageKey = await saveAttachmentContent(file, content)
+	      const commitResult = await uploadNewAttachmentSession(parentNo, file, content)
+	      storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      file.storageKey = storageKey
        part.project = part.project || parent.project
       part.files = [file]
       part.hasFile = true
@@ -1065,7 +1520,11 @@ export const useDomainStore = defineStore('domain', () => {
     const originalPartNo = file.partNo
     let storageKey: string | undefined
     try {
-      storageKey = await saveAttachmentContent(file, content)
+	      const commitResult = await uploadNewAttachmentSession(drawingNo, file, content as Blob)
+	      storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      file.storageKey = storageKey
       // 只有新上传 CAD 时读取一次标题栏材料，并随业务文档持久化。
       if ('parentNo' in target && content) {
         try {
@@ -1349,12 +1808,17 @@ export const useDomainStore = defineStore('domain', () => {
       replacedBy: operatorName,
       replacedAt: replaceTime,
       history: updatedHistory,
-      ...(newStorageKey ? { storageKey: newStorageKey } : {}),
-    }
+	      ...(newStorageKey ? { storageKey: newStorageKey } : {}),
+	    }
+	    if (!content) throw new Error(`文件「${newFileInfo.name}」缺少真实内容，无法替换`)
 
-    let storageKey: string | undefined
-    try {
-      storageKey = await saveAttachmentContent(updatedFile, content)
+	    try {
+	      const commitResult = await uploadReplacementSession(drawingNo, { ...currentFile, role: currentFile.role }, content)
+	      updatedFile.storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      updatedFile.currentStorageKey = updatedFile.storageKey
+	      if (typeof commitResult.version === 'string') updatedFile.version = commitResult.version
 
       // 只有替换产生新版本时重新读取标题栏材料，避免点击详情时重复请求。
       if ('parentNo' in target && content) {
@@ -1394,8 +1858,7 @@ export const useDomainStore = defineStore('domain', () => {
       await persist()
       return updatedFile
     } catch (saveError) {
-      if (storageKey) await dataManager.deleteAttachment(storageKey).catch(() => undefined)
-      throw saveError
+	      throw saveError
     }
   }
 
@@ -1412,7 +1875,11 @@ export const useDomainStore = defineStore('domain', () => {
       file.role = 'other'
       file.drawingNo = ownerNo
       delete file.partNo
-      storageKey = await saveAttachmentContent(file, content)
+	      const commitResult = await uploadNewAttachmentSession(ownerNo, file, content as Blob)
+	      storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      file.storageKey = storageKey
       target.otherFiles = [...otherFiles, file]
       await persist()
       recordActivity({
@@ -1503,7 +1970,11 @@ export const useDomainStore = defineStore('domain', () => {
     const originalBom = [...bomItems.value]
     let storageKey: string | undefined
     try {
-      storageKey = await saveAttachmentContent(file, content)
+	      const commitResult = await uploadNewAttachmentSession(drawingNo, { ...file, role: 'material' }, content as Blob)
+	      storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      file.storageKey = storageKey
       attachments.materialFiles.unshift(file)
 
       let importedCount = 0
@@ -1550,7 +2021,6 @@ export const useDomainStore = defineStore('domain', () => {
 
     const originalFiles = [...attachments.materialFiles]
     const originalBom = [...bomItems.value]
-    const oldStorageKey = currentFile.storageKey
     const updatedFile: MaterialFile = {
       ...currentFile,
       name: content.name,
@@ -1562,7 +2032,11 @@ export const useDomainStore = defineStore('domain', () => {
     }
 
     try {
-      await saveAttachmentContent(updatedFile, content)
+	      const commitResult = await uploadReplacementSession(drawingNo, { ...currentFile, role: 'material' }, content)
+	      updatedFile.storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      if (typeof commitResult.version === 'string') updatedFile.version = commitResult.version
       const index = attachments.materialFiles.findIndex((item) => item.id === fileId)
       if (index >= 0) attachments.materialFiles[index] = updatedFile
 
@@ -1577,7 +2051,6 @@ export const useDomainStore = defineStore('domain', () => {
         ]
       }
       await persist()
-      if (oldStorageKey) await dataManager.deleteAttachment(oldStorageKey)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1707,7 +2180,11 @@ export const useDomainStore = defineStore('domain', () => {
           console.warn(`读取工艺文件编制人员失败：${file.name}`, scanError)
         }
       }
-      storageKey = await saveAttachmentContent(file, content)
+	      const commitResult = await uploadNewAttachmentSession(drawingNo, { ...file, role: 'craft' }, content as Blob)
+	      storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      file.storageKey = storageKey
       attachments.craftFiles.unshift(file)
       craftFiles.value = [file, ...craftFiles.value.filter((item) => item.id !== file.id)]
       await persist()
@@ -1739,7 +2216,6 @@ export const useDomainStore = defineStore('domain', () => {
 
     const originalFiles = [...attachments.craftFiles]
     const originalGlobalFiles = [...craftFiles.value]
-    const oldStorageKey = currentFile.storageKey
     const updatedFile: CraftFile = {
       ...currentFile,
       name: content.name,
@@ -1761,13 +2237,16 @@ export const useDomainStore = defineStore('domain', () => {
           console.warn(`替换工艺文件后读取编制人员失败：${content.name}`, scanError)
         }
       }
-      await saveAttachmentContent(updatedFile, content)
+	      const commitResult = await uploadReplacementSession(drawingNo, { ...currentFile, role: 'craft' }, content)
+	      updatedFile.storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      if (typeof commitResult.version === 'string') updatedFile.ver = commitResult.version
       const targetIndex = attachments.craftFiles.findIndex((item) => item.id === fileId)
       if (targetIndex >= 0) attachments.craftFiles[targetIndex] = updatedFile
       const globalIndex = craftFiles.value.findIndex((item) => item.id === fileId && item.drawingNo === drawingNo)
       if (globalIndex >= 0) craftFiles.value[globalIndex] = updatedFile
       await persist()
-      if (oldStorageKey) await dataManager.deleteAttachment(oldStorageKey)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -2123,27 +2602,6 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
-  async function hideDrawing(drawingNo: string): Promise<void> {
-    await initialize()
-    const drawing = drawings.value.find((item) => item.no === drawingNo)
-    if (!drawing) throw new Error(`图纸 ${drawingNo} 不存在`)
-    if (!hiddenList.value.some((item) => item.no === drawingNo)) {
-      hiddenList.value.push({
-        no: drawing.no,
-        name: drawing.name,
-        op: '隐藏图纸',
-        by: '系统用户',
-        date: nowLabel(),
-      })
-      await persist()
-    }
-  }
-
-  async function restoreHidden(index: number): Promise<void> {
-    await initialize()
-    hiddenList.value.splice(index, 1)
-    await persist()
-  }
 
   return {
     drawings,
@@ -2162,7 +2620,6 @@ export const useDomainStore = defineStore('domain', () => {
     completedReviews,
     users,
     flows,
-    hiddenList,
     adminLogs,
     myPendingReviews,
     currentDrawing,
@@ -2175,6 +2632,8 @@ export const useDomainStore = defineStore('domain', () => {
     reviewCount,
     drawingStats,
     initialize,
+    pendingUploadSessionId,
+    uploadProgress,
     reloadFromServer,
     refreshDrawingDesigner,
     recordActivity,
@@ -2183,6 +2642,10 @@ export const useDomainStore = defineStore('domain', () => {
     clearCurrentDrawing,
     getReviewCase,
     addDrawing,
+			retryFailedDrawingUpload,
+			retryFailedDrawingUploadItem,
+		dismissPendingUploadSession,
+			cancelPendingUploadSession,
     attributeName,
     attributeFieldName,
     validateAttributeValues,
@@ -2221,8 +2684,6 @@ export const useDomainStore = defineStore('domain', () => {
     resetUserPassword,
     toggleUser,
     toggleFlow,
-    hideDrawing,
-    restoreHidden,
   }
 })
 

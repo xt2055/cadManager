@@ -1,0 +1,737 @@
+package handlers
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"cadguanliq/internal/audit"
+	"cadguanliq/internal/auth"
+	"cadguanliq/internal/editing"
+	"cadguanliq/internal/http/middleware"
+	"cadguanliq/internal/response"
+	"cadguanliq/internal/storage"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type AdminDrawingSummary struct {
+	ID              string `json:"id"`
+	No              string `json:"no"`
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	Project         string `json:"project"`
+	Material        string `json:"material"`
+	Vendor          string `json:"vendor"`
+	Status          string `json:"status"`
+	Version         string `json:"version"`
+	CreatedBy       string `json:"createdBy"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedBy       string `json:"updatedBy"`
+	UpdatedAt       string `json:"updatedAt"`
+	PartCount       int    `json:"partCount"`
+	AttachmentCount int    `json:"attachmentCount"`
+	SessionCount    int    `json:"sessionCount"`
+}
+
+type AdminPartSummary struct {
+	ID              string `json:"id"`
+	DrawingID       string `json:"drawingId"`
+	DrawingNo       string `json:"drawingNo"`
+	No              string `json:"no"`
+	Name            string `json:"name"`
+	ParentNo        string `json:"parentNo"`
+	Project         string `json:"project"`
+	Material        string `json:"material"`
+	Status          string `json:"status"`
+	Version         string `json:"version"`
+	CreatedBy       string `json:"createdBy"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedBy       string `json:"updatedBy"`
+	UpdatedAt       string `json:"updatedAt"`
+	AttachmentCount int    `json:"attachmentCount"`
+	SessionCount    int    `json:"sessionCount"`
+}
+
+type AdminDrawingPage struct {
+	List     []AdminDrawingSummary `json:"list"`
+	Total    int                   `json:"total"`
+	Page     int                   `json:"page"`
+	PageSize int                   `json:"pageSize"`
+}
+
+type AdminPartPage struct {
+	List     []AdminPartSummary `json:"list"`
+	Total    int                `json:"total"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"pageSize"`
+}
+
+type AdminAttachment struct {
+	ID                string `json:"id"`
+	OriginalName      string `json:"originalName"`
+	CurrentName       string `json:"currentName"`
+	Role              string `json:"role"`
+	StorageKey        string `json:"storageKey"`
+	CurrentStorageKey string `json:"currentStorageKey"`
+	Version           string `json:"version"`
+	Size              int64  `json:"size"`
+	MimeType          string `json:"mimeType"`
+	UploadedBy        string `json:"uploadedBy"`
+	CreatedAt         string `json:"createdAt"`
+}
+
+type AdminFileVersion struct {
+	ID           string    `json:"id"`
+	AttachmentID string    `json:"attachmentId"`
+	StorageKey   string    `json:"storageKey"`
+	Version      string    `json:"version"`
+	VersionKind  string    `json:"versionKind"`
+	Size         int64     `json:"size"`
+	MimeType     string    `json:"mimeType"`
+	CreatedBy    string    `json:"createdBy"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type AdminDrawingDetail struct {
+	Drawing     AdminDrawingSummary `json:"drawing"`
+	Parts       []AdminPartSummary  `json:"parts"`
+	Attachments []AdminAttachment   `json:"attachments"`
+	Versions    []AdminFileVersion  `json:"versions"`
+	Sessions    []map[string]any    `json:"sessions"`
+}
+
+func AdminDrawings(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodGet {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		page, err := listAdminDrawings(request.Context(), pool, request)
+		if err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "后台图纸列表读取失败")
+			return
+		}
+		response.WriteData(writer, http.StatusOK, page)
+	}
+}
+
+func AdminDrawingResource(pool *pgxpool.Pool, objectStorage storage.ObjectStorage, auditRepository audit.Repository) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		id, action, err := adminResourceParts(request.URL.Path, "/api/admin/drawings/")
+		if err != nil {
+			response.WriteError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		switch {
+		case request.Method == http.MethodGet && action == "":
+			detail, findErr := findAdminDrawing(request.Context(), pool, id)
+			if findErr != nil {
+				writeAdminDrawingError(writer, findErr)
+				return
+			}
+			response.WriteData(writer, http.StatusOK, detail)
+		case request.Method == http.MethodPost && (action == "disable" || action == "enable"):
+			var no string
+			var status string
+			if action == "disable" {
+				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status_before_disabled = CASE WHEN status <> 'disabled' THEN status ELSE status_before_disabled END, status = 'disabled', updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
+			} else {
+				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status = COALESCE(status_before_disabled, 'draft'), status_before_disabled = NULL, updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid AND status = 'disabled' RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
+			}
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeAdminDrawingError(writer, ErrAdminDrawingNotFound)
+				return
+			}
+			if err != nil {
+				response.WriteError(writer, http.StatusInternalServerError, "图纸状态更新失败")
+				return
+			}
+			writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{DrawingNo: no, TargetType: "drawing", Action: "edit", Summary: actionLabel(action) + "图纸", Result: "success", Detail: map[string]any{"status": status}})
+			response.WriteData(writer, http.StatusOK, map[string]string{"id": id, "status": status})
+		case request.Method == http.MethodDelete && action == "":
+			result, deleteErr := hardDeleteDrawing(request.Context(), pool, objectStorage, id)
+			if deleteErr != nil {
+				writeAdminDrawingError(writer, deleteErr)
+				return
+			}
+			writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{DrawingNo: result, TargetType: "drawing", Action: "delete", Summary: "永久删除图纸「" + result + "」", Result: "success"})
+			response.WriteData(writer, http.StatusOK, map[string]string{"no": result})
+		default:
+			response.WriteError(writer, http.StatusNotFound, "后台图纸接口不存在")
+		}
+	}
+}
+
+func AdminPartResource(pool *pgxpool.Pool, objectStorage storage.ObjectStorage, auditRepository audit.Repository) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		id, action, err := adminResourceParts(request.URL.Path, "/api/admin/parts/")
+		if err != nil {
+			response.WriteError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
+		if request.Method != http.MethodPost || (action != "disable" && action != "enable") {
+			if request.Method == http.MethodDelete && action == "" {
+				no, drawingNo, keys, deleteErr := hardDeletePart(request.Context(), pool, objectStorage, id)
+				if deleteErr != nil {
+					writeAdminDrawingError(writer, deleteErr)
+					return
+				}
+				writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{DrawingNo: drawingNo, TargetType: "part", Action: "delete", Summary: "永久删除零件「" + no + "」", Result: "success", Detail: map[string]any{"partNo": no, "storageKeys": keys}})
+				response.WriteData(writer, http.StatusOK, map[string]string{"no": no})
+				return
+			}
+			response.WriteError(writer, http.StatusNotFound, "后台零件接口不存在")
+			return
+		}
+		var no string
+		var status string
+		if action == "disable" {
+			err = pool.QueryRow(request.Context(), `UPDATE structure_parts SET status_before_disabled = CASE WHEN status <> 'disabled' THEN status ELSE status_before_disabled END, status = 'disabled', updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid RETURNING part_no, status`, id, user.ID).Scan(&no, &status)
+		} else {
+			err = pool.QueryRow(request.Context(), `UPDATE structure_parts SET status = COALESCE(status_before_disabled, 'draft'), status_before_disabled = NULL, updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid AND status = 'disabled' RETURNING part_no, status`, id, user.ID).Scan(&no, &status)
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeAdminDrawingError(writer, ErrAdminDrawingNotFound)
+			return
+		}
+		if err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "零件状态更新失败")
+			return
+		}
+		writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{DrawingNo: no, TargetType: "part", Action: "edit", Summary: actionLabel(action) + "零件", Result: "success", Detail: map[string]any{"status": status}})
+		response.WriteData(writer, http.StatusOK, map[string]string{"id": id, "status": status})
+	}
+}
+
+func AdminAttachmentResource(pool *pgxpool.Pool, objectStorage storage.ObjectStorage, auditRepository audit.Repository) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		id, action, err := adminResourceParts(request.URL.Path, "/api/admin/attachments/")
+		if err != nil || action != "" || request.Method != http.MethodDelete {
+			response.WriteError(writer, http.StatusNotFound, "后台附件接口不存在")
+			return
+		}
+		no, name, keys, err := hardDeleteAttachment(request.Context(), pool, objectStorage, id)
+		if err != nil {
+			writeAdminDrawingError(writer, err)
+			return
+		}
+		writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{DrawingNo: no, TargetType: "file", Action: "delete", Summary: "永久删除附件「" + name + "」", Result: "success", Detail: map[string]any{"attachmentId": id, "storageKeys": keys}})
+		response.WriteData(writer, http.StatusOK, map[string]string{"id": id, "name": name})
+	}
+}
+
+func AdminEditSessionResource(service *editing.Service, auditRepository audit.Repository) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		id, action, err := adminResourceParts(request.URL.Path, "/api/admin/edit-sessions/")
+		if err != nil || action != "close" || request.Method != http.MethodPost {
+			response.WriteError(writer, http.StatusNotFound, "后台编辑会话接口不存在")
+			return
+		}
+		result, err := service.Close(request.Context(), user, id)
+		if err != nil {
+			writeEditingError(writer, err)
+			return
+		}
+		writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{TargetType: "file", Action: "edit", Summary: "管理员强制结束编辑会话", Result: "success", Detail: map[string]any{"sessionId": id, "changed": result.Changed, "version": result.Version}})
+		response.WriteData(writer, http.StatusOK, result)
+	})
+}
+
+var ErrAdminDrawingNotFound = errors.New("后台图纸不存在")
+var ErrAdminDrawingBusy = errors.New("图纸存在活动编辑会话，请先结束编辑后再删除")
+var ErrAdminPartHasChildren = errors.New("该零件存在子零件，请先处理子零件后再删除")
+
+func listAdminDrawings(ctx context.Context, pool *pgxpool.Pool, request *http.Request) (any, error) {
+	page := parseAdminInt(request.URL.Query().Get("page"), 1)
+	pageSize := parseAdminInt(request.URL.Query().Get("page_size"), 20)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	kind := strings.TrimSpace(request.URL.Query().Get("kind"))
+	if kind == "part" {
+		return listAdminParts(ctx, pool, request, page, pageSize)
+	}
+	keyword := "%" + strings.ToLower(strings.TrimSpace(request.URL.Query().Get("keyword"))) + "%"
+	status := strings.TrimSpace(request.URL.Query().Get("status"))
+	var total int
+	where := `WHERE ($1 = '%' OR lower(d.drawing_no) LIKE $1 OR lower(d.name) LIKE $1 OR lower(d.project) LIKE $1)
+		AND ($2 = '' OR d.status = $2)`
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM drawings d `+where, keyword, status).Scan(&total); err != nil {
+		return nil, err
+	}
+	offset := (page - 1) * pageSize
+	rows, err := pool.Query(ctx, `SELECT d.id::text, d.drawing_no, d.name, d.kind, d.project, d.material, d.vendor, d.status, d.version,
+		COALESCE(c.display_name, c.account, ''), d.created_at, COALESCE(u.display_name, u.account, ''), d.updated_at,
+		(SELECT count(*) FROM structure_parts p WHERE p.drawing_id = d.id),
+		(SELECT count(*) FROM attachments a WHERE a.drawing_id = d.id AND a.deleted_at IS NULL),
+		(SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.drawing_id = d.id AND s.status = 'active')
+		FROM drawings d LEFT JOIN users c ON c.id = d.created_by LEFT JOIN users u ON u.id = d.updated_by `+where+` ORDER BY d.updated_at DESC, d.drawing_no LIMIT $3 OFFSET $4`, keyword, status, pageSize, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]AdminDrawingSummary, 0)
+	for rows.Next() {
+		var item AdminDrawingSummary
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&item.ID, &item.No, &item.Name, &item.Kind, &item.Project, &item.Material, &item.Vendor, &item.Status, &item.Version, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt, &item.PartCount, &item.AttachmentCount, &item.SessionCount); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = createdAt.Format(time.RFC3339)
+		item.UpdatedAt = updatedAt.Format(time.RFC3339)
+		items = append(items, item)
+	}
+	return AdminDrawingPage{List: items, Total: total, Page: page, PageSize: pageSize}, rows.Err()
+}
+
+func listAdminParts(ctx context.Context, pool *pgxpool.Pool, request *http.Request, page, pageSize int) (AdminPartPage, error) {
+	keyword := "%" + strings.ToLower(strings.TrimSpace(request.URL.Query().Get("keyword"))) + "%"
+	status := strings.TrimSpace(request.URL.Query().Get("status"))
+	where := `WHERE ($1 = '%' OR lower(p.part_no) LIKE $1 OR lower(p.name) LIKE $1 OR lower(d.drawing_no) LIKE $1)
+		AND ($2 = '' OR p.status = $2)`
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id `+where, keyword, status).Scan(&total); err != nil {
+		return AdminPartPage{}, err
+	}
+	rows, err := pool.Query(ctx, `SELECT p.id::text, p.drawing_id::text, d.drawing_no, p.part_no, p.name, COALESCE(parent.part_no, ''), COALESCE(p.project, d.project, ''), p.material, p.status, p.version,
+		COALESCE(c.display_name, c.account, ''), p.created_at, COALESCE(u.display_name, u.account, ''), p.updated_at,
+		(SELECT count(*) FROM attachments a WHERE a.part_id = p.id AND a.deleted_at IS NULL),
+		(SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.part_id = p.id AND s.status = 'active')
+		FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id LEFT JOIN structure_parts parent ON parent.id = p.parent_part_id LEFT JOIN users c ON c.id = p.created_by LEFT JOIN users u ON u.id = p.updated_by `+where+` ORDER BY p.updated_at DESC, p.part_no LIMIT $3 OFFSET $4`, keyword, status, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return AdminPartPage{}, err
+	}
+	defer rows.Close()
+	items := make([]AdminPartSummary, 0)
+	for rows.Next() {
+		var item AdminPartSummary
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&item.ID, &item.DrawingID, &item.DrawingNo, &item.No, &item.Name, &item.ParentNo, &item.Project, &item.Material, &item.Status, &item.Version, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt, &item.AttachmentCount, &item.SessionCount); err != nil {
+			return AdminPartPage{}, err
+		}
+		item.CreatedAt = createdAt.Format(time.RFC3339)
+		item.UpdatedAt = updatedAt.Format(time.RFC3339)
+		items = append(items, item)
+	}
+	return AdminPartPage{List: items, Total: total, Page: page, PageSize: pageSize}, rows.Err()
+}
+
+func findAdminDrawing(ctx context.Context, pool *pgxpool.Pool, id string) (AdminDrawingDetail, error) {
+	var item AdminDrawingSummary
+	var createdAt, updatedAt time.Time
+	err := pool.QueryRow(ctx, `SELECT d.id::text, d.drawing_no, d.name, d.kind, d.project, d.material, d.vendor, d.status, d.version, COALESCE(c.display_name, c.account, ''), d.created_at, COALESCE(u.display_name, u.account, ''), d.updated_at,
+		(SELECT count(*) FROM structure_parts p WHERE p.drawing_id = d.id), (SELECT count(*) FROM attachments a WHERE a.drawing_id = d.id AND a.deleted_at IS NULL), (SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.drawing_id = d.id AND s.status = 'active')
+		FROM drawings d LEFT JOIN users c ON c.id = d.created_by LEFT JOIN users u ON u.id = d.updated_by WHERE d.id = $1::uuid`, id).Scan(&item.ID, &item.No, &item.Name, &item.Kind, &item.Project, &item.Material, &item.Vendor, &item.Status, &item.Version, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt, &item.PartCount, &item.AttachmentCount, &item.SessionCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminDrawingDetail{}, ErrAdminDrawingNotFound
+	}
+	if err != nil {
+		return AdminDrawingDetail{}, err
+	}
+	item.CreatedAt = createdAt.Format(time.RFC3339)
+	item.UpdatedAt = updatedAt.Format(time.RFC3339)
+	parts, err := listAllAdminParts(ctx, pool, id)
+	if err != nil {
+		return AdminDrawingDetail{}, err
+	}
+	attachments, err := listAdminAttachments(ctx, pool, id)
+	if err != nil {
+		return AdminDrawingDetail{}, err
+	}
+	versions, err := listAdminVersions(ctx, pool, attachments)
+	if err != nil {
+		return AdminDrawingDetail{}, err
+	}
+	sessions, err := listAdminSessions(ctx, pool, item.No)
+	if err != nil {
+		return AdminDrawingDetail{}, err
+	}
+	return AdminDrawingDetail{Drawing: item, Parts: parts, Attachments: attachments, Versions: versions, Sessions: sessions}, nil
+}
+
+func listAllAdminParts(ctx context.Context, pool *pgxpool.Pool, drawingID string) ([]AdminPartSummary, error) {
+	return queryAllAdminParts(ctx, pool, drawingID)
+}
+
+func queryAllAdminParts(ctx context.Context, pool *pgxpool.Pool, drawingID string) ([]AdminPartSummary, error) {
+	rows, err := pool.Query(ctx, `SELECT p.id::text, p.drawing_id::text, d.drawing_no, p.part_no, p.name, COALESCE(parent.part_no, ''), COALESCE(p.project, d.project, ''), p.material, p.status, p.version, COALESCE(c.display_name, c.account, ''), p.created_at, COALESCE(u.display_name, u.account, ''), p.updated_at, (SELECT count(*) FROM attachments a WHERE a.part_id = p.id AND a.deleted_at IS NULL), (SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.part_id = p.id AND s.status = 'active') FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id LEFT JOIN structure_parts parent ON parent.id = p.parent_part_id LEFT JOIN users c ON c.id = p.created_by LEFT JOIN users u ON u.id = p.updated_by WHERE p.drawing_id = $1::uuid ORDER BY p.part_no`, drawingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]AdminPartSummary, 0)
+	for rows.Next() {
+		var item AdminPartSummary
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&item.ID, &item.DrawingID, &item.DrawingNo, &item.No, &item.Name, &item.ParentNo, &item.Project, &item.Material, &item.Status, &item.Version, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt, &item.AttachmentCount, &item.SessionCount); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = createdAt.Format(time.RFC3339)
+		item.UpdatedAt = updatedAt.Format(time.RFC3339)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func listAdminAttachments(ctx context.Context, pool *pgxpool.Pool, drawingID string) ([]AdminAttachment, error) {
+	rows, err := pool.Query(ctx, `SELECT a.id::text, a.original_name, COALESCE(a.current_name, a.original_name), a.file_role, a.storage_key, COALESCE(a.current_storage_key, a.storage_key), a.version, COALESCE(a.current_size_bytes, a.size_bytes), COALESCE(a.current_mime_type, a.mime_type), COALESCE(u.display_name, u.account, ''), a.created_at FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by WHERE (a.drawing_id = $1::uuid OR a.part_id IN (SELECT id FROM structure_parts WHERE drawing_id = $1::uuid)) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, drawingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]AdminAttachment, 0)
+	for rows.Next() {
+		var item AdminAttachment
+		var createdAt time.Time
+		if err := rows.Scan(&item.ID, &item.OriginalName, &item.CurrentName, &item.Role, &item.StorageKey, &item.CurrentStorageKey, &item.Version, &item.Size, &item.MimeType, &item.UploadedBy, &createdAt); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = createdAt.Format(time.RFC3339)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func listAdminVersions(ctx context.Context, pool *pgxpool.Pool, attachments []AdminAttachment) ([]AdminFileVersion, error) {
+	if len(attachments) == 0 {
+		return []AdminFileVersion{}, nil
+	}
+	rows, err := pool.Query(ctx, `SELECT v.id::text, v.attachment_id::text, v.storage_key, v.version, v.version_kind, v.size_bytes, v.mime_type, COALESCE(u.display_name, u.account, ''), v.created_at FROM file_versions v LEFT JOIN users u ON u.id = v.created_by WHERE v.attachment_id = ANY($1::uuid[]) AND v.deleted_at IS NULL ORDER BY v.created_at DESC`, attachmentIDs(attachments))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]AdminFileVersion, 0)
+	for rows.Next() {
+		var item AdminFileVersion
+		if err := rows.Scan(&item.ID, &item.AttachmentID, &item.StorageKey, &item.Version, &item.VersionKind, &item.Size, &item.MimeType, &item.CreatedBy, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func listAdminSessions(ctx context.Context, pool *pgxpool.Pool, drawingNo string) ([]map[string]any, error) {
+	rows, err := pool.Query(ctx, `SELECT s.id::text, s.attachment_id::text, COALESCE(a.current_name, a.original_name, ''), COALESCE(p.part_no, ''), COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id LEFT JOIN structure_parts p ON p.id = a.part_id JOIN users u ON u.id = s.user_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN drawings parent ON parent.id = p.drawing_id WHERE s.status = 'active' AND (d.drawing_no = $1 OR parent.drawing_no = $1) ORDER BY s.started_at DESC`, drawingNo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, attachmentID, name, partNo, user, status string
+		var started, seen time.Time
+		if err := rows.Scan(&id, &attachmentID, &name, &partNo, &user, &status, &started, &seen); err != nil {
+			return nil, err
+		}
+		items = append(items, map[string]any{"id": id, "attachmentId": attachmentID, "fileName": name, "partNo": partNo, "user": user, "status": status, "startedAt": started, "lastSeenAt": seen})
+	}
+	return items, rows.Err()
+}
+
+func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage storage.ObjectStorage, id string) (string, error) {
+	var no string
+	partNos := make([]string, 0)
+	if err := pool.QueryRow(ctx, `SELECT drawing_no FROM drawings WHERE id = $1::uuid`, id).Scan(&no); errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrAdminDrawingNotFound
+	} else if err != nil {
+		return "", err
+	}
+	keys := make([]string, 0)
+	rows, err := pool.Query(ctx, `SELECT storage_key, COALESCE(current_storage_key, '') FROM attachments WHERE drawing_id = $1::uuid OR part_id IN (SELECT id FROM structure_parts WHERE drawing_id = $1::uuid)`, id)
+	if err != nil {
+		return "", err
+	}
+	for rows.Next() {
+		var original, current string
+		if err := rows.Scan(&original, &current); err != nil {
+			rows.Close()
+			return "", err
+		}
+		keys = append(keys, original)
+		if current != "" {
+			keys = append(keys, current)
+		}
+	}
+	rows.Close()
+	versionRows, err := pool.Query(ctx, `SELECT v.storage_key FROM file_versions v JOIN attachments a ON a.id = v.attachment_id WHERE a.drawing_id = $1::uuid OR a.part_id IN (SELECT id FROM structure_parts WHERE drawing_id = $1::uuid)`, id)
+	if err != nil {
+		return "", err
+	}
+	for versionRows.Next() {
+		var key string
+		if err := versionRows.Scan(&key); err != nil {
+			versionRows.Close()
+			return "", err
+		}
+		keys = append(keys, key)
+	}
+	versionRows.Close()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	var active int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE s.status = 'active' AND (a.drawing_id = $1::uuid OR a.part_id IN (SELECT id FROM structure_parts WHERE drawing_id = $1::uuid))`, id).Scan(&active); err != nil {
+		return "", err
+	}
+	if active > 0 {
+		return "", ErrAdminDrawingBusy
+	}
+	partRows, err := tx.Query(ctx, `SELECT part_no FROM structure_parts WHERE drawing_id = $1::uuid`, id)
+	if err != nil {
+		return "", err
+	}
+	for partRows.Next() {
+		var partNo string
+		if err := partRows.Scan(&partNo); err != nil {
+			partRows.Close()
+			return "", err
+		}
+		partNos = append(partNos, partNo)
+	}
+	if err := partRows.Err(); err != nil {
+		partRows.Close()
+		return "", err
+	}
+	partRows.Close()
+	if _, err := tx.Exec(ctx, `UPDATE structure_parts SET parent_part_id = NULL WHERE drawing_id = $1::uuid`, id); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM drawings WHERE id = $1::uuid`, id); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	if objectStorage != nil {
+		for _, key := range uniqueStrings(keys) {
+			if err := objectStorage.Delete(ctx, key); err != nil {
+				return "", err
+			}
+		}
+	}
+	return no, nil
+}
+
+func hardDeletePart(ctx context.Context, pool *pgxpool.Pool, objectStorage storage.ObjectStorage, id string) (string, string, []string, error) {
+	var no, drawingNo string
+	err := pool.QueryRow(ctx, `SELECT p.part_no, d.drawing_no FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id WHERE p.id = $1::uuid`, id).Scan(&no, &drawingNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil, ErrAdminDrawingNotFound
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	var active int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM edit_sessions WHERE attachment_id IN (SELECT id FROM attachments WHERE part_id = $1::uuid) AND status = 'active'`, id).Scan(&active); err != nil {
+		return "", "", nil, err
+	}
+	if active > 0 {
+		return "", "", nil, ErrAdminDrawingBusy
+	}
+	keys := make([]string, 0)
+	rows, err := pool.Query(ctx, `SELECT a.storage_key, COALESCE(a.current_storage_key, '') FROM attachments a WHERE a.part_id = $1::uuid`, id)
+	if err != nil {
+		return "", "", nil, err
+	}
+	for rows.Next() {
+		var original, current string
+		if err := rows.Scan(&original, &current); err != nil {
+			rows.Close()
+			return "", "", nil, err
+		}
+		keys = append(keys, original, current)
+	}
+	rows.Close()
+	versionRows, err := pool.Query(ctx, `SELECT v.storage_key FROM file_versions v JOIN attachments a ON a.id = v.attachment_id WHERE a.part_id = $1::uuid`, id)
+	if err != nil {
+		return "", "", nil, err
+	}
+	for versionRows.Next() {
+		var key string
+		if err := versionRows.Scan(&key); err != nil {
+			versionRows.Close()
+			return "", "", nil, err
+		}
+		keys = append(keys, key)
+	}
+	versionRows.Close()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer tx.Rollback(ctx)
+	var childCount int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM structure_parts WHERE parent_part_id = $1::uuid`, id).Scan(&childCount); err != nil {
+		return "", "", nil, err
+	}
+	if childCount > 0 {
+		return "", "", nil, ErrAdminPartHasChildren
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM structure_parts WHERE id = $1::uuid`, id); err != nil {
+		return "", "", nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", "", nil, err
+	}
+	if objectStorage != nil {
+		for _, key := range uniqueStrings(keys) {
+			if err := objectStorage.Delete(ctx, key); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+	return no, drawingNo, uniqueStrings(keys), nil
+}
+
+func hardDeleteAttachment(ctx context.Context, pool *pgxpool.Pool, objectStorage storage.ObjectStorage, id string) (string, string, []string, error) {
+	var no, name string
+	var original, current string
+	err := pool.QueryRow(ctx, `SELECT COALESCE(d.drawing_no, parent.drawing_no, ''), COALESCE(a.current_name, a.original_name), a.storage_key, COALESCE(a.current_storage_key, '') FROM attachments a LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN structure_parts p ON p.id = a.part_id LEFT JOIN drawings parent ON parent.id = p.drawing_id WHERE a.id = $1::uuid`, id).Scan(&no, &name, &original, &current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil, ErrAdminDrawingNotFound
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	var active int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM edit_sessions WHERE attachment_id = $1::uuid AND status = 'active'`, id).Scan(&active); err != nil {
+		return "", "", nil, err
+	}
+	if active > 0 {
+		return "", "", nil, ErrAdminDrawingBusy
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM attachments WHERE id = $1::uuid`, id); err != nil {
+		return "", "", nil, err
+	}
+	keys := []string{original, current}
+	versionRows, err := pool.Query(ctx, `SELECT v.storage_key FROM file_versions v WHERE v.attachment_id = $1::uuid`, id)
+	if err != nil {
+		return "", "", nil, err
+	}
+	for versionRows.Next() {
+		var key string
+		if err := versionRows.Scan(&key); err != nil {
+			versionRows.Close()
+			return "", "", nil, err
+		}
+		keys = append(keys, key)
+	}
+	if err := versionRows.Err(); err != nil {
+		versionRows.Close()
+		return "", "", nil, err
+	}
+	versionRows.Close()
+	keys = uniqueStrings(keys)
+	if objectStorage != nil {
+		for _, key := range keys {
+			if err := objectStorage.Delete(ctx, key); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+	return no, name, keys, nil
+}
+
+func attachmentIDs(items []AdminAttachment) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
+}
+func parseAdminInt(value string, fallback int) int {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+func actionLabel(action string) string {
+	if action == "disable" {
+		return "禁用"
+	}
+	return "启用"
+}
+func writeAdminAudit(ctx context.Context, repository audit.Repository, user auth.AuthUser, input audit.CreateInput) {
+	if repository != nil {
+		_, _ = repository.Create(ctx, input, user.ID, user.DisplayName, "", "")
+	}
+}
+func adminResourceParts(path, prefix string) (string, string, error) {
+	raw := strings.TrimPrefix(path, prefix)
+	if raw == path {
+		return "", "", errors.New("资源路径无效")
+	}
+	parts := strings.Split(strings.Trim(raw, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return "", "", errors.New("资源 ID 不能为空")
+	}
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", errors.New("资源 ID 无效")
+	}
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	return id, action, nil
+}
+func writeAdminDrawingError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrAdminDrawingNotFound):
+		response.WriteError(writer, http.StatusNotFound, "图纸不存在")
+	case errors.Is(err, ErrAdminDrawingBusy):
+		response.WriteError(writer, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrAdminPartHasChildren):
+		response.WriteError(writer, http.StatusConflict, err.Error())
+	default:
+		response.WriteError(writer, http.StatusInternalServerError, "后台图纸操作失败")
+	}
+}

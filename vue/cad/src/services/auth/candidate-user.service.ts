@@ -30,8 +30,8 @@ export async function fetchReviewerCandidates(role = 'reviewer'): Promise<Array<
   }
 
   try {
-    const document = await dataManager.load()
-    return document.users
+    const users = await dataManager.listUsers()
+    return users
       .filter((user) => user.status === 'active' && (!role || user.roles.includes(role as any)))
       .map((user) => ({ id: user.id, name: user.displayName, account: user.account }))
   } catch {

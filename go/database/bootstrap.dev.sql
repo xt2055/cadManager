@@ -18,7 +18,6 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'cadguanliq')\gexec
 
 \connect cadguanliq
 \ir migrations/000001_initial_schema.sql
-\ir migrations/000002_data_document_compat.sql
 \ir migrations/000003_review_node_roles.sql
 \ir migrations/000004_review_flow_assignments.sql
 \ir migrations/000005_drawing_operation_audit.sql
@@ -26,6 +25,16 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'cadguanliq')\gexec
 \ir migrations/000007_file_versions.sql
 \ir migrations/000008_edit_session_tickets.sql
 \ir migrations/000009_current_file_storage.sql
+\ir migrations/000010_update_management.sql
+\ir migrations/000011_drawing_lifecycle.sql
+\ir migrations/000012_versioned_edit_work_files.sql
+\ir migrations/000013_remove_hidden_status.sql
+\ir migrations/000014_modular_domain_data.sql
+\ir migrations/000015_remove_data_documents.sql
+\ir migrations/000016_attachment_storage_key_lifecycle.sql
+\ir migrations/000017_upload_sessions_and_blobs.sql
+\ir migrations/000018_upload_chunks.sql
+\ir migrations/000019_repair_upload_schema.sql
 
 -- 初始化脚本由管理员执行时，明确授予业务账号运行时权限。
 GRANT CONNECT ON DATABASE cadguanliq TO cadguanliq_app;

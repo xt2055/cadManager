@@ -3,6 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { dataManager } from '@/services/data-manager'
+import type { FileVersionInfo } from '@/services/data-manager/data-provider'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingFile, DrawingFileHistoryItem } from '@/types/domain.types'
@@ -21,6 +23,7 @@ const fileId = computed(() => String(route.query.fileId ?? ''))
 
 const targetFile = ref<DrawingFile | null>(null)
 const selectedNodeId = ref<string | null>(null)
+const versionRecords = ref<FileVersionInfo[]>([])
 
 interface HistoryTreeNode {
   id: string
@@ -33,6 +36,7 @@ interface HistoryTreeNode {
   replacedAt?: string
   replaceReason?: string
   storageKey?: string
+  versionId?: string
   mimeType?: string
   previewable: boolean
   isCurrent: boolean
@@ -66,15 +70,55 @@ async function loadFile() {
   }
 
   targetFile.value = file || null
-  if (file && !selectedNodeId.value) {
-    selectedNodeId.value = file.id
+  versionRecords.value = []
+  selectedNodeId.value = null
+  if (!file) return
+
+  const currentKey = file.currentStorageKey || file.storageKey
+  if (currentKey) {
+    try {
+      versionRecords.value = await dataManager.listFileVersions(currentKey)
+    } catch (error) {
+      console.warn('加载后端版本记录失败，回退文档历史记录', error)
+    }
   }
+  const currentRecord = versionRecords.value.find((item) => item.storageKey === currentKey)
+  selectedNodeId.value = currentRecord?.id || file.id
+}
+
+function formatVersionSize(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`
+  if (size >= 1024) return `${(size / 1024).toFixed(0)} KB`
+  return `${size} B`
 }
 
 // 构造按时间先后顺序排列的历史演进树节点
 const historyTree = computed<HistoryTreeNode[]>(() => {
   if (!targetFile.value) return []
   const nodes: HistoryTreeNode[] = []
+  if (versionRecords.value.length) {
+    const currentKey = targetFile.value.currentStorageKey || targetFile.value.storageKey || ''
+    const records = [...versionRecords.value].sort((left, right) => {
+      return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
+    })
+    records.forEach((item, index) => {
+      nodes.push({
+        id: item.id,
+        versionId: item.id,
+        version: item.version,
+        name: targetFile.value?.name || item.storageKey.split('/').pop() || item.version,
+        size: formatVersionSize(item.size),
+        uploadedBy: item.createdByName || targetFile.value?.uploadedBy || '未知用户',
+        uploadedAt: item.createdAt,
+        storageKey: item.storageKey,
+        mimeType: item.mimeType,
+        previewable: true,
+        isCurrent: item.storageKey === currentKey,
+        index: index + 1,
+      })
+    })
+    return nodes
+  }
   const historyList = targetFile.value.history ?? []
 
   // 1. 历史版本节点（先出现的版本在前）
@@ -133,7 +177,9 @@ function openViewer(node: HistoryTreeNode) {
   // 历史版本节点按其版本文件存储键精确在线浏览（后端按 file_versions.storage_key 定位）；
   // 当前生效节点仍走当前文件源。fileId 统一用逻辑文件 ID 保证 viewer 能找到文件信息。
   const query: Record<string, string> = { fileId: targetFile.value.id }
-  if (!node.isCurrent && node.storageKey) {
+  if (node.versionId) {
+    query.versionId = node.versionId
+  } else if (!node.isCurrent && node.storageKey) {
     query.versionKey = node.storageKey
   }
   router.push({
@@ -148,7 +194,7 @@ function openEditor(node: HistoryTreeNode) {
   router.push({
     name: 'drawing-editor',
     params: { drawingId: drawingId.value },
-    query: { fileId: node.id },
+    query: { fileId: targetFile.value.id },
   })
 }
 
@@ -158,19 +204,29 @@ async function downloadFile(node: HistoryTreeNode) {
     return
   }
   try {
-    const dummyFile: DrawingFile = {
-      id: node.id,
-      name: node.name,
-      size: node.size,
-      role: targetFile.value?.role || 'part',
-      drawingNo: targetFile.value?.drawingNo || drawingId.value,
-      version: node.version,
-      uploadedBy: node.uploadedBy,
-      uploadedAt: node.uploadedAt,
-      storageKey: node.storageKey,
-      previewable: node.previewable,
+    if (node.versionId) {
+      const blob = await dataManager.downloadFileVersion(node.versionId)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = node.name
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } else {
+      const dummyFile: DrawingFile = {
+        id: node.id,
+        name: node.name,
+        size: node.size,
+        role: targetFile.value?.role || 'part',
+        drawingNo: targetFile.value?.drawingNo || drawingId.value,
+        version: node.version,
+        uploadedBy: node.uploadedBy,
+        uploadedAt: node.uploadedAt,
+        storageKey: node.storageKey,
+        previewable: node.previewable,
+      }
+      await domainStore.downloadAttachment(dummyFile)
     }
-    await domainStore.downloadAttachment(dummyFile)
     uiStore.toast(`已触发下载 ${node.name} (${node.version})`, 'ok')
   } catch (err) {
     console.error('下载失败', err)

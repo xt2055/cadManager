@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -9,6 +9,7 @@ import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import { dataManager } from '@/services/data-manager'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
+import type { UploadSessionSnapshot } from '@/services/data-manager/data-provider'
 import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 
 defineOptions({
@@ -73,6 +74,74 @@ const isDraggingAssembly = ref(false)
 const isDraggingParts = ref(false)
 const isCreating = ref(false)
 const createStatus = ref('正在准备创建')
+const createError = ref('')
+const canRetryUpload = computed(() => Boolean(domainStore.pendingUploadSessionId))
+const uploadSnapshot = ref<UploadSessionSnapshot | null>(null)
+const readyUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'ready' || item.status === 'committed').length ?? 0)
+const failedUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'failed').length ?? 0)
+
+async function refreshUploadSnapshot() {
+  const sessionId = domainStore.pendingUploadSessionId
+  if (!sessionId) {
+    uploadSnapshot.value = null
+    return
+  }
+  try {
+    const snapshot = await dataManager.getUploadSession(sessionId)
+    uploadSnapshot.value = snapshot
+    await Promise.all(snapshot.items.map(async (item) => {
+      if (item.status === 'ready' || item.status === 'committed') {
+        domainStore.uploadProgress[item.id] = 100
+        return
+      }
+      try {
+        const chunks = await dataManager.listUploadChunks(sessionId, item.id)
+        if (chunks.manifest.chunkSize > 0 && chunks.manifest.totalSize > 0) {
+          const count = Math.ceil(chunks.manifest.totalSize / chunks.manifest.chunkSize)
+          domainStore.uploadProgress[item.id] = Math.round((chunks.parts.length / count) * 100)
+        }
+      } catch {
+        // 普通整文件上传没有分片清单，状态仍由会话快照展示。
+      }
+    }))
+	  } catch (error) {
+	    if (isExpiredUploadError(error)) {
+	      await domainStore.dismissPendingUploadSession()
+	      uploadSnapshot.value = null
+	      return
+	    }
+	    console.warn('读取上传会话状态失败', error)
+	  }
+}
+
+function uploadStatusLabel(status: string): string {
+  return ({ pending: '待上传', uploading: '上传中', ready: '已完成', committed: '已提交', failed: '失败' } as Record<string, string>)[status] ?? status
+}
+
+function isExpiredUploadError(error: unknown): boolean {
+  return error instanceof Error && (error.message.includes('上传会话已过期') || error.message.includes('HTTP 410'))
+}
+
+async function retryUploadItem(itemId: string) {
+  if (isCreating.value) return
+  isCreating.value = true
+  createStatus.value = '正在重试文件'
+  try {
+    await domainStore.retryFailedDrawingUploadItem(itemId)
+    await refreshUploadSnapshot()
+    uiStore.toast('文件已重新上传', 'ok')
+  } catch (error) {
+    createError.value = error instanceof Error ? error.message : '重试文件失败'
+    uiStore.toast(createError.value, 'warn')
+    await refreshUploadSnapshot()
+  } finally {
+    isCreating.value = false
+    createStatus.value = '正在准备创建'
+  }
+}
+
+onMounted(() => { void refreshUploadSnapshot() })
+watch(() => domainStore.pendingUploadSessionId, () => { void refreshUploadSnapshot() })
 
 const assemblyFileInput = ref<HTMLInputElement | null>(null)
 const partFilesInput = ref<HTMLInputElement | null>(null)
@@ -246,12 +315,16 @@ function triggerFolderPick() {
 }
 
 function handleCancel() {
+  void domainStore.cancelPendingUploadSession().catch((error) => {
+    console.warn('取消上传会话清理失败', error)
+  })
   router.push({ name: 'drawing-library' })
 }
 
 function handleSubmit() {
   if (isCreating.value) return
   isCreating.value = true
+  createError.value = ''
   createStatus.value = '正在准备创建'
   void performCreate().finally(() => {
     isCreating.value = false
@@ -479,7 +552,11 @@ async function performCreate() {
     await domainStore.addDrawing(newProjectDrawing, partsForStructure, attachments.filter((item): item is { id: string; content: File } => Boolean(item.id && item.content)))
   } catch (error) {
     console.error('保存新建图纸失败', error)
-    uiStore.toast('项目创建失败，数据未能保存', 'warn')
+    createError.value = error instanceof Error ? error.message : '项目创建失败，数据未能保存'
+    // 会话 ID 在文件项创建前就会写入；失败时主动刷新，避免界面继续显示
+    // watcher 首次读到的“0/0”旧快照。
+    await refreshUploadSnapshot()
+    uiStore.toast(createError.value, 'warn')
     return
   }
 
@@ -492,6 +569,25 @@ async function performCreate() {
    uiStore.toast(`项目「${projectNo}」已成功创建，总图图号为「${drawingNo}」${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}${fallbackMessage}`, unidentifiedPartNames.length ? 'warn' : 'ok')
   router.push({ name: 'drawing-preview', params: { drawingId: newProjectDrawing.no } })
 }
+
+async function retryFailedUpload() {
+  if (isCreating.value || !canRetryUpload.value) return
+  isCreating.value = true
+  createError.value = ''
+  createStatus.value = '正在重试失败文件'
+  try {
+    const drawingNo = await domainStore.retryFailedDrawingUpload()
+    uiStore.toast(`上传已恢复，项目「${drawingNo}」创建成功`, 'ok')
+    router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
+  } catch (error) {
+    createError.value = error instanceof Error ? error.message : '重试失败文件时发生错误'
+    uiStore.toast(createError.value, 'warn')
+    await refreshUploadSnapshot()
+  } finally {
+    isCreating.value = false
+    createStatus.value = '正在准备创建'
+  }
+}
 </script>
 
 <template>
@@ -502,6 +598,28 @@ async function performCreate() {
         <strong>正在创建图纸</strong>
         <span>{{ createStatus }}</span>
         <small>请勿关闭页面或重复点击</small>
+      </div>
+    </div>
+    <div v-if="canRetryUpload" class="create-upload-recovery" :role="createError ? 'alert' : undefined">
+      <div>
+        <strong>{{ failedUploadCount ? '部分文件尚未上传完成' : createError ? '文件已上传，项目尚未提交' : '上传会话进度' }}</strong>
+        <span>项目尚未写入数据库，已完成文件会保留在暂存会话中。</span>
+        <span v-if="uploadSnapshot">已完成 {{ readyUploadCount }}/{{ uploadSnapshot.items.length }}，失败 {{ failedUploadCount }} 个；会话截止 {{ new Date(uploadSnapshot.session.expiresAt).toLocaleString() }}</span>
+        <small v-if="createError">{{ createError }}</small>
+      </div>
+      <div class="create-upload-recovery-actions">
+        <button v-if="uploadSnapshot?.items.length" class="btn sm" type="button" :disabled="isCreating" @click="retryFailedUpload">{{ failedUploadCount ? '仅重试失败文件' : '继续提交' }}</button>
+        <button class="btn sm" type="button" :disabled="isCreating" @click="handleCancel">放弃并清理</button>
+      </div>
+      <div v-if="uploadSnapshot" class="create-upload-recovery-list">
+        <div v-for="item in uploadSnapshot.items" :key="item.id" class="create-upload-recovery-item">
+          <span class="mono">{{ item.originalName }}</span>
+          <span>{{ uploadStatusLabel(item.status) }}</span>
+          <span class="upload-progress-value">{{ domainStore.uploadProgress[item.id] ?? (item.status === 'ready' || item.status === 'committed' ? 100 : 0) }}%</span>
+          <span class="upload-progress-track" aria-hidden="true"><span class="upload-progress-fill" :style="{ width: `${domainStore.uploadProgress[item.id] ?? (item.status === 'ready' || item.status === 'committed' ? 100 : 0)}%` }"></span></span>
+          <small v-if="item.errorMessage">{{ item.errorMessage }}</small>
+          <button v-if="item.status === 'failed'" class="btn sm" type="button" :disabled="isCreating" @click="retryUploadItem(item.id)">重试</button>
+        </div>
       </div>
     </div>
     <div class="create-topbar">
@@ -786,6 +904,92 @@ async function performCreate() {
 .create-loading-card small {
   color: var(--text-3);
   font-size: 11px;
+}
+
+.create-upload-recovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 14px 0;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--danger, #c45b4b) 35%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger, #c45b4b) 8%, var(--panel));
+}
+
+.create-upload-recovery > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.create-upload-recovery span,
+.create-upload-recovery small {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.create-upload-recovery small {
+  color: var(--danger, #c45b4b);
+}
+
+.create-upload-recovery-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.create-upload-recovery-item {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto 42px minmax(80px, 180px) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.upload-progress-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-progress-track {
+  display: block;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.upload-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent, #5b8def);
+  transition: width 180ms ease;
+}
+
+.create-upload-recovery-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+@media (max-width: 680px) {
+  .create-upload-recovery {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .create-upload-recovery-actions {
+    flex-wrap: wrap;
+  }
+
+  .create-upload-recovery-item {
+    grid-template-columns: 1fr auto 42px;
+  }
+
+  .upload-progress-track {
+    grid-column: 1 / -1;
+  }
 }
 
 .create-spinner,

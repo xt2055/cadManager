@@ -54,21 +54,23 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateInput, o
 	var err error
 	if partID == nil {
 		err = repository.pool.QueryRow(ctx, `
-			INSERT INTO attachments (drawing_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by)
-			SELECT id, $2, $3, $3, $4, $4, $5, $5, $6, $6, $7, $7, $8, $9, $10::uuid
+			INSERT INTO attachments (drawing_id, file_role, storage_key, current_storage_key, blob_id, current_blob_id, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by)
+			SELECT id, $2, $3, $3, (SELECT id FROM file_blobs WHERE storage_key = $3 LIMIT 1),
+			       (SELECT id FROM file_blobs WHERE storage_key = $3 LIMIT 1), $4, $4, $5, $5, $6, $6, $7, $7, $8, $9, $10::uuid
 			FROM drawings WHERE drawing_no = $1
 			RETURNING id::text`, input.DrawingNo, role, object.Key, input.Name, object.MimeType, object.Size, object.SHA256, version, input.Previewable, userID).Scan(&id)
 	} else {
 		err = repository.pool.QueryRow(ctx, `
-			INSERT INTO attachments (part_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by)
-			VALUES ($1::uuid, $2, $3, $3, $4, $4, $5, $5, $6, $6, $7, $7, $8, $9, $10::uuid)
+			INSERT INTO attachments (part_id, file_role, storage_key, current_storage_key, blob_id, current_blob_id, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by)
+			VALUES ($1::uuid, $2, $3, $3, (SELECT id FROM file_blobs WHERE storage_key = $3 LIMIT 1),
+			        (SELECT id FROM file_blobs WHERE storage_key = $3 LIMIT 1), $4, $4, $5, $5, $6, $6, $7, $7, $8, $9, $10::uuid)
 			RETURNING id::text`, *partID, role, object.Key, input.Name, object.MimeType, object.Size, object.SHA256, version, input.Previewable, userID).Scan(&id)
 	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Attachment{}, ErrNotFound
 		}
-		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "unique constraint") {
+		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "SQLSTATE 23505") {
 			return Attachment{}, ErrConflict
 		}
 		return Attachment{}, fmt.Errorf("保存附件元数据失败: %w", err)
@@ -89,16 +91,18 @@ func (repository *PGRepository) Find(ctx context.Context, storageKey string) (At
 	var uploadedBy *string
 	var createdAt time.Time
 	err := repository.pool.QueryRow(ctx, `
-		SELECT a.id::text, a.storage_key, a.current_storage_key, a.original_name, a.current_name,
+		SELECT a.id::text, COALESCE(ob.storage_key, a.storage_key), COALESCE(cb.storage_key, a.current_storage_key, a.storage_key), a.original_name, a.current_name,
 		       a.current_mime_type, a.current_size_bytes, a.current_sha256,
 		       COALESCE(d.drawing_no, parent.drawing_no, ''),
 		       p.part_no, a.file_role, a.size_bytes, a.mime_type, COALESCE(a.sha256, ''), a.version,
 		       a.previewable, COALESCE(a.uploaded_by::text, ''), a.created_at
 		FROM attachments a
+		LEFT JOIN file_blobs ob ON ob.id = a.blob_id
+		LEFT JOIN file_blobs cb ON cb.id = a.current_blob_id
 		LEFT JOIN drawings d ON d.id = a.drawing_id
 		LEFT JOIN structure_parts p ON p.id = a.part_id
 		LEFT JOIN drawings parent ON parent.id = p.drawing_id
-		WHERE (a.storage_key = $1 OR a.current_storage_key = $1) AND a.deleted_at IS NULL`, storageKey).Scan(
+			WHERE (a.storage_key = $1 OR a.current_storage_key = $1 OR ob.storage_key = $1 OR cb.storage_key = $1) AND a.deleted_at IS NULL`, storageKey).Scan(
 		&item.ID, &item.StorageKey, &currentStorageKey, &item.Name, &currentName,
 		&currentMimeType, &currentSize, &currentSHA256, &drawingNo, &partNo, &role, &item.Size, &item.MimeType,
 		&item.SHA256, &item.Version, &item.Previewable, &uploadedBy, &createdAt,
@@ -160,8 +164,10 @@ func (repository *PGRepository) FindByOwnerAndName(ctx context.Context, drawingN
 func (repository *PGRepository) UpdateContent(ctx context.Context, storageKey string, size int64, mimeType, sha256 string) error {
 	result, err := repository.pool.Exec(ctx, `
 		UPDATE attachments
-		SET size_bytes = $2, mime_type = $3, sha256 = $4
-		WHERE storage_key = $1 AND deleted_at IS NULL`, storageKey, size, mimeType, sha256)
+		SET size_bytes = $2, mime_type = $3, sha256 = $4,
+		    blob_id = COALESCE((SELECT id FROM file_blobs WHERE storage_key = $1 LIMIT 1), blob_id),
+		    current_blob_id = COALESCE((SELECT id FROM file_blobs WHERE storage_key = $1 LIMIT 1), current_blob_id)
+		WHERE (storage_key = $1 OR current_storage_key = $1) AND deleted_at IS NULL`, storageKey, size, mimeType, sha256)
 	if err != nil {
 		return fmt.Errorf("更新附件内容元数据失败: %w", err)
 	}
@@ -175,9 +181,13 @@ func (repository *PGRepository) UpdateContent(ctx context.Context, storageKey st
 func (repository *PGRepository) SetCurrentVersion(ctx context.Context, sourceStorageKey, currentStorageKey, name, version string, size int64, mimeType, sha256 string) error {
 	result, err := repository.pool.Exec(ctx, `
 		UPDATE attachments
-		SET current_storage_key = $2, current_name = $3, current_size_bytes = $4,
-		    current_mime_type = $5, current_sha256 = $6, version = $7
-		WHERE storage_key = $1 AND deleted_at IS NULL`, sourceStorageKey, currentStorageKey, name, size, mimeType, sha256, version)
+		SET current_storage_key = $2,
+		    current_blob_id = COALESCE((SELECT id FROM file_blobs WHERE storage_key = $2 LIMIT 1), current_blob_id),
+		    current_name = $3, current_size_bytes = $4, current_mime_type = $5,
+		    current_sha256 = $6, version = $7
+		WHERE (storage_key = $1 OR current_storage_key = $1
+		       OR current_blob_id IN (SELECT id FROM file_blobs WHERE storage_key = $1))
+		  AND deleted_at IS NULL`, sourceStorageKey, currentStorageKey, name, size, mimeType, sha256, version)
 	if err != nil {
 		return fmt.Errorf("更新当前 CAD 版本元数据失败: %w", err)
 	}
@@ -189,7 +199,7 @@ func (repository *PGRepository) SetCurrentVersion(ctx context.Context, sourceSto
 
 func (repository *PGRepository) ListByDrawing(ctx context.Context, drawingNo string) ([]Attachment, error) {
 	rows, err := repository.pool.Query(ctx, `
-		SELECT a.id::text, a.storage_key, COALESCE(a.current_storage_key, a.storage_key),
+			SELECT a.id::text, COALESCE(ob.storage_key, a.storage_key), COALESCE(cb.storage_key, a.current_storage_key, a.storage_key),
 		       a.original_name, COALESCE(a.current_name, a.original_name),
 		       COALESCE(a.current_mime_type, a.mime_type),
 		       COALESCE(a.current_size_bytes, a.size_bytes),
@@ -198,6 +208,8 @@ func (repository *PGRepository) ListByDrawing(ctx context.Context, drawingNo str
 		       a.size_bytes, a.mime_type, COALESCE(a.sha256, ''), a.version,
 		       a.previewable, COALESCE(a.uploaded_by::text, ''), a.created_at
 		FROM attachments a
+		LEFT JOIN file_blobs ob ON ob.id = a.blob_id
+		LEFT JOIN file_blobs cb ON cb.id = a.current_blob_id
 		LEFT JOIN drawings d ON d.id = a.drawing_id
 		LEFT JOIN structure_parts p ON p.id = a.part_id
 		LEFT JOIN drawings parent ON parent.id = p.drawing_id
@@ -259,15 +271,16 @@ func (repository *PGRepository) ListAllCad(ctx context.Context) ([]Attachment, e
 		return nil, nil
 	}
 	rows, err := repository.pool.Query(ctx, `
-		SELECT a.id::text, a.storage_key, a.original_name, COALESCE(d.drawing_no, parent.drawing_no, ''),
+		SELECT a.id::text, COALESCE(ob.storage_key, a.storage_key), a.original_name, COALESCE(d.drawing_no, parent.drawing_no, ''),
 		       p.part_no, a.file_role, a.size_bytes, a.mime_type, COALESCE(a.sha256, ''), a.version,
 		       a.previewable, COALESCE(a.uploaded_by::text, '')
 		FROM attachments a
+		LEFT JOIN file_blobs ob ON ob.id = a.blob_id
 		LEFT JOIN drawings d ON d.id = a.drawing_id
 		LEFT JOIN structure_parts p ON p.id = a.part_id
 		LEFT JOIN drawings parent ON parent.id = p.drawing_id
-		WHERE (a.storage_key ILIKE '%.exb' OR a.original_name ILIKE '%.exb'
-		    OR a.storage_key ILIKE '%.dwg' OR a.original_name ILIKE '%.dwg')
+		WHERE (a.storage_key ILIKE '%.exb' OR ob.storage_key ILIKE '%.exb' OR a.original_name ILIKE '%.exb'
+		    OR a.storage_key ILIKE '%.dwg' OR ob.storage_key ILIKE '%.dwg' OR a.original_name ILIKE '%.dwg')
 		  AND a.deleted_at IS NULL
 		ORDER BY a.created_at DESC`)
 	if err != nil {

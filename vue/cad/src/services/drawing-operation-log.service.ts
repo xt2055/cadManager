@@ -11,11 +11,24 @@ interface OperationLogInput {
   detail?: Record<string, unknown>
 }
 
-interface OperationLogPage {
+export interface OperationLogPage {
   list: ActivityLog[]
   total: number
   page: number
   pageSize: number
+}
+
+export interface AdminOperationLogQuery {
+  page?: number
+  pageSize?: number
+  action?: ActivityType
+  drawingNo?: string
+  targetType?: ActivityTargetType
+  actorId?: string
+  result?: ActivityResult
+  keyword?: string
+  from?: string
+  to?: string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -63,5 +76,27 @@ export async function listDrawingOperationLogs(options: { page?: number; pageSiz
     credentials: 'include',
   })
   if (!response.ok) throw new Error(`图纸操作日志读取失败：HTTP ${response.status}`)
+  return unwrap<OperationLogPage>(await response.json())
+}
+
+export async function listAdminOperationLogs(options: AdminOperationLogQuery = {}): Promise<OperationLogPage> {
+  const query = new URLSearchParams({
+    page: String(options.page ?? 1),
+    page_size: String(options.pageSize ?? 20),
+  })
+  if (options.action) query.set('action', options.action)
+  if (options.drawingNo) query.set('drawing_no', options.drawingNo)
+  if (options.targetType) query.set('target_type', options.targetType)
+  if (options.actorId) query.set('actor_id', options.actorId)
+  if (options.result) query.set('result', options.result)
+  if (options.keyword) query.set('keyword', options.keyword)
+  if (options.from) query.set('from', options.from)
+  if (options.to) query.set('to', options.to)
+  const response = await fetch(`${getApiBaseUrl()}/admin/audit-logs?${query}`, {
+    method: 'GET',
+    headers: authHeaders(),
+    credentials: 'include',
+  })
+  if (!response.ok) throw new Error(`管理员操作日志读取失败：HTTP ${response.status}`)
   return unwrap<OperationLogPage>(await response.json())
 }

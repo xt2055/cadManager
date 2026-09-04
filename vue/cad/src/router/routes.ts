@@ -180,9 +180,9 @@ export const routes: RouteRecordRaw[] = [
         component: () => import('@/features/admin/pages/ReviewFlowManagementPage.vue'),
       },
       {
-        path: 'drawing-control',
-        name: RouteName.AdminDrawingControl,
-        component: () => import('@/features/admin/pages/DrawingControlPage.vue'),
+        path: 'drawings',
+        name: RouteName.AdminDrawings,
+        component: () => import('@/features/admin/pages/AdminDrawingsPage.vue'),
       },
       {
         path: 'logs',

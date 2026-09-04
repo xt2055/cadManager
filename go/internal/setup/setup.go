@@ -1,11 +1,11 @@
-﻿// Package setup 提供首次运行安装向导：内嵌网页 + 分步初始化 API。
+// Package setup 提供首次运行安装向导：内嵌网页 + 分步初始化 API。
 // 触发条件：工作目录下不存在 .env 配置文件。向导完成后写入配置并自动重启进入正常模式。
 package setup
 
 import (
 	"context"
-	"encoding/json"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,12 +22,12 @@ import (
 	"sync"
 	"time"
 
+	"cadguanliq/database"
 	"cadguanliq/internal/auth"
 	"cadguanliq/internal/config"
 	"cadguanliq/internal/converter"
 	"cadguanliq/internal/pythonenv"
 	"cadguanliq/internal/response"
-	"cadguanliq/database"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -214,7 +214,11 @@ func prepareDatabase(ctx context.Context, input databaseInput) (applied int, ski
 		if readErr != nil {
 			return applied, skipped, readErr
 		}
-		if _, execErr := pool.Exec(ctx, string(content)); execErr != nil {
+		migrationSQL, parseErr := migrationSQLForPGX(content)
+		if parseErr != nil {
+			return applied, skipped, fmt.Errorf("解析迁移 %s 失败: %w", version, parseErr)
+		}
+		if _, execErr := pool.Exec(ctx, migrationSQL); execErr != nil {
 			return applied, skipped, fmt.Errorf("执行迁移 %s 失败: %w", version, execErr)
 		}
 		if _, execErr := pool.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); execErr != nil {
@@ -223,6 +227,25 @@ func prepareDatabase(ctx context.Context, input databaseInput) (applied int, ski
 		applied++
 	}
 	return applied, skipped, nil
+}
+
+// migrationSQLForPGX removes the psql-only error handling directive used when
+// the same files are executed manually. Unknown psql commands are rejected so
+// they cannot be silently ignored by the application migration path.
+func migrationSQLForPGX(content []byte) (string, error) {
+	lines := strings.Split(string(content), "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, `\`) {
+			if trimmed == `\set ON_ERROR_STOP on` {
+				continue
+			}
+			return "", fmt.Errorf("不支持的 psql 指令 %q", trimmed)
+		}
+		result = append(result, line)
+	}
+	return strings.Join(result, "\n"), nil
 }
 
 func fsGlob() ([]string, error) {

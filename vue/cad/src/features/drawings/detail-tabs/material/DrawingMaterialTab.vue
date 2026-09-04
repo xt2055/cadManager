@@ -28,9 +28,9 @@ const materialFiles = computed<MaterialFile[]>(() => {
 })
 
 const materialAuthor = computed(() => {
-  const fromBom = domainStore.bom.find((item) => item.drawingNo === currentItem.value?.no && item.remark && item.remark.includes('编制'))
-  const fromFile = materialFiles.value.find((f) => f.author && f.author.trim())?.author?.trim()
-  if (fromFile && fromFile !== '待定') return fromFile
+	if (!materialFiles.value.length) return ''
+	const fromFile = materialFiles.value.find((f) => f.author && f.author.trim())?.author?.trim()
+	if (fromFile && fromFile !== '待定') return fromFile
   const designer = (currentItem.value?.signers as Record<string, string> | undefined)?.['设计']
   if (designer && designer.trim() && designer.trim() !== '待定') return designer.trim()
   return ''
@@ -363,9 +363,9 @@ async function handleParseFile(file: MaterialFile) {
         <div>
           <div class="mat-title-row">
             <h3>备料清单与物资定额</h3>
-            <span class="author-badge">
+            <span v-if="materialAuthor" class="author-badge">
               <DemoIcon name="user-check" :size="13" />
-              编制：<b>{{ materialAuthor || '朱春蓉' }}</b>
+              编制：<b>{{ materialAuthor }}</b>
             </span>
           </div>
           <p>支持上传 Excel / CSV 格式备料表，版本与当前图纸生命周期完全绑定。</p>
@@ -412,7 +412,7 @@ async function handleParseFile(file: MaterialFile) {
             <b>{{ f.name }}</b>
             <span>
               {{ f.size }} · {{ f.version }} · 由 {{ f.uploadedBy }} 上传于 {{ f.uploadedAt && f.uploadedAt !== '刚刚' ? f.uploadedAt : formatCurrentTime() }}
-              · 编制：<b class="author-tag">{{ f.author || materialAuthor || '朱春蓉' }}</b>
+              <template v-if="f.author || materialAuthor"> · 编制：<b class="author-tag">{{ f.author || materialAuthor }}</b></template>
             </span>
            </div>
             <button class="btn sm" type="button" @click="handleDownloadFile(f)">
@@ -437,7 +437,7 @@ async function handleParseFile(file: MaterialFile) {
         <DemoIcon name="table" :size="16" />
         备料项目清单
         <span class="hint">共 {{ localBom.length }} 项物料</span>
-        <span class="author-badge-sm">编制：<b>{{ materialAuthor || '朱春蓉' }}</b></span>
+        <span v-if="materialAuthor" class="author-badge-sm">编制：<b>{{ materialAuthor }}</b></span>
         <span v-if="isEditing" class="tag warn">编辑模式中</span>
       </div>
 

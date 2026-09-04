@@ -4,26 +4,28 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	Addr            string
-	AllowedOrigins  []string
-	UpdateVersion   string
-	UpdateNotes     string
-	UpdatePublished string
-	UpdateURL       string
-	UpdateMandatory bool
-	StorageRoot     string
-	MaxUploadBytes  int64
-	LogDir          string
-	UpdatesDir      string
-	Dwg2DxfBin      string
-	CaxaBin         string
-	SMB             SMBConfig
-	Database        DatabaseConfig
+	Addr             string
+	AllowedOrigins   []string
+	UpdateVersion    string
+	UpdateNotes      string
+	UpdatePublished  string
+	UpdateURL        string
+	UpdateMandatory  bool
+	StorageRoot      string
+	MaxUploadBytes   int64
+	UploadSessionTTL time.Duration
+	LogDir           string
+	UpdatesDir       string
+	Dwg2DxfBin       string
+	CaxaBin          string
+	SMB              SMBConfig
+	Database         DatabaseConfig
 }
 
 type SMBConfig struct {
@@ -51,19 +53,20 @@ func Load() Config {
 	_ = godotenv.Load()
 
 	return Config{
-		Addr:            getenv("CAD_SERVER_ADDR", ":8080"),
-		AllowedOrigins:  splitList(getenv("CAD_ALLOWED_ORIGINS", "*")),
-		UpdateVersion:   getenv("UPDATE_VERSION", "0.1.0"),
-		UpdateNotes:     getenv("UPDATE_NOTES", "暂无更新说明"),
-		UpdatePublished: os.Getenv("UPDATE_PUBLISHED_AT"),
-		UpdateURL:       os.Getenv("UPDATE_DOWNLOAD_URL"),
-		UpdateMandatory: getenvBool("UPDATE_MANDATORY", false),
-		StorageRoot:     getenv("CAD_STORAGE_ROOT", "./storage/attachments"),
-		MaxUploadBytes:  int64(getenvInt("CAD_MAX_UPLOAD_MB", 100)) * 1024 * 1024,
-		LogDir:          getenv("CAD_LOG_DIR", "./logs"),
-		UpdatesDir:      getenv("CAD_UPDATES_DIR", "./updates"),
-		Dwg2DxfBin:      getenv("CAD_DWG2DXF_BIN", "./tools/exb2dxf/ok/dwg2dxf.exe"),
-		CaxaBin:         os.Getenv("CAD_CAXA_BIN"),
+		Addr:             getenv("CAD_SERVER_ADDR", ":8080"),
+		AllowedOrigins:   splitList(getenv("CAD_ALLOWED_ORIGINS", "*")),
+		UpdateVersion:    getenv("UPDATE_VERSION", "0.1.0"),
+		UpdateNotes:      getenv("UPDATE_NOTES", "暂无更新说明"),
+		UpdatePublished:  os.Getenv("UPDATE_PUBLISHED_AT"),
+		UpdateURL:        os.Getenv("UPDATE_DOWNLOAD_URL"),
+		UpdateMandatory:  getenvBool("UPDATE_MANDATORY", false),
+		StorageRoot:      getenv("CAD_STORAGE_ROOT", "./storage/attachments"),
+		MaxUploadBytes:   int64(getenvInt("CAD_MAX_UPLOAD_MB", 100)) * 1024 * 1024,
+		UploadSessionTTL: time.Duration(getenvInt("CAD_UPLOAD_SESSION_TTL_HOURS", 24)) * time.Hour,
+		LogDir:           getenv("CAD_LOG_DIR", "./logs"),
+		UpdatesDir:       getenv("CAD_UPDATES_DIR", "./updates"),
+		Dwg2DxfBin:       getenv("CAD_DWG2DXF_BIN", "./tools/exb2dxf/ok/dwg2dxf.exe"),
+		CaxaBin:          os.Getenv("CAD_CAXA_BIN"),
 		SMB: SMBConfig{
 			Enabled:   getenvBool("CAD_SMB_ENABLED", true),
 			Host:      strings.TrimSpace(os.Getenv("CAD_SMB_HOST")),
