@@ -1134,11 +1134,11 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 			if bom.No <= 0 || strings.TrimSpace(bom.Name) == "" || bom.Quantity < 0 || bom.Weight < 0 || (bom.DrawingNo != "" && bom.DrawingNo != manifest.Drawing.No) {
 				return nil, errors.New("BOM 项目字段无效")
 			}
-			partID := nullableString(partIDs[bom.PartNo])
-			if bom.PartNo != "" && partID == nil {
+			partID := partIDs[bom.PartNo]
+			if bom.PartNo != "" && partID == "" {
 				return nil, fmt.Errorf("BOM 所属零件不存在: %s", bom.PartNo)
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO bom_items (bom_id, item_no, part_id, name, spec, quantity, weight, remark) VALUES ($1::uuid, $2, $3::uuid, $4, COALESCE(NULLIF($5, ''), '—'), $6, $7, COALESCE($8, ''))`, bomID, bom.No, partID, bom.Name, bom.Spec, bom.Quantity, bom.Weight, bom.Remark); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO bom_items (bom_id, item_no, part_id, name, spec, quantity, weight, remark) VALUES ($1::uuid, $2, NULLIF($3, '')::uuid, $4, COALESCE(NULLIF($5, ''), '—'), $6, $7, COALESCE($8, ''))`, bomID, bom.No, partID, bom.Name, bom.Spec, bom.Quantity, bom.Weight, bom.Remark); err != nil {
 				return nil, fmt.Errorf("保存项目 BOM 失败: %w", err)
 			}
 		}
