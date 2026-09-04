@@ -1,6 +1,6 @@
 import { dataManager } from '@/services/data-manager'
 import { ApiUploadGateway, AttachmentUploader, BrowserUploadRecoveryStore, DrawingUploadCoordinator } from '@/modules/upload'
-import { DrawingCommandService, DrawingFileService, DrawingQueryService, DrawingReadModelMapper } from '@/modules/drawing'
+import { DrawingCommandService, DrawingFileService, DrawingQueryService, DrawingReadModelMapper, DrawingRelationQueryService } from '@/modules/drawing'
 import { ReviewService } from '@/modules/review'
 import { reviewCaseService } from '@/services/review-case.service'
 import { reviewFlowService } from '@/services/review-flow.service'
@@ -74,6 +74,11 @@ export const drawingQueryService = new DrawingQueryService({
 })
 
 export const drawingReadModelMapper = new DrawingReadModelMapper()
+
+export const drawingRelationQueryService = new DrawingRelationQueryService({
+  loadBranches: () => dataManager.loadBranches(),
+  loadBorrows: () => dataManager.loadBorrows(),
+})
 
 export const reviewService = new ReviewService(reviewCaseService, reviewFlowService)
 

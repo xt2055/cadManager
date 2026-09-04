@@ -1,17 +1,29 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
-import type { BorrowRecord, StructurePart } from '@/types/domain.types'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useDrawingRelationsStore } from '@/stores/drawing-relations.store'
+import { useWorkspaceStore } from '@/stores/workspace.store'
+import type { BorrowRecord } from '@/types/domain.types'
+import type { PartView } from '@/modules/drawing'
 import { isSameDrawingFamily } from '@/utils/drawing-number-parser'
 
 defineOptions({ name: 'DrawingBorrowTab' })
 
 const router = useRouter()
-const domainStore = useDomainStore()
-const currentNo = computed(() => domainStore.currentDrawing?.no || '')
+const route = useRoute()
+const drawingStore = useDrawingStore()
+const relationsStore = useDrawingRelationsStore()
+const workspaceStore = useWorkspaceStore()
+const currentDrawing = computed(() => drawingStore.getDrawing(String(route.params.drawingId ?? '')))
+const currentNo = computed(() => currentDrawing.value?.no || '')
+const allParts = computed(() => drawingStore.parts)
+
+onMounted(() => {
+  void Promise.all([drawingStore.load(), relationsStore.load()]).catch(() => undefined)
+})
 
 interface BorrowRow {
   partNo: string
@@ -22,20 +34,19 @@ interface BorrowRow {
   status: BorrowRecord['status']
 }
 
-function recordMatchesPart(record: BorrowRecord, part: StructurePart): boolean {
+function recordMatchesPart(record: BorrowRecord, part: PartView): boolean {
   return record.partNo === part.no || record.part.startsWith(`${part.no} `)
 }
 
-function belongsToCurrentProject(part: StructurePart, projectNo: string): boolean {
+function belongsToCurrentProject(part: PartView, projectNo: string): boolean {
   if (part.parentNo === projectNo || part.no.startsWith(`${projectNo}-`)) return true
-  if (part.files?.some((file) => file.drawingNo === projectNo) || part.otherFiles?.some((file) => file.drawingNo === projectNo)) return true
 
   const visited = new Set<string>()
   let parentNo = part.parentNo
   while (parentNo && !visited.has(parentNo)) {
     if (parentNo === projectNo) return true
     visited.add(parentNo)
-    parentNo = domainStore.structure.find((candidate) => candidate.no === parentNo)?.parentNo || ''
+    parentNo = allParts.value.find((candidate) => candidate.no === parentNo)?.parentNo || ''
   }
   return false
 }
@@ -45,16 +56,16 @@ const borrowedRows = computed<BorrowRow[]>(() => {
   if (!current) return []
 
   const rows: BorrowRow[] = []
-  const borrowedParts = domainStore.structure.filter((part) => {
+  const borrowedParts = allParts.value.filter((part) => {
     if (!belongsToCurrentProject(part, current)) return false
-    const sourceNo = part.borrowFrom?.trim() || ''
+    const sourceNo = part.sourceDrawing?.trim() || ''
     // 只有创建时明确标记来源、且来源不属于当前项目族的零件才是借用件。
     // 不能从零件图号或文件存在与否推断借用关系。
     return Boolean(sourceNo && sourceNo !== current && !isSameDrawingFamily(part.no, current))
   })
   for (const part of borrowedParts) {
-    const sourceNo = part.borrowFrom?.trim() || ''
-    const record = domainStore.borrows.find((item) => item.dir === 'in' && recordMatchesPart(item, part) && item.targetDrawingNo === current)
+    const sourceNo = part.sourceDrawing?.trim() || ''
+    const record = relationsStore.borrows.find((item) => item.dir === 'in' && recordMatchesPart(item, part) && item.targetDrawingNo === current)
     rows.push({
       partNo: part.no,
       partName: part.name,
@@ -67,7 +78,7 @@ const borrowedRows = computed<BorrowRow[]>(() => {
 
   const knownPartNos = new Set(rows.map((row) => row.partNo))
 
-  for (const record of domainStore.borrows) {
+  for (const record of relationsStore.borrows) {
     if (record.dir !== 'in' || record.targetDrawingNo !== current || !record.sourceDrawingNo) continue
     const partNo = record.partNo || record.part.split(/\s+/, 1)[0] || ''
     if (!partNo || knownPartNos.has(partNo)) continue
@@ -86,12 +97,13 @@ const borrowedRows = computed<BorrowRow[]>(() => {
 })
 
 function hasDrawing(no: string): boolean {
-  return Boolean(no && domainStore.drawings.some((drawing) => drawing.no === no))
+  return Boolean(no && drawingStore.getDrawing(no))
 }
 
 function openDrawing(no: string) {
   if (!hasDrawing(no)) return
-  domainStore.openDrawing(no)
+  const drawing = drawingStore.getDrawing(no)
+  if (drawing) workspaceStore.selectDrawing(drawing.id)
   void router.push({ name: 'drawing-preview', params: { drawingId: no } })
 }
 </script>

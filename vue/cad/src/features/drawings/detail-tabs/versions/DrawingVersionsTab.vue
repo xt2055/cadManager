@@ -1,51 +1,60 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { versioningService } from '@/app/container'
 import type { FileVersionInfo } from '@/services/data-manager/data-provider'
-import type { DrawingFile } from '@/types/domain.types'
-import { useDomainStore } from '@/stores/domain.store'
+import type { FileView } from '@/modules/drawing'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useDrawingRelationsStore } from '@/stores/drawing-relations.store'
+import { useWorkspaceStore } from '@/stores/workspace.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'DrawingVersionsTab' })
 
-const domainStore = useDomainStore()
+const route = useRoute()
+const drawingStore = useDrawingStore()
+const relationsStore = useDrawingRelationsStore()
+const workspaceStore = useWorkspaceStore()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
 const router = useRouter()
 
 const isAdmin = computed(() => authStore.hasRole('admin'))
 
-const currentNo = computed(() => domainStore.currentDrawing?.no || '')
+const currentDrawing = computed(() => drawingStore.getDrawing(String(route.params.drawingId ?? '')))
+const currentNo = computed(() => currentDrawing.value?.no || '')
 
 // 双向分支关系：我从哪里分叉（forkedFrom）+ 我衍生出哪些分支（branches.from === 当前图号）
 const forkedFromNo = computed(() => {
-  const target = domainStore.currentDrawing
-  return target && 'forkedFrom' in target ? (target as { forkedFrom?: string }).forkedFrom || '' : ''
+  return currentDrawing.value?.forkedFrom || ''
 })
 
 const forkedFromName = computed(() => {
   if (!forkedFromNo.value) return ''
-  const source = domainStore.drawings.find((item) => item.no === forkedFromNo.value)
+  const source = drawingStore.getDrawing(forkedFromNo.value)
   return source?.name || '源图纸'
 })
 
 const derivedBranches = computed(() => {
   const no = currentNo.value
-  if (!no) return domainStore.branches
-  return domainStore.branches.filter((item) => item.from === no)
+  if (!no) return relationsStore.branches
+  return relationsStore.branches.filter((item) => item.from === no)
 })
 
 function openDrawingByNo(no: string) {
-  domainStore.openDrawing(no)
+  const drawing = drawingStore.getDrawing(no)
+  if (!drawing) return
+  workspaceStore.selectDrawing(drawing.id)
+  void router.push({ name: 'drawing-preview', params: { drawingId: drawing.no } })
 }
 
-const cadFiles = computed<DrawingFile[]>(() => {
-  const target = domainStore.currentDrawing
+const cadFiles = computed<FileView[]>(() => {
+  const target = currentDrawing.value
   if (!target) return []
-  return (target.files || []).filter((file) => /\.(exb|dwg|dxf)$/i.test(file.name))
+  return target.files.filter((file) => /\.(exb|dwg|dxf)$/i.test(file.name))
 })
 
 const selectedStorageKey = ref('')
@@ -54,6 +63,10 @@ const loading = ref(false)
 const busyVersionId = ref('')
 
 const selectedFile = computed(() => cadFiles.value.find((file) => (file.currentStorageKey || file.storageKey) === selectedStorageKey.value))
+
+onMounted(() => {
+  void Promise.all([drawingStore.load(), relationsStore.load()]).catch(() => undefined)
+})
 
 watch(cadFiles, (files) => {
   const keys = new Set(files.map((file) => file.currentStorageKey || file.storageKey || ''))

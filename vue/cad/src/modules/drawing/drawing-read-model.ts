@@ -10,6 +10,8 @@ export interface FileView {
   size: string
   uploadedAt: string
   version: string
+  storageKey?: string
+  currentStorageKey?: string
 }
 
 export interface DrawingSummaryView {
@@ -160,13 +162,15 @@ export class DrawingReadModelMapper {
     }
   }
 
-  private toFileView(file: { id: string; name: string; size: string; uploadedAt: string; version: string }): FileView {
+  private toFileView(file: { id: string; name: string; size: string; uploadedAt: string; version: string; storageKey?: string; currentStorageKey?: string }): FileView {
     return {
       id: file.id,
       name: file.name,
       size: file.size,
       uploadedAt: file.uploadedAt,
       version: file.version,
+      ...(file.storageKey ? { storageKey: file.storageKey } : {}),
+      ...(file.currentStorageKey ? { currentStorageKey: file.currentStorageKey } : {}),
     }
   }
 
