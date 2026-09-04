@@ -167,6 +167,10 @@ export interface ActivityLog {
 
 export interface StructurePart {
 	id?: string
+	drawingId?: string
+	relationId?: string
+	relationRevision?: number
+	relationType?: 'owned' | 'borrowed' | string
 	revision?: number
 	no: string
   name: string

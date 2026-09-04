@@ -35,10 +35,11 @@ export class DrawingQueryService {
     const result: StructurePart[] = []
     const pending = [drawingNo]
     while (pending.length) {
-      const parentNo = pending.shift()
-      if (!parentNo) continue
-      for (const part of structure) {
-        if (part.parentNo !== parentNo || result.some((item) => item.no === part.no)) continue
+	      const parentNo = pending.shift()
+	      if (!parentNo) continue
+	      for (const part of structure) {
+	        const partKey = part.relationId ?? `${part.id ?? part.no}|${part.drawingId ?? ''}|${part.parentNo}`
+	        if (part.parentNo !== parentNo || result.some((item) => (item.relationId ?? `${item.id ?? item.no}|${item.drawingId ?? ''}|${item.parentNo}`) === partKey)) continue
         result.push(part)
         pending.push(part.no)
       }

@@ -46,29 +46,36 @@ export class DrawingUploadCoordinator {
       metadata: plan.metadata,
     })
     const entries = new Map<string, PendingDrawingUploadEntry>()
-    plan.onSessionCreated?.(session, entries)
+	    plan.onSessionCreated?.(session, entries)
 
-    const uploadItems = new Map<string, { itemId: string; file: DrawingUploadFile }>()
-    for (const input of plan.files) {
-      if (!input.content) throw new Error(`文件「${input.file.name}」缺少文件内容（上传会话：${session.id}）`)
-      await this.recovery.save(session.id, input.file.id, input.content, input.file.name).catch((error) => {
-        console.warn(`保存文件「${input.file.name}」的刷新恢复副本失败`, error)
-      })
-      const hashCheck = await this.safeHash(input.content, input.file.name)
-      const item = await this.gateway.createItem(session.id, {
-        clientRef: input.file.id,
-        drawingNo: plan.drawingNo,
-        ...('role' in input.file && input.file.partNo ? { partNo: input.file.partNo } : {}),
-        role: this.roleOf(input.file),
-        originalName: input.file.name,
-        mimeType: input.content.type || 'application/octet-stream',
-        sha256: hashCheck.sha256,
-        size: input.content.size,
-        ...(!this.isCAD(input.file.name) && hashCheck.exists && hashCheck.blobId ? { blobId: hashCheck.blobId } : {}),
-      })
-      uploadItems.set(input.file.id, { itemId: item.id, file: input.file })
-      entries.set(input.file.id, { itemId: item.id, file: input.file, content: input.content })
-    }
+	    const uploadItems = new Map<string, { itemId: string; file: DrawingUploadFile }>()
+	    try {
+	      for (const input of plan.files) {
+	        if (!input.content) throw new Error(`文件「${input.file.name}」缺少文件内容（上传会话：${session.id}）`)
+	        await this.recovery.save(session.id, input.file.id, input.content, input.file.name).catch((error) => {
+	          console.warn(`保存文件「${input.file.name}」的刷新恢复副本失败`, error)
+	        })
+	        const hashCheck = await this.safeHash(input.content, input.file.name)
+	        const item = await this.gateway.createItem(session.id, {
+	          clientRef: input.file.id,
+	          drawingNo: plan.drawingNo,
+	          ...('role' in input.file && input.file.partNo ? { partNo: input.file.partNo } : {}),
+	          role: this.roleOf(input.file),
+	          originalName: input.file.name,
+	          mimeType: input.content.type || 'application/octet-stream',
+	          sha256: hashCheck.sha256,
+	          size: input.content.size,
+	          ...(!this.isCAD(input.file.name) && hashCheck.exists && hashCheck.blobId ? { blobId: hashCheck.blobId } : {}),
+	        })
+	        uploadItems.set(input.file.id, { itemId: item.id, file: input.file })
+	        entries.set(input.file.id, { itemId: item.id, file: input.file, content: input.content })
+	      }
+    } catch (error) {
+	      await this.gateway.cancelSession(session.id).catch((cancelError) => {
+	        console.warn(`清理未完成的上传会话失败：${session.id}`, cancelError)
+	      })
+	      throw error
+	    }
 
     const failedFiles: string[] = []
     const queue = [...uploadItems.values()]

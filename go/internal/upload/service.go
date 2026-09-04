@@ -992,6 +992,14 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 	if currentBlobID == "" {
 		return nil, errors.New("待提交文件缺少内容对象")
 	}
+	var attachmentMetadata struct {
+		CreatePart *drawing.CreatePartInput `json:"createPart"`
+	}
+	if len(metadata) > 0 {
+		if err := json.Unmarshal(metadata, &attachmentMetadata); err != nil {
+			return nil, fmt.Errorf("附件会话元数据格式无效: %w", err)
+		}
+	}
 	currentName := item.OriginalName
 	currentMime := item.MimeType
 	currentSize := item.Size
@@ -1000,7 +1008,7 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		currentMime = firstNonEmpty(processedMime, "application/acad")
 		currentSize = processedSize
 	}
-	var attachmentID, version, versionID string
+	var attachmentID, version, versionID, createdPartID string
 	if item.AttachmentID == "" {
 		var ownerID string
 		if item.PartNo == "" {
@@ -1016,7 +1024,17 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 				LIMIT 1`, item.DrawingNo, item.PartNo).Scan(&ownerID)
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
+			if item.PartNo == "" || attachmentMetadata.CreatePart == nil {
+				return nil, ErrNotFound
+			}
+			if drawing.NormalizePartNo(attachmentMetadata.CreatePart.No) != drawing.NormalizePartNo(item.PartNo) {
+				return nil, errors.New("上传附件的零件图号与创建零件图号不一致")
+			}
+			ownerID, err = createPartForAttachmentTx(ctx, tx, item.DrawingNo, *attachmentMetadata.CreatePart, userID)
+			if err != nil {
+				return nil, fmt.Errorf("随附件创建零件失败: %w", err)
+			}
+			createdPartID = ownerID
 		}
 		if err != nil {
 			return nil, fmt.Errorf("查询附件所属对象失败: %w", err)
@@ -1061,6 +1079,9 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		attachmentID = item.AttachmentID
 	}
 	result := map[string]any{"sessionId": sessionID, "attachmentId": attachmentID, "storageKey": currentKey, "currentStorageKey": currentKey, "version": version, "status": "committed"}
+	if createdPartID != "" {
+		result["partId"] = createdPartID
+	}
 	resultBytes, _ := json.Marshal(result)
 	if _, err := tx.Exec(ctx, `UPDATE upload_sessions SET status = 'committed', committed_at = now(), result = $2::jsonb, last_activity_at = now(), error_message = NULL WHERE id = $1::uuid AND status IN ('open', 'failed')`, sessionID, string(resultBytes)); err != nil {
 		return nil, fmt.Errorf("保存上传会话结果失败: %w", err)
@@ -1072,6 +1093,62 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		return nil, fmt.Errorf("提交上传事务失败: %w", err)
 	}
 	return resultBytes, nil
+}
+
+// createPartForAttachmentTx 与普通创建零件共用同一提交事务，避免先提交附件再创建零件导致附件提交必然失败。
+func createPartForAttachmentTx(ctx context.Context, tx pgx.Tx, drawingNo string, input drawing.CreatePartInput, userID string) (string, error) {
+	var drawingID string
+	if err := tx.QueryRow(ctx, `SELECT id::text FROM drawings WHERE drawing_no = $1 FOR UPDATE`, drawingNo).Scan(&drawingID); errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	} else if err != nil {
+		return "", fmt.Errorf("查询附件所属图纸失败: %w", err)
+	}
+	if strings.TrimSpace(input.No) == "" || strings.TrimSpace(input.Name) == "" {
+		return "", errors.New("零件图号和名称不能为空")
+	}
+	if strings.TrimSpace(input.ParentNo) != "" {
+		var parentExists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM drawing_part_relations r JOIN parts p ON p.id = r.part_id WHERE r.drawing_id = $1::uuid AND r.status = 'active' AND p.normalized_part_no = $2)`, drawingID, drawing.NormalizePartNo(input.ParentNo)).Scan(&parentExists); err != nil {
+			return "", fmt.Errorf("校验零件父级失败: %w", err)
+		}
+		if !parentExists {
+			return "", drawing.ErrNotFound
+		}
+	}
+	status := input.Status
+	if status == "" {
+		status = drawing.StatusDraft
+	}
+	version := input.Version
+	if version == "" {
+		version = "v1.0"
+	}
+	partType := input.ManufacturingType
+	if partType == "" {
+		partType = "自制件"
+	}
+	quantity := input.Quantity
+	if quantity == 0 {
+		quantity = 1
+	}
+	var partID string
+	if err := tx.QueryRow(ctx, `INSERT INTO parts (part_no, normalized_part_no, created_by, updated_by) VALUES ($1, $2, $3::uuid, $3::uuid) RETURNING id::text`, strings.TrimSpace(input.No), drawing.NormalizePartNo(input.No), userID).Scan(&partID); err != nil {
+		if isUniqueViolation(err) {
+			return "", drawing.ErrConflict
+		}
+		return "", fmt.Errorf("创建零件失败: %w", err)
+	}
+	var revisionID string
+	if err := tx.QueryRow(ctx, `INSERT INTO part_revisions (part_id, revision_no, version, name, material, spec, weight, surface_treatment, part_type, workflow_status, created_by) VALUES ($1::uuid, 1, $2, $3, COALESCE(NULLIF($4, ''), '—'), $5, $6, COALESCE(NULLIF($7, ''), ''), COALESCE(NULLIF($8, ''), '自制件'), $9, $10::uuid) RETURNING id::text`, partID, version, strings.TrimSpace(input.Name), input.Material, input.Spec, input.Weight, input.SurfaceTreatment, partType, status, userID).Scan(&revisionID); err != nil {
+		return "", fmt.Errorf("创建零件版本失败: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, parent_relation_id, relation_type, qty, remark, created_by, updated_by) VALUES ($1::uuid, $2::uuid, (SELECT r.id FROM drawing_part_relations r JOIN parts p ON p.id = r.part_id WHERE r.drawing_id = $1::uuid AND r.status = 'active' AND p.normalized_part_no = $3 LIMIT 1), 'owned', $4, COALESCE($5, ''), $6::uuid, $6::uuid)`, drawingID, partID, drawing.NormalizePartNo(input.ParentNo), quantity, input.Remark, userID); err != nil {
+		return "", fmt.Errorf("创建零件结构关系失败: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE parts SET published_revision_id = CASE WHEN $2 = 'published' THEN $1::uuid ELSE NULL END WHERE id = $3::uuid`, revisionID, status, partID); err != nil {
+		return "", fmt.Errorf("设置零件发布指针失败: %w", err)
+	}
+	return partID, nil
 }
 
 func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, userID, sessionID string, session Session, metadata []byte) (json.RawMessage, error) {

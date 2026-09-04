@@ -258,14 +258,15 @@ func (repository *PGRepository) ListParts(ctx context.Context, drawingID string)
 			       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
 			       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'),
 			       r.qty, COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
-			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, p.lifecycle_status,
+			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, COALESCE(source_drawing.drawing_no, ''), p.lifecycle_status,
 			       COALESCE(pr.created_by::text, p.created_by::text, ''), COALESCE(pr.created_at, p.created_at),
 			       COALESCE(pr.published_by::text, p.updated_by::text, ''), COALESCE(pr.published_at, p.updated_at)
 		FROM drawing_part_relations r
 		JOIN parts p ON p.id = r.part_id
 		JOIN drawings d ON d.id = r.drawing_id
-		LEFT JOIN drawing_part_relations parent_rel ON parent_rel.id = r.parent_relation_id
-		LEFT JOIN parts parent_part ON parent_part.id = parent_rel.part_id
+			LEFT JOIN drawing_part_relations parent_rel ON parent_rel.id = r.parent_relation_id
+			LEFT JOIN parts parent_part ON parent_part.id = parent_rel.part_id
+		LEFT JOIN LATERAL (SELECT source_drawing.drawing_no FROM drawing_part_relations source_rel JOIN drawings source_drawing ON source_drawing.id = source_rel.drawing_id WHERE source_rel.part_id = p.id AND source_rel.relation_type = 'owned' AND source_rel.status = 'active' AND source_rel.drawing_id <> r.drawing_id ORDER BY source_rel.created_at LIMIT 1) source_drawing ON true
 		LEFT JOIN part_revisions pr ON pr.id = COALESCE(p.published_revision_id, (SELECT latest.id FROM part_revisions latest WHERE latest.part_id = p.id ORDER BY latest.revision_no DESC LIMIT 1))
 		WHERE r.drawing_id = $1::uuid AND r.status = 'active'
 		ORDER BY p.part_no, r.created_at`, drawingID)
@@ -295,14 +296,15 @@ func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, 
 			       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
 			       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'), r.qty,
 			       COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
-			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, p.lifecycle_status,
+			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, COALESCE(source_drawing.drawing_no, ''), p.lifecycle_status,
 			       COALESCE(pr.created_by::text, p.created_by::text, ''), COALESCE(pr.created_at, p.created_at),
 			       COALESCE(pr.published_by::text, p.updated_by::text, ''), COALESCE(pr.published_at, p.updated_at)
 		FROM parts p
 		JOIN drawing_part_relations r ON r.part_id = p.id AND r.status = 'active'
 		JOIN drawings d ON d.id = r.drawing_id
-		LEFT JOIN drawing_part_relations parent_rel ON parent_rel.id = r.parent_relation_id
-		LEFT JOIN parts parent_part ON parent_part.id = parent_rel.part_id
+			LEFT JOIN drawing_part_relations parent_rel ON parent_rel.id = r.parent_relation_id
+			LEFT JOIN parts parent_part ON parent_part.id = parent_rel.part_id
+		LEFT JOIN LATERAL (SELECT source_drawing.drawing_no FROM drawing_part_relations source_rel JOIN drawings source_drawing ON source_drawing.id = source_rel.drawing_id WHERE source_rel.part_id = p.id AND source_rel.relation_type = 'owned' AND source_rel.status = 'active' AND source_rel.drawing_id <> r.drawing_id ORDER BY source_rel.created_at LIMIT 1) source_drawing ON true
 		LEFT JOIN part_revisions pr ON pr.id = COALESCE(p.published_revision_id, (SELECT latest.id FROM part_revisions latest WHERE latest.part_id = p.id ORDER BY latest.revision_no DESC LIMIT 1))
 		WHERE p.id = $1::uuid
 		ORDER BY r.created_at DESC LIMIT 1`, id)
@@ -319,16 +321,19 @@ func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, 
 
 func scanFinalPart(row rowScanner) (Part, error) {
 	var part Part
-	var status, relationType, lifecycle string
+	var status, relationType, borrowFrom, lifecycle string
 	var createdAt, updatedAt time.Time
 	if err := row.Scan(&part.ID, &part.RelationID, &part.DrawingID, &part.No, &part.Name, &part.ParentNo,
 		&part.Project, &part.Material, &part.Spec, &part.Weight, &part.SurfaceTreatment,
 		&part.ManufacturingType, &part.Quantity, &status, &part.Version, &part.Revision,
-		&part.RelationRevision, &relationType, &lifecycle, &part.CreatedBy, &createdAt, &part.UpdatedBy, &updatedAt); err != nil {
+		&part.RelationRevision, &relationType, &borrowFrom, &lifecycle, &part.CreatedBy, &createdAt, &part.UpdatedBy, &updatedAt); err != nil {
 		return Part{}, err
 	}
 	part.Status = Status(status)
 	part.RelationType = relationType
+	if borrowFrom != "" {
+		part.BorrowFrom = &borrowFrom
+	}
 	part.LifecycleStatus = lifecycle
 	part.CreatedAt = createdAt.Format(time.RFC3339)
 	part.UpdatedAt = updatedAt.Format(time.RFC3339)
@@ -471,7 +476,13 @@ func (repository *PGRepository) UpdatePart(ctx context.Context, id string, input
 	}
 	if input.Quantity != nil || input.Remark != nil {
 		var relationID string
-		if err := tx.QueryRow(ctx, `SELECT id::text FROM drawing_part_relations WHERE part_id = $1::uuid AND status = 'active' ORDER BY created_at DESC LIMIT 1`, id).Scan(&relationID); err == nil {
+		relationQuery := `SELECT id::text FROM drawing_part_relations WHERE part_id = $1::uuid AND status = 'active' ORDER BY created_at DESC LIMIT 1`
+		relationArgs := []any{id}
+		if input.RelationID != nil && strings.TrimSpace(*input.RelationID) != "" {
+			relationQuery = `SELECT id::text FROM drawing_part_relations WHERE id = $1::uuid AND part_id = $2::uuid AND status = 'active'`
+			relationArgs = []any{strings.TrimSpace(*input.RelationID), id}
+		}
+		if err := tx.QueryRow(ctx, relationQuery, relationArgs...).Scan(&relationID); err == nil {
 			if input.Quantity != nil {
 				_, err = tx.Exec(ctx, `UPDATE drawing_part_relations SET qty = $2, revision = revision + 1, updated_by = $3::uuid WHERE id = $1::uuid`, relationID, *input.Quantity, userID)
 			}

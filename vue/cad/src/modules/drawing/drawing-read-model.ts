@@ -104,7 +104,10 @@ export interface DrawingSummaryView {
 }
 
 export interface PartView {
-  id: PartId
+	id: PartId
+	relationId?: string
+	relationRevision?: number
+	relationType?: string
   no: string
   name: string
   parentNo: string
@@ -149,17 +152,27 @@ export class DrawingReadModelMapper {
   map(snapshot: DrawingQuerySnapshot): DrawingReadModelSnapshot {
     const normalized = this.withAttachments(snapshot)
     const drawingsByNo = new Map(normalized.drawings.map((drawing) => [drawing.no, drawing]))
-    const partsByNo = new Map(normalized.structure.map((part) => [part.no, part]))
+	    const partsByNo = new Map<string, StructurePart[]>()
+	    for (const part of normalized.structure) {
+	      const candidates = partsByNo.get(part.no) ?? []
+	      candidates.push(part)
+	      partsByNo.set(part.no, candidates)
+	    }
 
     const drawings = normalized.drawings.map((drawing) => this.toDrawingSummary(drawing, drawingsByNo))
     const parts = normalized.structure.map((part) => this.toPartView(part, drawingsByNo, partsByNo))
-    const nodes = new Map(parts.map((part) => [part.no, { ...part, children: [] as StructureNodeView[] }]))
+	    const nodes = new Map<string, StructureNodeView>()
+	    normalized.structure.forEach((part, index) => {
+	      const view = parts[index]
+	      if (view) nodes.set(this.partKey(part, index), { ...view, children: [] })
+	    })
     const structureByDrawing: Record<string, StructureNodeView[]> = {}
 
     for (const part of normalized.structure) {
-      const node = nodes.get(part.no)
-      if (!node) continue
-      const parentNode = nodes.get(part.parentNo)
+	      const node = nodes.get(this.partKey(part, normalized.structure.indexOf(part)))
+	      if (!node) continue
+	      const parent = (partsByNo.get(part.parentNo) ?? []).find((candidate) => candidate.drawingId === part.drawingId)
+	      const parentNode = parent ? nodes.get(this.partKey(parent, normalized.structure.indexOf(parent))) : undefined
       if (parentNode) {
         parentNode.children.push(node)
         continue
@@ -191,10 +204,19 @@ export class DrawingReadModelMapper {
       craftFiles: [],
     }))
     const drawingByNo = new Map(drawings.map((drawing) => [drawing.no, drawing]))
-    const partByNo = new Map(structure.map((part) => [part.no, part]))
+	    const drawingIdsByNo = new Map(drawings.map((drawing) => [drawing.no, drawing.id]))
+	    const partByNo = new Map<string, StructurePart[]>()
+	    for (const part of structure) {
+	      const candidates = partByNo.get(part.no) ?? []
+	      candidates.push(part)
+	      partByNo.set(part.no, candidates)
+	    }
 
     for (const item of snapshot.attachments) {
-      const owner = item.partNo ? partByNo.get(item.partNo) : drawingByNo.get(item.drawingNo)
+	      const partCandidates = item.partNo ? partByNo.get(item.partNo) ?? [] : []
+	      const owner = item.partNo
+	        ? partCandidates.find((part) => part.drawingId === drawingIdsByNo.get(item.drawingNo)) ?? partCandidates[0]
+	        : drawingByNo.get(item.drawingNo)
       if (!owner) continue
       const name = item.name || item.currentName || '未命名文件'
       const uploadedAt = formatReadableDateTime(item.createdAt, '历史记录')
@@ -287,11 +309,16 @@ export class DrawingReadModelMapper {
     }
   }
 
-  private toPartView(part: StructurePart, drawingsByNo: Map<string, Drawing>, partsByNo: Map<string, StructurePart>): PartView {
-    const sourcePart = part.borrowFrom ? partsByNo.get(part.borrowFrom) : undefined
-    const sourceDrawing = part.borrowFrom ? this.findRootDrawingNo(sourcePart ?? part, partsByNo, drawingsByNo) : undefined
-    return {
-      id: part.id ?? part.no,
+	  private toPartView(part: StructurePart, drawingsByNo: Map<string, Drawing>, partsByNo: Map<string, StructurePart[]>): PartView {
+	    const sourcePart = part.borrowFrom ? partsByNo.get(part.borrowFrom)?.[0] : undefined
+	    const sourceDrawing = part.borrowFrom && drawingsByNo.has(part.borrowFrom)
+	      ? part.borrowFrom
+	      : part.borrowFrom ? this.findRootDrawingNo(sourcePart ?? part, partsByNo, drawingsByNo) : undefined
+	    return {
+	      id: part.id ?? part.no,
+	      ...(part.relationId ? { relationId: part.relationId } : {}),
+	      ...(part.relationRevision !== undefined ? { relationRevision: part.relationRevision } : {}),
+	      ...(part.relationType ? { relationType: part.relationType } : {}),
       no: part.no,
       name: part.name,
       parentNo: part.parentNo,
@@ -309,7 +336,7 @@ export class DrawingReadModelMapper {
       version: part.ver,
       updatedAt: part.updatedAt ?? part.createdAt ?? '',
       fileNames: [...new Set([...(part.files ?? []), ...(part.otherFiles ?? [])].map((file) => file.name).filter(Boolean))],
-      borrowed: Boolean(part.borrowFrom),
+	      borrowed: part.relationType === 'borrowed' || Boolean(part.borrowFrom),
       ...(sourcePart ? { sourcePartId: sourcePart.id ?? sourcePart.no } : {}),
       ...(sourceDrawing ? { sourceDrawing } : {}),
       ...(sourcePart?.ver ? { publishedVersion: sourcePart.ver } : {}),
@@ -407,9 +434,13 @@ export class DrawingReadModelMapper {
     }
   }
 
-  private findRootDrawingNo(
-    part: StructurePart,
-    partsByNo: Map<string, StructurePart>,
+	  private partKey(part: StructurePart, index: number): string {
+	    return part.relationId ?? part.id ?? `${part.no}:${part.drawingId ?? ''}:${index}`
+	  }
+
+	  private findRootDrawingNo(
+	    part: StructurePart,
+	    partsByNo: Map<string, StructurePart[]>,
     drawingsByNo: Map<string, Drawing>,
   ): string | undefined {
     const visited = new Set<string>()
@@ -417,7 +448,7 @@ export class DrawingReadModelMapper {
     while (parentNo && !visited.has(parentNo)) {
       if (drawingsByNo.has(parentNo)) return parentNo
       visited.add(parentNo)
-      const parent = partsByNo.get(parentNo)
+	      const parent = (partsByNo.get(parentNo) ?? []).find((candidate) => candidate.drawingId === part.drawingId) ?? partsByNo.get(parentNo)?.[0]
       if (!parent) return undefined
       parentNo = parent.parentNo
     }

@@ -225,10 +225,22 @@ func TestAtomicBorrowCharacterizationUsesDrawingCommand(t *testing.T) {
 
 func TestPartRevisionCharacterizationPublishesThroughCommand(t *testing.T) {
 	request := authenticatedRequest(http.MethodPost, "/api/part-revisions/revision-1/publish", ``)
+	request = request.WithContext(context.WithValue(request.Context(), middleware.AuthUserContextKey, auth.AuthUser{
+		ID: "user-1", Account: "tester", DisplayName: "测试用户", Roles: []string{"reviewer"},
+	}))
 	recorder := httptest.NewRecorder()
 	PartRevisionResource(&characterizationDrawingRepository{}).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, expected %d", recorder.Code, http.StatusOK)
+	}
+}
+
+func TestPartRevisionCharacterizationRejectsPublishForOrdinaryUser(t *testing.T) {
+	request := authenticatedRequest(http.MethodPost, "/api/part-revisions/revision-1/publish", ``)
+	recorder := httptest.NewRecorder()
+	PartRevisionResource(&characterizationDrawingRepository{}).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, expected %d", recorder.Code, http.StatusForbidden)
 	}
 }
 

@@ -9,9 +9,9 @@ export interface DrawingFileGateway {
   exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
   identifyDrawingFile(file: Blob, name: string, options?: DrawingFileIdentifyOptions): Promise<DrawingFileIdentity>
   identifyDrawingMaterial(file: Blob, name: string): Promise<DrawingFileIdentity>
-  reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult>
+	reidentifyDrawingFile(storageKey: string, partNo: string, attachmentId?: string): Promise<ReidentifyDrawingFileResult>
   scanDrawingDesigner(drawingNo: string): Promise<string>
-  deleteAttachment(storageKey: string): Promise<void>
+	deleteAttachment(storageKey: string, attachmentId?: string): Promise<void>
 }
 
 /** 图纸文件应用服务：识别、读取和导出能力通过 Gateway 注入，页面不接触底层 HTTP 客户端。 */
@@ -24,11 +24,11 @@ export class DrawingFileService {
     return this.gateway.identifyDrawingFile(file, name, options)
   }
   identifyMaterial(file: Blob, name: string): Promise<DrawingFileIdentity> { return this.gateway.identifyDrawingMaterial(file, name) }
-  reidentify(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult> {
-    return this.gateway.reidentifyDrawingFile(storageKey, partNo)
+	reidentify(storageKey: string, partNo: string, attachmentId?: string): Promise<ReidentifyDrawingFileResult> {
+		return this.gateway.reidentifyDrawingFile(storageKey, partNo, attachmentId)
   }
   scanDesigner(drawingNo: string): Promise<string> { return this.gateway.scanDrawingDesigner(drawingNo) }
-  delete(storageKey: string): Promise<void> { return this.gateway.deleteAttachment(storageKey) }
+	delete(storageKey: string, attachmentId?: string): Promise<void> { return this.gateway.deleteAttachment(storageKey, attachmentId) }
 }
 
 export type { DrawingFileIdentity, DrawingFileIdentifyOptions, ReidentifyDrawingFileResult }

@@ -120,6 +120,15 @@ func hasAdminRole(roles []string) bool {
 	return false
 }
 
+func hasReviewRole(roles []string) bool {
+	for _, role := range roles {
+		if role == "admin" || role == "reviewer" {
+			return true
+		}
+	}
+	return false
+}
+
 func writeReviewError(writer http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, review.ErrNotFound):

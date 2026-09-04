@@ -78,12 +78,16 @@ func (repository *PGRepository) UpdateRelation(ctx context.Context, id string, i
 			}
 		}
 	}
+	var parentArg any
+	if input.ParentRelationID != nil {
+		parentArg = parentID
+	}
 
 	tag, err := tx.Exec(ctx, `UPDATE drawing_part_relations
-		SET qty = COALESCE($2, qty), remark = COALESCE($3, remark), position = COALESCE($4, position),
-			parent_relation_id = CASE WHEN $5 = '' THEN parent_relation_id ELSE NULLIF($5, '')::uuid END,
-			revision = revision + 1, updated_by = $6::uuid
-		WHERE id = $1::uuid AND status = 'active' AND revision = $7`, id, input.Qty, input.Remark, input.Position, parentID, userID, *input.ExpectedRevision)
+			SET qty = COALESCE($2, qty), remark = COALESCE($3, remark), position = COALESCE($4, position),
+				parent_relation_id = CASE WHEN $5::text IS NULL THEN parent_relation_id ELSE NULLIF($5::text, '')::uuid END,
+				revision = revision + 1, updated_by = $6::uuid
+			WHERE id = $1::uuid AND status = 'active' AND revision = $7`, id, input.Qty, input.Remark, input.Position, parentArg, userID, *input.ExpectedRevision)
 	if err != nil {
 		return Relation{}, fmt.Errorf("修改结构关系失败: %w", err)
 	}
@@ -402,6 +406,8 @@ func (repository *PGRepository) GetBOM(ctx context.Context, drawingID string) (B
 	var result BOM
 	result.DrawingID = drawingID
 	if err := repository.pool.QueryRow(ctx, `SELECT revision FROM drawing_boms WHERE drawing_id = $1::uuid`, drawingID).Scan(&result.Revision); errors.Is(err, pgx.ErrNoRows) {
+		result.Revision = 1
+		result.Items = make([]BOMItem, 0)
 		return result, nil
 	} else if err != nil {
 		return BOM{}, fmt.Errorf("查询 BOM 版本失败: %w", err)

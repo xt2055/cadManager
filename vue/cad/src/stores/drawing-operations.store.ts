@@ -529,7 +529,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
 	async function uploadNewAttachmentSession(
 		drawingNo: string,
-		file: { id: string; name: string; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string },
+		file: { id: string; name: string; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string; createPart?: Record<string, unknown> },
 		content: Blob,
 	): Promise<Record<string, unknown>> {
 		return attachmentUploader.create(drawingNo, file, content)
@@ -1005,15 +1005,13 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
     const rootDrawing = findRootDrawing(parentNo)
     if (!rootDrawing?.id || !isServerId(rootDrawing.id)) throw new Error('所属图纸缺少服务端身份，请刷新后重试')
-    let storageKey: string | undefined
+	    let storageKey: string | undefined
+	    let attachmentId: string | undefined
     try {
 	      file.partNo = part.no
-	      const commitResult = await uploadNewAttachmentSession(rootDrawing?.no || parentNo, file, content)
-	      storageKey = typeof commitResult.currentStorageKey === 'string'
-	        ? commitResult.currentStorageKey
-	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
-	      file.storageKey = storageKey
-      const created = await drawingCommandService.createPart(rootDrawing.id, {
+	      const commitResult = await uploadNewAttachmentSession(rootDrawing?.no || parentNo, {
+	        ...file,
+	        createPart: {
 	          no: part.no,
 	          name: part.name,
 	          parentNo: part.parentNo,
@@ -1021,16 +1019,30 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 	          spec: part.spec,
 	          weight: part.weight,
 	          surfaceTreatment: part.surfaceTreatment,
-	          manufacturingType: part.partType,
-	          quantity: part.qty,
+	          partType: part.partType,
+	          qty: part.qty,
 	          status: part.status,
-	          version: part.ver,
-          project: part.project || parent.project || parentNo,
+	          ver: part.ver,
+	          project: part.project || parent.project || parentNo,
 	          ...(part.vendor ? { vendor: part.vendor } : {}),
 	          ...(part.borrowFrom ? { borrowFrom: part.borrowFrom } : {}),
 	          ...(part.remark ? { remark: part.remark } : {}),
 	          ...(part.signers ? { signers: part.signers } : {}),
-	        })
+	        },
+	      }, content)
+	      attachmentId = typeof commitResult.attachmentId === 'string' ? commitResult.attachmentId : undefined
+	      storageKey = typeof commitResult.currentStorageKey === 'string'
+	        ? commitResult.currentStorageKey
+	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+	      file.storageKey = storageKey
+	      const created = (await drawingQueryService.getStructure()).find((candidate) =>
+	        candidate.no === part.no && candidate.parentNo === part.parentNo && candidate.drawingId === rootDrawing.id,
+	      ) ?? (typeof commitResult.partId === 'string' ? {
+	        ...part,
+	        id: commitResult.partId,
+	        drawingId: rootDrawing.id,
+	      } : undefined)
+	      if (!created) throw new Error(`服务端未返回新建零件：${part.no}`)
       structure.value.push({ ...created, files: [file], hasFile: true })
       recordActivity({
         drawingNo: part.no,
@@ -1043,7 +1055,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     } catch (saveError) {
       const insertedIndex = structure.value.findIndex((item) => item.no === part.no)
       if (insertedIndex >= 0) structure.value.splice(insertedIndex, 1)
-      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
+	      if (storageKey) await drawingFileService.delete(storageKey, attachmentId).catch(() => undefined)
       throw saveError
     }
   }
@@ -1060,9 +1072,11 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     const originalFiles = [...files]
     const originalHasFile = target.hasFile
     const originalPartNo = file.partNo
-    let storageKey: string | undefined
+	    let storageKey: string | undefined
+	    let attachmentId: string | undefined
     try {
 	      const commitResult = await uploadNewAttachmentSession(drawingNo, file, content as Blob)
+	      attachmentId = typeof commitResult.attachmentId === 'string' ? commitResult.attachmentId : undefined
 	      storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
@@ -1080,6 +1094,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
             if (!target.revision) throw new Error('零件缺少服务端版本信息，请刷新后重试')
             const updated = await drawingCommandService.updatePart(target.id, {
               expectedRevision: target.revision,
+              ...(target.relationId ? { relationId: target.relationId } : {}),
               material,
             })
             target.material = updated.material
@@ -1106,7 +1121,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
       target.hasFile = originalHasFile
       if (originalPartNo) file.partNo = originalPartNo
       else delete file.partNo
-      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
+	      if (storageKey) await drawingFileService.delete(storageKey, attachmentId).catch(() => undefined)
       throw saveError
     }
   }
@@ -1117,7 +1132,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     if (file.role === 'assembly' || !['.exb', '.dwg', '.dxf'].includes(extension) || !file.storageKey) {
       throw new Error('只有已关联存储位置的零件图支持重新识别')
     }
-    const result = await drawingFileService.reidentify(file.storageKey, newPartNo)
+	    const result = await drawingFileService.reidentify(file.storageKey, newPartNo, file.id)
     const oldPart = structure.value.find((part) => part.no === result.oldPartNo)
     const targetPart = structure.value.find((part) => part.no === result.partNo)
 
@@ -1304,6 +1319,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
 	    try {
 	      const commitResult = await uploadReplacementSession(drawingNo, { ...currentFile, role: currentFile.role }, content)
+	      if (typeof commitResult.attachmentId === 'string') updatedFile.id = commitResult.attachmentId
 	      updatedFile.storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
@@ -1318,7 +1334,18 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
             || identity.titleBlock?.['材料名称']
             || identity.titleBlock?.['材料']
             || identity.titleBlock?.['材质']
-          if (material) target.material = material
+	          if (material) {
+	            if (!('parentNo' in target) || !isServerId(target.id) || !target.revision) {
+	              throw new Error('零件缺少有效服务端身份或版本信息，无法保存材料')
+	            }
+	            const updatedPart = await drawingCommandService.updatePart(target.id, {
+	              expectedRevision: target.revision,
+	              ...(target.relationId ? { relationId: target.relationId } : {}),
+	              material,
+	            })
+	            target.material = updatedPart.material
+	            target.revision = updatedPart.revision
+	          }
         } catch (scanError) {
           console.warn(`替换版本后读取零件材料失败：${target.no}`, scanError)
         }
@@ -1357,13 +1384,15 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     const otherFiles = target.otherFiles ?? []
     if (otherFiles.some((item) => item.id === file.id)) throw new Error(`文件已存在：${file.name}`)
 
-    const originalFiles = [...otherFiles]
-    let storageKey: string | undefined
+	    const originalFiles = [...otherFiles]
+	    let storageKey: string | undefined
+	    let attachmentId: string | undefined
     try {
       file.role = 'other'
       file.drawingNo = ownerNo
       delete file.partNo
 	      const commitResult = await uploadNewAttachmentSession(ownerNo, file, content as Blob)
+	      attachmentId = typeof commitResult.attachmentId === 'string' ? commitResult.attachmentId : undefined
 	      storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
@@ -1379,7 +1408,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
       })
     } catch (saveError) {
       target.otherFiles = originalFiles
-      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
+	      if (storageKey) await drawingFileService.delete(storageKey, attachmentId).catch(() => undefined)
       throw saveError
     }
   }
@@ -1393,7 +1422,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     if (!file) throw new Error(`未找到其他文件：${fileId}`)
     target.otherFiles = otherFiles.filter((item) => item.id !== fileId)
     try {
-      if (file.storageKey) await drawingFileService.delete(file.storageKey)
+	      if (file.storageKey) await drawingFileService.delete(file.storageKey, file.id)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1420,7 +1449,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     target.files = files.filter((item) => item.id !== fileId)
     target.hasFile = target.files.length > 0
     try {
-      if (file.storageKey) await drawingFileService.delete(file.storageKey)
+	      if (file.storageKey) await drawingFileService.delete(file.storageKey, file.id)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1447,10 +1476,12 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     file.drawingNo = drawingNo
     const attachments = getTargetAttachmentFiles(target)
     const originalMaterialFiles = [...attachments.materialFiles]
-    const originalBom = [...bomItems.value]
-    let storageKey: string | undefined
+	    const originalBom = [...bomItems.value]
+	    let storageKey: string | undefined
+	    let attachmentId: string | undefined
     try {
 	      const commitResult = await uploadNewAttachmentSession(drawingNo, { ...file, role: 'material' }, content as Blob)
+	      attachmentId = typeof commitResult.attachmentId === 'string' ? commitResult.attachmentId : undefined
 	      storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
@@ -1485,7 +1516,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     } catch (saveError) {
       target.materialFiles = originalMaterialFiles
       bomItems.value = originalBom
-      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
+	      if (storageKey) await drawingFileService.delete(storageKey, attachmentId).catch(() => undefined)
       throw saveError
     }
   }
@@ -1560,7 +1591,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     bomItems.value = bomItems.value.filter((item) => item.sourceFileId !== fileId)
     try {
       await saveBomForDrawing(drawingNo)
-      if (file.storageKey) await drawingFileService.delete(file.storageKey)
+	      if (file.storageKey) await drawingFileService.delete(file.storageKey, file.id)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1643,8 +1674,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     file.drawingNo = drawingNo
     const attachments = getTargetAttachmentFiles(target)
     const originalCraftFiles = [...attachments.craftFiles]
-    const originalGlobalCraftFiles = [...craftFiles.value]
-    let storageKey: string | undefined
+	    const originalGlobalCraftFiles = [...craftFiles.value]
+	    let storageKey: string | undefined
+	    let attachmentId: string | undefined
     try {
       if (content && file.name.toLowerCase().endsWith('.docx')) {
         try {
@@ -1656,6 +1688,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
         }
       }
 	      const commitResult = await uploadNewAttachmentSession(drawingNo, { ...file, role: 'craft' }, content as Blob)
+	      attachmentId = typeof commitResult.attachmentId === 'string' ? commitResult.attachmentId : undefined
 	      storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
@@ -1673,7 +1706,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     } catch (saveError) {
       target.craftFiles = originalCraftFiles
       craftFiles.value = originalGlobalCraftFiles
-      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
+	      if (storageKey) await drawingFileService.delete(storageKey, attachmentId).catch(() => undefined)
       throw saveError
     }
   }
@@ -1747,7 +1780,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     target.craftFiles = attachments.craftFiles.filter((item) => item.id !== fileId)
     craftFiles.value = craftFiles.value.filter((item) => item.id !== fileId)
     try {
-      if (file.storageKey) await drawingFileService.delete(file.storageKey)
+	      if (file.storageKey) await drawingFileService.delete(file.storageKey, file.id)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1826,6 +1859,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
     await drawingCommandService.updatePart(part.id, {
       expectedRevision: part.revision,
+      ...(part.relationId ? { relationId: part.relationId } : {}),
       ...(nextPartNo !== part.no ? { no: nextPartNo } : {}),
       name,
       material,

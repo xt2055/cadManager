@@ -8,7 +8,8 @@ export interface AttachmentTarget {
   name: string
   revision?: number
   role: AttachmentRole
-  partNo?: string
+	partNo?: string
+	createPart?: Record<string, unknown>
 }
 
 export class AttachmentUploader {
@@ -51,7 +52,12 @@ export class AttachmentUploader {
     const session = await this.gateway.createSession({
       kind: 'attachment',
       idempotencyKey: `attachment-create:${target.id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-      metadata: { drawingNo, partNo: target.partNo || '', role: target.role },
+	      metadata: {
+	        drawingNo,
+	        partNo: target.partNo || '',
+	        role: target.role,
+	        ...(target.createPart ? { createPart: target.createPart } : {}),
+	      },
     })
     try {
       const item = await this.gateway.createItem(session.id, {

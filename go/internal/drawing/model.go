@@ -150,6 +150,7 @@ type CreatePartInput struct {
 
 type UpdatePartInput struct {
 	ExpectedRevision  *int64   `json:"expectedRevision"`
+	RelationID        *string  `json:"relationId"`
 	No                *string  `json:"no"`
 	Name              *string  `json:"name"`
 	Material          *string  `json:"material"`

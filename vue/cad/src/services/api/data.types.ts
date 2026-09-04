@@ -193,9 +193,13 @@ export function normalizeDrawings(value: unknown): Drawing[] {
     const no = text(source.no, id('drawing', text(source.name, '未命名图纸')))
     const files = array<unknown>(source.files).map((file) => normalizeDrawingFile(file, no, 'assembly'))
     const otherFiles = array<unknown>(source.otherFiles).map((file) => normalizeDrawingFile(file, no, 'other'))
-	return {
-	      ...(text(source.id) ? { id: text(source.id) } : {}),
-	      ...(number(source.revision) > 0 ? { revision: number(source.revision) } : {}),
+		return {
+		      ...(text(source.id) ? { id: text(source.id) } : {}),
+		      ...(text(source.drawingId) ? { drawingId: text(source.drawingId) } : {}),
+		      ...(text(source.relationId) ? { relationId: text(source.relationId) } : {}),
+		      ...(number(source.relationRevision) > 0 ? { relationRevision: number(source.relationRevision) } : {}),
+		      ...(text(source.relationType) ? { relationType: text(source.relationType) } : {}),
+		      ...(number(source.revision) > 0 ? { revision: number(source.revision) } : {}),
 	      no,
       name: text(source.name, no),
       kind: source.kind === '零件图' ? '零件图' : '总图',

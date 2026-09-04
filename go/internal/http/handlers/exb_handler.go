@@ -26,8 +26,9 @@ type exbParseRequest struct {
 }
 
 type reidentifyPartRequest struct {
-	StorageKey string `json:"storageKey"`
-	PartNo     string `json:"partNo"`
+	StorageKey   string `json:"storageKey"`
+	AttachmentID string `json:"attachmentId"`
+	PartNo       string `json:"partNo"`
 }
 
 type drawingDesignerResponse struct {
@@ -163,11 +164,17 @@ func ReidentifyPart(repository attachment.Repository) http.HandlerFunc {
 			return
 		}
 		var input reidentifyPartRequest
-		if err := decodeJSON(request, &input); err != nil || strings.TrimSpace(input.StorageKey) == "" || strings.TrimSpace(input.PartNo) == "" {
-			response.WriteError(writer, http.StatusBadRequest, "storageKey 和 partNo 必填且请求格式有效")
+		if err := decodeJSON(request, &input); err != nil || (strings.TrimSpace(input.StorageKey) == "" && strings.TrimSpace(input.AttachmentID) == "") || strings.TrimSpace(input.PartNo) == "" {
+			response.WriteError(writer, http.StatusBadRequest, "attachmentId 或 storageKey，以及 partNo 必填且请求格式有效")
 			return
 		}
-		result, err := repository.ReidentifyPart(request.Context(), strings.TrimSpace(input.StorageKey), strings.TrimSpace(input.PartNo), user.ID)
+		var result attachment.ReidentifyResult
+		var err error
+		if identity, ok := repository.(attachment.IdentityRepository); ok && strings.TrimSpace(input.AttachmentID) != "" {
+			result, err = identity.ReidentifyPartByID(request.Context(), strings.TrimSpace(input.AttachmentID), strings.TrimSpace(input.PartNo), user.ID)
+		} else {
+			result, err = repository.ReidentifyPart(request.Context(), strings.TrimSpace(input.StorageKey), strings.TrimSpace(input.PartNo), user.ID)
+		}
 		if err != nil {
 			if errors.Is(err, attachment.ErrNotFound) {
 				response.WriteError(writer, http.StatusNotFound, "附件不存在")

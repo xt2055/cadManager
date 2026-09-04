@@ -25,7 +25,8 @@ function unwrapResponseData(value: unknown): unknown {
 
 /** 面向服务端最终 API 的 HTTP 客户端。按能力注入各 Application Service，不提供整表写入门面。 */
 export class ApiDataProvider {
-  private readonly baseUrl: string
+	private readonly baseUrl: string
+	private drawingsLoadPromise: Promise<Drawing[]> | null = null
   /** 最近一次读取/保存确认的文档更新时间，用于乐观并发校验（防止旧窗口覆盖新数据）。 */
   private documentStamp = ''
 
@@ -33,19 +34,33 @@ export class ApiDataProvider {
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 
-	async loadDrawings(): Promise<Drawing[]> {
-		const drawings: unknown[] = []
-		let page = 1
-		while (true) {
-			const result = await this.request<unknown>(`/drawings?page=${page}&page_size=100`, { method: 'GET' })
-			if (!isRecord(result) || !Array.isArray(result.list)) throw new Error('图纸列表接口返回格式无效')
-			drawings.push(...result.list)
-			const total = typeof result.total === 'number' ? result.total : drawings.length
-			if (drawings.length >= total || result.list.length === 0) break
-			page += 1
+		loadDrawings(): Promise<Drawing[]> {
+			if (this.drawingsLoadPromise) return this.drawingsLoadPromise
+			const promise = (async () => {
+				const drawings: unknown[] = []
+				let page = 1
+				while (true) {
+					const result = await this.request<unknown>(`/drawings?page=${page}&page_size=100`, { method: 'GET' })
+					if (!isRecord(result) || !Array.isArray(result.list)) throw new Error('图纸列表接口返回格式无效')
+					drawings.push(...result.list)
+					const total = typeof result.total === 'number' ? result.total : drawings.length
+					if (drawings.length >= total || result.list.length === 0) break
+					page += 1
+				}
+				return normalizeDrawings(drawings)
+			})()
+			this.drawingsLoadPromise = promise
+			promise.then(() => {
+				queueMicrotask(() => {
+					if (this.drawingsLoadPromise === promise) this.drawingsLoadPromise = null
+				})
+			}, () => {
+				queueMicrotask(() => {
+					if (this.drawingsLoadPromise === promise) this.drawingsLoadPromise = null
+				})
+			})
+			return promise
 		}
-		return normalizeDrawings(drawings)
-	}
   async loadStructure(): Promise<StructurePart[]> {
     const drawings = await this.loadDrawings()
     const snapshots = await Promise.all(drawings.map(async (drawing) => {
@@ -150,8 +165,9 @@ export class ApiDataProvider {
     }
   }
 
-  async deleteAttachment(storageKey: string): Promise<void> {
-    await this.request(`/attachments/${encodeURIComponent(storageKey)}`, { method: 'DELETE' })
+	async deleteAttachment(storageKey: string, attachmentId?: string): Promise<void> {
+		const query = attachmentId ? `?attachmentId=${encodeURIComponent(attachmentId)}` : ''
+		await this.request(`/attachments/${encodeURIComponent(storageKey)}${query}`, { method: 'DELETE' })
   }
 
   async createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession> {
@@ -348,10 +364,10 @@ export class ApiDataProvider {
     }
   }
 
-  async reidentifyDrawingFile(storageKey: string, partNo: string): Promise<ReidentifyDrawingFileResult> {
-    const body = await this.request<unknown>('/exb/reidentify', {
-      method: 'POST',
-      body: JSON.stringify({ storageKey, partNo }),
+	async reidentifyDrawingFile(storageKey: string, partNo: string, attachmentId?: string): Promise<ReidentifyDrawingFileResult> {
+	    const body = await this.request<unknown>('/exb/reidentify', {
+	      method: 'POST',
+	      body: JSON.stringify({ storageKey, partNo, ...(attachmentId ? { attachmentId } : {}) }),
     })
     const payload = isRecord(body) && typeof body.storageKey === 'string' ? body : body
     if (!isRecord(payload) || typeof payload.storageKey !== 'string' || typeof payload.partNo !== 'string') {

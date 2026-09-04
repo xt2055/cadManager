@@ -123,6 +123,7 @@ async function saveEdit() {
     if (!part.id || part.revision === undefined) throw new Error('零件缺少服务端版本信息，请刷新后重试')
     await drawingCommandService.updatePart(part.id, {
       expectedRevision: part.revision,
+      ...(part.relationId ? { relationId: part.relationId } : {}),
       ...(nextPartNo !== part.no ? { no: nextPartNo } : {}),
       name: editForm.value.name.trim(),
       material: editForm.value.material.trim(),

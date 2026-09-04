@@ -387,6 +387,10 @@ func PartRevisionResource(repository drawing.AtomicRepository) http.HandlerFunc 
 			return
 		}
 		if request.Method == http.MethodPost && len(parts) == 2 && (parts[1] == "submit" || parts[1] == "reject" || parts[1] == "publish") {
+			if (parts[1] == "reject" || parts[1] == "publish") && !hasReviewRole(user.Roles) {
+				response.WriteError(writer, http.StatusForbidden, "只有审核人员可以执行该零件版本流转")
+				return
+			}
 			item, err := repository.TransitionRevision(request.Context(), id, parts[1], user.ID)
 			if err != nil {
 				writeAtomicDrawingError(writer, err, "零件版本流转失败")

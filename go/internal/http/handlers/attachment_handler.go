@@ -271,13 +271,59 @@ func AttachmentResource(repository attachment.Repository, objectStorage storage.
 			writer.Header().Set("Content-Length", fmt.Sprintf("%d", object.Size))
 			_, _ = io.Copy(writer, reader)
 		case http.MethodDelete:
-			if err := repository.Delete(request.Context(), key, ""); err != nil {
+			identity, hasIdentity := repository.(attachment.IdentityRepository)
+			attachmentID := strings.TrimSpace(request.URL.Query().Get("attachmentId"))
+			var deleted attachment.Attachment
+			if hasIdentity {
+				if attachmentID == "" {
+					response.WriteError(writer, http.StatusBadRequest, "删除附件必须提供 attachmentId")
+					return
+				}
+				item, findErr := identity.FindByID(request.Context(), attachmentID)
+				if findErr != nil {
+					writeAttachmentError(writer, findErr)
+					return
+				}
+				if item.StorageKey != key && item.CurrentStorageKey != key {
+					response.WriteError(writer, http.StatusNotFound, "附件不存在")
+					return
+				}
+				deleted, err = identity.DeleteByID(request.Context(), attachmentID, "")
+			} else {
+				err = repository.Delete(request.Context(), key, "")
+			}
+			if err != nil {
 				writeAttachmentError(writer, err)
 				return
 			}
-			if err := objectStorage.Delete(request.Context(), key); err != nil {
-				response.WriteError(writer, http.StatusInternalServerError, "附件文件删除失败")
-				return
+			// Blob 是可共享内容对象；只有没有任何活动附件引用时才物理删除。
+			keys := []string{key}
+			if deleted.StorageKey != "" {
+				keys = append(keys, deleted.StorageKey, deleted.CurrentStorageKey)
+			}
+			seen := map[string]struct{}{}
+			for _, objectKey := range keys {
+				if objectKey == "" {
+					continue
+				}
+				if _, ok := seen[objectKey]; ok {
+					continue
+				}
+				seen[objectKey] = struct{}{}
+				if hasIdentity {
+					referenced, refErr := identity.HasStorageKeyReference(request.Context(), objectKey)
+					if refErr != nil {
+						response.WriteError(writer, http.StatusInternalServerError, "附件引用检查失败")
+						return
+					}
+					if referenced {
+						continue
+					}
+				}
+				if deleteErr := objectStorage.Delete(request.Context(), objectKey); deleteErr != nil {
+					response.WriteError(writer, http.StatusInternalServerError, "附件文件删除失败")
+					return
+				}
 			}
 			response.WriteData(writer, http.StatusOK, nil)
 		default:

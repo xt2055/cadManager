@@ -61,6 +61,16 @@ type Repository interface {
 	FolderForDrawing(ctx context.Context, drawingNo string) (string, error)
 }
 
+// IdentityRepository exposes operations that must target one logical
+// attachment. A storage key identifies content and may be shared by many
+// attachments after blob de-duplication.
+type IdentityRepository interface {
+	FindByID(ctx context.Context, attachmentID string) (Attachment, error)
+	DeleteByID(ctx context.Context, attachmentID string, userID string) (Attachment, error)
+	HasStorageKeyReference(ctx context.Context, storageKey string) (bool, error)
+	ReidentifyPartByID(ctx context.Context, attachmentID, partNo, userID string) (ReidentifyResult, error)
+}
+
 type StorageObject struct {
 	Key      string
 	Size     int64

@@ -119,6 +119,10 @@ func (repository *PGRepository) findByID(ctx context.Context, id, key string) (A
 	return item, err
 }
 
+func (repository *PGRepository) FindByID(ctx context.Context, attachmentID string) (Attachment, error) {
+	return repository.findByID(ctx, attachmentID, "")
+}
+
 func (repository *PGRepository) Find(ctx context.Context, storageKey string) (Attachment, error) {
 	item, err := scanAttachment(repository.pool.QueryRow(ctx, attachmentSelect+` WHERE a.deleted_at IS NULL AND EXISTS (SELECT 1 FROM attachment_versions av JOIN file_blobs fb ON fb.id = av.blob_id WHERE av.attachment_id = a.id AND fb.storage_key = $1) LIMIT 1`, storageKey))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -226,7 +230,17 @@ func (repository *PGRepository) ListAllExb(ctx context.Context) ([]Attachment, e
 }
 
 func (repository *PGRepository) Delete(ctx context.Context, storageKey string, _ string) error {
-	result, err := repository.pool.Exec(ctx, `UPDATE attachments SET deleted_at = now(), revision = revision + 1 WHERE id IN (SELECT av.attachment_id FROM attachment_versions av JOIN file_blobs b ON b.id = av.blob_id WHERE b.storage_key = $1) AND deleted_at IS NULL`, storageKey)
+	var count int
+	if err := repository.pool.QueryRow(ctx, `SELECT count(DISTINCT av.attachment_id)
+		FROM attachment_versions av JOIN file_blobs b ON b.id = av.blob_id
+		JOIN attachments a ON a.id = av.attachment_id
+		WHERE b.storage_key = $1 AND a.deleted_at IS NULL`, storageKey).Scan(&count); err != nil {
+		return err
+	}
+	if count > 1 {
+		return fmt.Errorf("存储对象被多个附件共享，请使用 attachmentId 删除: %w", ErrConflict)
+	}
+	result, err := repository.pool.Exec(ctx, `UPDATE attachments SET deleted_at = now(), revision = revision + 1 WHERE id = (SELECT av.attachment_id FROM attachment_versions av JOIN file_blobs b ON b.id = av.blob_id JOIN attachments a ON a.id = av.attachment_id WHERE b.storage_key = $1 AND a.deleted_at IS NULL LIMIT 1)`, storageKey)
 	if err != nil {
 		return err
 	}
@@ -234,6 +248,32 @@ func (repository *PGRepository) Delete(ctx context.Context, storageKey string, _
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (repository *PGRepository) DeleteByID(ctx context.Context, attachmentID, _ string) (Attachment, error) {
+	item, err := repository.FindByID(ctx, attachmentID)
+	if err != nil {
+		return Attachment{}, err
+	}
+	result, err := repository.pool.Exec(ctx, `UPDATE attachments SET deleted_at = now(), revision = revision + 1 WHERE id = $1::uuid AND deleted_at IS NULL`, attachmentID)
+	if err != nil {
+		return Attachment{}, err
+	}
+	if result.RowsAffected() == 0 {
+		return Attachment{}, ErrNotFound
+	}
+	return item, nil
+}
+
+func (repository *PGRepository) HasStorageKeyReference(ctx context.Context, storageKey string) (bool, error) {
+	var referenced bool
+	err := repository.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM attachment_versions av
+		JOIN file_blobs b ON b.id = av.blob_id
+		JOIN attachments a ON a.id = av.attachment_id
+		WHERE b.storage_key = $1 AND a.deleted_at IS NULL
+	)`, storageKey).Scan(&referenced)
+	return referenced, err
 }
 func (repository *PGRepository) ReassignPart(ctx context.Context, storageKey, partID string) error {
 	result, err := repository.pool.Exec(ctx, `UPDATE attachments SET drawing_id = NULL, part_id = $2::uuid, file_role = 'part', revision = revision + 1 WHERE id IN (SELECT av.attachment_id FROM attachment_versions av JOIN file_blobs b ON b.id = av.blob_id WHERE b.storage_key = $1) AND deleted_at IS NULL`, storageKey, partID)
@@ -251,6 +291,18 @@ func (repository *PGRepository) ReidentifyPart(ctx context.Context, storageKey, 
 	if err != nil {
 		return ReidentifyResult{}, err
 	}
+	return repository.reidentifyPart(ctx, item, storageKey, partNo, userID)
+}
+
+func (repository *PGRepository) ReidentifyPartByID(ctx context.Context, attachmentID, partNo, userID string) (ReidentifyResult, error) {
+	item, err := repository.FindByID(ctx, attachmentID)
+	if err != nil {
+		return ReidentifyResult{}, err
+	}
+	return repository.reidentifyPart(ctx, item, item.CurrentStorageKey, partNo, userID)
+}
+
+func (repository *PGRepository) reidentifyPart(ctx context.Context, item Attachment, storageKey, partNo, userID string) (ReidentifyResult, error) {
 	no := strings.TrimSpace(partNo)
 	if no == "" {
 		return ReidentifyResult{}, errors.New("新零件图号不能为空")
@@ -282,6 +334,15 @@ func (repository *PGRepository) ReidentifyPart(ctx context.Context, storageKey, 
 		}
 	} else if err != nil {
 		return ReidentifyResult{}, err
+	}
+	var relationExists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM drawing_part_relations WHERE drawing_id = $1::uuid AND part_id = $2::uuid AND status = 'active')`, drawingID, partID).Scan(&relationExists); err != nil {
+		return ReidentifyResult{}, fmt.Errorf("检查零件结构关系失败: %w", err)
+	}
+	if !relationExists {
+		if _, err := tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'owned', $3::uuid, $3::uuid)`, drawingID, partID, userID); err != nil {
+			return ReidentifyResult{}, fmt.Errorf("创建零件结构关系失败: %w", err)
+		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE attachments SET drawing_id = NULL, part_id = $2::uuid, file_role = 'part', revision = revision + 1 WHERE id = $1::uuid`, item.ID, partID); err != nil {
 		return ReidentifyResult{}, err
