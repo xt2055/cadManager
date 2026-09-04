@@ -158,10 +158,26 @@ BOM
 
 ## 验收标准
 
-- [ ] 空数据库可执行全部 migration。
-- [ ] Seed 正常。
-- [ ] DB constraint tests 通过。
-- [ ] 旧 `structure_parts` 不再作为最终数据模型。
+- [x] 空数据库可执行全部 migration。
+- [x] 开发库 reset 后可执行最终 seed。
+- [x] DB constraint tests 通过。
+- [x] 旧 `structure_parts` 不再作为最终数据模型。
+
+## 本次实施记录
+
+执行日期：2026-09-04
+
+- 新增 `go/database/migrations/000022_rebuild_final_domain_model.sql`，在开发库中一次性重建最终领域模型。
+- 更新 `go/database/bootstrap.dev.sql`，启动初始化会包含 000021 和 000022。
+- 新增 `go/database/seed_dev.sql`，建立管理员、审核流程、示例图纸、Part、Published Revision、owned/borrowed relation 和 BOM。
+- 新增 `go/database/verify_final_schema.sql`，验证最终表、关键约束、Published 不可变、跨图纸父关系拒绝和 owned relation 规则。
+- 已在本地开发库完成 reset/rebuild/seed/constraint verification，执行成功。
+- 当前本地数据库关键结果：`drawings=2`、`parts=1`、`part_revisions=1`、`drawing_part_relations=2`；`structure_parts`、`file_versions`、`borrow_records` 已不再存在。
+- 所有最终模型表已由当前应用数据库用户拥有，应用可继续执行后续迁移。
+
+## 阶段边界
+
+Phase 1 只负责最终 Schema、开发 seed 和数据库约束验证。现有 Go 运行代码仍有部分 Repository 指向旧表和旧附件字段，这是 Phase 2 的迁移内容；在 Phase 2 完成前不能把旧后端程序视为兼容最终 Schema。
 
 ## 建议提交
 
@@ -171,4 +187,3 @@ refactor(db): introduce drawing part relations
 refactor(db): version bom and part attachments
 test(db): add domain constraint tests
 ```
-

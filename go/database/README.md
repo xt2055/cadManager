@@ -19,6 +19,7 @@
 go/database/
 ├─ bootstrap.dev.sql
 ├─ seed.dev.sql
+├─ seed_dev.sql
 ├─ README.md
 └─ migrations/
    ├─ 000001_initial_schema.sql
@@ -44,8 +45,8 @@ Remove-Item Env:PGPASSWORD
 1. 创建或更新开发业务用户 `cadguanliq_app`。
 2. 创建数据库 `cadguanliq`，并将所有者设置为 `cadguanliq_app`。
 3. 连接 `cadguanliq`。
-4. 执行 `migrations/000001_initial_schema.sql`。
-5. 执行 `migrations/000002_data_document_compat.sql`。
+4. 按序执行全部迁移，包括最终模型重建迁移。
+5. 如需测试数据，再执行 `seed_dev.sql`。
 
 脚本可以重复执行。表、索引、扩展和触发器使用幂等写法；重复执行不会删除已有业务数据。
 
@@ -85,16 +86,16 @@ Remove-Item Env:PGPASSWORD
 
 如果后续密码发生变化，应同时更新本机角色密码和本地未提交的初始化脚本；生产环境必须通过环境变量、密钥管理服务或部署平台 Secret 注入。
 
-## 首版表范围
+## 最终模型表范围
 
 首版迁移包含以下领域：
 
 ```text
 用户与角色：users、user_roles、sessions
-图纸与结构：drawings、structure_parts、drawing_signers
-文件与物料：attachments、drawing_versions、bom_items
+图纸与结构：drawings、parts、part_revisions、drawing_part_relations、drawing_signers
+文件与物料：attachments、attachment_versions、file_blobs、part_revision_attachments、drawing_boms、bom_items
 审核流程：review_flows、review_flow_nodes、review_cases、review_case_nodes、review_actions
-借用与日志：borrow_records、audit_logs
+借用：由 drawing_part_relations.relation_type = 'borrowed' 表示；日志：audit_logs
 更新服务：update_manifests
 ```
 
@@ -110,7 +111,7 @@ Remove-Item Env:PGPASSWORD
 
 ## 当前迁移状态
 
-本机开发数据库已经执行：
+本机开发数据库曾经执行：
 
 ```text
 000001_initial_schema.sql
@@ -119,4 +120,4 @@ Remove-Item Env:PGPASSWORD
 000004_review_flow_assignments.sql
 ```
 
-后续迁移只新增递增编号文件。不要修改已经执行过的迁移文件，避免不同开发环境的结构产生歧义。
+当前开发环境允许通过 000022 重建最终模型。重建后，新的迁移仍只新增递增编号文件；生产环境不得执行开发库重建迁移。
