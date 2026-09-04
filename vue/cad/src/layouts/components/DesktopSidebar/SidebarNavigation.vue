@@ -3,7 +3,8 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useReviewStore } from '@/stores/review.store'
 import { useAuthStore } from '@/stores/auth.store'
 
 defineOptions({
@@ -12,7 +13,8 @@ defineOptions({
 
 const route = useRoute()
 const router = useRouter()
-const domainStore = useDomainStore()
+const drawingStore = useDrawingStore()
+const reviewStore = useReviewStore()
 const authStore = useAuthStore()
 
 const groups = [
@@ -71,11 +73,11 @@ function go(routeName: string) {
         <DemoIcon :name="item.icon" :size="17" />
         <span class="nav-text">{{ item.label }}</span>
         <span
-          v-if="item.badge === 'review' && domainStore.reviewCount > 0"
+          v-if="item.badge === 'review' && reviewStore.myPendingReviews().length > 0"
           class="badge"
           data-badge="review"
-        >{{ domainStore.reviewCount }}</span>
-        <span v-else-if="item.badge === 'library' && domainStore.drawings.length" class="badge muted-badge">{{ domainStore.drawings.length }}</span>
+        >{{ reviewStore.myPendingReviews().length }}</span>
+        <span v-else-if="item.badge === 'library' && drawingStore.drawings.length" class="badge muted-badge">{{ drawingStore.drawings.length }}</span>
       </button>
     </template>
   </nav>

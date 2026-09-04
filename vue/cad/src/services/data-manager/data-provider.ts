@@ -102,7 +102,33 @@ export interface StoredAttachment {
   version: string
   previewable: boolean
   uploadedBy?: string
-  createdAt?: string
+	createdAt?: string
+}
+
+export interface DrawingBomSnapshot {
+	revision: number
+	items: BomItem[]
+}
+
+export interface ReplaceDrawingBomInput {
+	expectedRevision: number
+	items: BomItem[]
+}
+
+export interface BorrowPartInput {
+	sourcePartId: string
+	qty: number
+	borrowReason?: string
+	remark?: string
+}
+
+export interface DrawingBorrowResult {
+	id: string
+	drawingId: string
+	partId: string
+	qty: number
+	revision: number
+	status: string
 }
 
 export interface DrawingFileIdentity {
@@ -217,20 +243,41 @@ export interface EditSessionControlResult {
   currentName?: string
 }
 
+export interface CreatePartInput {
+  no: string
+  name: string
+  parentNo: string
+  material: string
+  spec: string
+  weight: number
+  surfaceTreatment: string
+  manufacturingType: string
+  quantity: number
+  status: string
+  version: string
+  project: string
+  vendor?: string
+  borrowFrom?: string
+  remark?: string
+  signers?: Record<string, string>
+}
+
 export interface DataProvider {
 	loadDrawings(): Promise<Drawing[]>
-  loadStructure(): Promise<StructurePart[]>
-  saveStructure(items: StructurePart[]): Promise<void>
+	loadStructure(): Promise<StructurePart[]>
+	saveStructure(items: StructurePart[]): Promise<void>
+	createPart?(drawingId: string, input: CreatePartInput): Promise<StructurePart>
   loadAttributes(): Promise<DrawingAttribute[]>
   saveAttributes(items: DrawingAttribute[]): Promise<void>
   loadVersions(): Promise<DrawingVersion[]>
   saveVersions(items: DrawingVersion[]): Promise<void>
-  loadBranches(): Promise<Branch[]>
-  saveBranches(items: Branch[]): Promise<void>
-  loadBorrows(): Promise<BorrowRecord[]>
-  saveBorrows(items: BorrowRecord[]): Promise<void>
-  loadBom(): Promise<BomItem[]>
-  saveBom(items: BomItem[]): Promise<void>
+	loadBranches(): Promise<Branch[]>
+	loadBorrows(): Promise<BorrowRecord[]>
+	loadBom(): Promise<BomItem[]>
+	saveBom(items: BomItem[]): Promise<void>
+	loadDrawingBom?(drawingId: string): Promise<DrawingBomSnapshot>
+	replaceDrawingBom?(drawingId: string, input: ReplaceDrawingBomInput): Promise<DrawingBomSnapshot>
+	borrowPart?(drawingId: string, input: BorrowPartInput): Promise<DrawingBorrowResult>
   loadCrafts(): Promise<CraftFile[]>
   saveCrafts(items: CraftFile[]): Promise<void>
 	loadAttachments(): Promise<StoredAttachment[]>

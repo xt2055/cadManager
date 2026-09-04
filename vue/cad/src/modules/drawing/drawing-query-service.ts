@@ -1,15 +1,18 @@
 import type { BomItem, Drawing, StructurePart } from '@/types/domain.types'
+import type { StoredAttachment } from '@/services/data-manager/data-provider'
 
 export interface DrawingQueryGateway {
   loadDrawings(): Promise<Drawing[]>
   loadStructure(): Promise<StructurePart[]>
   loadBom(): Promise<BomItem[]>
+  loadAttachments(): Promise<StoredAttachment[]>
 }
 
 export interface DrawingQuerySnapshot {
   drawings: Drawing[]
   structure: StructurePart[]
   bom: BomItem[]
+  attachments: StoredAttachment[]
 }
 
 /** 图纸查询应用服务：集中读取图纸、结构和 BOM，避免页面拼装旧数据源。 */
@@ -54,11 +57,12 @@ export class DrawingQueryService {
   }
 
   async loadSnapshot(): Promise<DrawingQuerySnapshot> {
-    const [drawings, structure, bom] = await Promise.all([
+    const [drawings, structure, bom, attachments] = await Promise.all([
       this.gateway.loadDrawings(),
       this.gateway.loadStructure(),
       this.gateway.loadBom(),
+      this.gateway.loadAttachments(),
     ])
-    return { drawings, structure, bom }
+    return { drawings, structure, bom, attachments }
   }
 }

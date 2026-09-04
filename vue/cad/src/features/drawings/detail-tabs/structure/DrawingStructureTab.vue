@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingStructureNode from '@/features/drawings/components/detail/DrawingStructureNode.vue'
-import { STATUS } from '@/stores/domain.store'
+import { STATUS } from '@/constants/drawing-status'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useWorkspaceStore } from '@/stores/workspace.store'
 import { formatReadableDateTime } from '@/utils/date-time'

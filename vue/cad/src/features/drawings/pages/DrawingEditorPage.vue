@@ -5,11 +5,13 @@ import { AcApDocManager, AcEdOpenMode } from '@mlightcad/cad-simple-viewer'
 import { MlCadViewer } from '@mlightcad/cad-viewer'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { auditService } from '@/app/container'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
+import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
 import { windowService } from '@/services/tauri/window.service'
 import { getApiBaseUrl } from '@/services/api-base.service'
-import type { DrawingFile } from '@/types/domain.types'
+import type { FileView } from '@/modules/drawing'
 import { assertCadWorkerAssets, getCadWorkerUrls } from '../detail-tabs/preview/cad-worker-assets'
 import { findWipeoutMasks } from '../detail-tabs/preview/cad-entity-filters'
 
@@ -20,15 +22,16 @@ defineOptions({
 const route = useRoute()
 const router = useRouter()
 const drawingOperationsStore = useDrawingOperationsStore()
+const drawingStore = useDrawingStore()
 const uiStore = useUiStore()
 
 const drawingId = computed(() => String(route.params.drawingId ?? ''))
 const fileId = computed(() => String(route.query.fileId ?? ''))
 
-const currentDrawing = computed(() => drawingOperationsStore.currentDrawing)
+const currentDrawing = computed(() => drawingStore.getDrawing(drawingId.value) ?? drawingStore.getPart(drawingId.value))
 const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in currentDrawing.value))
 
-const targetFile = ref<DrawingFile | null>(null)
+const targetFile = ref<FileView | null>(null)
 const cadOriginalFile = ref<File | null>(null)
 const cadSourceFileName = ref<string | null>(null)
 const cadOriginalError = ref('')
@@ -76,20 +79,13 @@ async function loadTargetFile() {
   cadOriginalError.value = ''
   clearOriginalFile()
 
-  await drawingOperationsStore.initialize()
+  await drawingStore.load()
 
-  if (drawingId.value) {
-    drawingOperationsStore.openDrawing(drawingId.value)
-  }
-
-  let file: DrawingFile | undefined
+  let file: FileView | undefined
   const currentFiles = currentDrawing.value
-    ? [...(currentDrawing.value.files ?? []), ...(currentDrawing.value.otherFiles ?? [])]
+    ? [...currentDrawing.value.files, ...currentDrawing.value.otherFiles]
     : []
-  const structureFiles = drawingOperationsStore.structure.flatMap((part) => [
-    ...(part.files ?? []),
-    ...(part.otherFiles ?? []),
-  ])
+  const structureFiles = drawingStore.parts.flatMap((part) => [...part.files, ...part.otherFiles])
 
   if (fileId.value) {
     file = [...currentFiles, ...structureFiles].find((candidate) => candidate.id === fileId.value)
@@ -133,11 +129,11 @@ async function loadTargetFile() {
       cadOriginalError.value = '当前图纸缺少 storageKey，无法加载编辑源'
     }
 
-    void drawingOperationsStore.recordActivityAndPersist({
+    void auditService.record({
       drawingNo: file.partNo || file.drawingNo,
       targetType: 'file',
       act: 'edit',
-      text: `打开在线 CAD 编辑器 <b>${file.name}</b>`,
+      txt: `打开在线 CAD 编辑器 <b>${file.name}</b>`,
       detail: { fileId: file.id, fileName: file.name },
     })
   }
@@ -340,7 +336,11 @@ async function saveAsNewVersion() {
       },
       savedFile,
     )
-    targetFile.value = updatedFile
+    await drawingStore.refresh()
+    targetFile.value = [
+      ...drawingStore.drawings.flatMap((item) => [...item.files, ...item.otherFiles]),
+      ...drawingStore.parts.flatMap((part) => [...part.files, ...part.otherFiles]),
+    ].find((file) => file.id === targetFile.value?.id) ?? targetFile.value
     cadSourceFileName.value = updatedFile.name
     savedVersion.value = updatedFile.version
   } catch (error) {

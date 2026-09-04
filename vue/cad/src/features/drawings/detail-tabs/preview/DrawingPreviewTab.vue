@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { drawingFileService, editingService } from '@/app/container'
 import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/services/data-manager/data-provider'
 import { useAuthStore } from '@/stores/auth.store'
+import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
+import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
 import { CAXA_NOT_FOUND_PREFIX } from '@/modules/editing'
-import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
+import type { DrawingFile } from '@/types/domain.types'
+import type { DrawingSummaryView, FileView, PartView } from '@/modules/drawing'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 import { formatReadableDateTime } from '@/utils/date-time'
 
@@ -18,11 +21,17 @@ defineOptions({
 })
 
 const router = useRouter()
+const route = useRoute()
 const drawingOperationsStore = useDrawingOperationsStore()
+const drawingStore = useDrawingStore()
+const reviewStore = useReviewStore()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
 
-const currentItem = computed(() => drawingOperationsStore.currentDrawing)
+const currentItem = computed<DrawingSummaryView | PartView | null>(() => {
+  const id = String(route.params.drawingId ?? '')
+  return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
+})
 const isAssembly = computed(() => !currentItem.value || !('parentNo' in currentItem.value))
 const rootDrawingNo = computed(() => {
   if (!currentItem.value) return ''
@@ -32,9 +41,9 @@ const rootDrawingNo = computed(() => {
   const visited = new Set<string>()
   while (!visited.has(currentNo)) {
     visited.add(currentNo)
-    const part = drawingOperationsStore.structure.find((item) => item.no === currentNo)
+    const part = drawingStore.parts.find((item) => item.no === currentNo)
     if (!part) return currentItem.value.parentNo
-    if (drawingOperationsStore.drawings.some((drawing) => drawing.no === part.parentNo)) return part.parentNo
+    if (drawingStore.drawings.some((drawing) => drawing.no === part.parentNo)) return part.parentNo
     currentNo = part.parentNo
   }
   return currentItem.value.parentNo
@@ -45,62 +54,38 @@ type ProjectDrawingFile = DrawingFile & {
   ownerName: string
 }
 
+function toDrawingFile(file: FileView): DrawingFile {
+  return {
+    ...file,
+    rawName: file.name,
+    rawStorageKey: file.storageKey,
+    history: file.history.map((item) => ({ ...item })),
+  }
+}
+
 // 总图页是项目级文件清单：总图与结构树内全部零件图都必须在这里出现。
 // 文件的归属从结构关系取得，而不依赖 CAD 标题栏或文件角色的历史数据。
 const allFiles = computed<ProjectDrawingFile[]>(() => {
   if (!currentItem.value) return []
   const rootNo = rootDrawingNo.value
-  // 附件接口直接反映数据库归属；优先使用它，不能让结构树的局部状态决定文件清单。
-  const attachmentFiles = drawingOperationsStore.storedAttachments
-    .filter((item) => item.drawingNo === rootNo && ['assembly', 'part', 'other'].includes(item.role))
-    .map((item): ProjectDrawingFile => {
-      const ownerNo = item.partNo || item.drawingNo
-      const role: DrawingFile['role'] = item.role === 'assembly' || item.role === 'part' ? item.role : 'other'
-      const owner = item.partNo
-        ? drawingOperationsStore.structure.find((part) => part.no === item.partNo)
-        : drawingOperationsStore.drawings.find((drawing) => drawing.no === item.drawingNo)
-      return {
-        id: item.id,
-				// 页面显示上传时的真实文件名；转换后的 currentName 只作为当前可打开格式。
-				name: item.name || item.currentName || '未命名文件',
-				rawName: item.currentName && item.currentName !== item.name ? item.currentName : undefined,
-        size: formatFileSize(item.currentSize ?? item.size),
-        role,
-        drawingNo: item.drawingNo,
-        ...(item.partNo ? { partNo: item.partNo } : {}),
-        version: item.version,
-        uploadedBy: item.uploadedBy || '未知用户',
-        uploadedAt: formatReadableDateTime(item.createdAt, '历史记录'),
-        storageKey: item.currentStorageKey || item.storageKey,
-        rawStorageKey: item.storageKey,
-        currentStorageKey: item.currentStorageKey,
-        mimeType: item.currentMimeType || item.mimeType,
-        previewable: item.previewable,
-        revision: item.revision,
-        ownerNo,
-        ownerName: owner?.name || ownerNo,
-      }
-    })
-  if (attachmentFiles.length) return sortProjectFiles(attachmentFiles)
-
   const files: ProjectDrawingFile[] = []
-  const appendOwnerFiles = (owner: Drawing | StructurePart) => {
+  const appendOwnerFiles = (owner: DrawingSummaryView | PartView) => {
     for (const file of [...(owner.files ?? []), ...(owner.otherFiles ?? [])]) {
       files.push({
-        ...file,
+        ...toDrawingFile(file),
         ownerNo: owner.no,
         ownerName: owner.name,
-        partNo: 'parentNo' in owner ? owner.no : file.partNo,
-        drawingNo: 'parentNo' in owner ? rootDrawingNo.value : file.drawingNo,
+        ...(file.partNo ? { partNo: file.partNo } : {}),
+        drawingNo: file.drawingNo || ('parentNo' in owner ? rootDrawingNo.value : owner.no),
       })
     }
   }
 
   // 如果是总图，递归汇总总图和所有后代零件。
   if (isAssembly.value) {
-    const mainDrawing = currentItem.value as Drawing
+    const mainDrawing = currentItem.value as DrawingSummaryView
     appendOwnerFiles(mainDrawing)
-    const belongsToDrawing = (part: StructurePart): boolean => {
+    const belongsToDrawing = (part: PartView): boolean => {
       if (part.parentNo === mainDrawing.no || part.no.startsWith(`${mainDrawing.no}-`)) return true
 
       const visited = new Set<string>()
@@ -108,19 +93,19 @@ const allFiles = computed<ProjectDrawingFile[]>(() => {
       while (parentNo && !visited.has(parentNo)) {
         if (parentNo === mainDrawing.no) return true
         visited.add(parentNo)
-        const parent = drawingOperationsStore.structure.find((candidate) => candidate.no === parentNo)
+        const parent = drawingStore.parts.find((candidate) => candidate.no === parentNo)
         if (!parent) return part.no.startsWith(`${mainDrawing.no}-`)
         parentNo = parent.parentNo
       }
       return false
     }
 
-    drawingOperationsStore.structure
+    drawingStore.parts
       .filter(belongsToDrawing)
       .forEach(appendOwnerFiles)
   } else {
     // 如果当前选中的就是零件图
-    appendOwnerFiles(currentItem.value as StructurePart)
+    appendOwnerFiles(currentItem.value as PartView)
   }
 
   return sortProjectFiles(files)
@@ -136,7 +121,7 @@ function sortProjectFiles(files: ProjectDrawingFile[]): ProjectDrawingFile[] {
 
 const hasAssemblyFile = computed(() => {
   if (isAssembly.value) {
-    const mainDrawing = currentItem.value as Drawing
+    const mainDrawing = currentItem.value as DrawingSummaryView
     return Boolean(mainDrawing?.files?.some((f) => f.role === 'assembly'))
   }
   return true // 零件图单独查看时
@@ -258,7 +243,7 @@ async function openSystemDefaultApps() {
 const candidateProjects = computed(() => {
   const curNo = currentItem.value?.no || ''
   const q = projectSearchQuery.value.trim().toLowerCase()
-  const list = drawingOperationsStore.drawings.filter((d) => d.no !== curNo)
+  const list = drawingStore.drawings.filter((d) => d.no !== curNo)
   if (!q) return list
   return list.filter((d) =>
     d.no.toLowerCase().includes(q) ||
@@ -271,7 +256,7 @@ const candidateProjects = computed(() => {
 // 当前选中的源项目对象
 const selectedProjectDetail = computed(() => {
   if (!selectedSourceProjectNo.value) return candidateProjects.value[0] || null
-  return drawingOperationsStore.drawings.find((d) => d.no === selectedSourceProjectNo.value) || null
+  return drawingStore.drawings.find((d) => d.no === selectedSourceProjectNo.value) || null
 })
 
 // 根据模式和筛选条件获取零件列表
@@ -281,7 +266,7 @@ const candidateParts = computed(() => {
   if (borrowSearchMode.value === 'global-part') {
     // 全库全局穿透搜索（排除当前项目自身的零件）
     const curNo = currentItem.value?.no || ''
-    const allOtherParts = drawingOperationsStore.structure.filter((p) => p.parentNo !== curNo)
+    const allOtherParts = drawingStore.parts.filter((p) => p.parentNo !== curNo)
     if (!q) return allOtherParts.slice(0, 100) // 默认展示前 100 项
     return allOtherParts.filter((p) =>
       p.no.toLowerCase().includes(q) ||
@@ -296,7 +281,7 @@ const candidateParts = computed(() => {
   const pNo = selectedSourceProjectNo.value || candidateProjects.value[0]?.no
   if (!pNo) return []
 
-  const parts = drawingOperationsStore.structure.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`))
+  const parts = drawingStore.parts.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`))
   if (!q) return parts
 
   return parts.filter((p) =>
@@ -309,18 +294,18 @@ const candidateParts = computed(() => {
 
 // 计算各个项目的零件数量
 function getProjectPartCount(pNo: string): number {
-  return drawingOperationsStore.structure.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`)).length
+  return drawingStore.parts.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`)).length
 }
 
 // 获取零件所属项目的名称
-function getPartProjectName(part: StructurePart): string {
-  const p = drawingOperationsStore.drawings.find((d) => d.no === part.parentNo)
+function getPartProjectName(part: PartView): string {
+  const p = drawingStore.drawings.find((d) => d.no === part.parentNo)
   return p ? p.name : (part.parentNo || '未知项目')
 }
 
 const selectedPartDetail = computed(() => {
   if (!selectedSourcePartNo.value) return null
-  return drawingOperationsStore.structure.find((p) => p.no === selectedSourcePartNo.value) || null
+  return drawingStore.parts.find((p) => p.no === selectedSourcePartNo.value) || null
 })
 
 function openBorrowModal() {
@@ -355,6 +340,7 @@ async function confirmBorrowPart() {
       selectedSourcePartNo.value,
       borrowReasonInput.value.trim() || '跨项目工程设计借用',
     )
+    await drawingStore.refresh()
     uiStore.toast(`成功借用零件「${borrowed.name} (${borrowed.no})」到当前项目`, 'ok')
     isBorrowing.value = false
     selectedSourcePartNo.value = ''
@@ -490,7 +476,7 @@ async function doStopSession(targetId: string, targetFileName: string) {
     } else {
       uiStore.toast('编辑已结束，图纸无改动', 'ok')
     }
-    await drawingOperationsStore.reloadFromServer()
+    await drawingStore.refresh()
   } catch (error) {
     // 捕获失败时后端保留编辑会话，用户可重试结束编辑，不会丢失工作内容。
     uiStore.toast(error instanceof Error ? error.message : '释放编辑会话失败', 'warn')
@@ -559,7 +545,7 @@ const canEditFiles = computed(() => {
   if (item.status === 'archived') return false
   if (item.status === 'reviewing') {
     if (admin) return true
-    return drawingOperationsStore.myPendingReviews.some((reviewCase) => reviewCase.no === item.no)
+    return reviewStore.myPendingReviews().some((reviewCase) => reviewCase.no === item.no)
   }
   const creator = (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
   return creator || admin
@@ -664,6 +650,7 @@ watch(
 )
 
 onMounted(() => {
+  void Promise.all([drawingStore.load(), reviewStore.load()])
   sessionPollTimer = window.setInterval(() => {
     void refreshActiveSessions()
   }, 10_000)
@@ -755,6 +742,7 @@ async function confirmReplace() {
       },
       selectedReplaceBlob.value,
     )
+    await drawingStore.refresh()
     uiStore.toast(`文件已成功替换为 ${updated.version} · 历史版本已归档留痕`, 'ok')
     isReplacing.value = false
     targetReplaceFile.value = null
@@ -793,6 +781,7 @@ async function doDeleteFile(file: DrawingFile) {
     } else {
       await drawingOperationsStore.deleteDrawingFile(targetNo, file.id)
     }
+    await drawingStore.refresh()
     uiStore.toast(`已删除文件 ${file.name}`)
   } catch (error) {
     console.error('删除文件失败', error)
@@ -926,7 +915,7 @@ async function onAssemblyFileChange(event: Event) {
     size: formatFileSize(file.size),
     role: 'assembly',
     drawingNo: currentItem.value.no,
-    version: currentItem.value.ver || 'v1.0',
+    version: currentItem.value.version || 'v1.0',
         uploadedBy: authStore.currentUser?.displayName || authStore.currentUser?.account || '未知',
     uploadedAt: formatCurrentTime(),
     previewable: true,
@@ -934,6 +923,7 @@ async function onAssemblyFileChange(event: Event) {
 
   try {
     await drawingOperationsStore.uploadDrawingFile(currentItem.value.no, newFile, file)
+    await drawingStore.refresh()
     uiStore.toast(`总图文件「${file.name}」上传成功`, 'ok')
     openBrowse(newFile)
   } catch (error) {
@@ -972,6 +962,7 @@ async function onPartFilesChange(event: Event) {
           previewable: true,
         }
         await drawingOperationsStore.uploadOtherFile(rootNo, newFile, file)
+        await drawingStore.refresh()
         otherCount += 1
         continue
       }
@@ -998,19 +989,21 @@ async function onPartFilesChange(event: Event) {
       }
 
       const parentExists = Boolean(
-        drawingOperationsStore.drawings.some((drawing) => drawing.no === parentNo)
-        || drawingOperationsStore.structure.some((part) => part.no === parentNo),
+        drawingStore.drawings.some((drawing) => drawing.no === parentNo)
+        || drawingStore.parts.some((part) => part.no === parentNo),
       )
       const existingPart = partNo
-        ? drawingOperationsStore.structure.find((part) => part.no === partNo && part.parentNo === rootNo)
+        ? drawingStore.parts.find((part) => part.no === partNo && part.parentNo === rootNo)
         : undefined
 
       if (!isStructuredPart || !parentExists) {
         await drawingOperationsStore.uploadOtherFile(rootNo, newFile, file)
+        await drawingStore.refresh()
         otherCount += 1
       } else if (existingPart) {
         if (material !== '—') existingPart.material = material
         await drawingOperationsStore.uploadDrawingFile(partNo, newFile, file)
+        await drawingStore.refresh()
         createdCount += 1
       } else {
         await drawingOperationsStore.createPartWithFile(parentNo, {
@@ -1029,7 +1022,8 @@ async function onPartFilesChange(event: Event) {
           hasFile: true,
            files: [newFile],
             ...(isBorrowed ? { borrowFrom: parsed.rootNo ?? parsed.no } : {}),
-         }, newFile, file)
+        }, newFile, file)
+        await drawingStore.refresh()
         createdCount += 1
       }
     }
@@ -1129,6 +1123,7 @@ async function confirmBatchReidentify() {
     for (const item of selected) {
       try {
         await drawingOperationsStore.reidentifyDrawingFile(item.file, item.newPartNo)
+        await drawingStore.refresh()
         updatedCount += 1
       } catch (error) {
         executeFailures.push(`${item.file.name}：${error instanceof Error ? error.message : String(error)}`)

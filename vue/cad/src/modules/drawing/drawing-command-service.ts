@@ -1,5 +1,5 @@
 import type { Drawing, StructurePart } from '@/types/domain.types'
-import type { UpdateDrawingInput, UpdatePartInput } from '@/services/data-manager/data-provider'
+import type { CreatePartInput, UpdateDrawingInput, UpdatePartInput } from '@/services/data-manager/data-provider'
 
 export interface DrawingLifecycle {
   id: string
@@ -11,6 +11,7 @@ export interface DrawingLifecycle {
 export interface DrawingCommandGateway {
   updateDrawing(drawingId: string, input: UpdateDrawingInput): Promise<Drawing>
   updatePart(partId: string, input: UpdatePartInput): Promise<StructurePart>
+  createPart(drawingId: string, input: CreatePartInput): Promise<StructurePart>
   archive(drawingNo: string): Promise<DrawingLifecycle>
   unarchive(drawingNo: string): Promise<DrawingLifecycle>
 }
@@ -25,6 +26,10 @@ export class DrawingCommandService {
 
   updatePart(partId: string, input: UpdatePartInput): Promise<StructurePart> {
     return this.gateway.updatePart(partId, input)
+  }
+
+  createPart(drawingId: string, input: CreatePartInput): Promise<StructurePart> {
+    return this.gateway.createPart(drawingId, input)
   }
 
   archive(drawingNo: string): Promise<DrawingLifecycle> {

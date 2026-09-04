@@ -6,7 +6,8 @@ import DesktopStatusBar from './components/DesktopStatusBar/DesktopStatusBar.vue
 import DemoModal from '@/components/feedback/DemoModal.vue'
 import DemoToast from '@/components/feedback/DemoToast.vue'
 import { windowService } from '@/services/tauri/window.service'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useReviewStore } from '@/stores/review.store'
 import { useThemeStore } from '@/stores/theme.store'
 import { useUiStore } from '@/stores/ui.store'
 
@@ -14,14 +15,15 @@ defineOptions({
   name: 'DesktopLayout',
 })
 
-const domainStore = useDomainStore()
+const drawingStore = useDrawingStore()
+const reviewStore = useReviewStore()
 const uiStore = useUiStore()
 const themeStore = useThemeStore()
 const isStarrySkin = computed(() => themeStore.skin === 'starry')
 const StarryGalaxy = defineAsyncComponent(() => import('@/components/common/StarryGalaxy.vue'))
 
 onMounted(async () => {
-  const initializePromise = domainStore.initialize().catch((error: unknown) => {
+  const initializePromise = Promise.all([drawingStore.load(), reviewStore.load()]).catch((error: unknown) => {
     console.error('初始化业务数据失败', error)
     uiStore.toast('业务数据加载失败，请检查数据服务配置', 'warn')
   })

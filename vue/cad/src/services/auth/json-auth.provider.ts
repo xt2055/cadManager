@@ -1,4 +1,4 @@
-import { dataManager } from '@/services/data-manager'
+import { adminService } from '@/app/container'
 import type { UserAccount } from '@/types/domain.types'
 import type { AuthProvider, AuthResult, AuthUser, LoginRequest, StoredAuthSession } from '@/features/auth/types/auth.types'
 
@@ -19,7 +19,7 @@ function createToken(): string {
 export class JsonAuthProvider implements AuthProvider {
   async login(request: LoginRequest): Promise<AuthResult> {
     const account = request.account.trim().toLowerCase()
-    const users = await dataManager.listUsers()
+    const users = await adminService.listUsers()
     const user = users.find((item) => item.account.toLowerCase() === account)
 
     if (!user || user.password !== request.password) {
@@ -36,7 +36,7 @@ export class JsonAuthProvider implements AuthProvider {
   }
 
   async restore(session: StoredAuthSession): Promise<AuthUser | null> {
-    const users = await dataManager.listUsers()
+    const users = await adminService.listUsers()
     const user = users.find((item) => item.id === session.userId)
     if (!user || user.status !== 'active') return null
     return toAuthUser(user)

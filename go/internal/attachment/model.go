@@ -52,6 +52,7 @@ type Repository interface {
 	// 版本文件永远写入 history 版本目录，原始 storage_key 不被覆盖。
 	SetCurrentVersion(ctx context.Context, sourceStorageKey, currentStorageKey, name, version string, size int64, mimeType, sha256 string) error
 	ListByDrawing(ctx context.Context, drawingNo string) ([]Attachment, error)
+	ListAll(ctx context.Context) ([]Attachment, error)
 	ListAllExb(ctx context.Context) ([]Attachment, error)
 	ListAllCad(ctx context.Context) ([]Attachment, error)
 	Delete(ctx context.Context, storageKey string, userID string) error

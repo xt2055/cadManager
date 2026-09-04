@@ -1,12 +1,13 @@
 import { dataManager } from '@/services/data-manager'
 import { ApiUploadGateway, AttachmentUploader, BrowserUploadRecoveryStore, DrawingUploadCoordinator } from '@/modules/upload'
-import { DrawingCommandService, DrawingFileService, DrawingQueryService, DrawingReadModelMapper, DrawingRelationQueryService } from '@/modules/drawing'
+import { BomCommandService, BorrowCommandService, DrawingCommandService, DrawingFileService, DrawingQueryService, DrawingReadModelMapper, DrawingRelationQueryService, LegacyDrawingModuleService } from '@/modules/drawing'
 import { ReviewService } from '@/modules/review'
 import { reviewCaseService } from '@/services/review-case.service'
 import { reviewFlowService } from '@/services/review-flow.service'
 import { EditingService } from '@/modules/editing'
 import { VersioningService } from '@/modules/versioning'
-import { AttributeQueryService, AttributeService } from '@/modules/attribute'
+import { AttributeCommandService, AttributeQueryService, AttributeService } from '@/modules/attribute'
+import { attributeCommandApiGateway } from '@/services/attribute-command-api.service'
 import { AuditService } from '@/modules/audit'
 import { AdminService } from '@/modules/admin'
 import {
@@ -44,6 +45,21 @@ export const appContainer = {
   resetDataProvider: () => dataManager.resetProvider(),
 }
 
+/** 过渡期基础设施适配器：旧模块只能通过应用服务端口访问数据提供者。 */
+export const legacyDrawingModuleService = new LegacyDrawingModuleService({
+  loadAttributes: () => dataManager.loadAttributes(),
+  loadBranches: () => dataManager.loadBranches(),
+  loadBorrows: () => dataManager.loadBorrows(),
+  loadCrafts: () => dataManager.loadCrafts(),
+  saveStructure: (items) => dataManager.saveStructure(items),
+  saveAttributes: (items) => dataManager.saveAttributes(items),
+  saveBom: (items) => dataManager.saveBom(items),
+  readAttachment: (storageKey) => dataManager.readAttachment(storageKey),
+  deleteAttachment: (storageKey) => dataManager.deleteAttachment(storageKey),
+  identifyDrawingMaterial: (file, name) => dataManager.identifyDrawingMaterial(file, name),
+  reidentifyDrawingFile: (storageKey, partNo) => dataManager.reidentifyDrawingFile(storageKey, partNo),
+})
+
 export const attachmentUploader = new AttachmentUploader(appContainer.uploadGateway)
 export const drawingUploadCoordinator = new DrawingUploadCoordinator(
   appContainer.uploadGateway,
@@ -53,8 +69,18 @@ export const drawingUploadCoordinator = new DrawingUploadCoordinator(
 export const drawingCommandService = new DrawingCommandService({
   updateDrawing: (drawingId, input) => dataManager.updateDrawing(drawingId, input),
   updatePart: (partId, input) => dataManager.updatePart(partId, input),
+  createPart: (drawingId, input) => dataManager.createPart(drawingId, input),
   archive: drawingLifecycleService.archive,
   unarchive: drawingLifecycleService.unarchive,
+})
+
+export const bomCommandService = new BomCommandService({
+  load: (drawingId) => dataManager.loadDrawingBom(drawingId),
+  replace: (drawingId, input) => dataManager.replaceDrawingBom(drawingId, input),
+})
+
+export const borrowCommandService = new BorrowCommandService({
+  borrow: (drawingId, input) => dataManager.borrowPart(drawingId, input),
 })
 
 export const drawingFileService = new DrawingFileService({
@@ -71,6 +97,7 @@ export const drawingQueryService = new DrawingQueryService({
   loadDrawings: () => dataManager.loadDrawings(),
   loadStructure: () => dataManager.loadStructure(),
   loadBom: () => dataManager.loadBom(),
+  loadAttachments: () => dataManager.loadAttachments(),
 })
 
 export const drawingReadModelMapper = new DrawingReadModelMapper()
@@ -94,6 +121,7 @@ export const editingService = new EditingService(dataManager, {
 export const versioningService = new VersioningService(dataManager)
 
 export const attributeService = new AttributeService()
+export const attributeCommandService = new AttributeCommandService(attributeCommandApiGateway)
 export const attributeQueryService = new AttributeQueryService({
   loadAttributes: () => dataManager.loadAttributes(),
 })

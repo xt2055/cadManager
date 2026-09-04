@@ -57,3 +57,15 @@ func TestNewRouterMethodNotAllowed(t *testing.T) {
 		t.Fatalf("method status = %d, expected %d", response.Code, http.StatusMethodNotAllowed)
 	}
 }
+
+func TestNewRouterLegacyDataRouteRemoved(t *testing.T) {
+	handler := NewRouter(config.Config{AllowedOrigins: []string{"*"}}, nil, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/data/structure", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("legacy data route status = %d, expected %d", response.Code, http.StatusNotFound)
+	}
+}

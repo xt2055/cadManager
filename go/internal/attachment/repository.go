@@ -193,6 +193,11 @@ func (repository *PGRepository) SetCurrentVersion(ctx context.Context, sourceSto
 func (repository *PGRepository) ListByDrawing(ctx context.Context, drawingNo string) ([]Attachment, error) {
 	return repository.list(ctx, attachmentSelect+` WHERE a.deleted_at IS NULL AND COALESCE(d.drawing_no, parent.drawing_no, '') = $1 ORDER BY CASE WHEN a.file_role = 'assembly' THEN 0 ELSE 1 END, a.created_at DESC`, drawingNo)
 }
+
+func (repository *PGRepository) ListAll(ctx context.Context) ([]Attachment, error) {
+	return repository.list(ctx, attachmentSelect+` WHERE a.deleted_at IS NULL ORDER BY a.created_at DESC`)
+}
+
 func (repository *PGRepository) list(ctx context.Context, query string, args ...any) ([]Attachment, error) {
 	rows, err := repository.pool.Query(ctx, query, args...)
 	if err != nil {

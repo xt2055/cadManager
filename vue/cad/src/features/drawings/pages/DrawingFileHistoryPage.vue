@@ -3,12 +3,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { versioningService } from '@/app/container'
+import { drawingFileService, versioningService } from '@/app/container'
 import type { FileVersionInfo } from '@/services/data-manager/data-provider'
-import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
+import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
 import { formatReadableDateTime } from '@/utils/date-time'
-import type { DrawingFile, DrawingFileHistoryItem } from '@/types/domain.types'
+import type { FileHistoryView, FileView } from '@/modules/drawing'
 
 defineOptions({
   name: 'DrawingFileHistoryPage',
@@ -16,13 +16,13 @@ defineOptions({
 
 const route = useRoute()
 const router = useRouter()
-const drawingOperationsStore = useDrawingOperationsStore()
+const drawingStore = useDrawingStore()
 const uiStore = useUiStore()
 
 const drawingId = computed(() => String(route.params.drawingId ?? ''))
 const fileId = computed(() => String(route.query.fileId ?? ''))
 
-const targetFile = ref<DrawingFile | null>(null)
+const targetFile = ref<FileView | null>(null)
 const selectedNodeId = ref<string | null>(null)
 const versionRecords = ref<FileVersionInfo[]>([])
 
@@ -46,18 +46,10 @@ interface HistoryTreeNode {
 
 // 加载指定文件
 async function loadFile() {
-  await drawingOperationsStore.initialize()
-  if (drawingId.value) {
-    drawingOperationsStore.openDrawing(drawingId.value)
-  }
-
-  const currentFiles = drawingOperationsStore.currentDrawing
-    ? [...(drawingOperationsStore.currentDrawing.files ?? []), ...(drawingOperationsStore.currentDrawing.otherFiles ?? [])]
-    : []
-  const structureFiles = drawingOperationsStore.structure.flatMap((part) => [
-    ...(part.files ?? []),
-    ...(part.otherFiles ?? []),
-  ])
+  await drawingStore.load()
+  const currentDrawing = drawingStore.getDrawing(drawingId.value)
+  const currentFiles = currentDrawing ? [...currentDrawing.files, ...currentDrawing.otherFiles] : []
+  const structureFiles = drawingStore.parts.flatMap((part) => [...part.files, ...part.otherFiles])
 
   let file = [...currentFiles, ...structureFiles].find((candidate) => candidate.id === fileId.value)
   if (!file && fileId.value) {
@@ -120,7 +112,7 @@ const historyTree = computed<HistoryTreeNode[]>(() => {
     })
     return nodes
   }
-  const historyList = targetFile.value.history ?? []
+  const historyList: FileHistoryView[] = targetFile.value.history
 
   // 1. 历史版本节点（先出现的版本在前）
   historyList.forEach((item, idx) => {
@@ -214,19 +206,13 @@ async function downloadFile(node: HistoryTreeNode) {
       anchor.click()
       URL.revokeObjectURL(url)
     } else {
-      const dummyFile: DrawingFile = {
-        id: node.id,
-        name: node.name,
-        size: node.size,
-        role: targetFile.value?.role || 'part',
-        drawingNo: targetFile.value?.drawingNo || drawingId.value,
-        version: node.version,
-        uploadedBy: node.uploadedBy,
-        uploadedAt: node.uploadedAt,
-        storageKey: node.storageKey,
-        previewable: node.previewable,
-      }
-      await drawingOperationsStore.downloadAttachment(dummyFile)
+      const content = await drawingFileService.read(node.storageKey)
+      const url = URL.createObjectURL(content)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = node.name
+      anchor.click()
+      URL.revokeObjectURL(url)
     }
     uiStore.toast(`已触发下载 ${node.name} (${node.version})`, 'ok')
   } catch (err) {

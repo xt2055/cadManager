@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { drawingQueryService, drawingReadModelMapper } from '@/app/container'
+import { drawingFileService, drawingQueryService, drawingReadModelMapper } from '@/app/container'
 import type { DrawingReadModelSnapshot, DrawingSummaryView, PartView, StructureNodeView } from '@/modules/drawing'
 
 function emptyModel(): DrawingReadModelSnapshot {
@@ -45,6 +45,17 @@ export const useDrawingStore = defineStore('drawing-read-model', () => {
     await load()
   }
 
+  async function refreshDesigner(idOrNo: string): Promise<void> {
+    await load()
+    const drawing = getDrawing(idOrNo)
+    if (!drawing) return
+    const designer = await drawingFileService.scanDesigner(drawing.no)
+    model.value = {
+      ...model.value,
+      drawings: model.value.drawings.map((item) => item.no === drawing.no ? { ...item, designer } : item),
+    }
+  }
+
   function invalidate() {
     loaded.value = false
     model.value = emptyModel()
@@ -75,6 +86,7 @@ export const useDrawingStore = defineStore('drawing-read-model', () => {
     error,
     load,
     refresh,
+    refreshDesigner,
     invalidate,
     getDrawing,
     getPart,

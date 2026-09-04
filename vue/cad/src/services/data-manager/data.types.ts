@@ -261,10 +261,10 @@ export function normalizeBom(value: unknown): BomItem[] {
       no: number(source.no, index + 1),
       id: text(source.id, id('bom', `${index}|${text(source.name)}`)),
       drawingNo: text(source.drawingNo),
-      ...(text(source.sourceFileId) ? { sourceFileId: text(source.sourceFileId) } : {}),
+      ...(text(source.sourceFileId, text(source.sourceAttachmentVersion)) ? { sourceFileId: text(source.sourceFileId, text(source.sourceAttachmentVersion)) } : {}),
       name: text(source.name, '未命名物料'),
       spec: text(source.spec, '—'),
-      qty: number(source.qty),
+      qty: number(source.qty, number(source.quantity)),
       weight: number(source.weight),
       remark: text(source.remark),
     }

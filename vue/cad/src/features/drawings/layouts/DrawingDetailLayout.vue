@@ -5,7 +5,6 @@ import { useRoute, useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingDetailHeader from '../components/detail/DrawingDetailHeader.vue'
 import DrawingDetailSubnav from '../components/detail/DrawingDetailSubnav.vue'
-import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useWorkspaceStore } from '@/stores/workspace.store'
 
@@ -15,7 +14,6 @@ defineOptions({
 
 const route = useRoute()
 const router = useRouter()
-const drawingOperationsStore = useDrawingOperationsStore()
 const drawingStore = useDrawingStore()
 const workspaceStore = useWorkspaceStore()
 const isPreview = computed(() => route.name === 'drawing-preview')
@@ -26,21 +24,18 @@ const drawing = computed(() => {
 
 async function syncDrawing() {
   const drawingId = String(route.params.drawingId ?? '')
-  await Promise.all([drawingStore.load(), drawingOperationsStore.initialize()])
+  await drawingStore.load()
   if (drawingId) {
     const item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
     if (item) {
       if ('parentNo' in item) workspaceStore.selectPart(item.id)
       else workspaceStore.selectDrawing(item.id)
     }
-    // 详情 Tab 尚在迁移期，保留旧 Store 的当前身份桥接。
-    drawingOperationsStore.openDrawing(drawingId)
-    await drawingOperationsStore.refreshDrawingDesigner(drawingId).catch((error) => {
+    await drawingStore.refreshDesigner(drawingId).catch((error) => {
       console.warn('读取图纸标题栏设计人失败', error)
     })
   } else {
     workspaceStore.clearSelection()
-    drawingOperationsStore.clearCurrentDrawing()
   }
 }
 

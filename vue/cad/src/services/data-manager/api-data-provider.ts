@@ -1,6 +1,6 @@
 import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart } from '@/types/domain.types'
-import { normalizeAttributes, normalizeBom, normalizeBranches, normalizeBorrows, normalizeCraftFile, normalizeDrawings, normalizeStructure, normalizeVersions } from './data.types'
-import type { DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo, UpdateDrawingInput, UpdatePartInput } from './data-provider'
+import { normalizeAttributes, normalizeBom, normalizeBranches, normalizeBorrows, normalizeDrawings, normalizeStructure, normalizeVersions } from './data.types'
+import type { BorrowPartInput, CreatePartInput, DataProvider, DrawingBomSnapshot, DrawingBorrowResult, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo, UpdateDrawingInput, UpdatePartInput, ReplaceDrawingBomInput } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import type { UserManagementInput } from './data-provider'
 import { getApiBaseUrl } from '@/services/api-base.service'
@@ -32,12 +32,8 @@ export class ApiDataProvider implements DataProvider {
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 
-  private async loadModule<T>(name: string): Promise<T> {
-    return this.request<T>(`/data/${name}`, { method: 'GET' })
-  }
-
-  private async saveModule<T>(name: string, items: T[]): Promise<void> {
-    await this.request(`/data/${name}`, { method: 'PUT', body: JSON.stringify(items) })
+  private rejectBulkWrite(module: string): Promise<void> {
+    return Promise.reject(new Error(`服务端模式不支持 ${module} 整表写入，请使用原子命令`))
   }
 
 	async loadDrawings(): Promise<Drawing[]> {
@@ -53,24 +49,46 @@ export class ApiDataProvider implements DataProvider {
 		}
 		return normalizeDrawings(drawings)
 	}
-  async loadStructure(): Promise<StructurePart[]> { return normalizeStructure(await this.loadModule<unknown>('structure')) }
-  saveStructure(items: StructurePart[]): Promise<void> { return this.saveModule('structure', items) }
-  async loadAttributes(): Promise<DrawingAttribute[]> { return normalizeAttributes(await this.loadModule<unknown>('attributes')) }
-  saveAttributes(items: DrawingAttribute[]): Promise<void> { return this.saveModule('attributes', items) }
-  async loadVersions(): Promise<DrawingVersion[]> { return normalizeVersions(await this.loadModule<unknown>('versions').catch(() => [])) }
+  async loadStructure(): Promise<StructurePart[]> {
+    const drawings = await this.loadDrawings()
+    const snapshots = await Promise.all(drawings.map(async (drawing) => {
+      if (!drawing.id) return [] as StructurePart[]
+      const result = await this.request<unknown>(`/drawings/${encodeURIComponent(drawing.id)}/structure`, { method: 'GET' })
+      if (!Array.isArray(result)) throw new Error(`图纸 ${drawing.no} 的结构接口返回格式无效`)
+      return normalizeStructure(result)
+    }))
+    return snapshots.flat()
+  }
+  saveStructure(_items: StructurePart[]): Promise<void> { return this.rejectBulkWrite('structure') }
+  async createPart(drawingId: string, input: CreatePartInput): Promise<StructurePart> {
+    const item = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}/parts`, {
+      method: 'POST', body: JSON.stringify(input),
+    })
+    const normalized = normalizeStructure([item])[0]
+    if (!normalized) throw new Error('零件创建接口返回格式无效')
+    return normalized
+  }
+  async loadAttributes(): Promise<DrawingAttribute[]> { return normalizeAttributes(await this.request<unknown>('/drawing-attributes', { method: 'GET' })) }
+  saveAttributes(_items: DrawingAttribute[]): Promise<void> { return this.rejectBulkWrite('attributes') }
+  async loadVersions(): Promise<DrawingVersion[]> { return normalizeVersions([]) }
   saveVersions(_items: DrawingVersion[]): Promise<void> { return Promise.resolve() }
-  async loadBranches(): Promise<Branch[]> { return normalizeBranches(await this.loadModule<unknown>('branches')) }
-  saveBranches(items: Branch[]): Promise<void> { return this.saveModule('branches', items) }
-  async loadBorrows(): Promise<BorrowRecord[]> { return normalizeBorrows(await this.loadModule<unknown>('borrows')) }
-  saveBorrows(items: BorrowRecord[]): Promise<void> { return this.saveModule('borrows', items) }
-  async loadBom(): Promise<BomItem[]> { return normalizeBom(await this.loadModule<unknown>('bom')) }
-  saveBom(items: BomItem[]): Promise<void> { return this.saveModule('bom', items) }
+  async loadBranches(): Promise<Branch[]> { return normalizeBranches(await this.request<unknown>('/drawing-relations/branches', { method: 'GET' })) }
+  async loadBorrows(): Promise<BorrowRecord[]> { return normalizeBorrows(await this.request<unknown>('/drawing-relations/borrows', { method: 'GET' })) }
+  async loadBom(): Promise<BomItem[]> {
+    const drawings = await this.loadDrawings()
+    const snapshots = await Promise.all(drawings.map(async (drawing) => {
+      if (!drawing.id) return [] as BomItem[]
+      const snapshot = await this.loadDrawingBom(drawing.id)
+      return snapshot.items.map((item) => ({ ...item, drawingNo: drawing.no }))
+    }))
+    return snapshots.flat()
+  }
+  saveBom(_items: BomItem[]): Promise<void> { return this.rejectBulkWrite('bom') }
   async loadCrafts(): Promise<CraftFile[]> {
-    const items = await this.loadModule<unknown>('crafts').catch(() => [])
-    return Array.isArray(items) ? items.map((item) => normalizeCraftFile(item, '')) : []
+    return []
   }
   saveCrafts(_items: CraftFile[]): Promise<void> { return Promise.resolve() }
-  loadAttachments(): Promise<StoredAttachment[]> { return this.loadModule<StoredAttachment[]>('attachments') }
+  loadAttachments(): Promise<StoredAttachment[]> { return this.request<StoredAttachment[]>('/attachments', { method: 'GET' }) }
 
   async updateDrawing(drawingId: string, input: UpdateDrawingInput): Promise<Drawing> {
     const item = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}`, {
@@ -88,6 +106,60 @@ export class ApiDataProvider implements DataProvider {
     const normalized = normalizeStructure([item])[0]
     if (!normalized) throw new Error('零件更新接口返回格式无效')
     return normalized
+  }
+
+  async loadDrawingBom(drawingId: string): Promise<DrawingBomSnapshot> {
+    const result = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}/bom`, { method: 'GET' })
+    if (!isRecord(result) || typeof result.revision !== 'number' || !Array.isArray(result.items)) {
+      throw new Error('图纸 BOM 接口返回格式无效')
+    }
+    return { revision: result.revision, items: normalizeBom(result.items) }
+  }
+
+  async replaceDrawingBom(drawingId: string, input: ReplaceDrawingBomInput): Promise<DrawingBomSnapshot> {
+    const result = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}/bom`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        expectedRevision: input.expectedRevision,
+        items: input.items.map((item, index) => ({
+          no: item.no || index + 1,
+          id: item.id,
+          name: item.name,
+          spec: item.spec,
+          quantity: item.qty,
+          weight: item.weight,
+          remark: item.remark,
+          ...(item.sourceFileId ? { sourceAttachmentVersion: item.sourceFileId } : {}),
+        })),
+      }),
+    })
+    if (!isRecord(result) || typeof result.revision !== 'number' || !Array.isArray(result.items)) {
+      throw new Error('图纸 BOM 修改接口返回格式无效')
+    }
+    return { revision: result.revision, items: normalizeBom(result.items) }
+  }
+
+  async borrowPart(drawingId: string, input: BorrowPartInput): Promise<DrawingBorrowResult> {
+    const result = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}/borrows`, {
+      method: 'POST',
+      body: JSON.stringify({
+        sourcePartId: input.sourcePartId,
+        qty: input.qty,
+        borrowReason: input.borrowReason || '',
+        remark: input.remark || '',
+      }),
+    })
+    if (!isRecord(result) || typeof result.id !== 'string' || typeof result.partId !== 'string') {
+      throw new Error('借用命令接口返回格式无效')
+    }
+    return {
+      id: result.id,
+      drawingId: typeof result.drawingId === 'string' ? result.drawingId : drawingId,
+      partId: result.partId,
+      qty: typeof result.qty === 'number' ? result.qty : input.qty,
+      revision: typeof result.revision === 'number' ? result.revision : 1,
+      status: typeof result.status === 'string' ? result.status : 'active',
+    }
   }
 
   async deleteAttachment(storageKey: string): Promise<void> {

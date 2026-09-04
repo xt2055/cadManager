@@ -82,7 +82,7 @@ func DrawingAttributes(pool *pgxpool.Pool) http.Handler {
 			response.WriteData(writer, http.StatusOK, map[string]string{"id": parts[0]})
 			return
 		}
-		if len(parts) == 2 && parts[1] == "fields" && request.Method == http.MethodPost {
+			if len(parts) == 2 && parts[1] == "fields" && request.Method == http.MethodPost {
 			var input attributeFieldCommand
 			if err := decodeJSON(request, &input); err != nil || strings.TrimSpace(input.Name) == "" {
 				response.WriteError(writer, http.StatusBadRequest, "属性字段参数无效")
@@ -95,9 +95,44 @@ func DrawingAttributes(pool *pgxpool.Pool) http.Handler {
 				return
 			}
 			response.WriteData(writer, http.StatusCreated, map[string]any{"id": id, "attributeId": parts[0], "name": input.Name, "enabled": input.Enabled, "sortOrder": input.SortOrder})
-			return
-		}
-		response.WriteError(writer, http.StatusNotFound, "属性接口不存在")
+				return
+			}
+			if len(parts) == 3 && parts[1] == "fields" {
+				fieldID := parts[2]
+				switch request.Method {
+				case http.MethodPatch:
+					var input attributeFieldCommand
+					if err := decodeJSON(request, &input); err != nil || strings.TrimSpace(input.Name) == "" {
+						response.WriteError(writer, http.StatusBadRequest, "属性字段参数无效")
+						return
+					}
+					result, err := pool.Exec(request.Context(), `UPDATE drawing_attribute_fields SET name = $3, enabled = $4, sort_order = $5 WHERE id = $1::uuid AND attribute_id = $2::uuid`, fieldID, parts[0], strings.TrimSpace(input.Name), input.Enabled, input.SortOrder)
+					if err != nil {
+						writeAttributeError(writer, err)
+						return
+					}
+					if result.RowsAffected() == 0 {
+						writeAttributeError(writer, pgx.ErrNoRows)
+						return
+					}
+					response.WriteData(writer, http.StatusOK, map[string]any{"id": fieldID, "attributeId": parts[0], "name": strings.TrimSpace(input.Name), "enabled": input.Enabled, "sortOrder": input.SortOrder})
+				case http.MethodDelete:
+					result, err := pool.Exec(request.Context(), `DELETE FROM drawing_attribute_fields WHERE id = $1::uuid AND attribute_id = $2::uuid`, fieldID, parts[0])
+					if err != nil {
+						writeAttributeError(writer, err)
+						return
+					}
+					if result.RowsAffected() == 0 {
+						writeAttributeError(writer, pgx.ErrNoRows)
+						return
+					}
+					response.WriteData(writer, http.StatusOK, map[string]string{"id": fieldID})
+				default:
+					response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+				}
+				return
+			}
+			response.WriteError(writer, http.StatusNotFound, "属性接口不存在")
 	})
 }
 

@@ -1,6 +1,6 @@
 import { normalizeAttributes, normalizeBranches, normalizeBorrows, normalizeCraftFile, normalizeVersions, readSeedModule } from './data.types'
 import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart } from '@/types/domain.types'
-import type { DataProvider, UserManagementInput, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo } from './data-provider'
+import type { DataProvider, DrawingBomSnapshot, ReplaceDrawingBomInput, UserManagementInput, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import seedDocument from './data.seed.json'
 import { JsonAttachmentRepository } from './json-attachment-repository'
@@ -34,11 +34,20 @@ export class JsonDataProvider implements DataProvider {
   loadVersions(): Promise<DrawingVersion[]> { return Promise.resolve(normalizeVersions(this.readModule('versions', [] as DrawingVersion[]))) }
   saveVersions(items: DrawingVersion[]): Promise<void> { this.writeModule('versions', items); return Promise.resolve() }
   loadBranches(): Promise<Branch[]> { return Promise.resolve(normalizeBranches(this.readModule('branches', readSeedModule(seedDocument, 'branches', [])))) }
-  saveBranches(items: Branch[]): Promise<void> { this.writeModule('branches', items); return Promise.resolve() }
   loadBorrows(): Promise<BorrowRecord[]> { return Promise.resolve(normalizeBorrows(this.readModule('borrows', readSeedModule(seedDocument, 'borrows', [])))) }
-  saveBorrows(items: BorrowRecord[]): Promise<void> { this.writeModule('borrows', items); return Promise.resolve() }
 	  loadBom(): Promise<BomItem[]> { return Promise.resolve(this.drawingRepository.listBom()) }
 	  saveBom(items: BomItem[]): Promise<void> { this.drawingRepository.saveBom(items); return Promise.resolve() }
+	  async loadDrawingBom(drawingId: string): Promise<DrawingBomSnapshot> {
+	    const drawingNo = this.drawingRepository.listDrawings().find((item) => item.id === drawingId || item.no === drawingId)?.no || drawingId
+	    return { revision: 1, items: this.drawingRepository.listBom().filter((item) => item.drawingNo === drawingNo) }
+	  }
+	  async replaceDrawingBom(drawingId: string, input: ReplaceDrawingBomInput): Promise<DrawingBomSnapshot> {
+	    const drawingNo = this.drawingRepository.listDrawings().find((item) => item.id === drawingId || item.no === drawingId)?.no || drawingId
+	    const allItems = this.drawingRepository.listBom().filter((item) => item.drawingNo !== drawingNo)
+	    const items = input.items.map((item, index) => ({ ...item, no: index + 1, drawingNo }))
+	    this.drawingRepository.saveBom([...allItems, ...items])
+	    return { revision: input.expectedRevision || 1, items }
+	  }
   loadCrafts(): Promise<CraftFile[]> { return Promise.resolve(this.readModule('crafts', [] as CraftFile[])) }
   saveCrafts(items: CraftFile[]): Promise<void> { this.writeModule('crafts', items); return Promise.resolve() }
 	  loadAttachments(): Promise<StoredAttachment[]> { return Promise.resolve(this.attachmentRepository.list()) }

@@ -1,24 +1,26 @@
 import { ApiDataProvider } from './api-data-provider'
 import type { DataProvider } from './data-provider'
-import type { DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, UserManagementInput, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo, UpdateDrawingInput, UpdatePartInput } from './data-provider'
+import type { BorrowPartInput, CreatePartInput, DrawingBomSnapshot, DrawingBorrowResult, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, UserManagementInput, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo, UpdateDrawingInput, UpdatePartInput, ReplaceDrawingBomInput } from './data-provider'
 import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart, UserAccount } from '@/types/domain.types'
 import { JsonDataProvider } from './json-data-provider'
 import { readDebugMode } from '@/services/runtime-config.service'
 
 export interface DataManager {
 	loadDrawings(): Promise<Drawing[]>
-  loadStructure(): Promise<StructurePart[]>
-  saveStructure(items: StructurePart[]): Promise<void>
+	  loadStructure(): Promise<StructurePart[]>
+	  saveStructure(items: StructurePart[]): Promise<void>
+	  createPart(drawingId: string, input: CreatePartInput): Promise<StructurePart>
   loadAttributes(): Promise<DrawingAttribute[]>
   saveAttributes(items: DrawingAttribute[]): Promise<void>
   loadVersions(): Promise<DrawingVersion[]>
   saveVersions(items: DrawingVersion[]): Promise<void>
   loadBranches(): Promise<Branch[]>
-  saveBranches(items: Branch[]): Promise<void>
   loadBorrows(): Promise<BorrowRecord[]>
-  saveBorrows(items: BorrowRecord[]): Promise<void>
-  loadBom(): Promise<BomItem[]>
-  saveBom(items: BomItem[]): Promise<void>
+	loadBom(): Promise<BomItem[]>
+	saveBom(items: BomItem[]): Promise<void>
+	loadDrawingBom(drawingId: string): Promise<DrawingBomSnapshot>
+	replaceDrawingBom(drawingId: string, input: ReplaceDrawingBomInput): Promise<DrawingBomSnapshot>
+	borrowPart(drawingId: string, input: BorrowPartInput): Promise<DrawingBorrowResult>
   loadCrafts(): Promise<CraftFile[]>
   saveCrafts(items: CraftFile[]): Promise<void>
   loadAttachments(): Promise<StoredAttachment[]>
@@ -83,18 +85,36 @@ export class DefaultDataManager implements DataManager {
   }
 
 	loadDrawings(): Promise<Drawing[]> { return this.getProvider().then((provider) => provider.loadDrawings()) }
-  loadStructure(): Promise<StructurePart[]> { return this.getProvider().then((provider) => provider.loadStructure()) }
-  saveStructure(items: StructurePart[]): Promise<void> { return this.getProvider().then((provider) => provider.saveStructure(items)) }
+	loadStructure(): Promise<StructurePart[]> { return this.getProvider().then((provider) => provider.loadStructure()) }
+	saveStructure(items: StructurePart[]): Promise<void> { return this.getProvider().then((provider) => provider.saveStructure(items)) }
+	async createPart(drawingId: string, input: CreatePartInput): Promise<StructurePart> {
+	  const provider = await this.getProvider()
+	  if (!provider.createPart) throw new Error('当前存储模式不支持零件原子创建')
+	  return provider.createPart(drawingId, input)
+	}
   loadAttributes(): Promise<DrawingAttribute[]> { return this.getProvider().then((provider) => provider.loadAttributes()) }
   saveAttributes(items: DrawingAttribute[]): Promise<void> { return this.getProvider().then((provider) => provider.saveAttributes(items)) }
   loadVersions(): Promise<DrawingVersion[]> { return this.getProvider().then((provider) => provider.loadVersions()) }
   saveVersions(items: DrawingVersion[]): Promise<void> { return this.getProvider().then((provider) => provider.saveVersions(items)) }
   loadBranches(): Promise<Branch[]> { return this.getProvider().then((provider) => provider.loadBranches()) }
-  saveBranches(items: Branch[]): Promise<void> { return this.getProvider().then((provider) => provider.saveBranches(items)) }
   loadBorrows(): Promise<BorrowRecord[]> { return this.getProvider().then((provider) => provider.loadBorrows()) }
-  saveBorrows(items: BorrowRecord[]): Promise<void> { return this.getProvider().then((provider) => provider.saveBorrows(items)) }
-  loadBom(): Promise<BomItem[]> { return this.getProvider().then((provider) => provider.loadBom()) }
-  saveBom(items: BomItem[]): Promise<void> { return this.getProvider().then((provider) => provider.saveBom(items)) }
+	loadBom(): Promise<BomItem[]> { return this.getProvider().then((provider) => provider.loadBom()) }
+	saveBom(items: BomItem[]): Promise<void> { return this.getProvider().then((provider) => provider.saveBom(items)) }
+	async loadDrawingBom(drawingId: string): Promise<DrawingBomSnapshot> {
+	  const provider = await this.getProvider()
+	  if (provider.loadDrawingBom) return provider.loadDrawingBom(drawingId)
+	  throw new Error('当前存储模式不支持图纸 BOM 查询')
+	}
+	async replaceDrawingBom(drawingId: string, input: ReplaceDrawingBomInput): Promise<DrawingBomSnapshot> {
+	  const provider = await this.getProvider()
+	  if (provider.replaceDrawingBom) return provider.replaceDrawingBom(drawingId, input)
+	  throw new Error('当前存储模式不支持图纸 BOM 原子修改')
+	}
+	async borrowPart(drawingId: string, input: BorrowPartInput): Promise<DrawingBorrowResult> {
+	  const provider = await this.getProvider()
+	  if (provider.borrowPart) return provider.borrowPart(drawingId, input)
+	  throw new Error('当前存储模式不支持借用零件原子命令')
+	}
   loadCrafts(): Promise<CraftFile[]> { return this.getProvider().then((provider) => provider.loadCrafts()) }
   saveCrafts(items: CraftFile[]): Promise<void> { return this.getProvider().then((provider) => provider.saveCrafts(items)) }
   loadAttachments(): Promise<StoredAttachment[]> { return this.getProvider().then((provider) => provider.loadAttachments()) }

@@ -1,26 +1,35 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DocxPreviewModal from './DocxPreviewModal.vue'
+import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { CraftFile } from '@/types/domain.types'
+import type { CraftFileView } from '@/modules/drawing'
 
 defineOptions({ name: 'DrawingProcessTab' })
 
 const drawingOperationsStore = useDrawingOperationsStore()
+const route = useRoute()
+const drawingStore = useDrawingStore()
 const uiStore = useUiStore()
 
-const currentItem = computed(() => drawingOperationsStore.currentDrawing)
+const currentItem = computed(() => {
+  const id = String(route.params.drawingId ?? '')
+  return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
+})
+const crafts = computed<CraftFileView[]>(() => currentItem.value?.craftFiles ?? [])
 const fileInput = ref<HTMLInputElement | null>(null)
 const replaceInput = ref<HTMLInputElement | null>(null)
 const replacingFileId = ref<string | null>(null)
 
 const previewVisible = ref(false)
-const previewFile = ref<CraftFile | null>(null)
+const previewFile = ref<CraftFileView | null>(null)
 
-function openPreview(file: CraftFile) {
+function openPreview(file: CraftFileView) {
   if (!file.storageKey) {
     uiStore.toast('该工艺文件尚未保存在本地或后端，暂无法预览', 'warn')
     return
@@ -39,7 +48,7 @@ function triggerUpload() {
   fileInput.value?.click()
 }
 
-function triggerReplace(file: CraftFile) {
+function triggerReplace(file: CraftFileView) {
   replacingFileId.value = file.id
   replaceInput.value?.click()
 }
@@ -51,6 +60,7 @@ async function onReplaceChange(event: Event) {
   if (!file || !fileId || !currentItem.value) return
   try {
     await drawingOperationsStore.replaceCraftFile(currentItem.value.no, fileId, file)
+    await drawingStore.refresh()
     uiStore.toast(`工艺文件已替换：${file.name}`, 'ok')
   } catch (error) {
     console.error('替换工艺文件失败', error)
@@ -85,7 +95,7 @@ async function onFileChange(event: Event) {
         drawingNo: currentItem.value.no,
         name: file.name,
         op: '机加工与装配工艺',
-        ver: currentItem.value.ver || 'v1.0',
+        ver: currentItem.value.version || 'v1.0',
         by: '张工',
         date: formatCurrentTime(),
         size: formatFileSize(file.size),
@@ -95,6 +105,7 @@ async function onFileChange(event: Event) {
 
       try {
         await drawingOperationsStore.uploadCraftFile(currentItem.value.no, newFile, file)
+        await drawingStore.refresh()
         uploadedCount += 1
       } catch (error) {
         failedCount += 1
@@ -114,12 +125,13 @@ async function onFileChange(event: Event) {
   }
 }
 
-async function handleDeleteCraft(file: CraftFile) {
+async function handleDeleteCraft(file: CraftFileView) {
   if (!currentItem.value) return
   if (!window.confirm(`确定要移除工艺文件「${file.name}」吗？`)) return
 
   try {
     await drawingOperationsStore.deleteCraftFile(currentItem.value.no, file.id || file.name)
+    await drawingStore.refresh()
     uiStore.toast(`已移除工艺文件 ${file.name}`)
   } catch (error) {
     console.error('删除工艺文件失败', error)
@@ -127,7 +139,7 @@ async function handleDeleteCraft(file: CraftFile) {
   }
 }
 
-async function handleDownloadCraft(file: CraftFile) {
+async function handleDownloadCraft(file: CraftFileView) {
   try {
     await drawingOperationsStore.downloadAttachment(file)
     uiStore.toast(`已开始下载 ${file.name}`, 'ok')
@@ -136,6 +148,8 @@ async function handleDownloadCraft(file: CraftFile) {
     uiStore.toast('下载工艺文件失败：附件可能尚未保存', 'warn')
   }
 }
+
+onMounted(() => { void drawingStore.load() })
 
 </script>
 
@@ -176,7 +190,7 @@ async function handleDownloadCraft(file: CraftFile) {
 
     <!-- 工艺文件宽卡片网格布局 -->
     <div class="craft-grid">
-      <div v-for="file in drawingOperationsStore.crafts" :key="file.id" class="card card-pad craft-wide-card">
+      <div v-for="file in crafts" :key="file.id" class="card card-pad craft-wide-card">
         <div class="craft-card-top">
           <div class="file-icon-wrap">
             <DemoIcon name="file-text" :size="24" />
@@ -222,7 +236,7 @@ async function handleDownloadCraft(file: CraftFile) {
       </div>
     </div>
 
-    <div v-if="!drawingOperationsStore.crafts.length" class="card empty">
+    <div v-if="!crafts.length" class="card empty">
       <DemoIcon name="file-text" :size="38" />
       <div class="t">暂无工艺文件</div>
       <p>请点击右上角「上传工艺文件」上传规程与指导卡</p>

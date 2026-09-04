@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
-import { STATUS } from '@/stores/domain.store'
+import { STATUS } from '@/constants/drawing-status'
 import { useUiStore } from '@/stores/ui.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useAttributeStore } from '@/stores/attribute.store'

@@ -4,7 +4,9 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
+import { useAttributeStore } from '@/stores/attribute.store'
 import { useAuthStore } from '@/stores/auth.store'
+import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { appContainer, drawingFileService } from '@/app/container'
@@ -19,6 +21,8 @@ defineOptions({
 
 const router = useRouter()
 const drawingOperationsStore = useDrawingOperationsStore()
+const drawingStore = useDrawingStore()
+const attributeStore = useAttributeStore()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
 const uploadGateway = appContainer.uploadGateway
@@ -37,10 +41,10 @@ let assemblyIdentifySequence = 0
 const createMode = ref<'blank' | 'fork'>('blank')
 const selectedForkSourceNo = ref('')
 
-const existingDrawings = computed(() => drawingOperationsStore.drawings)
+const existingDrawings = computed(() => drawingStore.drawings)
 
 function onForkSourceChange() {
-  const source = drawingOperationsStore.drawings.find((item) => item.no === selectedForkSourceNo.value)
+  const source = drawingStore.drawings.find((item) => item.no === selectedForkSourceNo.value)
   if (!source) return
   // 继承源项目的基本信息（均可修改）；总图图号预填源号，提交前必须改成新号。
   formProject.value = `${source.name} (改进版)`
@@ -147,7 +151,9 @@ async function retryUploadItem(itemId: string) {
   }
 }
 
-onMounted(() => { void refreshUploadSnapshot() })
+onMounted(() => {
+  void Promise.all([drawingStore.load(), attributeStore.load(), refreshUploadSnapshot()])
+})
 watch(() => drawingOperationsStore.pendingUploadSessionId, () => { void refreshUploadSnapshot() })
 
 const assemblyFileInput = ref<HTMLInputElement | null>(null)
@@ -361,7 +367,7 @@ async function performCreate() {
     return
   }
 
-  const attributeErrors = drawingOperationsStore.validateAttributeValues(formAttributeValues.value)
+  const attributeErrors = attributeStore.validate(formAttributeValues.value)
   if (attributeErrors.length) {
     uiStore.toast(attributeErrors[0] ?? '请完善图纸属性', 'warn')
     return
@@ -388,7 +394,6 @@ async function performCreate() {
          projectNo,
          formAttributeValues.value,
        )
-      drawingOperationsStore.openDrawing(drawingNo)
       uiStore.toast(`已基于「${selectedForkSourceNo.value}」成功分叉项目「${projectNo}」，总图图号为「${drawingNo}」`, 'ok')
       router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
       return
@@ -567,8 +572,6 @@ async function performCreate() {
     return
   }
 
-   drawingOperationsStore.openDrawing(newProjectDrawing.no)
-
   const borrowedPartCount = groupedPartEntries.filter((entries) => entries[0]?.isBorrowed).length
    const fallbackMessage = unidentifiedPartNames.length
      ? `；${unidentifiedPartNames.join('、')} 未识别出图号，已暂用文件名，可在零件详情页修改`
@@ -731,7 +734,7 @@ async function retryFailedUpload() {
 
           <DrawingAttributesForm
             v-model="formAttributeValues"
-            :attributes="drawingOperationsStore.sortedAttributes"
+            :attributes="attributeStore.sortedAttributes"
           />
         </section>
       </div>

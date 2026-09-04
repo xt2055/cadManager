@@ -1,21 +1,29 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import * as XLSX from 'xlsx'
 import { invoke } from '@tauri-apps/api/core'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { drawingFileService } from '@/app/container'
+import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { BomItem, MaterialFile } from '@/types/domain.types'
+import type { MaterialFileView } from '@/modules/drawing'
 import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({ name: 'DrawingMaterialTab' })
 
 const drawingOperationsStore = useDrawingOperationsStore()
+const route = useRoute()
+const drawingStore = useDrawingStore()
 const uiStore = useUiStore()
 
-const currentItem = computed(() => drawingOperationsStore.currentDrawing)
+const currentItem = computed(() => {
+  const id = String(route.params.drawingId ?? '')
+  return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
+})
 const fileInput = ref<HTMLInputElement | null>(null)
 const replaceInput = ref<HTMLInputElement | null>(null)
 const replacingFileId = ref<string | null>(null)
@@ -24,7 +32,7 @@ const isEditing = ref(false)
 const isSaving = ref(false)
 const localBom = ref<BomItem[]>([])
 
-const materialFiles = computed<MaterialFile[]>(() => {
+const materialFiles = computed<MaterialFileView[]>(() => {
   return currentItem.value?.materialFiles ?? []
 })
 
@@ -32,13 +40,13 @@ const materialAuthor = computed(() => {
 	if (!materialFiles.value.length) return ''
 	const fromFile = materialFiles.value.find((f) => f.author && f.author.trim())?.author?.trim()
 	if (fromFile && fromFile !== '待定') return fromFile
-  const designer = (currentItem.value?.signers as Record<string, string> | undefined)?.['设计']
+    const designer = currentItem.value && 'signers' in currentItem.value ? currentItem.value.signers?.['设计'] : undefined
   if (designer && designer.trim() && designer.trim() !== '待定') return designer.trim()
   return ''
 })
 
 watch(
-  () => drawingOperationsStore.bom,
+  () => drawingStore.getBom(currentItem.value?.no ?? ''),
   (items) => {
     if (!isEditing.value) {
       localBom.value = items.map((item) => ({ ...item }))
@@ -69,6 +77,7 @@ async function onReplaceChange(event: Event) {
   if (!file || !fileId || !currentItem.value) return
   try {
     const result = await drawingOperationsStore.replaceMaterialFile(currentItem.value.no, fileId, file)
+    await drawingStore.refresh()
     uiStore.toast(`备料表已替换，并解析出 ${result.importedCount} 条物料明细`, 'ok')
   } catch (error) {
     console.error('替换备料表失败', error)
@@ -80,12 +89,12 @@ async function onReplaceChange(event: Event) {
 }
 
 function startEdit() {
-  localBom.value = drawingOperationsStore.bom.map((item) => ({ ...item }))
+  localBom.value = drawingStore.getBom(currentItem.value?.no ?? '').map((item) => ({ ...item }))
   isEditing.value = true
 }
 
 function cancelEdit() {
-  localBom.value = drawingOperationsStore.bom.map((item) => ({ ...item }))
+  localBom.value = drawingStore.getBom(currentItem.value?.no ?? '').map((item) => ({ ...item }))
   isEditing.value = false
 }
 
@@ -116,6 +125,7 @@ async function saveEdit() {
   isSaving.value = true
   try {
     await drawingOperationsStore.saveDrawingBom(currentItem.value.no, localBom.value)
+    await drawingStore.refresh()
     isEditing.value = false
     uiStore.toast(`备料明细已成功保存，共 ${localBom.value.length} 项`, 'ok')
   } catch (error) {
@@ -280,13 +290,14 @@ async function onFileChange(event: Event) {
     drawingNo: currentItem.value.no,
     name: file.name,
     size: formatFileSize(file.size),
-    version: currentItem.value.ver || 'v1.0',
+    version: currentItem.value.version || 'v1.0',
     uploadedBy: '张工',
     uploadedAt: formatCurrentTime(),
   }
 
   try {
     const result = await drawingOperationsStore.uploadMaterialFile(currentItem.value.no, newFile, file)
+    await drawingStore.refresh()
     if (result.importedCount > 0) {
       uiStore.toast(`备料表「${file.name}」已保存并成功解析导入 ${result.importedCount} 条物料明细`, 'ok')
     } else {
@@ -300,12 +311,13 @@ async function onFileChange(event: Event) {
   }
 }
 
-async function handleDeleteFile(file: MaterialFile) {
+async function handleDeleteFile(file: MaterialFileView) {
   if (!currentItem.value) return
   if (!window.confirm(`确定要移除备料表文件「${file.name}」吗？`)) return
 
   try {
     await drawingOperationsStore.deleteMaterialFile(currentItem.value.no, file.id)
+    await drawingStore.refresh()
     uiStore.toast(`已移除备料表文件 ${file.name}`)
   } catch (error) {
     console.error('删除备料表失败', error)
@@ -313,7 +325,7 @@ async function handleDeleteFile(file: MaterialFile) {
   }
 }
 
-async function handleDownloadFile(file: MaterialFile) {
+async function handleDownloadFile(file: MaterialFileView) {
   try {
     await drawingOperationsStore.downloadAttachment(file)
     uiStore.toast(`已开始下载 ${file.name}`, 'ok')
@@ -323,11 +335,12 @@ async function handleDownloadFile(file: MaterialFile) {
   }
 }
 
-async function handleParseFile(file: MaterialFile) {
+async function handleParseFile(file: MaterialFileView) {
   if (!currentItem.value) return
 
   try {
     const result = await drawingOperationsStore.parseMaterialFile(currentItem.value.no, file.id)
+    await drawingStore.refresh()
     if (result.importedCount > 0) {
       uiStore.toast(`已从「${file.name}」解析出 ${result.importedCount} 条物料明细`, 'ok')
     } else {
@@ -338,6 +351,8 @@ async function handleParseFile(file: MaterialFile) {
     uiStore.toast('解析备料表明细失败：请确认文件内容和格式', 'warn')
   }
 }
+
+onMounted(() => { void drawingStore.load() })
 </script>
 
 <template>

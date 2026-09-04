@@ -1,40 +1,62 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useReviewStore } from '@/stores/review.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { ReviewNode } from '@/types/domain.types'
 
 defineOptions({ name: 'DrawingReviewTab' })
 
-const drawingOperationsStore = useDrawingOperationsStore()
+const route = useRoute()
+const drawingStore = useDrawingStore()
+const reviewStore = useReviewStore()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
 
-const currentItem = computed(() => drawingOperationsStore.currentDrawing)
+const currentItem = computed(() => {
+  const id = String(route.params.drawingId ?? '')
+  return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
+})
+const currentReviewCase = computed(() => currentItem.value ? reviewStore.getCase(currentItem.value.no) : null)
+const currentReviewNodes = computed<ReviewNode[]>(() => currentReviewCase.value?.nodes.map((node) => ({
+  name: node.name,
+  user: node.assignedName,
+  assignedUserId: node.assignedUserId,
+  status: node.status,
+  time: node.time || '—',
+  opinion: node.opinion,
+  required: node.required,
+  order: node.order,
+})) ?? [])
 
-const done = computed(() => drawingOperationsStore.currentReviewNodes.filter((node) => node.status === 'pass').length)
-const total = computed(() => drawingOperationsStore.currentReviewNodes.length)
+const done = computed(() => currentReviewNodes.value.filter((node) => node.status === 'pass').length)
+const total = computed(() => currentReviewNodes.value.length)
 const percent = computed(() => (total.value ? Math.round((done.value / total.value) * 100) : 0))
 const isReviewing = computed(() => currentItem.value?.status === 'reviewing')
 const isPublished = computed(() => currentItem.value?.status === 'published')
 
 // 顺序流转：节点按 order 排序，第一个待处理节点为当前活动节点，仅它可签署。
-const sortedNodes = computed(() => drawingOperationsStore.currentReviewNodes
+const sortedNodes = computed(() => currentReviewNodes.value
   .slice()
   .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)))
 const activeNodeName = computed(() => (isReviewing.value
   ? sortedNodes.value.find((node) => node.status === 'pending')?.name ?? null
   : null))
-const isRejected = computed(() => drawingOperationsStore.currentReviewCase?.status === 'rejected')
+const isRejected = computed(() => currentReviewCase.value?.status === 'rejected')
 // 图纸状态是审核中但查不到任何案例：历史残留数据，提供重新初始化入口。
-const missingCase = computed(() => isReviewing.value && !drawingOperationsStore.currentReviewCase)
+const missingCase = computed(() => isReviewing.value && !currentReviewCase.value)
+
+onMounted(() => {
+  void Promise.all([drawingStore.load(), reviewStore.load()]).catch(() => undefined)
+})
 
 // 发起/重新发起仅创建者或管理员可用（驳回后由发起人重新发起，审核员无权）。
 const canStartReview = computed(() => {
-  const item = drawingOperationsStore.currentDrawing
+  const item = currentItem.value
   const current = authStore.currentUser
   if (!item || !current) return false
   if (current.roles?.includes('admin')) return true
@@ -68,7 +90,7 @@ function cancelOpinion() {
 async function handleStartReview() {
   if (!currentItem.value) return
   try {
-    await drawingOperationsStore.startReview(currentItem.value.no)
+    await reviewStore.startCase(currentItem.value.no)
     uiStore.toast(`图纸「${currentItem.value.no}」已发起审核，请按顺序完成各节点签署`, 'ok')
   } catch (error) {
     console.error('发起审核失败', error)
@@ -84,14 +106,9 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
   }
 
   try {
-    await drawingOperationsStore.submitNodeReview(
-      currentItem.value.no,
-      nodeName,
-      action,
-      opinionText.value.trim(),
-      authStore.currentUser?.displayName || '当前审核人',
-      drawingOperationsStore.currentReviewCase?.id,
-    )
+    const reviewCase = currentReviewCase.value
+    if (!reviewCase) throw new Error('当前图纸没有可提交的审核案例')
+    await reviewStore.submitNode(reviewCase.id, nodeName, action, opinionText.value.trim())
     uiStore.toast(
       action === 'pass'
         ? `节点「${nodeName}」已审核通过`
@@ -159,17 +176,17 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
     </div>
 
     <!-- 进度条 -->
-    <div v-if="drawingOperationsStore.currentReviewNodes.length" class="review-progress card">
+    <div v-if="currentReviewNodes.length" class="review-progress card">
       <DemoIcon name="workflow" :size="17" />
       <b>流转进度看板</b>
       <div class="rp-track">
         <div class="rp-fill" :style="{ width: `${percent}%` }"></div>
       </div>
-      <span class="rp-txt">{{ done }} / {{ drawingOperationsStore.currentReviewNodes.length }} 已完成 · {{ percent }}%</span>
+      <span class="rp-txt">{{ done }} / {{ currentReviewNodes.length }} 已完成 · {{ percent }}%</span>
     </div>
 
     <!-- 可视化流程拓扑图与节点列表 -->
-    <div v-if="drawingOperationsStore.currentReviewNodes.length" class="review-diagram-area">
+    <div v-if="currentReviewNodes.length" class="review-diagram-area">
       <div class="section-subhead">
         <DemoIcon name="git-commit" :size="15" />
         <h4>审核节点流程（按顺序签署）</h4>

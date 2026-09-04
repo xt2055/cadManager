@@ -1,5 +1,5 @@
 import type { AuthUser } from '@/features/auth/types/auth.types'
-import { dataManager } from '@/services/data-manager'
+import { adminService } from '@/app/container'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -30,7 +30,7 @@ export async function fetchReviewerCandidates(role = 'reviewer'): Promise<Array<
   }
 
   try {
-    const users = await dataManager.listUsers()
+    const users = await adminService.listUsers()
     return users
       .filter((user) => user.status === 'active' && (!role || user.roles.includes(role as any)))
       .map((user) => ({ id: user.id, name: user.displayName, account: user.account }))
