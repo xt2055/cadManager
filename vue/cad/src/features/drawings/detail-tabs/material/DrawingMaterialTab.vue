@@ -8,6 +8,7 @@ import { dataManager } from '@/services/data-manager'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { BomItem, MaterialFile } from '@/types/domain.types'
+import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({ name: 'DrawingMaterialTab' })
 
@@ -411,7 +412,7 @@ async function handleParseFile(file: MaterialFile) {
            <div class="att-meta">
             <b>{{ f.name }}</b>
             <span>
-              {{ f.size }} · {{ f.version }} · 由 {{ f.uploadedBy }} 上传于 {{ f.uploadedAt && f.uploadedAt !== '刚刚' ? f.uploadedAt : formatCurrentTime() }}
+              {{ f.size }} · {{ f.version }} · 由 {{ f.uploadedBy }} 上传于 {{ formatReadableDateTime(f.uploadedAt, formatCurrentTime()) }}
               <template v-if="f.author || materialAuthor"> · 编制：<b class="author-tag">{{ f.author || materialAuthor }}</b></template>
             </span>
            </div>

@@ -234,6 +234,20 @@ func (repository *PGRepository) ConsumeTicket(ctx context.Context, token, userID
 	return session, nil
 }
 
+func (repository *PGRepository) UpdateWorkStorageKey(ctx context.Context, userID, sessionID, workStorageKey string) error {
+	result, err := repository.pool.Exec(ctx, `
+		UPDATE edit_sessions
+		SET work_storage_key = $3, last_seen_at = now()
+		WHERE id = $1::uuid AND user_id = $2::uuid AND status = 'active'`, sessionID, userID, workStorageKey)
+	if err != nil {
+		return fmt.Errorf("更新编辑工作文件键失败: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
 func (repository *PGRepository) Heartbeat(ctx context.Context, userID, sessionID string, now time.Time) error {
 	result, err := repository.pool.Exec(ctx, `
 		UPDATE edit_sessions

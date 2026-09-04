@@ -1,6 +1,6 @@
 import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart } from '@/types/domain.types'
 import { normalizeAttributes, normalizeBom, normalizeBranches, normalizeBorrows, normalizeCraftFile, normalizeDrawings, normalizeStructure, normalizeVersions } from './data.types'
-import type { DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo } from './data-provider'
+import type { DataProvider, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo, UpdateDrawingInput, UpdatePartInput } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import type { UserManagementInput } from './data-provider'
 import { getApiBaseUrl } from '@/services/api-base.service'
@@ -40,8 +40,19 @@ export class ApiDataProvider implements DataProvider {
     await this.request(`/data/${name}`, { method: 'PUT', body: JSON.stringify(items) })
   }
 
-  async loadDrawings(): Promise<Drawing[]> { return normalizeDrawings(await this.loadModule<unknown>('drawings')) }
-  saveDrawings(items: Drawing[]): Promise<void> { return this.saveModule('drawings', items) }
+	async loadDrawings(): Promise<Drawing[]> {
+		const drawings: unknown[] = []
+		let page = 1
+		while (true) {
+			const result = await this.request<unknown>(`/drawings?page=${page}&page_size=100`, { method: 'GET' })
+			if (!isRecord(result) || !Array.isArray(result.list)) throw new Error('图纸列表接口返回格式无效')
+			drawings.push(...result.list)
+			const total = typeof result.total === 'number' ? result.total : drawings.length
+			if (drawings.length >= total || result.list.length === 0) break
+			page += 1
+		}
+		return normalizeDrawings(drawings)
+	}
   async loadStructure(): Promise<StructurePart[]> { return normalizeStructure(await this.loadModule<unknown>('structure')) }
   saveStructure(items: StructurePart[]): Promise<void> { return this.saveModule('structure', items) }
   async loadAttributes(): Promise<DrawingAttribute[]> { return normalizeAttributes(await this.loadModule<unknown>('attributes')) }
@@ -60,6 +71,24 @@ export class ApiDataProvider implements DataProvider {
   }
   saveCrafts(_items: CraftFile[]): Promise<void> { return Promise.resolve() }
   loadAttachments(): Promise<StoredAttachment[]> { return this.loadModule<StoredAttachment[]>('attachments') }
+
+  async updateDrawing(drawingId: string, input: UpdateDrawingInput): Promise<Drawing> {
+    const item = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}`, {
+      method: 'PATCH', body: JSON.stringify(input),
+    })
+    const normalized = normalizeDrawings([item])[0]
+    if (!normalized) throw new Error('图纸更新接口返回格式无效')
+    return normalized
+  }
+
+  async updatePart(partId: string, input: UpdatePartInput): Promise<StructurePart> {
+    const item = await this.request<unknown>(`/parts/${encodeURIComponent(partId)}`, {
+      method: 'PATCH', body: JSON.stringify(input),
+    })
+    const normalized = normalizeStructure([item])[0]
+    if (!normalized) throw new Error('零件更新接口返回格式无效')
+    return normalized
+  }
 
   async deleteAttachment(storageKey: string): Promise<void> {
     await this.request(`/attachments/${encodeURIComponent(storageKey)}`, { method: 'DELETE' })
@@ -362,7 +391,7 @@ export class ApiDataProvider implements DataProvider {
     return payload as unknown as UserAccount
   }
 
-  private async request<T>(path: string, options: { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: string; headers?: Record<string, string>; onResponse?: (response: Response) => void }): Promise<T> {
+  private async request<T>(path: string, options: { method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; body?: string; headers?: Record<string, string>; onResponse?: (response: Response) => void }): Promise<T> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
       ...(options.headers || {}),

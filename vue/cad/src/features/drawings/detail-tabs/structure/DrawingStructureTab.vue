@@ -6,6 +6,7 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingStructureNode from '@/features/drawings/components/detail/DrawingStructureNode.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { isEquivalentAssemblyNo, isSameDrawingFamily, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
+import { formatReadableDateTime } from '@/utils/date-time'
 import type { StructurePart } from '@/types/domain.types'
 import type { StructureTreeNode } from '@/types/structure.types'
 
@@ -152,7 +153,7 @@ function selectPart(partNo: string) {
                <div v-for="file in [...(selected.files ?? []), ...(selected.otherFiles ?? [])]" :key="file.id" class="detail-file-row">
                  <div class="detail-file-name"><DemoIcon name="file" :size="14" /><span :title="file.name">{{ file.name }}</span></div>
                  <span class="detail-file-meta">大小 {{ file.size }}</span>
-                 <span class="detail-file-meta">上传 {{ file.uploadedAt }}</span>
+                 <span class="detail-file-meta">上传 {{ formatReadableDateTime(file.uploadedAt, '历史记录') }}</span>
                </div>
              </div>
              <div v-else class="detail-file-empty">暂无关联图纸文件</div>

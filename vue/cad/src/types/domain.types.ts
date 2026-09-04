@@ -115,7 +115,11 @@ export interface DrawingAttribute {
 }
 
 export interface Drawing {
-  no: string
+	/** 服务端资源 ID；旧的调试数据可不提供。 */
+	id?: string
+	/** 服务端乐观锁版本；修改时必须原样带回。 */
+	revision?: number
+	no: string
   name: string
   kind: '总图' | '零件图'
   project: string
@@ -162,7 +166,9 @@ export interface ActivityLog {
 }
 
 export interface StructurePart {
-  no: string
+	id?: string
+	revision?: number
+	no: string
   name: string
   parentNo: string
   project?: string

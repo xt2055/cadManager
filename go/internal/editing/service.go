@@ -31,6 +31,8 @@ var (
 	ErrInvalidTicket    = errors.New("打开票据无效或已使用")
 )
 
+const editTicketTTL = 5 * time.Minute
+
 // DrawingLookup 提供图纸生命周期查询（状态与创建者），用于编辑权限强校验。
 type DrawingLookup interface {
 	FindByNo(ctx context.Context, no string) (drawing.Drawing, error)
@@ -96,6 +98,16 @@ func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, 
 	if ext == "" {
 		ext = filepath.Ext(item.Name)
 	}
+	// EXB 附件提交后会保留原始文件，同时把可编辑的 DWG 放到 current_blob_id。
+	// currentStorageKey 可能是 blobs/<hash>，不能靠它自身的扩展名判断格式；
+	// currentName 才是当前对象的真实文件名。已有有效 DWG 时禁止再次读取/转换原始 EXB。
+	if item.CurrentStorageKey != "" && item.CurrentStorageKey != item.StorageKey && strings.EqualFold(filepath.Ext(item.CurrentName), ".dwg") {
+		if reader, _, statErr := service.storage.Open(ctx, item.CurrentStorageKey); statErr == nil {
+			_ = reader.Close()
+			return item.CurrentStorageKey, nil
+		}
+		log.Printf("[编辑会话] 当前 DWG 对象不存在: %s，继续处理原始文件", item.CurrentStorageKey)
+	}
 	if strings.EqualFold(ext, ".exb") && service.converter != nil {
 		dwgKey, convErr := service.converter.EnsureDwg(ctx, item)
 		if convErr != nil {
@@ -129,6 +141,33 @@ func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, 
 	return item.StorageKey, nil
 }
 
+// editWorkStorageKey 是 SMB 工作副本的逻辑文件名，不是内容对象键。
+// file_blobs 使用 blobs/<hash> 存储时没有扩展名，不能直接交给 CAXA；
+// 工作副本必须保留 CAD 文件扩展名，供 CAXA 按 DWG/EXB/DXF 正确识别。
+func editWorkStorageKey(sessionID, sourceStorageKey string, item attachment.Attachment) (string, error) {
+	// 当前版本实际可用时使用 currentName（通常是 EXB 转换后的 DWG）。
+	// 当前版本已丢失而回退原文件时，必须保持原文件扩展名，不能把 EXB 内容伪装成 DWG。
+	name := strings.TrimSpace(item.Name)
+	if sourceStorageKey != item.StorageKey && strings.TrimSpace(item.CurrentName) != "" {
+		name = strings.TrimSpace(item.CurrentName)
+	}
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" || name == "." {
+		return "", errors.New("附件缺少真实文件名，无法创建 CAXA 工作副本")
+	}
+	if filepath.Ext(name) == "" {
+		ext := filepath.Ext(item.Name)
+		if ext == "" {
+			ext = filepath.Ext(sourceStorageKey)
+		}
+		if ext == "" {
+			return "", fmt.Errorf("附件真实文件名缺少扩展名: %q", name)
+		}
+		name += ext
+	}
+	return "work/" + sessionID + "/" + name, nil
+}
+
 func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey string) (OpenResult, error) {
 	// 用户名和密码为空时由 Windows 当前登录凭据访问本机 SMB 共享，
 	// 避免将 Windows 密码写入项目配置。
@@ -155,7 +194,7 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 		return OpenResult{}, err
 	}
 
-	actualStorageKey, err := service.resolveWorkKey(ctx, user, item)
+	sourceStorageKey, err := service.resolveWorkKey(ctx, user, item)
 	if err != nil {
 		return OpenResult{}, err
 	}
@@ -174,14 +213,24 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 		if existing.UserID != user.ID {
 			return OpenResult{}, ErrFileBusy
 		}
-		if err := service.syncToWorkDirectory(ctx, actualStorageKey); err != nil {
+		workStorageKey := existing.WorkStorageKey
+		if filepath.Ext(workStorageKey) == "" {
+			workStorageKey, err = editWorkStorageKey(existing.ID, sourceStorageKey, item)
+			if err != nil {
+				return OpenResult{}, err
+			}
+			if err := service.repository.UpdateWorkStorageKey(ctx, user.ID, existing.ID, workStorageKey); err != nil {
+				return OpenResult{}, err
+			}
+		}
+		if err := service.syncToWorkDirectory(ctx, sourceStorageKey, workStorageKey); err != nil {
 			return OpenResult{}, fmt.Errorf("准备 SMB 工作文件失败: %w", err)
 		}
 		openTicket, ticketErr := randomID()
 		if ticketErr != nil {
 			return OpenResult{}, fmt.Errorf("创建打开票据失败: %w", ticketErr)
 		}
-		expiresAt := now.Add(60 * time.Second)
+		expiresAt := now.Add(editTicketTTL)
 		if err := service.repository.CreateTicket(ctx, openTicket, existing.ID, user.ID, expiresAt); err != nil {
 			return OpenResult{}, err
 		}
@@ -191,31 +240,35 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 		return OpenResult{
 			SessionID: existing.ID,
 			OpenURL:   "cadguanliq://open?ticket=" + openTicket,
-			UNCPath:   service.uncPath(actualStorageKey),
+			UNCPath:   service.uncPath(workStorageKey),
 			SMBRoot:   service.smbRoot(),
 			ExpiresAt: expiresAt,
 		}, nil
-	}
-	if err := service.syncToWorkDirectory(ctx, actualStorageKey); err != nil {
-		return OpenResult{}, fmt.Errorf("准备 SMB 工作文件失败: %w", err)
 	}
 	sessionID, err := randomID()
 	if err != nil {
 		return OpenResult{}, fmt.Errorf("创建编辑会话失败: %w", err)
 	}
+	workStorageKey, err := editWorkStorageKey(sessionID, sourceStorageKey, item)
+	if err != nil {
+		return OpenResult{}, err
+	}
+	if err := service.syncToWorkDirectory(ctx, sourceStorageKey, workStorageKey); err != nil {
+		return OpenResult{}, fmt.Errorf("准备 SMB 工作文件失败: %w", err)
+	}
 	openTicket, err := randomID()
 	if err != nil {
 		return OpenResult{}, fmt.Errorf("创建打开票据失败: %w", err)
 	}
-	expiresAt := now.Add(60 * time.Second)
+	expiresAt := now.Add(editTicketTTL)
 	session := Session{
 		ID:             sessionID,
 		AttachmentID:   item.ID,
 		StorageKey:     item.StorageKey,
-		WorkStorageKey: actualStorageKey,
+		WorkStorageKey: workStorageKey,
 		UserID:         user.ID,
 		UserName:       user.DisplayName,
-		UNCPath:        service.uncPath(actualStorageKey),
+		UNCPath:        service.uncPath(workStorageKey),
 		Status:         "active",
 		StartedAt:      now,
 		LastSeenAt:     now,
@@ -323,11 +376,15 @@ func (service *Service) ReadOnlyOpen(ctx context.Context, user auth.AuthUser, st
 		log.Printf("[编辑会话] 只读打开未找到服务器 CAXA，交由客户端启动: %v", caxaErr)
 		caxaPath = ""
 	}
+	fileName := item.Name
+	if actualStorageKey == item.CurrentStorageKey && strings.TrimSpace(item.CurrentName) != "" {
+		fileName = item.CurrentName
+	}
 	return ReadOnlyOpenResult{
 		// 相对 API 前缀的路径（客户端 apiBase 已含 /api，直接拼接）。
 		// 存储键可能含 %、括号、中文（如 3255%x4070），必须按路径段转义，否则 %x4 被当作 URL 转义序列。
 		DownloadPath: "/attachments/" + encodeAttachmentKeyPath(actualStorageKey),
-		FileName:     filepath.Base(actualStorageKey),
+		FileName:     filepath.Base(fileName),
 		CaxaPath:     caxaPath,
 	}, nil
 }
@@ -341,7 +398,8 @@ func encodeAttachmentKeyPath(key string) string {
 	return strings.Join(segments, "/")
 }
 
-func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTicket string) (ExchangeResult, error) {	if service.repository == nil {
+func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTicket string) (ExchangeResult, error) {
+	if service.repository == nil {
 		return ExchangeResult{}, errors.New("编辑会话数据库未配置")
 	}
 	now := time.Now().UTC()
@@ -601,14 +659,14 @@ func (service *Service) lockWorkFile(storageKey string) func() {
 	return lock.Unlock
 }
 
-func (service *Service) syncToWorkDirectory(ctx context.Context, storageKey string) error {
-	unlock := service.lockWorkFile(storageKey)
+func (service *Service) syncToWorkDirectory(ctx context.Context, sourceStorageKey, workStorageKey string) error {
+	unlock := service.lockWorkFile(workStorageKey)
 	defer unlock()
-	path, err := service.localPath(storageKey)
+	path, err := service.localPath(workStorageKey)
 	if err != nil {
 		return err
 	}
-	reader, _, err := service.storage.Open(ctx, storageKey)
+	reader, _, err := service.storage.Open(ctx, sourceStorageKey)
 	if err != nil {
 		return fmt.Errorf("读取对象存储文件失败: %w", err)
 	}

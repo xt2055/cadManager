@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import type { BorrowRecord, StructurePart } from '@/types/domain.types'
-import { parseDrawingNumber } from '@/utils/drawing-number-parser'
+import { isSameDrawingFamily } from '@/utils/drawing-number-parser'
 
 defineOptions({ name: 'DrawingBorrowTab' })
 
@@ -20,19 +20,6 @@ interface BorrowRow {
   user: string
   date: string
   status: BorrowRecord['status']
-}
-
-function rootDrawingNo(no: string): string {
-  let current = no
-  const visited = new Set<string>()
-  while (current && !visited.has(current)) {
-    visited.add(current)
-    if (domainStore.drawings.some((drawing) => drawing.no === current)) return current
-    const parent = domainStore.structure.find((part) => part.no === current)
-    if (!parent) break
-    current = parent.parentNo
-  }
-  return parseDrawingNumber(no).rootNo || no
 }
 
 function recordMatchesPart(record: BorrowRecord, part: StructurePart): boolean {
@@ -60,17 +47,14 @@ const borrowedRows = computed<BorrowRow[]>(() => {
   const rows: BorrowRow[] = []
   const borrowedParts = domainStore.structure.filter((part) => {
     if (!belongsToCurrentProject(part, current)) return false
-    if (part.borrowFrom) return true
-    // 文件已登记在当前项目图号名下的零件不属于借用；
-    // 即使图号族链条断开（父级零件缺失导致 rootNo 回退解析），也不能误报。
-    const registeredInProject = [...(part.files ?? []), ...(part.otherFiles ?? [])].some((file) => file.drawingNo === current)
-    if (registeredInProject) return false
-    const sourceNo = rootDrawingNo(part.no)
-    return Boolean(sourceNo && sourceNo !== current)
+    const sourceNo = part.borrowFrom?.trim() || ''
+    // 只有创建时明确标记来源、且来源不属于当前项目族的零件才是借用件。
+    // 不能从零件图号或文件存在与否推断借用关系。
+    return Boolean(sourceNo && sourceNo !== current && !isSameDrawingFamily(part.no, current))
   })
   for (const part of borrowedParts) {
-    const sourceNo = rootDrawingNo(part.borrowFrom || '')
-    const record = domainStore.borrows.find((item) => item.dir === 'in' && recordMatchesPart(item, part) && (!item.targetDrawingNo || item.targetDrawingNo === current))
+    const sourceNo = part.borrowFrom?.trim() || ''
+    const record = domainStore.borrows.find((item) => item.dir === 'in' && recordMatchesPart(item, part) && item.targetDrawingNo === current)
     rows.push({
       partNo: part.no,
       partName: part.name,
@@ -83,39 +67,15 @@ const borrowedRows = computed<BorrowRow[]>(() => {
 
   const knownPartNos = new Set(rows.map((row) => row.partNo))
 
-  // 兼容旧数据：部分跨项目零件只有 CAD 文件，没有生成借用流水记录。
-  const currentProjectFiles = [
-    ...(domainStore.currentDrawing?.files ?? []),
-    ...(domainStore.currentDrawing?.otherFiles ?? []),
-    ...domainStore.structure
-      .filter((part) => belongsToCurrentProject(part, current))
-      .flatMap((part) => [...(part.files ?? []), ...(part.otherFiles ?? [])]),
-  ]
-  for (const file of currentProjectFiles) {
-    if (file.role !== 'part' || !file.partNo || knownPartNos.has(file.partNo)) continue
-    const sourceNo = rootDrawingNo(file.partNo)
-    if (!sourceNo || sourceNo === current) continue
-    const part = domainStore.structure.find((candidate) => candidate.no === file.partNo)
-    const record = domainStore.borrows.find((item) => item.dir === 'in' && item.partNo === file.partNo && (!item.targetDrawingNo || item.targetDrawingNo === current))
-    rows.push({
-      partNo: file.partNo,
-      partName: part?.name || file.name.replace(/\.[^/.]+$/, ''),
-      drawingNo: record?.sourceDrawingNo || sourceNo,
-      user: record?.user || file.uploadedBy || '历史记录',
-      date: record?.date || file.uploadedAt || '历史记录',
-      status: record?.status || '使用中',
-    })
-    knownPartNos.add(file.partNo)
-  }
-
   for (const record of domainStore.borrows) {
-    if (record.dir !== 'in' || (record.targetDrawingNo && record.targetDrawingNo !== current)) continue
+    if (record.dir !== 'in' || record.targetDrawingNo !== current || !record.sourceDrawingNo) continue
     const partNo = record.partNo || record.part.split(/\s+/, 1)[0] || ''
     if (!partNo || knownPartNos.has(partNo)) continue
+    if (isSameDrawingFamily(partNo, current)) continue
     rows.push({
       partNo,
       partName: record.partName || record.part.replace(partNo, '').trim() || '未命名零件',
-      drawingNo: record.sourceDrawingNo || rootDrawingNo(record.project.match(/\(([^)]+)\)$/)?.[1] || ''),
+      drawingNo: record.sourceDrawingNo,
       user: record.user,
       date: record.date,
       status: record.status,

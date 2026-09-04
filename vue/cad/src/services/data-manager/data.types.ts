@@ -194,8 +194,10 @@ export function normalizeDrawings(value: unknown): Drawing[] {
     const no = text(source.no, id('drawing', text(source.name, '未命名图纸')))
     const files = array<unknown>(source.files).map((file) => normalizeDrawingFile(file, no, 'assembly'))
     const otherFiles = array<unknown>(source.otherFiles).map((file) => normalizeDrawingFile(file, no, 'other'))
-    return {
-      no,
+	return {
+	      ...(text(source.id) ? { id: text(source.id) } : {}),
+	      ...(number(source.revision) > 0 ? { revision: number(source.revision) } : {}),
+	      no,
       name: text(source.name, no),
       kind: source.kind === '零件图' ? '零件图' : '总图',
       project: text(source.project, text(source.name, no)),
@@ -224,8 +226,10 @@ export function normalizeStructure(value: unknown): StructurePart[] {
     const source = record(raw)
     const no = text(source.no, id('part', text(source.name, '未命名零件')))
     const files = array<unknown>(source.files).map((file) => normalizeDrawingFile(file, text(source.parentNo), 'part', no))
-    return {
-      no,
+	return {
+	      ...(text(source.id) ? { id: text(source.id) } : {}),
+	      ...(number(source.revision) > 0 ? { revision: number(source.revision) } : {}),
+	      no,
       name: text(source.name, no),
       parentNo: text(source.parentNo),
       ...(text(source.project) ? { project: text(source.project) } : {}),

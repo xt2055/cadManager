@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import AdminTabs from '../components/AdminTabs.vue'
 import { useUiStore } from '@/stores/ui.store'
 import { reviewFlowService, type ReviewFlowDto } from '@/services/review-flow.service'
 
@@ -45,14 +44,12 @@ watch(() => uiStore.modal, (current, previous) => {
 
 <template>
   <div class="page admin-page">
-    <div class="section-head"><h3>后台管理</h3><span class="lib-count">审核流程模板由数据库统一管理</span><button class="btn primary admin-action" type="button" @click="editFlow()"><DemoIcon name="plus" :size="14" />新增流程</button></div>
-    <AdminTabs active="flows" />
+  <div class="section-head"><h3>审核流程</h3><span class="lib-count">审核流程模板由数据库统一管理</span><button class="btn primary admin-action" type="button" @click="editFlow()"><DemoIcon name="plus" :size="14" />新增流程</button></div>
       <div v-for="flow in flows" :key="flow.id" class="card flow-card">
       <div class="flow-head"><DemoIcon name="workflow" :size="16" /><b>{{ flow.name }}</b><span class="tag" :class="flow.enabled ? 'ok' : 'mute'">{{ flow.enabled ? '启用中' : '已停用' }}</span><span class="tag info">{{ flow.nodes.length }} 个节点</span><div class="flow-actions"><button class="btn sm" type="button" @click="editFlow(flow)"><DemoIcon name="pencil" :size="14" />编辑节点</button><button class="btn sm" type="button" @click="toggleFlow(flow)">{{ flow.enabled ? '停用' : '启用' }}</button></div></div>
        <div class="flow-nodes"><span v-for="node in flow.nodes" :key="node.id || node.order" class="tag plain">{{ node.name }} · {{ node.candidateRole }}</span></div><div class="flow-desc">{{ flow.description || '未填写流程说明' }} · 创建人：{{ flow.createdBy || '待定' }}</div>
      </div>
       <div v-if="!loading && !flows.length" class="card empty"><DemoIcon name="workflow" :size="34" /><div class="t">暂无审核流程</div></div>
-    <div class="note"><DemoIcon name="shield-check" :size="14" /><div>已产生审核记录的流程执行「删除」时自动转为<b>停用归档</b>，历史审核记录始终可追溯，永不物理删除。</div></div>
   </div>
 </template>
 

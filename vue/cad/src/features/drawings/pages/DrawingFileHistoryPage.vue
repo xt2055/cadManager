@@ -7,6 +7,7 @@ import { dataManager } from '@/services/data-manager'
 import type { FileVersionInfo } from '@/services/data-manager/data-provider'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
+import { formatReadableDateTime } from '@/utils/date-time'
 import type { DrawingFile, DrawingFileHistoryItem } from '@/types/domain.types'
 
 defineOptions({
@@ -312,7 +313,7 @@ watch([drawingId, fileId], () => {
               <div class="node-card-meta">
                 <span>{{ node.uploadedBy }}</span>
                 <span class="dot-sep">·</span>
-                <span>{{ node.uploadedAt }}</span>
+                <span>{{ formatReadableDateTime(node.uploadedAt, '历史记录') }}</span>
               </div>
             </div>
           </div>
@@ -399,7 +400,7 @@ watch([drawingId, fileId], () => {
                 </div>
                 <div class="info-row">
                   <span class="k">上传时间：</span>
-                  <span class="v mono">{{ selectedNode.uploadedAt }}</span>
+                  <span class="v mono">{{ formatReadableDateTime(selectedNode.uploadedAt, '历史记录') }}</span>
                 </div>
                 <div v-if="selectedNode.replacedBy" class="info-row">
                   <span class="k">替换执行人：</span>
@@ -407,7 +408,7 @@ watch([drawingId, fileId], () => {
                 </div>
                 <div v-if="selectedNode.replacedAt" class="info-row">
                   <span class="k">替换时间：</span>
-                  <span class="v mono">{{ selectedNode.replacedAt }}</span>
+                  <span class="v mono">{{ formatReadableDateTime(selectedNode.replacedAt, '—') }}</span>
                 </div>
                 <div class="info-row full-width">
                   <span class="k">变更/更新说明：</span>

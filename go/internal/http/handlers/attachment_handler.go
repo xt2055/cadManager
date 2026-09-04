@@ -239,6 +239,13 @@ func AttachmentResource(repository attachment.Repository, objectStorage storage.
 			if !recordMissing {
 				fileName = item.Name
 				mimeType = firstNonEmpty(item.MimeType, object.MimeType, "application/octet-stream")
+				// currentStorageKey 可能是 blobs/<hash>，对象键本身没有扩展名。
+				// 如果请求的是当前对象，必须使用 currentName；否则会把 DWG 内容
+				// 以原始 EXB 文件名返回，CAXA 会报“数据错误”。
+				if key == item.CurrentStorageKey && strings.TrimSpace(item.CurrentName) != "" {
+					fileName = item.CurrentName
+					mimeType = firstNonEmpty(item.CurrentMimeType, item.MimeType, object.MimeType, "application/octet-stream")
+				}
 			}
 			isDxf := strings.EqualFold(filepathExt(key), ".dxf") || (!recordMissing && strings.EqualFold(filepathExt(item.Name), ".dxf"))
 			if isDxf {

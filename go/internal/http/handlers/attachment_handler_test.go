@@ -1,4 +1,4 @@
-﻿package handlers
+package handlers
 
 import (
 	"bytes"
@@ -74,6 +74,42 @@ func TestAttachmentResourceDownloadsWithRecord(t *testing.T) {
 	}
 	if got := recorder.Body.Bytes(); !bytes.Equal(got, want) {
 		t.Fatalf("GET body 大小 = %d, want %d; 内容不一致", len(got), len(want))
+	}
+}
+
+func TestAttachmentResourceUsesCurrentNameForCurrentBlob(t *testing.T) {
+	root := t.TempDir()
+	objectStorage, err := storage.NewLocalStorage(root)
+	if err != nil {
+		t.Fatalf("NewLocalStorage() error = %v", err)
+	}
+	currentKey := "blobs/4dff4e1de885303ed8b56bb9b0df695d68fb50fd6446be0f74fc914460adc7e7"
+	want := []byte("valid-dwg-content")
+	if _, putErr := objectStorage.Put(context.Background(), currentKey, bytes.NewReader(want), "application/acad"); putErr != nil {
+		t.Fatalf("Put() error = %v", putErr)
+	}
+
+	repo := &singleRecordRepo{item: attachment.Attachment{
+		StorageKey:        "blobs/original-exb-hash",
+		CurrentStorageKey: currentKey,
+		Name:              "工程图文档2.exb",
+		CurrentName:       "工程图文档2.dwg",
+		MimeType:          "application/octet-stream",
+		CurrentMimeType:   "application/acad",
+	}}
+	handler := AttachmentResource(repo, objectStorage)
+	request := authenticatedGet("/api/attachments/" + encodeAttachmentKeyPathForTest(currentKey))
+	recorder := httptest.NewRecorder()
+	handler(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, body=%s; want 200", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Body.Bytes(); !bytes.Equal(got, want) {
+		t.Fatalf("GET body = %q; want %q", got, want)
+	}
+	if got := recorder.Header().Get("Content-Disposition"); !strings.Contains(got, url.PathEscape("工程图文档2.dwg")) {
+		t.Fatalf("Content-Disposition = %q; want current DWG name", got)
 	}
 }
 

@@ -16,7 +16,6 @@ import (
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/cadtext"
 	"cadguanliq/internal/converter"
-	"cadguanliq/internal/exb"
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
 	"cadguanliq/internal/storage"
@@ -63,92 +62,13 @@ func ScanDrawingDesigner(repository attachment.Repository, objectStorage storage
 			return
 		}
 
-		attachments, err := repository.ListByDrawing(request.Context(), drawingNo)
-		if err != nil {
-			response.WriteError(writer, http.StatusInternalServerError, "查询图纸附件失败")
-			return
-		}
-
-		for _, item := range attachments {
-			if !strings.EqualFold(filepathExt(item.Name), ".exb") && !strings.EqualFold(filepathExt(item.StorageKey), ".exb") {
-				continue
-			}
-			reader, _, openErr := objectStorage.Open(request.Context(), item.StorageKey)
-			if openErr != nil {
-				continue
-			}
-			data, readErr := io.ReadAll(reader)
-			_ = reader.Close()
-			if readErr != nil {
-				continue
-			}
-			parsed, parseErr := exb.Parse(data)
-			if parseErr != nil {
-				continue
-			}
-			designer := strings.TrimSpace(parsed.TitleBlock["设计"])
-			if designer == "" || designer == "待定" {
-				continue
-			}
-			response.WriteData(writer, http.StatusOK, drawingDesignerResponse{Designer: designer, StorageKey: item.StorageKey})
-			return
-		}
-
+		log.Printf("[图纸设计人] 已跳过 Python EXB 标题栏读取: drawingNo=%q", drawingNo)
 		response.WriteData(writer, http.StatusOK, drawingDesignerResponse{})
 	}
 }
 
-func ParseEXB(repository attachment.Repository, objectStorage storage.ObjectStorage) http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		if _, ok := middleware.UserFromContext(request.Context()); !ok {
-			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
-			return
-		}
-		if request.Method != http.MethodPost {
-			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-
-		var input exbParseRequest
-		if err := decodeJSON(request, &input); err != nil || strings.TrimSpace(input.StorageKey) == "" {
-			response.WriteError(writer, http.StatusBadRequest, "storageKey 必填且请求格式有效")
-			return
-		}
-		if !strings.EqualFold(filepathExt(input.StorageKey), ".exb") {
-			response.WriteError(writer, http.StatusBadRequest, "只支持 EXB 文件")
-			return
-		}
-		if _, err := repository.Find(request.Context(), input.StorageKey); err != nil {
-			if errors.Is(err, attachment.ErrNotFound) {
-				response.WriteError(writer, http.StatusNotFound, "附件不存在")
-			} else {
-				response.WriteError(writer, http.StatusInternalServerError, "查询附件失败")
-			}
-			return
-		}
-
-		reader, _, err := objectStorage.Open(request.Context(), input.StorageKey)
-		if err != nil {
-			response.WriteError(writer, http.StatusNotFound, "附件文件不存在")
-			return
-		}
-		defer reader.Close()
-		data, err := io.ReadAll(reader)
-		if err != nil {
-			response.WriteError(writer, http.StatusInternalServerError, "读取 EXB 文件失败")
-			return
-		}
-		result, err := exb.Parse(data)
-		if err != nil {
-			response.WriteError(writer, http.StatusUnprocessableEntity, "EXB 文件解析失败")
-			return
-		}
-		response.WriteData(writer, http.StatusOK, result)
-	}
-}
-
-// IdentifyDrawingFile 优先从图纸标题栏读取图号，缺失时回退到文件名。
-// EXB 直接解析；DWG/DXF 先经 CAXA 转为临时 EXB 后解析。
+// IdentifyDrawingFile 仅按文件名提取图号。Python EXB 标题栏脚本已禁用，
+// 不再写入临时文件、转换图纸或读取文件内容。
 func IdentifyDrawingFile(convService *converter.Service) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := middleware.UserFromContext(request.Context()); !ok {
@@ -175,67 +95,12 @@ func IdentifyDrawingFile(convService *converter.Service) http.HandlerFunc {
 			return
 		}
 
-		inputFile, err := os.CreateTemp("", "cadguanliq-identify-*"+ext)
-		if err != nil {
-			log.Printf("[EXB识别] 创建临时文件失败: filename=%q err=%v", header.Filename, err)
-			response.WriteError(writer, http.StatusInternalServerError, "创建图纸识别临时文件失败")
-			return
-		}
-		inputPath := inputFile.Name()
-		defer os.Remove(inputPath)
-		if _, err := io.Copy(inputFile, file); err != nil {
-			log.Printf("[EXB识别] 写入临时文件失败: filename=%q temp=%q err=%v", header.Filename, inputPath, err)
-			inputFile.Close()
-			response.WriteError(writer, http.StatusInternalServerError, "保存图纸识别临时文件失败")
-			return
-		}
-		if err := inputFile.Close(); err != nil {
-			log.Printf("[EXB识别] 关闭临时文件失败: filename=%q temp=%q err=%v", header.Filename, inputPath, err)
-			response.WriteError(writer, http.StatusInternalServerError, "关闭图纸识别临时文件失败")
-			return
-		}
-		if ext == ".dxf" {
-			if err := cadtext.NormalizeDxfFileForCaxa(inputPath); err != nil {
-				log.Printf("[EXB识别] DXF 规范化失败: filename=%q temp=%q err=%v", header.Filename, inputPath, err)
-				response.WriteError(writer, http.StatusUnprocessableEntity, err.Error())
-				return
-			}
-		}
-
-		exbPath := inputPath
-		if ext != ".exb" {
-			if convService == nil {
-				log.Printf("[EXB识别] 转换服务未启动: filename=%q temp=%q", header.Filename, inputPath)
-				response.WriteError(writer, http.StatusServiceUnavailable, "CAD 转换服务未启动")
-				return
-			}
-			exbPath = inputPath + ".exb"
-			defer os.Remove(exbPath)
-			log.Printf("[EXB识别] 开始转换: filename=%q input=%q output=%q", header.Filename, inputPath, exbPath)
-			if err := convService.ConvertPathToExb(request.Context(), inputPath, exbPath); err != nil {
-				log.Printf("[EXB识别] 转换失败: filename=%q input=%q output=%q err=%v", header.Filename, inputPath, exbPath, err)
-				response.WriteError(writer, http.StatusUnprocessableEntity, "图纸转换失败，无法读取内部图号: "+err.Error())
-				return
-			}
-		}
-
-		result, err := exb.NewParser("").ParseFile(request.Context(), exbPath)
-		if err != nil {
-			log.Printf("[EXB识别] 解析失败: filename=%q exb=%q err=%v", header.Filename, exbPath, err)
-			response.WriteError(writer, http.StatusUnprocessableEntity, "读取图纸内部图号失败: "+err.Error())
-			return
-		}
-		titleBlockOnly := request.FormValue("titleBlockOnly") == "true"
-		partNo, partNoSource := resolvePartNo(header.Filename, result.TitleBlock, titleBlockOnly)
-		if partNoSource != "titleBlock" {
-			log.Printf("[EXB识别] 标题栏未找到图号，已回退文件名: filename=%q exb=%q titleBlock=%v fallbackPartNo=%q source=%s", header.Filename, exbPath, result.TitleBlock, partNo, partNoSource)
-		} else {
-			log.Printf("[EXB识别] 识别成功: filename=%q exb=%q partNo=%q source=titleBlock", header.Filename, exbPath, partNo)
-		}
+		partNo, partNoSource := resolvePartNo(header.Filename, nil, false)
+		log.Printf("[图号识别] 已跳过 Python 标题栏脚本: filename=%q partNo=%q source=%s", header.Filename, partNo, partNoSource)
 		response.WriteData(writer, http.StatusOK, map[string]any{
 			"partNo":       partNo,
-			"material":     firstTitleBlockValue(result.TitleBlock, "材料名称", "材料", "材质"),
-			"titleBlock":   result.TitleBlock,
+			"material":     "",
+			"titleBlock":   map[string]string{},
 			"partNoSource": partNoSource,
 		})
 	}
@@ -246,7 +111,7 @@ func IdentifyDrawingMaterial(convService *converter.Service) http.HandlerFunc {
 	return identifyDrawingFields(convService, false)
 }
 
-func identifyDrawingFields(convService *converter.Service, requirePartNo bool) http.HandlerFunc {
+func identifyDrawingFields(_ *converter.Service, requirePartNo bool) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := middleware.UserFromContext(request.Context()); !ok {
 			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
@@ -270,67 +135,16 @@ func identifyDrawingFields(convService *converter.Service, requirePartNo bool) h
 			response.WriteError(writer, http.StatusBadRequest, "只支持 EXB/DWG/DXF 文件读取标题栏")
 			return
 		}
-		inputFile, err := os.CreateTemp("", "cadguanliq-fields-*"+ext)
-		if err != nil {
-			log.Printf("[CAD字段识别] 创建临时文件失败: filename=%q err=%v", header.Filename, err)
-			response.WriteError(writer, http.StatusInternalServerError, "创建图纸识别临时文件失败")
+		partNo, partNoSource := resolvePartNo(header.Filename, nil, false)
+		if requirePartNo && partNo == "" {
+			response.WriteError(writer, http.StatusUnprocessableEntity, "文件名中未识别到图号")
 			return
 		}
-		inputPath := inputFile.Name()
-		defer os.Remove(inputPath)
-		if _, err := io.Copy(inputFile, file); err != nil {
-			log.Printf("[CAD字段识别] 写入临时文件失败: filename=%q temp=%q err=%v", header.Filename, inputPath, err)
-			_ = inputFile.Close()
-			response.WriteError(writer, http.StatusInternalServerError, "保存图纸识别临时文件失败")
-			return
-		}
-		if err := inputFile.Close(); err != nil {
-			log.Printf("[CAD字段识别] 关闭临时文件失败: filename=%q temp=%q err=%v", header.Filename, inputPath, err)
-			response.WriteError(writer, http.StatusInternalServerError, "关闭图纸识别临时文件失败")
-			return
-		}
-		if ext == ".dxf" {
-			if err := cadtext.NormalizeDxfFileForCaxa(inputPath); err != nil {
-				log.Printf("[CAD字段识别] DXF 规范化失败: filename=%q temp=%q err=%v", header.Filename, inputPath, err)
-				response.WriteError(writer, http.StatusUnprocessableEntity, err.Error())
-				return
-			}
-		}
-		if ext != ".exb" {
-			if convService == nil {
-				log.Printf("[CAD字段识别] 转换服务未启动: filename=%q temp=%q", header.Filename, inputPath)
-				response.WriteError(writer, http.StatusServiceUnavailable, "CAD 转换服务未启动")
-				return
-			}
-		}
-		exbPath := inputPath
-		if ext != ".exb" {
-			exbPath = inputPath + ".exb"
-			defer os.Remove(exbPath)
-			log.Printf("[CAD字段识别] 开始转换: filename=%q input=%q output=%q", header.Filename, inputPath, exbPath)
-			if err := convService.ConvertPathToExb(request.Context(), inputPath, exbPath); err != nil {
-				log.Printf("[CAD字段识别] 转换失败: filename=%q input=%q output=%q err=%v", header.Filename, inputPath, exbPath, err)
-				response.WriteError(writer, http.StatusUnprocessableEntity, "图纸转换失败，无法读取标题栏: "+err.Error())
-				return
-			}
-		}
-		result, err := exb.NewParser("").ParseFile(request.Context(), exbPath)
-		if err != nil {
-			log.Printf("[CAD字段识别] 解析失败: filename=%q exb=%q err=%v", header.Filename, exbPath, err)
-			response.WriteError(writer, http.StatusUnprocessableEntity, "读取图纸标题栏失败: "+err.Error())
-			return
-		}
-		partNo, partNoSource := resolvePartNo(header.Filename, result.TitleBlock, false)
-		material := firstTitleBlockValue(result.TitleBlock, "材料名称", "材料", "材质")
-		if partNoSource != "titleBlock" {
-			log.Printf("[CAD字段识别] 标题栏未找到图号，已回退文件名: filename=%q exb=%q titleBlock=%v fallbackPartNo=%q source=%s", header.Filename, exbPath, result.TitleBlock, partNo, partNoSource)
-		} else {
-			log.Printf("[CAD字段识别] 识别成功: filename=%q exb=%q partNo=%q source=titleBlock", header.Filename, exbPath, partNo)
-		}
+		log.Printf("[CAD字段识别] 已跳过 Python 标题栏脚本: filename=%q partNo=%q source=%s", header.Filename, partNo, partNoSource)
 		response.WriteData(writer, http.StatusOK, map[string]any{
 			"partNo":       partNo,
-			"material":     material,
-			"titleBlock":   result.TitleBlock,
+			"material":     "",
+			"titleBlock":   map[string]string{},
 			"partNoSource": partNoSource,
 		})
 	}
@@ -689,8 +503,9 @@ func CADSource(repository attachment.Repository, objectStorage storage.ObjectSto
 		sourceKey := storageKey
 		fileName := item.Name
 
-		// 优先使用已就绪的当前 DWG 工作副本（需确认存储中物理存在）
-		if item.CurrentStorageKey != "" && strings.EqualFold(filepathExt(item.CurrentStorageKey), ".dwg") {
+		// 优先使用已就绪的当前 DWG 对象。内容对象键通常是 blobs/<hash>，
+		// 因此必须依据 currentName 判断格式，不能依据 currentStorageKey 的后缀。
+		if item.CurrentStorageKey != "" && item.CurrentStorageKey != item.StorageKey && strings.EqualFold(filepathExt(item.CurrentName), ".dwg") {
 			if reader, info, statErr := objectStorage.Open(request.Context(), item.CurrentStorageKey); statErr == nil && info.Size > 0 {
 				_ = reader.Close()
 				sourceKey = item.CurrentStorageKey

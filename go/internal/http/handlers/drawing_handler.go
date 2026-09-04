@@ -157,6 +157,14 @@ func DrawingResource(repository drawing.Repository) http.HandlerFunc {
 				response.WriteError(writer, http.StatusBadRequest, "图纸状态无效")
 				return
 			}
+			if input.Kind != nil && *input.Kind != "总图" && *input.Kind != "零件图" {
+				response.WriteError(writer, http.StatusBadRequest, "图纸类型无效")
+				return
+			}
+			if input.ExpectedRevision == nil || *input.ExpectedRevision < 1 {
+				response.WriteError(writer, http.StatusPreconditionRequired, "修改图纸必须提供当前 revision")
+				return
+			}
 			item, err := repository.Update(request.Context(), id, input, user.ID)
 			if err != nil {
 				writeDrawingError(writer, err, "图纸修改失败")
@@ -195,6 +203,14 @@ func PartResource(repository drawing.Repository) http.HandlerFunc {
 				response.WriteError(writer, http.StatusBadRequest, "零件修改参数格式无效")
 				return
 			}
+			if input.ExpectedRevision == nil || *input.ExpectedRevision < 1 {
+				response.WriteError(writer, http.StatusPreconditionRequired, "修改零件必须提供当前 revision")
+				return
+			}
+			if input.Status != nil && !validStatus(*input.Status) {
+				response.WriteError(writer, http.StatusBadRequest, "零件图状态无效")
+				return
+			}
 			item, err := repository.UpdatePart(request.Context(), id, input, user.ID)
 			if err != nil {
 				writeDrawingError(writer, err, "零件修改失败")
@@ -228,6 +244,10 @@ func writeDrawingError(writer http.ResponseWriter, err error, fallback string) {
 		response.WriteError(writer, http.StatusNotFound, "图纸或零件不存在")
 	case errors.Is(err, drawing.ErrConflict):
 		response.WriteError(writer, http.StatusConflict, "图号已存在或资源冲突")
+	case errors.Is(err, drawing.ErrRevisionConflict):
+		response.WriteError(writer, http.StatusConflict, "资源已被其他用户修改，请刷新后重新编辑")
+	case errors.Is(err, drawing.ErrRevisionRequired):
+		response.WriteError(writer, http.StatusPreconditionRequired, "修改请求缺少当前 revision")
 	default:
 		response.WriteError(writer, http.StatusInternalServerError, fallback)
 	}

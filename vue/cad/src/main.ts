@@ -12,8 +12,21 @@ import { getApiBaseUrl, initializeApiBaseUrl } from './services/api-base.service
 import '@mlightcad/cad-viewer/style.css'
 import './styles/index.css'
 
+// Windows 打开自定义协议时，deep-link 插件和 single-instance 插件可能
+// 同时转发同一个 URL。票据只能消费一次，因此必须在客户端先做短时去重。
+const handledCadTickets = new Map<string, number>()
+
+function cadTicketFromUrl(url: string): string {
+  return new URL(url).searchParams.get('ticket') || url
+}
+
 async function openDeepLink(url: string): Promise<void> {
   if (!url.startsWith('cadguanliq://open')) return
+  const ticket = cadTicketFromUrl(url)
+  const now = Date.now()
+  const previous = handledCadTickets.get(ticket)
+  if (previous && now - previous < 120_000) return
+  handledCadTickets.set(ticket, now)
   const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
   const apiBaseUrl = getApiBaseUrl()
   if (!accessToken || !apiBaseUrl) return

@@ -5,7 +5,6 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import { listAdminOperationLogs, type OperationLogPage } from '@/services/drawing-operation-log.service'
 import { useDomainStore } from '@/stores/domain.store'
 import { ACTIVITY_LABELS, type ActivityLog, type ActivityResult, type ActivityTargetType, type ActivityType } from '@/types/domain.types'
-import AdminTabs from '../components/AdminTabs.vue'
 
 defineOptions({ name: 'AdminOperationLogPage' })
 
@@ -119,14 +118,13 @@ onMounted(() => {
   <div class="page admin-page log-admin-page">
     <div class="section-head">
       <div>
-        <h3>后台管理</h3>
+        <h3>操作日志</h3>
         <span class="lib-count">仅显示管理员执行的操作 · 共 {{ resultPage.total }} 条</span>
       </div>
       <button class="btn" type="button" :disabled="loading" @click="loadLogs">
         <DemoIcon name="refresh-cw" :size="14" />刷新
       </button>
     </div>
-    <AdminTabs active="logs" />
 
     <section class="card filter-card">
       <div class="filter-grid">

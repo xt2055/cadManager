@@ -1,13 +1,12 @@
 import { ApiDataProvider } from './api-data-provider'
 import type { DataProvider } from './data-provider'
-import type { DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, UserManagementInput, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo } from './data-provider'
+import type { DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, UserManagementInput, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo, UpdateDrawingInput, UpdatePartInput } from './data-provider'
 import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart, UserAccount } from '@/types/domain.types'
 import { JsonDataProvider } from './json-data-provider'
 import { readDebugMode } from '@/services/runtime-config.service'
 
 export interface DataManager {
-  loadDrawings(): Promise<Drawing[]>
-  saveDrawings(items: Drawing[]): Promise<void>
+	loadDrawings(): Promise<Drawing[]>
   loadStructure(): Promise<StructurePart[]>
   saveStructure(items: StructurePart[]): Promise<void>
   loadAttributes(): Promise<DrawingAttribute[]>
@@ -23,6 +22,8 @@ export interface DataManager {
   loadCrafts(): Promise<CraftFile[]>
   saveCrafts(items: CraftFile[]): Promise<void>
   loadAttachments(): Promise<StoredAttachment[]>
+	updateDrawing(drawingId: string, input: UpdateDrawingInput): Promise<Drawing>
+	updatePart(partId: string, input: UpdatePartInput): Promise<StructurePart>
   createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession>
 	createUploadSessionItem(sessionId: string, input: CreateUploadSessionItemInput): Promise<UploadSessionItem>
 	checkUploadHash(file: Blob): Promise<UploadHashCheckResult>
@@ -80,8 +81,7 @@ export class DefaultDataManager implements DataManager {
     return this.provider
   }
 
-  loadDrawings(): Promise<Drawing[]> { return this.getProvider().then((provider) => provider.loadDrawings()) }
-  saveDrawings(items: Drawing[]): Promise<void> { return this.getProvider().then((provider) => provider.saveDrawings(items)) }
+	loadDrawings(): Promise<Drawing[]> { return this.getProvider().then((provider) => provider.loadDrawings()) }
   loadStructure(): Promise<StructurePart[]> { return this.getProvider().then((provider) => provider.loadStructure()) }
   saveStructure(items: StructurePart[]): Promise<void> { return this.getProvider().then((provider) => provider.saveStructure(items)) }
   loadAttributes(): Promise<DrawingAttribute[]> { return this.getProvider().then((provider) => provider.loadAttributes()) }
@@ -97,6 +97,18 @@ export class DefaultDataManager implements DataManager {
   loadCrafts(): Promise<CraftFile[]> { return this.getProvider().then((provider) => provider.loadCrafts()) }
   saveCrafts(items: CraftFile[]): Promise<void> { return this.getProvider().then((provider) => provider.saveCrafts(items)) }
   loadAttachments(): Promise<StoredAttachment[]> { return this.getProvider().then((provider) => provider.loadAttachments()) }
+
+  async updateDrawing(drawingId: string, input: UpdateDrawingInput): Promise<Drawing> {
+    const provider = await this.getProvider()
+    if (!provider.updateDrawing) throw new Error('当前存储模式不支持图纸原子更新')
+    return provider.updateDrawing(drawingId, input)
+  }
+
+  async updatePart(partId: string, input: UpdatePartInput): Promise<StructurePart> {
+    const provider = await this.getProvider()
+    if (!provider.updatePart) throw new Error('当前存储模式不支持零件原子更新')
+    return provider.updatePart(partId, input)
+  }
 
   createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession> {
     return this.getProvider().then((provider) => provider.createUploadSession(input))

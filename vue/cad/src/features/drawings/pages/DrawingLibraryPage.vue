@@ -6,6 +6,7 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { useAuthStore } from '@/stores/auth.store'
 import type { DrawingStatus, StructurePart } from '@/types/domain.types'
+import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({ name: 'DrawingLibraryPage' })
 
@@ -297,7 +298,7 @@ onMounted(() => {
                 <td>{{ drawing.vendor || '—' }}</td>
                 <td><span class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span></td>
                 <td class="mono">{{ drawing.ver }}</td>
-                <td class="mono text-time">{{ drawing.updated }}</td>
+                <td class="mono text-time">{{ formatReadableDateTime(drawing.updated, '—') }}</td>
                 <td class="row-actions">
                   <button class="btn sm" type="button" @click="openDetail(drawing.no)">
                     <DemoIcon name="eye" :size="13" />详情

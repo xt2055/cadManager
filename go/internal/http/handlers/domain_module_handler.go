@@ -14,22 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type moduleDrawing struct {
-	ID              string            `json:"id,omitempty"`
-	No              string            `json:"no"`
-	Name            string            `json:"name"`
-	Kind            string            `json:"kind"`
-	Project         string            `json:"project"`
-	Material        string            `json:"material"`
-	Vendor          string            `json:"vendor"`
-	Status          string            `json:"status"`
-	Version         string            `json:"ver"`
-	BorrowFrom      *string           `json:"borrowFrom,omitempty"`
-	Remark          *string           `json:"remark,omitempty"`
-	AttributeValues map[string]string `json:"attributeValues,omitempty"`
-	Signers         map[string]string `json:"signers,omitempty"`
-}
-
 type modulePart struct {
 	ID                string            `json:"id,omitempty"`
 	DrawingID         string            `json:"drawingId,omitempty"`
@@ -49,6 +33,7 @@ type modulePart struct {
 	BorrowFrom        *string           `json:"borrowFrom,omitempty"`
 	Remark            *string           `json:"remark,omitempty"`
 	Signers           map[string]string `json:"signers,omitempty"`
+	Revision          int64             `json:"revision"`
 }
 
 type moduleAttribute struct {
@@ -129,8 +114,6 @@ func DataModules(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 		module := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/data/"), "/")
 		switch module {
-		case "drawings":
-			moduleDrawings(writer, request, pool)
 		case "structure":
 			moduleStructure(writer, request, pool)
 		case "attributes":
@@ -153,115 +136,12 @@ func DataModules(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-func moduleDrawings(writer http.ResponseWriter, request *http.Request, pool *pgxpool.Pool) {
-	if request.Method == http.MethodGet {
-		rows, err := pool.Query(request.Context(), `
-			SELECT d.id::text, d.drawing_no, d.name, d.kind, d.project, d.material, d.vendor, d.status, d.version,
-			       d.borrow_from, d.remark, COALESCE(u.display_name, u.account, ''), d.created_at, d.updated_at,
-			       COALESCE((SELECT jsonb_object_agg(v.attribute_id::text, v.field_id::text)
-			                  FROM drawing_attribute_values v WHERE v.drawing_id = d.id), '{}'::jsonb)
-			FROM drawings d LEFT JOIN users u ON u.id = d.updated_by
-			ORDER BY d.updated_at DESC, d.drawing_no`)
-		if err != nil {
-			response.WriteError(writer, http.StatusInternalServerError, "图纸模块读取失败")
-			return
-		}
-		defer rows.Close()
-		items := make([]moduleDrawing, 0)
-		for rows.Next() {
-			var item moduleDrawing
-			var updatedBy string
-			var createdAt, updatedAt time.Time
-			var attributeValues []byte
-			if err := rows.Scan(&item.ID, &item.No, &item.Name, &item.Kind, &item.Project, &item.Material, &item.Vendor, &item.Status, &item.Version, &item.BorrowFrom, &item.Remark, &updatedBy, &createdAt, &updatedAt, &attributeValues); err != nil {
-				response.WriteError(writer, http.StatusInternalServerError, "图纸模块读取失败")
-				return
-			}
-			if err := json.Unmarshal(attributeValues, &item.AttributeValues); err != nil {
-				response.WriteError(writer, http.StatusInternalServerError, "图纸属性值读取失败")
-				return
-			}
-			item.Signers, err = readSigners(request, pool, item.ID)
-			if err != nil {
-				response.WriteError(writer, http.StatusInternalServerError, "图纸签署人读取失败")
-				return
-			}
-			_ = updatedBy
-			_ = createdAt
-			_ = updatedAt
-			items = append(items, item)
-		}
-		response.WriteData(writer, http.StatusOK, items)
-		return
-	}
-	if request.Method != http.MethodPut {
-		response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var items []moduleDrawing
-	if err := json.NewDecoder(request.Body).Decode(&items); err != nil {
-		response.WriteError(writer, http.StatusBadRequest, "图纸模块格式无效")
-		return
-	}
-	user, _ := middleware.UserFromContext(request.Context())
-	tx, err := pool.Begin(request.Context())
-	if err != nil {
-		response.WriteError(writer, http.StatusInternalServerError, "图纸模块保存失败")
-		return
-	}
-	defer tx.Rollback(request.Context())
-	for _, item := range items {
-		if strings.TrimSpace(item.No) == "" || strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Project) == "" {
-			continue
-		}
-		if _, err := tx.Exec(request.Context(), `
-			INSERT INTO drawings (drawing_no, name, project, kind, material, vendor, status, version, borrow_from, remark, created_by, updated_by)
-			VALUES ($1, $2, $3, COALESCE(NULLIF($4, ''), '总图'), COALESCE(NULLIF($5, ''), '—'), $6, COALESCE(NULLIF($7, ''), 'draft'), COALESCE(NULLIF($8, ''), 'v1.0'), $9, $10, $11::uuid, $11::uuid)
-			ON CONFLICT (drawing_no) DO UPDATE SET name = EXCLUDED.name, project = EXCLUDED.project,
-				kind = EXCLUDED.kind, material = EXCLUDED.material, vendor = EXCLUDED.vendor,
-				status = EXCLUDED.status, version = EXCLUDED.version, borrow_from = EXCLUDED.borrow_from, remark = EXCLUDED.remark,
-			updated_by = EXCLUDED.updated_by, updated_at = now()`, item.No, item.Name, item.Project, item.Kind, item.Material, item.Vendor, item.Status, item.Version, item.BorrowFrom, item.Remark, user.ID); err != nil {
-			response.WriteError(writer, http.StatusBadRequest, "图纸模块保存失败")
-			return
-		}
-		var drawingID string
-		if err := tx.QueryRow(request.Context(), `SELECT id::text FROM drawings WHERE drawing_no = $1`, item.No).Scan(&drawingID); err != nil {
-			response.WriteError(writer, http.StatusBadRequest, "图纸模块保存失败")
-			return
-		}
-		if _, err := tx.Exec(request.Context(), `DELETE FROM drawing_attribute_values WHERE drawing_id = $1::uuid`, drawingID); err != nil {
-			response.WriteError(writer, http.StatusBadRequest, "图纸属性值保存失败")
-			return
-		}
-		for attributeID, fieldID := range item.AttributeValues {
-			result, err := tx.Exec(request.Context(), `
-				INSERT INTO drawing_attribute_values (drawing_id, attribute_id, field_id)
-				SELECT $1::uuid, f.attribute_id, f.id
-				FROM drawing_attribute_fields f
-				WHERE f.attribute_id = $2::uuid AND f.id = $3::uuid`, drawingID, attributeID, fieldID)
-			if err != nil || result.RowsAffected() == 0 {
-				response.WriteError(writer, http.StatusBadRequest, "图纸属性值无效")
-				return
-			}
-		}
-		if err := saveModuleSigners(request, tx, drawingID, item.Signers, true); err != nil {
-			response.WriteError(writer, http.StatusBadRequest, "图纸签署人保存失败")
-			return
-		}
-	}
-	if err := tx.Commit(request.Context()); err != nil {
-		response.WriteError(writer, http.StatusInternalServerError, "图纸模块保存失败")
-		return
-	}
-	response.WriteData(writer, http.StatusOK, nil)
-}
-
 func moduleStructure(writer http.ResponseWriter, request *http.Request, pool *pgxpool.Pool) {
 	if request.Method == http.MethodGet {
 		rows, err := pool.Query(request.Context(), `
 			SELECT p.id::text, p.drawing_id::text, p.part_no, p.name, COALESCE(parent.part_no, ''),
 			       COALESCE(p.project, d.project, ''), p.material, p.spec, p.weight, p.surface_treatment,
-			       p.manufacturing_type, p.quantity, p.status, p.version, p.vendor, p.borrow_from, p.remark
+			       p.manufacturing_type, p.quantity, p.status, p.version, p.revision, p.vendor, p.borrow_from, p.remark
 			FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id
 			LEFT JOIN structure_parts parent ON parent.id = p.parent_part_id
 			ORDER BY p.part_no`)
@@ -273,7 +153,7 @@ func moduleStructure(writer http.ResponseWriter, request *http.Request, pool *pg
 		items := make([]modulePart, 0)
 		for rows.Next() {
 			var item modulePart
-			if err := rows.Scan(&item.ID, &item.DrawingID, &item.No, &item.Name, &item.ParentNo, &item.Project, &item.Material, &item.Spec, &item.Weight, &item.SurfaceTreatment, &item.ManufacturingType, &item.Quantity, &item.Status, &item.Version, &item.Vendor, &item.BorrowFrom, &item.Remark); err != nil {
+			if err := rows.Scan(&item.ID, &item.DrawingID, &item.No, &item.Name, &item.ParentNo, &item.Project, &item.Material, &item.Spec, &item.Weight, &item.SurfaceTreatment, &item.ManufacturingType, &item.Quantity, &item.Status, &item.Version, &item.Revision, &item.Vendor, &item.BorrowFrom, &item.Remark); err != nil {
 				response.WriteError(writer, http.StatusInternalServerError, "结构模块读取失败")
 				return
 			}
@@ -616,7 +496,7 @@ func moduleAttachments(writer http.ResponseWriter, request *http.Request, pool *
 		response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	rows, err := pool.Query(request.Context(), `SELECT a.id::text, COALESCE(ob.storage_key, a.storage_key), COALESCE(cb.storage_key, a.current_storage_key, ''), a.original_name, COALESCE(a.current_name, ''), COALESCE(a.current_mime_type, a.mime_type), COALESCE(a.current_size_bytes, a.size_bytes), COALESCE(d.drawing_no, parent.drawing_no, ''), p.part_no, a.file_role, a.size_bytes, a.mime_type, a.version, a.previewable, COALESCE(a.uploaded_by::text, ''), a.created_at, a.revision FROM attachments a LEFT JOIN file_blobs ob ON ob.id = a.blob_id LEFT JOIN file_blobs cb ON cb.id = a.current_blob_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN structure_parts p ON p.id = a.part_id LEFT JOIN drawings parent ON parent.id = p.drawing_id WHERE a.deleted_at IS NULL ORDER BY a.created_at DESC`)
+		rows, err := pool.Query(request.Context(), `SELECT a.id::text, COALESCE(ob.storage_key, a.storage_key), COALESCE(cb.storage_key, a.current_storage_key, ''), a.original_name, COALESCE(a.current_name, ''), COALESCE(a.current_mime_type, a.mime_type), COALESCE(a.current_size_bytes, a.size_bytes), COALESCE(d.drawing_no, parent.drawing_no, ''), p.part_no, a.file_role, a.size_bytes, a.mime_type, a.version, a.previewable, COALESCE(u.display_name, u.account, a.uploaded_by::text, ''), a.created_at, a.revision FROM attachments a LEFT JOIN file_blobs ob ON ob.id = a.blob_id LEFT JOIN file_blobs cb ON cb.id = a.current_blob_id LEFT JOIN users u ON u.id = a.uploaded_by LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN structure_parts p ON p.id = a.part_id LEFT JOIN drawings parent ON parent.id = p.drawing_id WHERE a.deleted_at IS NULL ORDER BY a.created_at DESC`)
 	if err != nil {
 		response.WriteError(writer, http.StatusInternalServerError, "附件模块读取失败")
 		return

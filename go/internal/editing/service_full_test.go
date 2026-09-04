@@ -128,6 +128,17 @@ func (repo *fakeSessionRepo) FindActiveByID(ctx context.Context, sessionID strin
 	return *session, nil
 }
 
+func (repo *fakeSessionRepo) UpdateWorkStorageKey(ctx context.Context, userID, sessionID, workStorageKey string) error {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	session, ok := repo.sessions[sessionID]
+	if !ok || session.Status != "active" || session.UserID != userID {
+		return ErrSessionNotFound
+	}
+	session.WorkStorageKey = workStorageKey
+	return nil
+}
+
 func (repo *fakeSessionRepo) CreateTicket(ctx context.Context, token string, sessionID, userID string, expiresAt time.Time) error {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
@@ -384,7 +395,7 @@ func TestSyncToWorkDirectoryCreatesAndReplaces(t *testing.T) {
 	if _, err := env.storage.Put(context.Background(), key, bytes.NewReader([]byte("content-1")), "application/acad"); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
-	if err := env.service.syncToWorkDirectory(context.Background(), key); err != nil {
+	if err := env.service.syncToWorkDirectory(context.Background(), key, key); err != nil {
 		t.Fatalf("syncToWorkDirectory() error = %v", err)
 	}
 	path, _ := env.service.localPath(key)
@@ -395,7 +406,7 @@ func TestSyncToWorkDirectoryCreatesAndReplaces(t *testing.T) {
 	if _, err := env.storage.Put(context.Background(), key, bytes.NewReader([]byte("content-2-longer")), "application/acad"); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
-	if err := env.service.syncToWorkDirectory(context.Background(), key); err != nil {
+	if err := env.service.syncToWorkDirectory(context.Background(), key, key); err != nil {
 		t.Fatalf("再次 syncToWorkDirectory() error = %v", err)
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != "content-2-longer" {
@@ -440,7 +451,7 @@ func TestSyncToWorkDirectoryConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := service.syncToWorkDirectory(context.Background(), key); err != nil {
+			if err := service.syncToWorkDirectory(context.Background(), key, key); err != nil {
 				errCh <- err
 			}
 		}()
@@ -520,8 +531,8 @@ func TestOpenCreatesSessionWithWorkKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("会话未创建: %v", err)
 	}
-	if session.WorkStorageKey != testCurrentKey {
-		t.Fatalf("会话工作文件键 = %q; want %q", session.WorkStorageKey, testCurrentKey)
+	if !strings.HasPrefix(session.WorkStorageKey, "work/"+result.SessionID+"/") || !strings.HasSuffix(session.WorkStorageKey, ".dwg") {
+		t.Fatalf("会话工作文件键应使用带 .dwg 扩展名的工作副本，got %q", session.WorkStorageKey)
 	}
 	if !strings.Contains(session.UNCPath, `\\TESTHOST\cadshare`) {
 		t.Fatalf("UNC 路径 = %q", session.UNCPath)
@@ -551,6 +562,27 @@ func TestOpenReclaimsOwnSession(t *testing.T) {
 	}
 }
 
+func TestResolveWorkKeyUsesExistingCurrentDwgBlob(t *testing.T) {
+	env := newTestEnv(t)
+	item := attachment.Attachment{
+		StorageKey:        "blobs/original-exb-hash",
+		CurrentStorageKey: "blobs/current-dwg-hash",
+		Name:              "工程图文档2.exb",
+		CurrentName:       "工程图文档2.dwg",
+	}
+	if _, err := env.storage.Put(context.Background(), item.CurrentStorageKey, bytes.NewReader([]byte("valid-dwg")), "application/acad"); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	got, err := env.service.resolveWorkKey(context.Background(), designerUser, item)
+	if err != nil {
+		t.Fatalf("resolveWorkKey() error = %v", err)
+	}
+	if got != item.CurrentStorageKey {
+		t.Fatalf("工作源键 = %q; want 已存在的当前 DWG %q", got, item.CurrentStorageKey)
+	}
+}
+
 func TestOpenFallsBackToRawKeyWhenCurrentMissing(t *testing.T) {
 	env := newTestEnv(t)
 	item := fixtureAttachment()
@@ -565,8 +597,15 @@ func TestOpenFallsBackToRawKeyWhenCurrentMissing(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	session, _ := env.sessions.FindActiveByID(context.Background(), result.SessionID)
-	if session.WorkStorageKey != item.StorageKey {
-		t.Fatalf("回退工作文件键 = %q; want 原始 key %q", session.WorkStorageKey, item.StorageKey)
+	wantWorkKey, err := editWorkStorageKey(result.SessionID, item.StorageKey, item)
+	if err != nil {
+		t.Fatalf("editWorkStorageKey() error = %v", err)
+	}
+	if session.WorkStorageKey != wantWorkKey {
+		t.Fatalf("回退工作文件键 = %q; want %q", session.WorkStorageKey, wantWorkKey)
+	}
+	if filepath.Ext(session.WorkStorageKey) != ".exb" {
+		t.Fatalf("回退原始 EXB 时工作副本必须保留 .exb 扩展名，got %q", session.WorkStorageKey)
 	}
 }
 
@@ -589,7 +628,11 @@ func TestCloseWithChangeCreatesVersion(t *testing.T) {
 	result := openFixture(t, env, designerUser)
 
 	// 模拟 CAD 保存：修改 SMB 工作文件
-	workPath, err := env.service.localPath(testCurrentKey)
+	workKey, err := editWorkStorageKey(result.SessionID, testCurrentKey, fixtureAttachment())
+	if err != nil {
+		t.Fatalf("editWorkStorageKey() error = %v", err)
+	}
+	workPath, err := env.service.localPath(workKey)
 	if err != nil {
 		t.Fatalf("localPath() error = %v", err)
 	}
@@ -645,7 +688,11 @@ func TestCloseCaptureFailureKeepsSession(t *testing.T) {
 	env := newTestEnv(t)
 	result := openFixture(t, env, designerUser)
 
-	workPath, _ := env.service.localPath(testCurrentKey)
+	workKey, err := editWorkStorageKey(result.SessionID, testCurrentKey, fixtureAttachment())
+	if err != nil {
+		t.Fatalf("editWorkStorageKey() error = %v", err)
+	}
+	workPath, _ := env.service.localPath(workKey)
 	if err := os.WriteFile(workPath, []byte("unsaved-work"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -659,7 +706,11 @@ func TestCloseCaptureFailureKeepsSession(t *testing.T) {
 	if findErr != nil {
 		t.Fatalf("捕获失败后会话必须保留, err = %v", findErr)
 	}
-	if session.WorkStorageKey != testCurrentKey {
+	wantWorkKey, err := editWorkStorageKey(result.SessionID, testCurrentKey, fixtureAttachment())
+	if err != nil {
+		t.Fatalf("editWorkStorageKey() error = %v", err)
+	}
+	if session.WorkStorageKey != wantWorkKey {
 		t.Fatalf("会话状态被破坏: %+v", session)
 	}
 
@@ -702,7 +753,11 @@ func TestCloseConcurrentOnlyOneWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	workPath, _ := service.localPath(testCurrentKey)
+	workKey, err := editWorkStorageKey(opened.SessionID, testCurrentKey, item)
+	if err != nil {
+		t.Fatalf("editWorkStorageKey() error = %v", err)
+	}
+	workPath, _ := service.localPath(workKey)
 	if err := os.WriteFile(workPath, []byte("concurrent-edit"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}

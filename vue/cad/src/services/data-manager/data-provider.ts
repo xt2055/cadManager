@@ -130,6 +130,39 @@ export interface UserManagementInput {
   status?: UserStatus
 }
 
+/** 单资源更新的乐观锁请求。仅提交实际变更字段，revision 必须来自最近一次服务端读取。 */
+export interface UpdateDrawingInput {
+  expectedRevision: number
+  name?: string
+  kind?: '总图' | '零件图'
+  project?: string
+  material?: string
+  vendor?: string
+  status?: string
+  ver?: string
+  borrowFrom?: string
+  remark?: string
+  signers?: Record<string, string>
+  attributeValues?: Record<string, string>
+}
+
+export interface UpdatePartInput {
+  expectedRevision: number
+  no?: string
+  name?: string
+  material?: string
+  spec?: string
+  weight?: number
+  surfaceTreatment?: string
+  partType?: string
+  qty?: number
+  status?: string
+  ver?: string
+  vendor?: string
+  borrowFrom?: string
+  remark?: string
+}
+
 export interface EditSessionOpenResult {
   sessionId: string
   openUrl: string
@@ -184,8 +217,7 @@ export interface EditSessionControlResult {
 }
 
 export interface DataProvider {
-  loadDrawings(): Promise<Drawing[]>
-  saveDrawings(items: Drawing[]): Promise<void>
+	loadDrawings(): Promise<Drawing[]>
   loadStructure(): Promise<StructurePart[]>
   saveStructure(items: StructurePart[]): Promise<void>
   loadAttributes(): Promise<DrawingAttribute[]>
@@ -200,7 +232,9 @@ export interface DataProvider {
   saveBom(items: BomItem[]): Promise<void>
   loadCrafts(): Promise<CraftFile[]>
   saveCrafts(items: CraftFile[]): Promise<void>
-  loadAttachments(): Promise<StoredAttachment[]>
+	loadAttachments(): Promise<StoredAttachment[]>
+	updateDrawing?(drawingId: string, input: UpdateDrawingInput): Promise<Drawing>
+	updatePart?(partId: string, input: UpdatePartInput): Promise<StructurePart>
   createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession>
 	createUploadSessionItem(sessionId: string, input: CreateUploadSessionItemInput): Promise<UploadSessionItem>
 	checkUploadHash(file: Blob): Promise<UploadHashCheckResult>

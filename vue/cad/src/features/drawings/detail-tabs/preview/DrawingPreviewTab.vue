@@ -11,6 +11,7 @@ import { useUiStore } from '@/stores/ui.store'
 import { CAXA_NOT_FOUND_PREFIX, openCadEditSession, openCadReadonly, openDefaultAppsSettings, pickCaxaExecutable, saveLocalCaxaPath } from '@/services/tauri/cad-edit.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
+import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({
   name: 'DrawingPreviewTab',
@@ -39,15 +40,66 @@ const rootDrawingNo = computed(() => {
   return currentItem.value.parentNo
 })
 
-// 汇聚当前对象关联的所有图纸文件
-const allFiles = computed<DrawingFile[]>(() => {
-  if (!currentItem.value) return []
-  const files: DrawingFile[] = []
+type ProjectDrawingFile = DrawingFile & {
+  ownerNo: string
+  ownerName: string
+}
 
-  // 如果是总图，递归汇总总图、零件和其他文件。
+// 总图页是项目级文件清单：总图与结构树内全部零件图都必须在这里出现。
+// 文件的归属从结构关系取得，而不依赖 CAD 标题栏或文件角色的历史数据。
+const allFiles = computed<ProjectDrawingFile[]>(() => {
+  if (!currentItem.value) return []
+  const rootNo = rootDrawingNo.value
+  // 附件接口直接反映数据库归属；优先使用它，不能让结构树的局部状态决定文件清单。
+  const attachmentFiles = domainStore.storedAttachments
+    .filter((item) => item.drawingNo === rootNo && ['assembly', 'part', 'other'].includes(item.role))
+    .map((item): ProjectDrawingFile => {
+      const ownerNo = item.partNo || item.drawingNo
+      const role: DrawingFile['role'] = item.role === 'assembly' || item.role === 'part' ? item.role : 'other'
+      const owner = item.partNo
+        ? domainStore.structure.find((part) => part.no === item.partNo)
+        : domainStore.drawings.find((drawing) => drawing.no === item.drawingNo)
+      return {
+        id: item.id,
+				// 页面显示上传时的真实文件名；转换后的 currentName 只作为当前可打开格式。
+				name: item.name || item.currentName || '未命名文件',
+				rawName: item.currentName && item.currentName !== item.name ? item.currentName : undefined,
+        size: formatFileSize(item.currentSize ?? item.size),
+        role,
+        drawingNo: item.drawingNo,
+        ...(item.partNo ? { partNo: item.partNo } : {}),
+        version: item.version,
+        uploadedBy: item.uploadedBy || '未知用户',
+        uploadedAt: formatReadableDateTime(item.createdAt, '历史记录'),
+        storageKey: item.currentStorageKey || item.storageKey,
+        rawStorageKey: item.storageKey,
+        currentStorageKey: item.currentStorageKey,
+        mimeType: item.currentMimeType || item.mimeType,
+        previewable: item.previewable,
+        revision: item.revision,
+        ownerNo,
+        ownerName: owner?.name || ownerNo,
+      }
+    })
+  if (attachmentFiles.length) return sortProjectFiles(attachmentFiles)
+
+  const files: ProjectDrawingFile[] = []
+  const appendOwnerFiles = (owner: Drawing | StructurePart) => {
+    for (const file of [...(owner.files ?? []), ...(owner.otherFiles ?? [])]) {
+      files.push({
+        ...file,
+        ownerNo: owner.no,
+        ownerName: owner.name,
+        partNo: 'parentNo' in owner ? owner.no : file.partNo,
+        drawingNo: 'parentNo' in owner ? rootDrawingNo.value : file.drawingNo,
+      })
+    }
+  }
+
+  // 如果是总图，递归汇总总图和所有后代零件。
   if (isAssembly.value) {
     const mainDrawing = currentItem.value as Drawing
-    files.push(...(mainDrawing.files ?? []), ...(mainDrawing.otherFiles ?? []))
+    appendOwnerFiles(mainDrawing)
     const belongsToDrawing = (part: StructurePart): boolean => {
       if (part.parentNo === mainDrawing.no || part.no.startsWith(`${mainDrawing.no}-`)) return true
 
@@ -65,15 +117,22 @@ const allFiles = computed<DrawingFile[]>(() => {
 
     domainStore.structure
       .filter(belongsToDrawing)
-      .forEach((part) => files.push(...(part.files ?? []), ...(part.otherFiles ?? [])))
+      .forEach(appendOwnerFiles)
   } else {
     // 如果当前选中的就是零件图
-    const part = currentItem.value as StructurePart
-    files.push(...(part.files ?? []), ...(part.otherFiles ?? []))
+    appendOwnerFiles(currentItem.value as StructurePart)
   }
 
-  return files.filter((file, index, sourceFiles) => sourceFiles.findIndex((candidate) => candidate.id === file.id) === index)
+  return sortProjectFiles(files)
 })
+
+function sortProjectFiles(files: ProjectDrawingFile[]): ProjectDrawingFile[] {
+  const uniqueFiles = files.filter((file, index, sourceFiles) => sourceFiles.findIndex((candidate) => candidate.id === file.id) === index)
+  return uniqueFiles.sort((left, right) => {
+    const roleRank = (file: ProjectDrawingFile) => file.role === 'assembly' ? 0 : file.role === 'part' ? 1 : 2
+    return roleRank(left) - roleRank(right) || left.ownerNo.localeCompare(right.ownerNo) || left.name.localeCompare(right.name)
+  })
+}
 
 const hasAssemblyFile = computed(() => {
   if (isAssembly.value) {
@@ -1044,7 +1103,7 @@ async function reidentifyAllPartFiles() {
     }
 
     if (!results.length) {
-      uiStore.toast(failures.length ? `没有发现图号变化，${failures.length} 个文件识别失败` : '所有零件图号均已与标题栏一致', failures.length ? 'warn' : 'ok')
+      uiStore.toast(failures.length ? `没有发现图号变化，${failures.length} 个文件识别失败` : '所有零件图号均已与文件名一致', failures.length ? 'warn' : 'ok')
       return
     }
 
@@ -1211,7 +1270,7 @@ function closeReidentifyModal() {
         <DemoIcon name="file-text" :size="16" />
         已关联图纸文件清单 ({{ allFiles.length }})
         <span class="hint">支持 DWG / DXF / EXB / PDF / STEP</span>
-        <button class="btn sm" type="button" :disabled="isReidentifyingAll" title="读取全部零件 CAD 文件标题栏并批量校正图号" @click="reidentifyAllPartFiles">
+        <button class="btn sm" type="button" :disabled="isReidentifyingAll" title="按全部零件 CAD 文件名批量校正图号" @click="reidentifyAllPartFiles">
           <DemoIcon name="scan" :size="13" />
           {{ isReidentifyingAll ? '识别中...' : '全部重新识别图号' }}
         </button>
@@ -1238,7 +1297,10 @@ function closeReidentifyModal() {
               <td class="file-name-cell">
                 <DemoIcon name="file-check-2" :size="16" />
                 <div class="file-title-wrap">
-                  <b>{{ file.name }}</b>
+                  <div class="file-title-text">
+                    <b>{{ file.name }}</b>
+                    <span class="file-owner">{{ file.role === 'assembly' ? `项目总图 · ${file.ownerNo}` : `所属零件 · ${file.ownerNo}${file.ownerName && file.ownerName !== file.ownerNo ? `（${file.ownerName}）` : ''}` }}</span>
+                  </div>
                   <span v-if="isFileEditingByMe(file)" class="badge-collab active">
                     <span class="pulse-dot"></span>我正在编辑
                   </span>
@@ -1362,7 +1424,7 @@ function closeReidentifyModal() {
         <div class="modal-body reidentify-modal-body">
           <div class="reidentify-hint">
             <DemoIcon name="info" :size="14" />
-            <span>系统已从图纸内部标题栏读取到真实图号，并已自动过滤明细表和非零件图文件。请核对并勾选需校正的项：</span>
+            <span>系统已按图纸文件名识别图号，并已自动过滤明细表和非零件图文件。请核对并勾选需校正的项：</span>
           </div>
 
           <div class="reidentify-table-wrap">
@@ -1378,7 +1440,7 @@ function closeReidentifyModal() {
                   </th>
                   <th>文件名</th>
                   <th>当前关联图号</th>
-                  <th>识别图号 (标题栏)</th>
+                  <th>识别图号 (文件名)</th>
                 </tr>
               </thead>
               <tbody>
@@ -1402,7 +1464,7 @@ function closeReidentifyModal() {
           <div v-if="reidentifyFailures.length" class="reidentify-fail-box">
             <div class="fail-title">
               <DemoIcon name="alert-triangle" :size="13" />
-              <span>以下 {{ reidentifyFailures.length }} 个文件未能在标题栏中找到规范图号（已忽略）：</span>
+              <span>以下 {{ reidentifyFailures.length }} 个文件未能从文件名识别出规范图号（已忽略）：</span>
             </div>
             <ul>
               <li v-for="(msg, idx) in reidentifyFailures" :key="idx">{{ msg }}</li>
@@ -2581,6 +2643,23 @@ function closeReidentifyModal() {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.file-title-text {
+  display: grid;
+  min-width: 0;
+}
+
+.file-title-text b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-owner {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .download-modal {

@@ -14,6 +14,8 @@ import (
 var (
 	ErrNotFound          = errors.New("drawing resource not found")
 	ErrConflict          = errors.New("drawing resource conflict")
+	ErrRevisionConflict  = errors.New("drawing resource revision conflict")
+	ErrRevisionRequired  = errors.New("drawing resource revision required")
 	ErrInvalidTransition = errors.New("drawing status transition not allowed")
 )
 
@@ -28,23 +30,24 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 func (repository *PGRepository) List(ctx context.Context, filter ListFilter) (Page[Drawing], error) {
 	keyword := "%" + strings.ToLower(strings.TrimSpace(filter.Keyword)) + "%"
 	vendor := "%" + strings.ToLower(strings.TrimSpace(filter.Vendor)) + "%"
-	where := `WHERE ($1 = '%' OR lower(drawing_no) LIKE $1 OR lower(name) LIKE $1 OR lower(project) LIKE $1)
-		AND ($2 = '' OR status = $2)
-		AND ($3 = '%' OR lower(vendor) LIKE $3)`
+	where := `WHERE ($1 = '%' OR lower(d.drawing_no) LIKE $1 OR lower(d.name) LIKE $1 OR lower(d.project) LIKE $1)
+		AND ($2 = '' OR d.status = $2)
+		AND ($3 = '%' OR lower(d.vendor) LIKE $3)`
 	var total int
-	if err := repository.pool.QueryRow(ctx, `SELECT count(*) FROM drawings `+where, keyword, string(filter.Status), vendor).Scan(&total); err != nil {
+	if err := repository.pool.QueryRow(ctx, `SELECT count(*) FROM drawings d `+where, keyword, string(filter.Status), vendor).Scan(&total); err != nil {
 		return Page[Drawing]{}, fmt.Errorf("统计图纸失败: %w", err)
 	}
 	offset := (filter.Page - 1) * filter.PageSize
 	rows, err := repository.pool.Query(ctx, `
-		SELECT id::text, drawing_no, name, kind, project, material, vendor, status, version,
-		       borrow_from, remark,
-		       COALESCE(created_user.display_name, created_user.account, ''), created_at,
-		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), updated_at
-		FROM drawings
-		LEFT JOIN users created_user ON created_user.id = drawings.created_by
-		LEFT JOIN users updated_user ON updated_user.id = drawings.updated_by `+where+`
-		ORDER BY updated_at DESC, drawing_no
+		SELECT d.id::text, d.drawing_no, d.name, d.kind, d.project, d.material, d.vendor, d.status, d.version, d.revision,
+		       d.borrow_from, d.remark,
+		       COALESCE(created_user.display_name, created_user.account, ''), d.created_at,
+		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), d.updated_at,
+		       COALESCE(d.created_by::text, '')
+		FROM drawings d
+		LEFT JOIN users created_user ON created_user.id = d.created_by
+		LEFT JOIN users updated_user ON updated_user.id = d.updated_by `+where+`
+		ORDER BY d.updated_at DESC, d.drawing_no
 		LIMIT $4 OFFSET $5`, keyword, string(filter.Status), vendor, filter.PageSize, offset)
 	if err != nil {
 		return Page[Drawing]{}, fmt.Errorf("查询图纸失败: %w", err)
@@ -53,6 +56,14 @@ func (repository *PGRepository) List(ctx context.Context, filter ListFilter) (Pa
 	items := make([]Drawing, 0)
 	for rows.Next() {
 		item, err := scanDrawing(rows)
+		if err != nil {
+			return Page[Drawing]{}, err
+		}
+		item.Signers, err = repository.loadDrawingSigners(ctx, item.ID)
+		if err != nil {
+			return Page[Drawing]{}, err
+		}
+		item.AttributeValues, err = repository.loadDrawingAttributeValues(ctx, item.ID)
 		if err != nil {
 			return Page[Drawing]{}, err
 		}
@@ -75,7 +86,7 @@ func (repository *PGRepository) FindByNo(ctx context.Context, no string) (Drawin
 func (repository *PGRepository) find(ctx context.Context, condition string, argument string) (Drawing, error) {
 	row := repository.pool.QueryRow(ctx, `
 		SELECT d.id::text, d.drawing_no, d.name, d.kind, d.project, d.material, d.vendor, d.status,
-		       d.version, d.borrow_from, d.remark,
+		       d.version, d.revision, d.borrow_from, d.remark,
 		       COALESCE(created_user.display_name, created_user.account, ''), d.created_at,
 		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), d.updated_at,
 		       COALESCE(d.created_by::text, '')
@@ -93,6 +104,10 @@ func (repository *PGRepository) find(ctx context.Context, condition string, argu
 	if err != nil {
 		return Drawing{}, err
 	}
+	item.AttributeValues, err = repository.loadDrawingAttributeValues(ctx, item.ID)
+	if err != nil {
+		return Drawing{}, err
+	}
 	return item, nil
 }
 
@@ -105,7 +120,7 @@ func scanDrawing(row rowScanner) (Drawing, error) {
 	var status string
 	var createdAt time.Time
 	var updatedAt time.Time
-	if err := row.Scan(&item.ID, &item.No, &item.Name, &item.Kind, &item.Project, &item.Material, &item.Vendor, &status, &item.Version, &item.BorrowFrom, &item.Remark, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt, &item.CreatedByID); err != nil {
+	if err := row.Scan(&item.ID, &item.No, &item.Name, &item.Kind, &item.Project, &item.Material, &item.Vendor, &status, &item.Version, &item.Revision, &item.BorrowFrom, &item.Remark, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt, &item.CreatedByID); err != nil {
 		return Drawing{}, err
 	}
 	item.Status = Status(status)
@@ -163,14 +178,52 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateDrawingI
 }
 
 func (repository *PGRepository) Update(ctx context.Context, id string, input UpdateDrawingInput, userID string) (Drawing, error) {
-	_, err := repository.pool.Exec(ctx, `
-		UPDATE drawings
-		SET name = COALESCE($2, name), project = COALESCE($3, project), material = COALESCE($4, material),
-		    vendor = COALESCE($5, vendor), status = COALESCE($6, status), version = COALESCE($7, version),
-		    borrow_from = COALESCE($8, borrow_from), remark = COALESCE($9, remark), updated_by = $10::uuid
-		WHERE id = $1::uuid`, id, input.Name, input.Project, input.Material, input.Vendor, input.Status, input.Version, input.BorrowFrom, input.Remark, userID)
+	if input.ExpectedRevision == nil || *input.ExpectedRevision < 1 {
+		return Drawing{}, ErrRevisionRequired
+	}
+	tx, err := repository.pool.Begin(ctx)
 	if err != nil {
+		return Drawing{}, fmt.Errorf("开始修改图纸事务失败: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		UPDATE drawings
+		SET name = COALESCE($2, name), kind = COALESCE($3, kind), project = COALESCE($4, project), material = COALESCE($5, material),
+		    vendor = COALESCE($6, vendor), status = COALESCE($7, status), version = COALESCE($8, version),
+		    borrow_from = COALESCE($9, borrow_from), remark = COALESCE($10, remark), updated_by = $11::uuid,
+		    revision = revision + 1
+		WHERE id = $1::uuid AND revision = $12`, id, input.Name, input.Kind, input.Project, input.Material, input.Vendor, input.Status, input.Version, input.BorrowFrom, input.Remark, userID, *input.ExpectedRevision)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return Drawing{}, ErrConflict
+		}
 		return Drawing{}, fmt.Errorf("修改图纸失败: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM drawings WHERE id = $1::uuid)`, id).Scan(&exists); err != nil {
+			return Drawing{}, fmt.Errorf("检查图纸版本失败: %w", err)
+		}
+		if !exists {
+			return Drawing{}, ErrNotFound
+		}
+		return Drawing{}, ErrRevisionConflict
+	}
+	if input.AttributeValues != nil {
+		if err := repository.replaceDrawingAttributeValues(ctx, tx, id, input.AttributeValues); err != nil {
+			return Drawing{}, err
+		}
+	}
+	if input.Signers != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM drawing_signers WHERE drawing_id = $1::uuid`, id); err != nil {
+			return Drawing{}, fmt.Errorf("清理图纸签署人失败: %w", err)
+		}
+		if err := repository.saveSigners(ctx, tx, id, input.Signers); err != nil {
+			return Drawing{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Drawing{}, fmt.Errorf("提交图纸修改事务失败: %w", err)
 	}
 	item, err := repository.Find(ctx, id)
 	if errors.Is(err, ErrNotFound) {
@@ -183,7 +236,7 @@ func (repository *PGRepository) Update(ctx context.Context, id string, input Upd
 func (repository *PGRepository) SetStatusByNo(ctx context.Context, no string, from, to Status, userID string) (Drawing, error) {
 	tag, err := repository.pool.Exec(ctx, `
 		UPDATE drawings
-		SET status = $2, updated_by = $3::uuid, updated_at = now()
+		SET status = $2, updated_by = $3::uuid, updated_at = now(), revision = revision + 1
 		WHERE drawing_no = $1 AND status = $4`, no, to, userID, from)
 	if err != nil {
 		return Drawing{}, fmt.Errorf("更新图纸状态失败: %w", err)
@@ -201,7 +254,7 @@ func (repository *PGRepository) ListParts(ctx context.Context, drawingID string)
 	rows, err := repository.pool.Query(ctx, `
 		SELECT p.id::text, p.drawing_id::text, p.part_no, p.name, COALESCE(parent.part_no, ''),
 		       COALESCE(p.project, d.project, ''), p.material, p.spec, p.weight, p.surface_treatment,
-		       p.manufacturing_type, p.quantity, p.status, p.version, p.vendor, p.borrow_from, p.remark,
+		       p.manufacturing_type, p.quantity, p.status, p.version, p.revision, p.vendor, p.borrow_from, p.remark,
 		       COALESCE(created_user.display_name, created_user.account, ''), p.created_at,
 		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), p.updated_at
 		FROM structure_parts p
@@ -234,7 +287,7 @@ func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, 
 	row := repository.pool.QueryRow(ctx, `
 		SELECT p.id::text, p.drawing_id::text, p.part_no, p.name, COALESCE(parent.part_no, ''),
 		       COALESCE(p.project, d.project, ''), p.material, p.spec, p.weight, p.surface_treatment,
-		       p.manufacturing_type, p.quantity, p.status, p.version, p.vendor, p.borrow_from, p.remark,
+		       p.manufacturing_type, p.quantity, p.status, p.version, p.revision, p.vendor, p.borrow_from, p.remark,
 		       COALESCE(created_user.display_name, created_user.account, ''), p.created_at,
 		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), p.updated_at
 		FROM structure_parts p
@@ -259,7 +312,7 @@ func scanPart(row rowScanner) (Part, error) {
 	var status string
 	var createdAt time.Time
 	var updatedAt time.Time
-	if err := row.Scan(&part.ID, &part.DrawingID, &part.No, &part.Name, &part.ParentNo, &part.Project, &part.Material, &part.Spec, &part.Weight, &part.SurfaceTreatment, &part.ManufacturingType, &part.Quantity, &status, &part.Version, &part.Vendor, &part.BorrowFrom, &part.Remark, &part.CreatedBy, &createdAt, &part.UpdatedBy, &updatedAt); err != nil {
+	if err := row.Scan(&part.ID, &part.DrawingID, &part.No, &part.Name, &part.ParentNo, &part.Project, &part.Material, &part.Spec, &part.Weight, &part.SurfaceTreatment, &part.ManufacturingType, &part.Quantity, &status, &part.Version, &part.Revision, &part.Vendor, &part.BorrowFrom, &part.Remark, &part.CreatedBy, &createdAt, &part.UpdatedBy, &updatedAt); err != nil {
 		return Part{}, err
 	}
 	part.Status = Status(status)
@@ -313,22 +366,79 @@ func (repository *PGRepository) CreatePart(ctx context.Context, drawingID string
 }
 
 func (repository *PGRepository) UpdatePart(ctx context.Context, id string, input UpdatePartInput, userID string) (Part, error) {
-	_, err := repository.pool.Exec(ctx, `
+	if input.ExpectedRevision == nil || *input.ExpectedRevision < 1 {
+		return Part{}, ErrRevisionRequired
+	}
+	tag, err := repository.pool.Exec(ctx, `
 		UPDATE structure_parts
-		SET name = COALESCE($2, name), material = COALESCE($3, material), spec = COALESCE($4, spec),
-		    weight = COALESCE($5, weight), surface_treatment = COALESCE($6, surface_treatment),
-		    manufacturing_type = COALESCE($7, manufacturing_type), quantity = COALESCE($8, quantity),
-		    status = COALESCE($9, status), version = COALESCE($10, version), vendor = COALESCE($11, vendor),
-		    borrow_from = COALESCE($12, borrow_from), remark = COALESCE($13, remark), updated_by = $14::uuid
-		WHERE id = $1::uuid`, id, input.Name, input.Material, input.Spec, input.Weight, input.SurfaceTreatment, input.ManufacturingType, input.Quantity, input.Status, input.Version, input.Vendor, input.BorrowFrom, input.Remark, userID)
+		SET part_no = COALESCE($2, part_no), name = COALESCE($3, name), material = COALESCE($4, material), spec = COALESCE($5, spec),
+		    weight = COALESCE($6, weight), surface_treatment = COALESCE($7, surface_treatment),
+		    manufacturing_type = COALESCE($8, manufacturing_type), quantity = COALESCE($9, quantity),
+		    status = COALESCE($10, status), version = COALESCE($11, version), vendor = COALESCE($12, vendor),
+		    borrow_from = COALESCE($13, borrow_from), remark = COALESCE($14, remark), updated_by = $15::uuid,
+		    revision = revision + 1
+		WHERE id = $1::uuid AND revision = $16`, id, input.No, input.Name, input.Material, input.Spec, input.Weight, input.SurfaceTreatment, input.ManufacturingType, input.Quantity, input.Status, input.Version, input.Vendor, input.BorrowFrom, input.Remark, userID, *input.ExpectedRevision)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return Part{}, ErrConflict
+		}
 		return Part{}, fmt.Errorf("修改零件失败: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if err := repository.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM structure_parts WHERE id = $1::uuid)`, id).Scan(&exists); err != nil {
+			return Part{}, fmt.Errorf("检查零件版本失败: %w", err)
+		}
+		if !exists {
+			return Part{}, ErrNotFound
+		}
+		return Part{}, ErrRevisionConflict
 	}
 	return repository.FindPart(ctx, id)
 }
 
+func (repository *PGRepository) replaceDrawingAttributeValues(ctx context.Context, tx pgx.Tx, drawingID string, values map[string]string) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM drawing_attribute_values WHERE drawing_id = $1::uuid`, drawingID); err != nil {
+		return fmt.Errorf("清理图纸属性值失败: %w", err)
+	}
+	for attributeID, fieldID := range values {
+		if strings.TrimSpace(attributeID) == "" || strings.TrimSpace(fieldID) == "" {
+			continue
+		}
+		result, err := tx.Exec(ctx, `
+			INSERT INTO drawing_attribute_values (drawing_id, attribute_id, field_id)
+			SELECT $1::uuid, f.attribute_id, f.id
+			FROM drawing_attribute_fields f
+			WHERE f.attribute_id = $2::uuid AND f.id = $3::uuid`, drawingID, attributeID, fieldID)
+		if err != nil || result.RowsAffected() == 0 {
+			return fmt.Errorf("图纸属性值无效")
+		}
+	}
+	return nil
+}
+
 func (repository *PGRepository) loadDrawingSigners(ctx context.Context, id string) (Signers, error) {
 	return repository.loadSigners(ctx, "drawing_id", id)
+}
+
+func (repository *PGRepository) loadDrawingAttributeValues(ctx context.Context, id string) (map[string]string, error) {
+	rows, err := repository.pool.Query(ctx, `
+		SELECT attribute_id::text, field_id::text
+		FROM drawing_attribute_values
+		WHERE drawing_id = $1::uuid`, id)
+	if err != nil {
+		return nil, fmt.Errorf("读取图纸属性值失败: %w", err)
+	}
+	defer rows.Close()
+	values := make(map[string]string)
+	for rows.Next() {
+		var attributeID, fieldID string
+		if err := rows.Scan(&attributeID, &fieldID); err != nil {
+			return nil, err
+		}
+		values[attributeID] = fieldID
+	}
+	return values, rows.Err()
 }
 
 func (repository *PGRepository) loadPartSigners(ctx context.Context, id string) (Signers, error) {

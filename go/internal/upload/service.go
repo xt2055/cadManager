@@ -1097,11 +1097,13 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 	type projectAttachment struct {
 		id, partNo, role, name, mime, objectKey, blobID string
 		processedKey, processedBlobID, sha256           string
-		size                                            int64
+		processedMime, processedSHA256                  string
+		size, processedSize                             int64
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, part_no, file_role, original_name, mime_type,
-		       object_key, blob_id::text, COALESCE(processed_object_key, ''), COALESCE(processed_blob_id::text, ''), size_bytes, sha256
+		       object_key, blob_id::text, COALESCE(processed_object_key, ''), COALESCE(processed_blob_id::text, ''),
+		       size_bytes, sha256, COALESCE(processed_size_bytes, 0), COALESCE(processed_mime_type, ''), COALESCE(processed_sha256, '')
 		FROM upload_session_items WHERE session_id = $1::uuid AND status = 'ready' ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, err
@@ -1109,7 +1111,7 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 	projectAttachments := make([]projectAttachment, 0, count)
 	for rows.Next() {
 		var item projectAttachment
-		if err := rows.Scan(&item.id, &item.partNo, &item.role, &item.name, &item.mime, &item.objectKey, &item.blobID, &item.processedKey, &item.processedBlobID, &item.size, &item.sha256); err != nil {
+		if err := rows.Scan(&item.id, &item.partNo, &item.role, &item.name, &item.mime, &item.objectKey, &item.blobID, &item.processedKey, &item.processedBlobID, &item.size, &item.sha256, &item.processedSize, &item.processedMime, &item.processedSHA256); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1133,20 +1135,28 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		}
 		currentKey := item.objectKey
 		currentBlobID := item.blobID
+		currentName := item.name
+		currentMime := item.mime
+		currentSize := item.size
+		currentSHA256 := item.sha256
 		if item.processedKey != "" {
 			currentKey = item.processedKey
 			currentBlobID = item.processedBlobID
+			currentName = processedCADName(item.name)
+			currentMime = firstNonEmpty(item.processedMime, "application/acad")
+			currentSize = item.processedSize
+			currentSHA256 = item.processedSHA256
 		}
 		var attachmentID string
 		if item.partNo == "" {
-			err = tx.QueryRow(ctx, `INSERT INTO attachments (drawing_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by, blob_id, current_blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $5, $6, $6, $7, $7, $8, $8, 'v1.0', true, $9::uuid, $10::uuid, $11::uuid) RETURNING id::text`, ownerID, item.role, item.objectKey, currentKey, item.name, item.mime, item.size, item.sha256, userID, item.blobID, currentBlobID).Scan(&attachmentID)
+			err = tx.QueryRow(ctx, `INSERT INTO attachments (drawing_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by, blob_id, current_blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'v1.0', true, $13::uuid, $14::uuid, $15::uuid) RETURNING id::text`, ownerID, item.role, item.objectKey, currentKey, item.name, currentName, item.mime, currentMime, item.size, currentSize, item.sha256, currentSHA256, userID, item.blobID, currentBlobID).Scan(&attachmentID)
 		} else {
-			err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by, blob_id, current_blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $5, $6, $6, $7, $7, $8, $8, 'v1.0', true, $9::uuid, $10::uuid, $11::uuid) RETURNING id::text`, ownerID, item.role, item.objectKey, currentKey, item.name, item.mime, item.size, item.sha256, userID, item.blobID, currentBlobID).Scan(&attachmentID)
+			err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by, blob_id, current_blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'v1.0', true, $13::uuid, $14::uuid, $15::uuid) RETURNING id::text`, ownerID, item.role, item.objectKey, currentKey, item.name, currentName, item.mime, currentMime, item.size, currentSize, item.sha256, currentSHA256, userID, item.blobID, currentBlobID).Scan(&attachmentID)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("创建项目附件失败: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO file_versions (attachment_id, storage_key, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, is_pinned, is_current_release, blob_id) VALUES ($1::uuid, $2, $3, 'v1.0', 'release', $4, $5, $6, $7::uuid, true, true, $8::uuid)`, attachmentID, currentKey, item.objectKey, item.size, item.mime, item.sha256, userID, currentBlobID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO file_versions (attachment_id, storage_key, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, is_pinned, is_current_release, blob_id) VALUES ($1::uuid, $2, $3, 'v1.0', 'release', $4, $5, $6, $7::uuid, true, true, $8::uuid)`, attachmentID, currentKey, item.objectKey, currentSize, currentMime, currentSHA256, userID, currentBlobID); err != nil {
 			return nil, fmt.Errorf("创建项目初始版本失败: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE upload_session_items SET attachment_id = $2::uuid, status = 'committed', updated_at = now() WHERE id = $1::uuid`, item.id, attachmentID); err != nil {
@@ -1646,6 +1656,21 @@ func uniqueKeys(values ...string) []string {
 func isCAD(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	return ext == ".exb" || ext == ".dwg" || ext == ".dxf"
+}
+
+// processedCADName 是上传后当前可直接打开的 CAD 文件名。
+// 原始文件名保留在 original_name；只要产生了处理对象，当前对象统一是 DWG，
+// 因此 current_name 必须与实际对象格式一致。
+func processedCADName(name string) string {
+	name = filepath.Base(strings.ReplaceAll(strings.TrimSpace(name), "\\", "/"))
+	if name == "" || name == "." {
+		return "图纸.dwg"
+	}
+	ext := filepath.Ext(name)
+	if ext == "" {
+		return name + ".dwg"
+	}
+	return strings.TrimSuffix(name, ext) + ".dwg"
 }
 
 func safeName(name string) string {

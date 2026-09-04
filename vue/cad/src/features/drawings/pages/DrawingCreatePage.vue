@@ -162,7 +162,7 @@ async function handleAssemblySelected(file: File) {
   const sequence = ++assemblyIdentifySequence
   const fileNameIdentity = parseStandaloneDrawingFileName(file.name)
   formDrawingNo.value = ''
-  assemblyIdentifyMessage.value = '正在读取总图标题栏中的真实图号…'
+  assemblyIdentifyMessage.value = '正在根据总图文件名识别图号…'
   isIdentifyingAssembly.value = true
   if (!formProject.value) {
     formProject.value = fileNameIdentity.name || file.name.replace(/\.[^/.]+$/, '')
@@ -172,23 +172,23 @@ async function handleAssemblySelected(file: File) {
   }
   if (file && supportsDrawingNumberIdentification(file.name)) {
     try {
-      const identity = await dataManager.identifyDrawingFile(file, file.name, { titleBlockOnly: true })
+      const identity = await dataManager.identifyDrawingFile(file, file.name)
       if (sequence !== assemblyIdentifySequence) return
-      if (identity.partNoSource !== 'titleBlock' || !identity.partNo.trim()) {
-        assemblyIdentifyMessage.value = '标题栏未识别到总图图号，请核对图纸后手动填写。'
+      if (identity.partNoSource !== 'filename' || !identity.partNo.trim()) {
+        assemblyIdentifyMessage.value = '文件名中未识别到总图图号，请核对后手动填写。'
       } else {
         formDrawingNo.value = identity.partNo.trim()
-        assemblyIdentifyMessage.value = '已从总图标题栏读取真实图号。'
+        assemblyIdentifyMessage.value = '已从总图文件名识别图号。'
       }
     } catch (error) {
       if (sequence !== assemblyIdentifySequence) return
-      assemblyIdentifyMessage.value = error instanceof Error ? error.message : '读取总图标题栏失败，请手动填写总图图号。'
+      assemblyIdentifyMessage.value = error instanceof Error ? error.message : '读取总图文件名失败，请手动填写总图图号。'
     } finally {
       if (sequence === assemblyIdentifySequence) isIdentifyingAssembly.value = false
     }
   } else {
     isIdentifyingAssembly.value = false
-    assemblyIdentifyMessage.value = '当前文件不是可读取标题栏的 CAD 格式，请手动填写总图图号。'
+    assemblyIdentifyMessage.value = '当前文件名无法自动识别图号，请手动填写总图图号。'
   }
   uiStore.toast(`总图 ${file.name} 已选择，现可继续添加零件图`, 'ok')
 }
@@ -346,11 +346,11 @@ async function performCreate() {
     return
   }
   if (isIdentifyingAssembly.value) {
-    uiStore.toast('正在读取总图标题栏，请稍候再保存', 'warn')
+    uiStore.toast('正在识别总图文件名，请稍候再保存', 'warn')
     return
   }
   if (!drawingNo) {
-    uiStore.toast('请填写总图图号；总图图号必须来自标题栏识别或用户核对后的手动输入', 'warn')
+    uiStore.toast('请填写总图图号；请以总图文件名识别结果或人工核对结果为准', 'warn')
     return
   }
 
@@ -700,14 +700,14 @@ async function retryFailedUpload() {
                 id="create-drawing-no"
                 v-model="formDrawingNo"
                 class="inp"
-                :placeholder="isIdentifyingAssembly ? '正在读取标题栏…' : '从总图标题栏自动识别，也可核对后修改'"
+                :placeholder="isIdentifyingAssembly ? '正在识别文件名…' : '从总图文件名自动识别，也可核对后修改'"
                 :disabled="isIdentifyingAssembly"
               />
               <small
                 class="field-help"
                 :class="{ error: (createMode === 'fork' && formDrawingNo === selectedForkSourceNo) || (assemblyIdentifyMessage && !formDrawingNo && !isIdentifyingAssembly) }"
               >
-                {{ createMode === 'fork' && formDrawingNo === selectedForkSourceNo ? '分叉需要新的总图图号，请修改后再提交。' : assemblyIdentifyMessage || '总图图号来自图纸标题栏，不使用项目号代替。' }}
+                {{ createMode === 'fork' && formDrawingNo === selectedForkSourceNo ? '分叉需要新的总图图号，请修改后再提交。' : assemblyIdentifyMessage || '总图图号来自总图文件名，不使用项目号代替。' }}
               </small>
             </div>
 
@@ -757,7 +757,7 @@ async function retryFailedUpload() {
               </div>
               <div class="upload-texts">
                 <b>上传项目总图</b>
-              <p>支持 .exb / .dwg / .dxf / .pdf · 单文件 ≤ 100MB；选择后读取标题栏图号</p>
+              <p>支持 .exb / .dwg / .dxf / .pdf · 单文件 ≤ 100MB；选择后按文件名识别图号</p>
               </div>
               <div class="upload-actions">
                 <button class="btn sm primary" type="button" @click="triggerAssemblyPick">

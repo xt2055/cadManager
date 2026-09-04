@@ -7,6 +7,7 @@ import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue
 import { STATUS, useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { Drawing, StructurePart, StructurePartEditable } from '@/types/domain.types'
+import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({ name: 'DrawingPropertiesTab' })
 
@@ -290,7 +291,7 @@ const feedIcons: Record<string, string> = {
         <div class="kv"><div class="k">所属项目</div><div class="v">{{ (currentItem as Drawing)?.project || '—' }}</div></div>
         <div class="kv"><div class="k">发布版本</div><div class="v mono">{{ currentItem?.ver || 'v1.0' }}</div></div>
         <div class="kv"><div class="k">生命周期状态</div><div class="v"><span v-if="currentItem" class="tag" :class="STATUS[currentItem.status].c">{{ STATUS[currentItem.status].t }}</span></div></div>
-        <div class="kv"><div class="k">更新时间</div><div class="v mono">{{ (currentItem && 'updated' in currentItem ? currentItem.updated : '') || '—' }}</div></div>
+        <div class="kv"><div class="k">更新时间</div><div class="v mono">{{ formatReadableDateTime(currentItem && 'updated' in currentItem ? currentItem.updated : undefined) }}</div></div>
         <div class="kv full-width"><div class="k">工程说明与备注</div><div class="v remark-txt">{{ currentItem?.remark || '无特殊备忘与交底要求' }}</div></div>
       </div>
     </div>
@@ -313,7 +314,7 @@ const feedIcons: Record<string, string> = {
           <div class="feed-txt">
             <b>{{ item.user }}</b> <span v-html="item.txt"></span>
           </div>
-          <div class="feed-time">{{ item.time }}</div>
+	          <div class="feed-time">{{ formatReadableDateTime(item.time, '—') }}</div>
         </div>
         <div v-if="!activityLogs.length" class="empty compact-empty">
           <DemoIcon name="activity" :size="30" />

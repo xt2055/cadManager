@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -148,9 +149,9 @@ func AdminDrawingResource(pool *pgxpool.Pool, objectStorage storage.ObjectStorag
 			var no string
 			var status string
 			if action == "disable" {
-				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status_before_disabled = CASE WHEN status <> 'disabled' THEN status ELSE status_before_disabled END, status = 'disabled', updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
+				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status_before_disabled = CASE WHEN status <> 'disabled' THEN status ELSE status_before_disabled END, status = 'disabled', updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
 			} else {
-				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status = COALESCE(status_before_disabled, 'draft'), status_before_disabled = NULL, updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid AND status = 'disabled' RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
+				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status = COALESCE(status_before_disabled, 'draft'), status_before_disabled = NULL, updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid AND status = 'disabled' RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
 			}
 			if errors.Is(err, pgx.ErrNoRows) {
 				writeAdminDrawingError(writer, ErrAdminDrawingNotFound)
@@ -205,9 +206,9 @@ func AdminPartResource(pool *pgxpool.Pool, objectStorage storage.ObjectStorage, 
 		var no string
 		var status string
 		if action == "disable" {
-			err = pool.QueryRow(request.Context(), `UPDATE structure_parts SET status_before_disabled = CASE WHEN status <> 'disabled' THEN status ELSE status_before_disabled END, status = 'disabled', updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid RETURNING part_no, status`, id, user.ID).Scan(&no, &status)
+			err = pool.QueryRow(request.Context(), `UPDATE structure_parts SET status_before_disabled = CASE WHEN status <> 'disabled' THEN status ELSE status_before_disabled END, status = 'disabled', updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid RETURNING part_no, status`, id, user.ID).Scan(&no, &status)
 		} else {
-			err = pool.QueryRow(request.Context(), `UPDATE structure_parts SET status = COALESCE(status_before_disabled, 'draft'), status_before_disabled = NULL, updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid AND status = 'disabled' RETURNING part_no, status`, id, user.ID).Scan(&no, &status)
+			err = pool.QueryRow(request.Context(), `UPDATE structure_parts SET status = COALESCE(status_before_disabled, 'draft'), status_before_disabled = NULL, updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid AND status = 'disabled' RETURNING part_no, status`, id, user.ID).Scan(&no, &status)
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeAdminDrawingError(writer, ErrAdminDrawingNotFound)
@@ -505,12 +506,17 @@ func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage st
 		return "", err
 	}
 	defer tx.Rollback(ctx)
-	var active int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE s.status = 'active' AND (a.drawing_id = $1::uuid OR a.part_id IN (SELECT id FROM structure_parts WHERE drawing_id = $1::uuid))`, id).Scan(&active); err != nil {
-		return "", err
-	}
-	if active > 0 {
-		return "", ErrAdminDrawingBusy
+	// 管理员删除是强制操作：丢弃未提交的本地编辑并释放会话，
+	// 不等待 CAXA，也不让活动编辑锁阻塞图纸删除。
+	if _, err := tx.Exec(ctx, `
+		UPDATE edit_sessions s
+		SET status = 'closed', closed_at = now(), last_seen_at = now()
+		FROM attachments a
+		LEFT JOIN structure_parts p ON p.id = a.part_id
+		WHERE s.attachment_id = a.id
+		  AND s.status = 'active'
+		  AND (a.drawing_id = $1::uuid OR p.drawing_id = $1::uuid)`, id); err != nil {
+		return "", fmt.Errorf("释放图纸编辑会话失败: %w", err)
 	}
 	partRows, err := tx.Query(ctx, `SELECT part_no FROM structure_parts WHERE drawing_id = $1::uuid`, id)
 	if err != nil {
@@ -557,13 +563,6 @@ func hardDeletePart(ctx context.Context, pool *pgxpool.Pool, objectStorage stora
 	if err != nil {
 		return "", "", nil, err
 	}
-	var active int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM edit_sessions WHERE attachment_id IN (SELECT id FROM attachments WHERE part_id = $1::uuid) AND status = 'active'`, id).Scan(&active); err != nil {
-		return "", "", nil, err
-	}
-	if active > 0 {
-		return "", "", nil, ErrAdminDrawingBusy
-	}
 	keys := make([]string, 0)
 	rows, err := pool.Query(ctx, `SELECT a.storage_key, COALESCE(a.current_storage_key, '') FROM attachments a WHERE a.part_id = $1::uuid`, id)
 	if err != nil {
@@ -596,6 +595,13 @@ func hardDeletePart(ctx context.Context, pool *pgxpool.Pool, objectStorage stora
 		return "", "", nil, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		UPDATE edit_sessions
+		SET status = 'closed', closed_at = now(), last_seen_at = now()
+		WHERE attachment_id IN (SELECT id FROM attachments WHERE part_id = $1::uuid)
+		  AND status = 'active'`, id); err != nil {
+		return "", "", nil, fmt.Errorf("释放零件编辑会话失败: %w", err)
+	}
 	var childCount int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM structure_parts WHERE parent_part_id = $1::uuid`, id).Scan(&childCount); err != nil {
 		return "", "", nil, err
@@ -628,13 +634,6 @@ func hardDeleteAttachment(ctx context.Context, pool *pgxpool.Pool, objectStorage
 	}
 	if err != nil {
 		return "", "", nil, err
-	}
-	var active int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM edit_sessions WHERE attachment_id = $1::uuid AND status = 'active'`, id).Scan(&active); err != nil {
-		return "", "", nil, err
-	}
-	if active > 0 {
-		return "", "", nil, ErrAdminDrawingBusy
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM attachments WHERE id = $1::uuid`, id); err != nil {
 		return "", "", nil, err

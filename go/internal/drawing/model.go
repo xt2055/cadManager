@@ -13,24 +13,26 @@ const (
 )
 
 type Drawing struct {
-	ID         string  `json:"id"`
-	No         string  `json:"no"`
-	Name       string  `json:"name"`
-	Kind       string  `json:"kind"`
-	Project    string  `json:"project"`
-	Material   string  `json:"material"`
-	Vendor     string  `json:"vendor"`
-	Status     Status  `json:"status"`
-	Version    string  `json:"ver"`
-	BorrowFrom *string `json:"borrowFrom,omitempty"`
-	Remark     *string `json:"remark,omitempty"`
-	By         string  `json:"by,omitempty"`
-	Updated    string  `json:"updated,omitempty"`
-	CreatedBy  string  `json:"createdBy,omitempty"`
-	CreatedAt  string  `json:"createdAt,omitempty"`
-	UpdatedBy  string  `json:"updatedBy,omitempty"`
-	UpdatedAt  string  `json:"updatedAt,omitempty"`
-	Signers    Signers `json:"signers"`
+	ID              string            `json:"id"`
+	No              string            `json:"no"`
+	Name            string            `json:"name"`
+	Kind            string            `json:"kind"`
+	Project         string            `json:"project"`
+	Material        string            `json:"material"`
+	Vendor          string            `json:"vendor"`
+	Status          Status            `json:"status"`
+	Version         string            `json:"ver"`
+	BorrowFrom      *string           `json:"borrowFrom,omitempty"`
+	Remark          *string           `json:"remark,omitempty"`
+	By              string            `json:"by,omitempty"`
+	Updated         string            `json:"updated,omitempty"`
+	CreatedBy       string            `json:"createdBy,omitempty"`
+	CreatedAt       string            `json:"createdAt,omitempty"`
+	UpdatedBy       string            `json:"updatedBy,omitempty"`
+	UpdatedAt       string            `json:"updatedAt,omitempty"`
+	Signers         Signers           `json:"signers"`
+	AttributeValues map[string]string `json:"attributeValues"`
+	Revision        int64             `json:"revision"`
 
 	// CreatedByID 创建者用户 ID（仅用于服务端权限判断，不下发前端）。
 	CreatedByID string `json:"-"`
@@ -61,6 +63,7 @@ type Part struct {
 	UpdatedBy         string  `json:"updatedBy,omitempty"`
 	UpdatedAt         string  `json:"updatedAt,omitempty"`
 	Signers           Signers `json:"signers"`
+	Revision          int64   `json:"revision"`
 }
 
 type ListFilter struct {
@@ -93,14 +96,18 @@ type CreateDrawingInput struct {
 }
 
 type UpdateDrawingInput struct {
-	Name       *string `json:"name"`
-	Project    *string `json:"project"`
-	Material   *string `json:"material"`
-	Vendor     *string `json:"vendor"`
-	Status     *Status `json:"status"`
-	Version    *string `json:"ver"`
-	BorrowFrom *string `json:"borrowFrom"`
-	Remark     *string `json:"remark"`
+	ExpectedRevision *int64            `json:"expectedRevision"`
+	Name             *string           `json:"name"`
+	Kind             *string           `json:"kind"`
+	Project          *string           `json:"project"`
+	Material         *string           `json:"material"`
+	Vendor           *string           `json:"vendor"`
+	Status           *Status           `json:"status"`
+	Version          *string           `json:"ver"`
+	BorrowFrom       *string           `json:"borrowFrom"`
+	Remark           *string           `json:"remark"`
+	Signers          Signers           `json:"signers"`
+	AttributeValues  map[string]string `json:"attributeValues"`
 }
 
 type CreatePartInput struct {
@@ -123,6 +130,8 @@ type CreatePartInput struct {
 }
 
 type UpdatePartInput struct {
+	ExpectedRevision  *int64   `json:"expectedRevision"`
+	No                *string  `json:"no"`
 	Name              *string  `json:"name"`
 	Material          *string  `json:"material"`
 	Spec              *string  `json:"spec"`

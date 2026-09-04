@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { dataManager } from '@/services/data-manager'
+import type { StoredAttachment } from '@/services/data-manager/data-provider'
 import { deleteUploadRecoverySession, loadUploadRecoveryFile, saveUploadRecoveryFile } from '@/services/upload-file-storage'
 import { readDocxAuthor } from '@/utils/docx-metadata'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
@@ -12,6 +13,7 @@ import { reviewFlowService, signerRoleForNode } from '@/services/review-flow.ser
 import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.service'
 import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
 import { ensureSmbCredential } from '@/services/tauri/cad-edit.service'
+import { formatReadableDateTime } from '@/utils/date-time'
 import type {
   ActivityLog,
   ActivityResult,
@@ -109,6 +111,8 @@ export const useDomainStore = defineStore('domain', () => {
   const borrows = ref<BorrowRecord[]>([])
   const bomItems = ref<BomItem[]>([])
   const craftFiles = ref<CraftFile[]>([])
+  // 数据库附件快照：项目级文件清单以它为准，避免结构树局部状态遗漏零件文件。
+  const storedAttachments = ref<StoredAttachment[]>([])
   const logs = ref<ActivityLog[]>([])
   const reviewCases = ref<ReviewCase[]>([])
   const myReviews = ref<MyReview[]>([])
@@ -243,7 +247,8 @@ export const useDomainStore = defineStore('domain', () => {
       .catch(() => undefined)
       .then(async () => {
         const operations: Promise<void>[] = []
-        if (moduleSnapshot(drawings.value) !== persistedSnapshots.drawings) operations.push(dataManager.saveDrawings(drawings.value))
+        // 图纸不再允许全量回写：旧页面的整个数组会复活已删除资源、覆盖他人修改。
+        // 图纸字段必须由 /api/drawings/{id} 的带 revision PATCH 提交。
         if (moduleSnapshot(structure.value) !== persistedSnapshots.structure) operations.push(dataManager.saveStructure(structure.value))
         if (moduleSnapshot(attributes.value) !== persistedSnapshots.attributes) operations.push(dataManager.saveAttributes(attributes.value))
         if (moduleSnapshot(versions.value) !== persistedSnapshots.versions) operations.push(dataManager.saveVersions(versions.value))
@@ -333,23 +338,8 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
-  function applyStoredAttachments(items: Array<{
-    id: string
-    name: string
-    currentName?: string
-    storageKey: string
-    currentStorageKey?: string
-    drawingNo: string
-    partNo?: string
-    role: 'assembly' | 'part' | 'material' | 'craft' | 'other'
-    size: number
-    mimeType: string
-    version: string
-		previewable: boolean
-		revision?: number
-    uploadedBy?: string
-    createdAt?: string
-  }>): void {
+  function applyStoredAttachments(items: StoredAttachment[]): void {
+    storedAttachments.value = items
     if (!items.length) return
     const drawingByNo = new Map(drawings.value.map((drawing) => [drawing.no, drawing]))
     const partByNo = new Map(structure.value.map((part) => [part.no, part]))
@@ -371,22 +361,23 @@ export const useDomainStore = defineStore('domain', () => {
     for (const item of items) {
       const owner = item.partNo ? partByNo.get(item.partNo) : drawingByNo.get(item.drawingNo)
       if (!owner) continue
-      const name = item.currentName || item.name
-      const file: DrawingFile = {
-        id: item.id,
-        name,
-        rawName: item.name !== name ? item.name : undefined,
-        size: formatFileSize(item.size),
+			// 页面显示原始真实文件名；currentName 仅代表后台转换后的当前格式（例如 EXB -> DWG）。
+			const name = item.name || item.currentName || '未命名文件'
+			const file: DrawingFile = {
+				id: item.id,
+				name,
+				rawName: item.currentName && item.currentName !== name ? item.currentName : undefined,
+				size: formatFileSize(item.currentSize ?? item.size),
         role: item.role === 'assembly' || item.role === 'part' ? item.role : 'other',
         drawingNo: item.drawingNo,
         ...(item.partNo ? { partNo: item.partNo } : {}),
         version: item.version,
         uploadedBy: item.uploadedBy || '未知用户',
-        uploadedAt: item.createdAt || '历史记录',
+        uploadedAt: formatReadableDateTime(item.createdAt, '历史记录'),
         storageKey: item.currentStorageKey || item.storageKey,
         rawStorageKey: item.storageKey,
         currentStorageKey: item.currentStorageKey,
-        mimeType: item.mimeType,
+				mimeType: item.currentMimeType || item.mimeType,
 		previewable: item.previewable,
 		revision: item.revision,
       }
@@ -398,7 +389,7 @@ export const useDomainStore = defineStore('domain', () => {
           size: formatFileSize(item.size),
           version: item.version,
           uploadedBy: item.uploadedBy || '未知用户',
-          uploadedAt: item.createdAt || '历史记录',
+          uploadedAt: formatReadableDateTime(item.createdAt, '历史记录'),
           storageKey: item.currentStorageKey || item.storageKey,
 			mimeType: item.mimeType,
 			revision: item.revision,
@@ -422,7 +413,7 @@ export const useDomainStore = defineStore('domain', () => {
         }
         owner.craftFiles = [...(owner.craftFiles ?? []).filter((file) => file.id !== craft.id), craft]
         craftFiles.value.push(craft)
-      } else if (item.role === 'assembly' && 'kind' in owner) {
+      } else if ((item.role === 'assembly' && 'kind' in owner) || (item.role === 'part' && 'parentNo' in owner)) {
         owner.files = [...(owner.files ?? []).filter((candidate) => candidate.id !== file.id), file]
       } else {
         owner.otherFiles = [...(owner.otherFiles ?? []).filter((candidate) => candidate.id !== file.id), file]
@@ -1020,9 +1011,14 @@ export const useDomainStore = defineStore('domain', () => {
     if (!drawing) throw new Error(`图纸 ${drawingNo} 不存在`)
     const errors = validateAttributeValues(values)
     if (errors.length) throw new Error(errors[0])
-    drawing.attributeValues = Object.fromEntries(Object.entries(values).filter(([, value]) => value))
-    drawing.updated = nowLabel()
-    await persist()
+    if (!drawing.id || !drawing.revision) throw new Error('图纸缺少服务端版本信息，请刷新后重试')
+    const attributeValues = Object.fromEntries(Object.entries(values).filter(([, value]) => value))
+    await dataManager.updateDrawing(drawing.id, {
+      expectedRevision: drawing.revision,
+      attributeValues,
+    })
+    // PATCH 成功后重新取服务端快照，防止同一窗口继续保留旧 revision。
+    await reloadFromServer()
   }
 
 	  async function addDrawing(
@@ -1108,7 +1104,9 @@ export const useDomainStore = defineStore('domain', () => {
 	            ...(structurePartNos.has(item.drawingNo) ? { partNo: item.drawingNo } : {}),
 	          })),
 		borrows: [
-			...(transactionContext.borrows ?? borrows.value)
+			// 新建项目只接受本次提交明确传入的借用关系，绝不能把当前内存中
+			// 其他项目的借用记录一并复制进新项目。
+			...(transactionContext.borrows ?? [])
 				.filter((item) => !item.targetDrawingNo || item.targetDrawingNo === drawing.no)
 				.map((item) => ({
 					direction: item.dir,
@@ -2450,22 +2448,11 @@ export const useDomainStore = defineStore('domain', () => {
     if (!material) throw new Error('请输入材料牌号')
     if (!Number.isFinite(payload.qty) || payload.qty <= 0) throw new Error('装配数量必须大于 0')
     if (!Number.isFinite(payload.weight) || payload.weight < 0) throw new Error('理论重量不能小于 0')
+    if (!part.id || !part.revision) throw new Error('零件缺少服务端版本信息，请刷新后重试')
 
-    const original = { ...part }
-    const originalStructure = structure.value.map((candidate) => ({
-      candidate,
-      parentNo: candidate.parentNo,
-      files: candidate.files ? [...candidate.files] : undefined,
-      otherFiles: candidate.otherFiles ? [...candidate.otherFiles] : undefined,
-    }))
-    const originalDrawings = drawings.value.map((drawing) => ({
-      drawing,
-      files: drawing.files ? [...drawing.files] : undefined,
-      otherFiles: drawing.otherFiles ? [...drawing.otherFiles] : undefined,
-    }))
-    const originalPartNo = part.no
-    Object.assign(part, {
-      no: nextPartNo,
+    await dataManager.updatePart(part.id, {
+      expectedRevision: part.revision,
+      ...(nextPartNo !== part.no ? { no: nextPartNo } : {}),
       name,
       material,
       spec,
@@ -2473,53 +2460,18 @@ export const useDomainStore = defineStore('domain', () => {
       surfaceTreatment,
       partType: payload.partType,
       qty: payload.qty,
-      ...(vendor ? { vendor } : { vendor: undefined }),
-      ...(remark ? { remark } : { remark: undefined }),
+      ...(vendor ? { vendor } : {}),
+      ...(remark ? { remark } : {}),
     })
-
-    const activityLog = recordActivity({
+    await reloadFromServer()
+    recordActivity({
       drawingNo: nextPartNo,
-      drawingName: part.name,
+      drawingName: name,
       targetType: 'part',
       act: 'edit',
       text: `更新零件图 <b>${nextPartNo}</b> 属性：材料 ${material} · 规格 ${spec || '未填写'} · 数量 ×${payload.qty}`,
-      detail: { changedFields: payload, ...(originalPartNo !== nextPartNo ? { oldPartNo: originalPartNo, newPartNo: nextPartNo } : {}) },
+      detail: { changedFields: payload, ...(nextPartNo !== partNo ? { oldPartNo: partNo, newPartNo: nextPartNo } : {}) },
     })
-
-    if (originalPartNo !== nextPartNo) {
-      const parentNo = directParentDrawingNo(nextPartNo)
-      if (parentNo && (drawings.value.some((item) => item.no === parentNo) || structure.value.some((item) => item.no === parentNo))) {
-        part.parentNo = parentNo
-      }
-      for (const candidate of structure.value) {
-        if (candidate !== part && candidate.parentNo === originalPartNo) candidate.parentNo = nextPartNo
-      }
-      for (const drawing of drawings.value) {
-        drawing.files = (drawing.files ?? []).map((file) => file.partNo === originalPartNo ? { ...file, partNo: nextPartNo } : file)
-        drawing.otherFiles = (drawing.otherFiles ?? []).map((file) => file.partNo === originalPartNo ? { ...file, partNo: nextPartNo } : file)
-      }
-      for (const candidate of structure.value) {
-        candidate.files = (candidate.files ?? []).map((file) => file.partNo === originalPartNo ? { ...file, partNo: nextPartNo } : file)
-        candidate.otherFiles = (candidate.otherFiles ?? []).map((file) => file.partNo === originalPartNo ? { ...file, partNo: nextPartNo } : file)
-      }
-    }
-
-    try {
-      await persist()
-    } catch (saveError) {
-      Object.assign(part, original)
-      for (const snapshot of originalStructure) {
-        snapshot.candidate.parentNo = snapshot.parentNo
-        snapshot.candidate.files = snapshot.files
-        snapshot.candidate.otherFiles = snapshot.otherFiles
-      }
-      for (const snapshot of originalDrawings) {
-        snapshot.drawing.files = snapshot.files
-        snapshot.drawing.otherFiles = snapshot.otherFiles
-      }
-      logs.value = logs.value.filter((item) => item.id !== activityLog.id)
-      throw saveError
-    }
   }
 
   async function refreshUsers(): Promise<void> {
@@ -2613,6 +2565,7 @@ export const useDomainStore = defineStore('domain', () => {
     borrows,
     bom,
     crafts,
+    storedAttachments,
     logs,
     reviewCases,
     currentReviewNodes,

@@ -28,8 +28,7 @@ export class JsonDataProvider implements DataProvider {
     window.localStorage.setItem(`${MODULE_STORAGE_PREFIX}${name}`, JSON.stringify(value, null, 2))
   }
 
-  loadDrawings(): Promise<Drawing[]> { return Promise.resolve(normalizeDrawings(this.readModule('drawings', readSeedModule(seedDocument, 'drawings', [])))) }
-  saveDrawings(items: Drawing[]): Promise<void> { this.writeModule('drawings', items); return Promise.resolve() }
+	loadDrawings(): Promise<Drawing[]> { return Promise.resolve(normalizeDrawings(this.readModule('drawings', readSeedModule(seedDocument, 'drawings', [])))) }
   loadStructure(): Promise<StructurePart[]> { return Promise.resolve(normalizeStructure(this.readModule('structure', readSeedModule(seedDocument, 'structure', [])))) }
   saveStructure(items: StructurePart[]): Promise<void> { this.writeModule('structure', items); return Promise.resolve() }
   loadAttributes(): Promise<DrawingAttribute[]> { return Promise.resolve(normalizeAttributes(this.readModule('attributes', readSeedModule(seedDocument, 'attributes', [])))) }

@@ -6,6 +6,7 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 import { STATUS, useDomainStore } from '@/stores/domain.store'
+import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({
   name: 'DrawingDetailHeader',
@@ -120,7 +121,7 @@ function openParentDrawing() {
           <span>项目 <b>{{ ('project' in (drawing || {})) ? (drawing as any).project : '—' }}</b></span>
           <span v-if="isPart">关联图号 <b class="mono">{{ drawing?.no }}</b></span>
           <span>创建人 <b>{{ creatorLabel || '待定' }}</b></span>
-          <span>更新时间 <b>{{ ('updated' in (drawing || {})) ? (drawing as any).updated : '刚刚' }}</b></span>
+          <span>更新时间 <b>{{ ('updated' in (drawing || {})) ? formatReadableDateTime((drawing as any).updated, '刚刚') : '刚刚' }}</b></span>
           <span v-if="'forkedFrom' in (drawing || {}) && (drawing as any).forkedFrom" class="tag plain">分叉自·{{ (drawing as any).forkedFrom }}</span>
           <button v-if="isPart && parentDrawing" class="parent-link" type="button" @click="openParentDrawing">
             所属总图 <b>{{ parentDrawing.name }}</b><DemoIcon name="arrow-up-right" :size="12" />

@@ -2,7 +2,6 @@
 import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import AdminTabs from '../components/AdminTabs.vue'
 import {
   deleteAdminDrawing,
   deleteAdminAttachment,
@@ -20,10 +19,12 @@ import {
   type AdminPartSummary,
 } from '@/services/admin-drawing.service'
 import { useUiStore } from '@/stores/ui.store'
+import { useDomainStore } from '@/stores/domain.store'
 
 defineOptions({ name: 'AdminDrawingsPage' })
 
 const uiStore = useUiStore()
+const domainStore = useDomainStore()
 const mode = ref<'drawing' | 'part'>('drawing')
 const keyword = ref('')
 const status = ref('')
@@ -59,7 +60,7 @@ function formatSize(size: number) {
   return `${size} B`
 }
 function roleLabel(value: string) { return value === 'assembly' ? '总图' : value === 'part' ? '零件图' : value }
-function attachmentName(item: AdminAttachment) { return item.currentName || item.originalName }
+function attachmentName(item: AdminAttachment) { return item.originalName || item.currentName }
 
 async function load() {
   loading.value = true
@@ -93,7 +94,7 @@ async function toggleDrawing(item: { id: string; no: string; status: string }) {
   const confirmed = window.confirm(`确定要${action}图纸「${item.no}」吗？${nextStatus === 'disabled' ? '\n禁用后普通图纸库将不再显示。' : ''}`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await setAdminDrawingStatus(item.id, nextStatus); uiStore.toast(`图纸「${item.no}」已${action}`, 'ok'); await load(); if (detail.value?.drawing.id === item.id) detail.value = await getAdminDrawing(item.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : `图纸${action}失败`, 'warn') } finally { busyId.value = '' }
+  try { await setAdminDrawingStatus(item.id, nextStatus); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`图纸「${item.no}」已${action}`, 'ok'); if (detail.value?.drawing.id === item.id) detail.value = await getAdminDrawing(item.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : `图纸${action}失败`, 'warn') } finally { busyId.value = '' }
 }
 
 async function togglePart(item: AdminPartSummary) {
@@ -103,7 +104,7 @@ async function togglePart(item: AdminPartSummary) {
   const confirmed = window.confirm(`确定要${action}零件「${item.no}」吗？`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await setAdminPartStatus(item.id, nextStatus); uiStore.toast(`零件「${item.no}」已${action}`, 'ok'); await load() } catch (error) { uiStore.toast(error instanceof Error ? error.message : `零件${action}失败`, 'warn') } finally { busyId.value = '' }
+  try { await setAdminPartStatus(item.id, nextStatus); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`零件「${item.no}」已${action}`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : `零件${action}失败`, 'warn') } finally { busyId.value = '' }
 }
 
 async function hardDelete(item: { id: string; no: string }) {
@@ -111,7 +112,7 @@ async function hardDelete(item: { id: string; no: string }) {
   const confirmed = window.confirm(`确定永久删除图纸「${item.no}」吗？\n\n这将同时删除其零件、附件、CAD 版本和物理文件，无法恢复。`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await deleteAdminDrawing(item.id); closeDetail(); uiStore.toast(`图纸「${item.no}」已永久删除`, 'ok'); await load() } catch (error) { uiStore.toast(error instanceof Error ? error.message : '图纸永久删除失败', 'warn') } finally { busyId.value = '' }
+  try { await deleteAdminDrawing(item.id); closeDetail(); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`图纸「${item.no}」已永久删除`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : '图纸永久删除失败', 'warn') } finally { busyId.value = '' }
 }
 
 async function removeAttachment(item: AdminAttachment) {
@@ -146,10 +147,9 @@ onMounted(() => { void load() })
 <template>
   <div class="page admin-page admin-drawings-page">
     <div class="section-head">
-      <div><h3>后台管理</h3><span class="lib-count">总图、零件图、附件、版本与编辑会话统一管理</span></div>
+      <div><h3>图纸管理</h3><span class="lib-count">总图、零件图、附件、版本与编辑会话统一管理</span></div>
       <button class="btn" type="button" :disabled="loading" @click="load"><DemoIcon name="refresh-cw" :size="14" />刷新</button>
     </div>
-    <AdminTabs active="mgmt" />
 
     <section class="card filter-card">
       <div class="mode-switch"><button class="mode-btn" :class="{ active: mode === 'drawing' }" type="button" @click="switchMode('drawing')"><DemoIcon name="layers" :size="14" />总图管理</button><button class="mode-btn" :class="{ active: mode === 'part' }" type="button" @click="switchMode('part')"><DemoIcon name="file" :size="14" />零件图管理</button></div>

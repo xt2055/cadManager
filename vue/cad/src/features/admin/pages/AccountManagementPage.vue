@@ -2,7 +2,6 @@
 import { onMounted } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import AdminTabs from '../components/AdminTabs.vue'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 
@@ -40,11 +39,9 @@ function openResetPassword(user: { id: string; account: string }) {
 <template>
   <div class="page admin-page">
     <div class="section-head">
-      <h3>后台管理</h3><span class="lib-count">管理员账号同时继承普通用户全部功能</span>
+      <h3>账号管理</h3>
       <button class="btn primary admin-action" type="button" @click="uiStore.openModal('add-user', '分配账号')"><DemoIcon name="user-plus" :size="14" />分配账号</button>
     </div>
-    <AdminTabs active="users" />
-    <div class="note admin-note"><DemoIcon name="user-plus" :size="14" /><div>系统不开放自行注册，账号仅由管理员在此分配；同一用户可拥有多个角色，管理员账号同时继承普通用户全部功能。</div></div>
     <div class="card">
       <table class="tbl">
         <thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>状态</th><th>最近活跃</th><th>操作</th></tr></thead>
