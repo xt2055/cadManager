@@ -1,5 +1,5 @@
 import type { DrawingFile, MaterialFile, CraftFile } from '@/types/domain.types'
-import type { UploadHashCheckResult, UploadSession, UploadSessionItem } from '@/services/data-manager/data-provider'
+import type { UploadHashCheckResult, UploadSession, UploadSessionItem } from '@/types/application.types'
 import type { UploadGateway } from './upload-gateway'
 import type { UploadRecoveryStore } from './upload-recovery-store'
 

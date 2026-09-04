@@ -1,6 +1,6 @@
-import { dataManager } from '@/services/data-manager'
+import { ApiDataProvider } from '@/services/api/api-data-provider'
 import { ApiUploadGateway, AttachmentUploader, BrowserUploadRecoveryStore, DrawingUploadCoordinator } from '@/modules/upload'
-import { BomCommandService, BorrowCommandService, DrawingCommandService, DrawingFileService, DrawingQueryService, DrawingReadModelMapper, DrawingRelationQueryService, LegacyDrawingModuleService } from '@/modules/drawing'
+import { BomCommandService, BorrowCommandService, DrawingCommandService, DrawingFileService, DrawingQueryService, DrawingReadModelMapper, DrawingRelationQueryService } from '@/modules/drawing'
 import { ReviewService } from '@/modules/review'
 import { reviewCaseService } from '@/services/review-case.service'
 import { reviewFlowService } from '@/services/review-flow.service'
@@ -38,27 +38,13 @@ import {
 } from '@/services/admin-drawing.service'
 import { ensureSmbCredential, openCadEditSession, openCadReadonly, openDefaultAppsSettings, pickCaxaExecutable, saveLocalCaxaPath } from '@/services/tauri/cad-edit.service'
 
+export const apiDataProvider = new ApiDataProvider()
+
 /** Composition root：页面和 Store 只从这里取得上传能力，不自行创建基础设施。 */
 export const appContainer = {
-  uploadGateway: new ApiUploadGateway(dataManager),
+  uploadGateway: new ApiUploadGateway(apiDataProvider),
   uploadRecoveryStore: new BrowserUploadRecoveryStore(),
-  resetDataProvider: () => dataManager.resetProvider(),
 }
-
-/** 过渡期基础设施适配器：旧模块只能通过应用服务端口访问数据提供者。 */
-export const legacyDrawingModuleService = new LegacyDrawingModuleService({
-  loadAttributes: () => dataManager.loadAttributes(),
-  loadBranches: () => dataManager.loadBranches(),
-  loadBorrows: () => dataManager.loadBorrows(),
-  loadCrafts: () => dataManager.loadCrafts(),
-  saveStructure: (items) => dataManager.saveStructure(items),
-  saveAttributes: (items) => dataManager.saveAttributes(items),
-  saveBom: (items) => dataManager.saveBom(items),
-  readAttachment: (storageKey) => dataManager.readAttachment(storageKey),
-  deleteAttachment: (storageKey) => dataManager.deleteAttachment(storageKey),
-  identifyDrawingMaterial: (file, name) => dataManager.identifyDrawingMaterial(file, name),
-  reidentifyDrawingFile: (storageKey, partNo) => dataManager.reidentifyDrawingFile(storageKey, partNo),
-})
 
 export const attachmentUploader = new AttachmentUploader(appContainer.uploadGateway)
 export const drawingUploadCoordinator = new DrawingUploadCoordinator(
@@ -67,49 +53,49 @@ export const drawingUploadCoordinator = new DrawingUploadCoordinator(
 )
 
 export const drawingCommandService = new DrawingCommandService({
-  updateDrawing: (drawingId, input) => dataManager.updateDrawing(drawingId, input),
-  updatePart: (partId, input) => dataManager.updatePart(partId, input),
-  createPart: (drawingId, input) => dataManager.createPart(drawingId, input),
+  updateDrawing: (drawingId, input) => apiDataProvider.updateDrawing(drawingId, input),
+  updatePart: (partId, input) => apiDataProvider.updatePart(partId, input),
+  createPart: (drawingId, input) => apiDataProvider.createPart(drawingId, input),
   archive: drawingLifecycleService.archive,
   unarchive: drawingLifecycleService.unarchive,
 })
 
 export const bomCommandService = new BomCommandService({
-  load: (drawingId) => dataManager.loadDrawingBom(drawingId),
-  replace: (drawingId, input) => dataManager.replaceDrawingBom(drawingId, input),
+  load: (drawingId) => apiDataProvider.loadDrawingBom(drawingId),
+  replace: (drawingId, input) => apiDataProvider.replaceDrawingBom(drawingId, input),
 })
 
 export const borrowCommandService = new BorrowCommandService({
-  borrow: (drawingId, input) => dataManager.borrowPart(drawingId, input),
+  borrow: (drawingId, input) => apiDataProvider.borrowPart(drawingId, input),
 })
 
 export const drawingFileService = new DrawingFileService({
-  readAttachment: (storageKey) => dataManager.readAttachment(storageKey),
-  exportBOM: (drawingNo, storageKey, items) => dataManager.exportBOM(drawingNo, storageKey, items),
-  identifyDrawingFile: (file, name, options) => dataManager.identifyDrawingFile(file, name, options),
-  identifyDrawingMaterial: (file, name) => dataManager.identifyDrawingMaterial(file, name),
-  reidentifyDrawingFile: (storageKey, partNo) => dataManager.reidentifyDrawingFile(storageKey, partNo),
-  scanDrawingDesigner: (drawingNo) => dataManager.scanDrawingDesigner(drawingNo),
-  deleteAttachment: (storageKey) => dataManager.deleteAttachment(storageKey),
+  readAttachment: (storageKey) => apiDataProvider.readAttachment(storageKey),
+  exportBOM: (drawingNo, storageKey, items) => apiDataProvider.exportBOM(drawingNo, storageKey, items),
+  identifyDrawingFile: (file, name, options) => apiDataProvider.identifyDrawingFile(file, name, options),
+  identifyDrawingMaterial: (file, name) => apiDataProvider.identifyDrawingMaterial(file, name),
+  reidentifyDrawingFile: (storageKey, partNo) => apiDataProvider.reidentifyDrawingFile(storageKey, partNo),
+  scanDrawingDesigner: (drawingNo) => apiDataProvider.scanDrawingDesigner(drawingNo),
+  deleteAttachment: (storageKey) => apiDataProvider.deleteAttachment(storageKey),
 })
 
 export const drawingQueryService = new DrawingQueryService({
-  loadDrawings: () => dataManager.loadDrawings(),
-  loadStructure: () => dataManager.loadStructure(),
-  loadBom: () => dataManager.loadBom(),
-  loadAttachments: () => dataManager.loadAttachments(),
+  loadDrawings: () => apiDataProvider.loadDrawings(),
+  loadStructure: () => apiDataProvider.loadStructure(),
+  loadBom: () => apiDataProvider.loadBom(),
+  loadAttachments: () => apiDataProvider.loadAttachments(),
 })
 
 export const drawingReadModelMapper = new DrawingReadModelMapper()
 
 export const drawingRelationQueryService = new DrawingRelationQueryService({
-  loadBranches: () => dataManager.loadBranches(),
-  loadBorrows: () => dataManager.loadBorrows(),
+  loadBranches: () => apiDataProvider.loadBranches(),
+  loadBorrows: () => apiDataProvider.loadBorrows(),
 })
 
 export const reviewService = new ReviewService(reviewCaseService, reviewFlowService)
 
-export const editingService = new EditingService(dataManager, {
+export const editingService = new EditingService(apiDataProvider, {
   openCadEditSession,
   openCadReadonly,
   pickCaxaExecutable,
@@ -118,12 +104,12 @@ export const editingService = new EditingService(dataManager, {
   ensureSmbCredential,
 })
 
-export const versioningService = new VersioningService(dataManager)
+export const versioningService = new VersioningService(apiDataProvider)
 
 export const attributeService = new AttributeService()
 export const attributeCommandService = new AttributeCommandService(attributeCommandApiGateway)
 export const attributeQueryService = new AttributeQueryService({
-  loadAttributes: () => dataManager.loadAttributes(),
+  loadAttributes: () => apiDataProvider.loadAttributes(),
 })
 
 export const auditService = new AuditService({
@@ -133,9 +119,9 @@ export const auditService = new AuditService({
 })
 
 export const adminService = new AdminService({
-  listUsers: () => dataManager.listUsers(),
-  createUser: (input) => dataManager.createUser(input),
-  updateUser: (userId, input) => dataManager.updateUser(userId, input),
+  listUsers: () => apiDataProvider.listUsers(),
+  createUser: (input) => apiDataProvider.createUser(input),
+  updateUser: (userId, input) => apiDataProvider.updateUser(userId, input),
   fetchSystemLogs,
   fetchSystemLogFiles,
   systemLogDownloadUrl,

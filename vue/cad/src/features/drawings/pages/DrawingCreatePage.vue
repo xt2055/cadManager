@@ -12,7 +12,7 @@ import { useUiStore } from '@/stores/ui.store'
 import { appContainer, drawingFileService } from '@/app/container'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import type { DrawingFileIdentity } from '@/modules/drawing'
-import type { UploadSessionSnapshot } from '@/services/data-manager/data-provider'
+import type { UploadSessionSnapshot } from '@/types/application.types'
 import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
 
 defineOptions({

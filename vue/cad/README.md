@@ -41,28 +41,19 @@ bun dev
 bun run build
 ```
 
-## 数据管理器
+## 数据访问
 
-业务数据统一通过 `src/services/data-manager` 访问，不在页面中区分 API 或本地保存方式。
-
-- 开发阶段默认使用 JSON Provider。
-- Tauri 开发环境将数据保存到应用数据目录下的 `data-document.json`。
-- 浏览器执行 `bun dev` 时使用 `localStorage` 保存 JSON 字符串作为降级方案。
-- 生产阶段默认使用 API Provider，可通过 `VITE_DATA_PROVIDER` 和 `VITE_API_BASE_URL` 覆盖。
+前端只使用 Go 服务端 API。页面通过 `src/app/container.ts` 注入按能力拆分的 Application Service，服务端 API 客户端位于 `src/services/api`；不再提供本地 JSON 数据、整表保存或运行模式切换。
 
 复制 `.env.example` 为本地环境文件后，可配置。连接本机 Go 后端时：
 
 ```env
-VITE_DATA_PROVIDER=api
 VITE_API_BASE_URL=http://127.0.0.1:8080/api
 ```
 
 如果使用 Tauri 桌面客户端，Go 后端必须先启动在 `127.0.0.1:8080`；如果使用 Vite 开发服务器，也会通过该地址请求 API。
 
-当前统一文档接口为：
-
-- `GET /data/document`：加载业务数据文档。
-- `PUT /data/document`：保存完整业务数据文档。
+业务读取和写入使用最终资源接口，例如图纸、结构、属性、关系、附件、上传会话和版本 API；旧 `/api/data/*` 整表接口已删除。
 
 客户端更新检查接口为：
 

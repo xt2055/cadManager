@@ -7,8 +7,6 @@ import { useThemeStore } from '@/stores/theme.store'
 import { windowService } from '@/services/tauri/window.service'
 import { useUserPreferenceStore } from '@/stores/user-preference.store'
 import { useAuthStore } from '@/stores/auth.store'
-import { readDebugMode, writeDebugMode } from '@/services/runtime-config.service'
-import { appContainer } from '@/app/container'
 
 defineOptions({
   name: 'LoginPage',
@@ -33,9 +31,6 @@ const isLaserAnimating = ref(false)
 const laserStatus = ref('认证成功 · 正在建立粒子通道')
 const laserCanvas = ref<HTMLCanvasElement | null>(null)
 const submitButton = ref<HTMLButtonElement | null>(null)
-const debugMenuOpen = ref(false)
-const debugMode = ref(false)
-const debugModeLoading = ref(true)
 
 interface RememberedCredentials {
   account: string
@@ -520,18 +515,6 @@ function waitForViewportStable(): Promise<void> {
   })
 }
 
-async function applyDebugMode() {
-  try {
-    await writeDebugMode(debugMode.value)
-    appContainer.resetDataProvider()
-    authStore.resetProvider()
-  } catch (error) {
-    debugMode.value = !debugMode.value
-    errorMessage.value = '运行模式保存失败，请重试'
-    console.error('保存运行模式配置失败', error)
-  }
-}
-
 async function prepareWorkspaceWindow() {
   try {
     await windowService.setWorkspaceWindowSize()
@@ -591,13 +574,6 @@ onMounted(async () => {
   themeStore.applyTheme()
   restoreRememberedCredentials()
   try {
-    debugMode.value = await readDebugMode()
-  } catch (error) {
-    console.error('读取运行模式配置失败', error)
-  } finally {
-    debugModeLoading.value = false
-  }
-  try {
     await windowService.setLoginWindowSize()
     await waitForViewportStable()
   } catch (error) {
@@ -632,24 +608,6 @@ onBeforeUnmount(() => {
         <span>图枢 · 安全认证</span>
       </div>
       <div class="window-mini-controls">
-        <div class="debug-settings-wrap">
-          <button class="win-mini-btn" type="button" title="运行设置" @click.stop="debugMenuOpen = !debugMenuOpen">
-            <DemoIcon name="settings" :size="13" />
-          </button>
-          <div v-if="debugMenuOpen" class="debug-settings-menu" @click.stop>
-            <div class="debug-settings-title">运行设置</div>
-            <label class="debug-mode-option">
-              <input
-                v-model="debugMode"
-                type="checkbox"
-                :disabled="debugModeLoading"
-                @change="applyDebugMode"
-              />
-              <span>调试模式</span>
-            </label>
-            <p>开启后使用本地 JSON；关闭后请求正式 API。</p>
-          </div>
-        </div>
         <button class="win-mini-btn" type="button" title="最小化" @click="handleMinimize">
           <DemoIcon name="minus" :size="13" />
         </button>

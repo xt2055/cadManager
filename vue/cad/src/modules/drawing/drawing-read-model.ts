@@ -1,6 +1,6 @@
 import type { BomItem, CraftFile, Drawing, DrawingFile, DrawingSigners, MaterialFile, StructurePart } from '@/types/domain.types'
 import type { DrawingQuerySnapshot } from './drawing-query-service'
-import type { StoredAttachment } from '@/services/data-manager/data-provider'
+import type { StoredAttachment } from '@/types/application.types'
 import { formatReadableDateTime } from '@/utils/date-time'
 
 export type DrawingId = string

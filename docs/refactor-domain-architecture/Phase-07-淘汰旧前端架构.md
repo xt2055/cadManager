@@ -47,12 +47,7 @@ useDemoStore
 services/data-manager/
 ```
 
-如仍需要 JSON Debug，保留独立的：
-
-```text
-JsonDrawingRepository
-JsonAttachmentRepository
-```
+本次不再保留 JSON Debug；服务端 API 是唯一运行时数据源。
 
 ## 阶段检查
 
@@ -74,13 +69,13 @@ rg "persist\(" src
 - 已移除 `reloadFromServer`，命令完成后由页面调用受影响 ReadModel Store 的 `refresh`；操作日志改由 `AuditService` 直接记录。
 - 认证 JSON 回退和审核候选人查询已改为通过 `AdminService`，业务服务不再直接导入 dataManager。
 - `drawing-operations.store.ts` 已移除 `persist`、快照缓存和 `JSON.stringify` 差异判断；BOM、服务端借用、创建零件和属性字段命令均已切换到原子 Application Service，附件写入统一由附件服务负责。
-- 属性、结构和 BOM 仍保留 JSON Debug 的显式兼容适配器，JSON Debug 借用命令明确不支持复制降级；服务端模式不再调用整表写入。`dataManager` 仅保留在组合根中作为基础设施适配器，业务模块不再直接依赖它。
-- 本批次 `npm run type-check`、`npm run build` 和 `git diff --check` 已通过。
+- 属性、结构和 BOM 均通过原子 Application Service 写入；服务端 API 客户端不再提供整表写入接口，JSON Debug、`DataManager` 门面和旧模块适配器已删除。
+- 本批次 `npm run test`、`npm run type-check`、`npm run build`、`go test ./...` 和 `git diff --check` 已通过。
 
 ## 验收标准
 
 - [x] 旧 Store 不再被引用（`domain.store.ts` 已删除，页面无旧 Store 读取引用）。
-- [x] dataManager 不再被组合根之外的业务代码使用。
+- [x] dataManager 门面和 data-manager 目录已删除，能力按 API 客户端与 Application Service 拆分。
 - [x] 没有全量快照持久化。
 - [x] 命令完成后使用定向刷新或资源失效。
 - [x] 前端类型检查和构建通过；后端 `go test ./...` 通过，前端项目当前无独立 test script。

@@ -9,8 +9,8 @@
 执行日期：2026-09-04
 
 - `go test ./...` 通过，包含 HTTP 路由、原子命令和附件/版本相关测试。
-- 前端 `npm run type-check` 与 `npm run build` 通过；项目当前没有独立的 `npm run test` 脚本。
-- 旧 Store、全量快照持久化、旧 `/api/data/` 路由、bulk write Handler 和 Part clone borrow 扫描均为 0。
+- 前端 `npm run test`、`npm run type-check` 与 `npm run build` 通过。
+- 旧 Store、全量快照持久化、JSON Debug、DataManager、旧 `/api/data/` 路由、bulk write Handler 和 Part clone borrow 扫描均为 0。
 - `git diff --check` 通过。
 - 需要真实数据库、对象存储、SMB/CAXA 和浏览器部署环境的业务 E2E 保留为部署后手工回归项。
 
@@ -160,7 +160,7 @@ Fork retry duplication = impossible
 ```text
 npm type-check ✓
 npm build       ✓
-frontend tests  ✓
+frontend tests  ✓ (architecture regression)
 go test ./...   ✓
 API tests       ✓
 business E2E    ✓

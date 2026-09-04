@@ -4,7 +4,7 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { appConfig } from '@/app/app.config'
 import { editingService } from '@/app/container'
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import type { ActiveEditSessionInfo } from '@/services/data-manager/data-provider'
+import type { ActiveEditSessionInfo } from '@/types/application.types'
 import { checkForUpdates, resolveUpdateDownloadUrl, type UpdateCheckResult } from '@/services/update.service'
 import {
   getSavedUpdateServer,

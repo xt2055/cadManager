@@ -1,4 +1,4 @@
-import type { FileVersionInfo } from '@/services/data-manager/data-provider'
+import type { FileVersionInfo } from '@/types/application.types'
 
 export interface VersioningGateway {
   listFileVersions(storageKey: string): Promise<FileVersionInfo[]>

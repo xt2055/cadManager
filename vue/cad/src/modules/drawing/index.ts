@@ -1,7 +1,6 @@
 export * from './drawing-command-service'
 export * from './bom-command-service'
 export * from './borrow-command-service'
-export * from './legacy-drawing-module-service'
 export * from './drawing-file-service'
 export * from './drawing-query-service'
 export * from './drawing-relation-query-service'

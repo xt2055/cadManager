@@ -1,15 +1,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { legacyDrawingModuleService } from '@/app/container'
-import type { StoredAttachment } from '@/services/data-manager/data-provider'
+import type { StoredAttachment } from '@/types/application.types'
 import { readDocxAuthor } from '@/utils/docx-metadata'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-number-parser'
 import { useAuthStore } from '@/stores/auth.store'
 import { formatReadableDateTime } from '@/utils/date-time'
-import { adminService, appContainer, attributeCommandService, attributeService, attachmentUploader, auditService, bomCommandService, borrowCommandService, drawingCommandService, drawingFileService, drawingQueryService, drawingUploadCoordinator, editingService } from '@/app/container'
-import { AttributeCommandUnsupportedError } from '@/services/attribute-command-api.service'
+import { adminService, appContainer, attributeCommandService, attributeQueryService, attributeService, attachmentUploader, auditService, bomCommandService, borrowCommandService, drawingCommandService, drawingFileService, drawingQueryService, drawingRelationQueryService, drawingUploadCoordinator, editingService } from '@/app/container'
 import { STATUS } from '@/constants/drawing-status'
 import type { PendingDrawingUploadEntry } from '@/modules/upload'
 import type {
@@ -89,10 +87,6 @@ function isServerId(value: string | undefined): value is string {
   return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
 }
 
-function isUnsupportedAttributeCommand(error: unknown): boolean {
-  return error instanceof AttributeCommandUnsupportedError
-}
-
 export const useDrawingOperationsStore = defineStore('drawing-operations', () => {
 	const authStore = useAuthStore()
 	const uploadGateway = appContainer.uploadGateway
@@ -111,33 +105,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
   const loading = ref(false)
   const error = ref<string | null>(null)
   let initializationPromise: Promise<void> | null = null
-  let legacyWriteQueue: Promise<void> = Promise.resolve()
   const pendingDrawingUploads = new Map<string, Map<string, PendingDrawingUploadEntry>>()
   const pendingUploadSessionId = ref<string | null>(null)
   const uploadProgress = ref<Record<string, number>>({})
-
-type LegacyModule = 'structure' | 'attributes' | 'bom'
-
-  /**
-   * 兼容 JSON 调试数据的最后一层写适配器。
-   * 每个命令显式声明受影响的模块，不再比较并回写整个 Store 快照。
-   */
-  async function saveLegacyModules(...modules: LegacyModule[]): Promise<void> {
-    const uniqueModules = [...new Set(modules)]
-    const operation = legacyWriteQueue
-      .catch(() => undefined)
-      .then(async () => {
-        await Promise.all(uniqueModules.map((module) => {
-          switch (module) {
-          case 'structure': return legacyDrawingModuleService.saveStructure(structure.value)
-          case 'attributes': return legacyDrawingModuleService.saveAttributes(attributes.value)
-          case 'bom': return legacyDrawingModuleService.saveBom(bomItems.value)
-          }
-        }))
-      })
-    legacyWriteQueue = operation.catch(() => undefined)
-    await operation
-  }
 
   async function saveBomForDrawing(drawingNo: string): Promise<void> {
     const drawing = drawings.value.find((item) => item.no === drawingNo)
@@ -145,7 +115,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
       await bomCommandService.replace(drawing.id, bomItems.value.filter((item) => item.drawingNo === drawingNo))
       return
     }
-    await saveLegacyModules('bom')
+    throw new Error(`图纸 ${drawingNo} 缺少服务端身份，无法保存 BOM`)
   }
 
   function recordActivity(input: {
@@ -283,12 +253,11 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     error.value = null
     initializationPromise = (async () => {
       try {
-        const [drawingSnapshot, loadedAttributes, loadedBranches, loadedBorrows, loadedCrafts] = await Promise.all([
+        const [drawingSnapshot, loadedAttributes, loadedBranches, loadedBorrows] = await Promise.all([
           drawingQueryService.loadSnapshot(),
-          legacyDrawingModuleService.loadAttributes(),
-          legacyDrawingModuleService.loadBranches(),
-          legacyDrawingModuleService.loadBorrows(),
-          legacyDrawingModuleService.loadCrafts(),
+          attributeQueryService.list(),
+          drawingRelationQueryService.listBranches(),
+          drawingRelationQueryService.listBorrows(),
         ])
         const { drawings: loadedDrawings, structure: loadedStructure, bom: loadedBom, attachments: loadedAttachments } = drawingSnapshot
         drawings.value = loadedDrawings
@@ -297,7 +266,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
         branches.value = loadedBranches
         borrows.value = loadedBorrows
         bomItems.value = loadedBom
-        craftFiles.value = loadedCrafts
+        craftFiles.value = []
 	        applyStoredAttachments(loadedAttachments)
 	        const lastSessionId = window.localStorage.getItem('cad:last-upload-session')
 	        if (lastSessionId) {
@@ -592,25 +561,8 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
       enabled: true,
       sortOrder: attributes.value.length + 1,
     }
-    let attribute: DrawingAttribute
-    let usedLegacy = false
-    try {
-      attribute = await attributeCommandService.create(input)
-    } catch (error) {
-      if (!isUnsupportedAttributeCommand(error)) throw error
-      usedLegacy = true
-      attribute = {
-        id: createId('attribute'),
-        name: trimmed,
-        required,
-        enabled: true,
-        sortOrder: attributes.value.length + 1,
-        fields: [],
-        createdAt: nowLabel(),
-      }
-    }
+    const attribute = await attributeCommandService.create(input)
     attributes.value.push(attribute)
-    if (usedLegacy) await saveLegacyModules('attributes')
     return attribute
   }
 
@@ -622,28 +574,15 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     if (!name) throw new Error('属性名称不能为空')
     if (attributes.value.some((item) => item.id !== id && item.name === name)) throw new Error(`属性「${name}」已存在`)
     const input = { name, required: payload.required, enabled: payload.enabled, sortOrder: attribute.sortOrder }
-    try {
-      Object.assign(attribute, await attributeCommandService.update(id, input))
-    } catch (error) {
-      if (!isUnsupportedAttributeCommand(error)) throw error
-      Object.assign(attribute, input)
-      await saveLegacyModules('attributes')
-    }
+    Object.assign(attribute, await attributeCommandService.update(id, input))
   }
 
   async function deleteAttribute(id: string): Promise<void> {
     await initialize()
     if (!attributes.value.some((item) => item.id === id)) throw new Error('属性不存在')
-    let usedLegacy = false
-    try {
-      await attributeCommandService.remove(id)
-    } catch (error) {
-      if (!isUnsupportedAttributeCommand(error)) throw error
-      usedLegacy = true
-    }
+    await attributeCommandService.remove(id)
     attributes.value = attributes.value.filter((item) => item.id !== id)
     for (const drawing of drawings.value) if (drawing.attributeValues) delete drawing.attributeValues[id]
-    if (usedLegacy) await saveLegacyModules('attributes')
   }
 
   async function addAttributeField(attributeId: string, name: string): Promise<DrawingAttributeField> {
@@ -654,17 +593,8 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     if (!trimmed) throw new Error('字段名称不能为空')
     if (attribute.fields.some((field) => field.name === trimmed)) throw new Error(`字段「${trimmed}」已存在`)
     const input = { name: trimmed, enabled: true, sortOrder: attribute.fields.length + 1 }
-    let field: DrawingAttributeField
-    let usedLegacy = false
-    try {
-      field = await attributeCommandService.addField(attributeId, input)
-    } catch (error) {
-      if (!isUnsupportedAttributeCommand(error)) throw error
-      usedLegacy = true
-      field = { id: createId('attribute-field'), ...input, createdAt: nowLabel() }
-    }
+    const field = await attributeCommandService.addField(attributeId, input)
     attribute.fields.push(field)
-    if (usedLegacy) await saveLegacyModules('attributes')
     return field
   }
 
@@ -677,13 +607,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     if (!trimmed) throw new Error('字段名称不能为空')
     if (attribute.fields.some((item) => item.id !== fieldId && item.name === trimmed)) throw new Error(`字段「${trimmed}」已存在`)
     const input = { name: trimmed, enabled, sortOrder: field.sortOrder }
-    try {
-      Object.assign(field, await attributeCommandService.updateField(attributeId, fieldId, input))
-    } catch (error) {
-      if (!isUnsupportedAttributeCommand(error)) throw error
-      Object.assign(field, input)
-      await saveLegacyModules('attributes')
-    }
+    Object.assign(field, await attributeCommandService.updateField(attributeId, fieldId, input))
   }
 
   async function reorderAttributeFields(attributeId: string, fieldIds: string[]): Promise<void> {
@@ -705,15 +629,8 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
       field.sortOrder = newFields.length + 1
       newFields.push(field)
     })
-    let usedLegacy = false
-    try {
-      await attributeCommandService.reorderFields(attributeId, newFields)
-    } catch (error) {
-      if (!isUnsupportedAttributeCommand(error)) throw error
-      usedLegacy = true
-    }
+    await attributeCommandService.reorderFields(attributeId, newFields)
     attribute.fields = newFields
-    if (usedLegacy) await saveLegacyModules('attributes')
   }
 
   async function setDrawingAttributes(drawingNo: string, values: Record<string, string>): Promise<void> {
@@ -1054,7 +971,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
 	    for (const copy of fileCopies) {
 		      const sourceKey = ('currentStorageKey' in copy.source ? copy.source.currentStorageKey : undefined) || copy.source.storageKey
 		      if (!copy.target || !sourceKey) continue
-		      const content = await legacyDrawingModuleService.readAttachment(sourceKey)
+		      const content = await drawingFileService.read(sourceKey)
 		      forkAttachments.push({ id: copy.target.id, content })
 		    }
 		    await addDrawing(forkedDrawing, forkedParts, forkAttachments, {
@@ -1087,7 +1004,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     if (part.parentNo !== parentNo) throw new Error(`零件 ${part.no} 的所属总图不正确`)
 
     const rootDrawing = findRootDrawing(parentNo)
-    const useAtomicCreate = Boolean(rootDrawing?.id && isServerId(rootDrawing.id))
+    if (!rootDrawing?.id || !isServerId(rootDrawing.id)) throw new Error('所属图纸缺少服务端身份，请刷新后重试')
     let storageKey: string | undefined
     try {
 	      file.partNo = part.no
@@ -1096,8 +1013,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
 	      file.storageKey = storageKey
-	      if (useAtomicCreate && rootDrawing?.id) {
-	        const created = await drawingCommandService.createPart(rootDrawing.id, {
+      const created = await drawingCommandService.createPart(rootDrawing.id, {
 	          no: part.no,
 	          name: part.name,
 	          parentNo: part.parentNo,
@@ -1115,13 +1031,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
 	          ...(part.remark ? { remark: part.remark } : {}),
 	          ...(part.signers ? { signers: part.signers } : {}),
 	        })
-	        structure.value.push({ ...created, files: [file], hasFile: true })
-	      } else {
-	        part.project = part.project || parent.project
-	        part.files = [file]
-	        part.hasFile = true
-	        structure.value.push(part)
-	      }
+      structure.value.push({ ...created, files: [file], hasFile: true })
       recordActivity({
         drawingNo: part.no,
         drawingName: part.name,
@@ -1130,11 +1040,10 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
         text: `创建零件图 ${part.no}`,
         detail: { parentNo: parentNo, fileName: file.name },
       })
-	      if (!useAtomicCreate) await saveLegacyModules('structure')
     } catch (saveError) {
       const insertedIndex = structure.value.findIndex((item) => item.no === part.no)
       if (insertedIndex >= 0) structure.value.splice(insertedIndex, 1)
-      if (storageKey) await legacyDrawingModuleService.deleteAttachment(storageKey).catch(() => undefined)
+      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
       throw saveError
     }
   }
@@ -1152,35 +1061,30 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     const originalHasFile = target.hasFile
     const originalPartNo = file.partNo
     let storageKey: string | undefined
-	    let structureChanged = false
     try {
 	      const commitResult = await uploadNewAttachmentSession(drawingNo, file, content as Blob)
 	      storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
 	      file.storageKey = storageKey
-      // 只有新上传 CAD 时读取一次标题栏材料，并保留到兼容结构模块。
+      // 新上传 CAD 时读取标题栏材料，并通过 Part 原子更新写回服务端。
       if ('parentNo' in target && content) {
         try {
-          const identity = await legacyDrawingModuleService.identifyDrawingMaterial(content, file.name)
+          const identity = await drawingFileService.identifyMaterial(content, file.name)
           const material = identity.material
             || identity.titleBlock?.['材料名称']
             || identity.titleBlock?.['材料']
             || identity.titleBlock?.['材质']
-	          if (material) {
-	            if ('parentNo' in target && isServerId(target.id)) {
-	              if (!target.revision) throw new Error('零件缺少服务端版本信息，请刷新后重试')
-	              const updated = await drawingCommandService.updatePart(target.id, {
-	                expectedRevision: target.revision,
-	                material,
-	              })
-	              target.material = updated.material
-	              target.revision = updated.revision
-	            } else {
-	              target.material = material
-	              structureChanged = true
-	            }
-	          }
+          if (material) {
+            if (!('parentNo' in target) || !isServerId(target.id)) throw new Error('零件缺少有效服务端身份，请刷新后重试')
+            if (!target.revision) throw new Error('零件缺少服务端版本信息，请刷新后重试')
+            const updated = await drawingCommandService.updatePart(target.id, {
+              expectedRevision: target.revision,
+              material,
+            })
+            target.material = updated.material
+            target.revision = updated.revision
+          }
         } catch (scanError) {
           console.warn(`上传图纸后读取零件材料失败：${target.no}`, scanError)
         }
@@ -1189,7 +1093,6 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
       files.push(file)
       target.hasFile = true
       if ('updated' in target) target.updated = nowLabel()
-      if (structureChanged) await saveLegacyModules('structure')
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1203,7 +1106,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
       target.hasFile = originalHasFile
       if (originalPartNo) file.partNo = originalPartNo
       else delete file.partNo
-      if (storageKey) await legacyDrawingModuleService.deleteAttachment(storageKey).catch(() => undefined)
+      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
       throw saveError
     }
   }
@@ -1214,7 +1117,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     if (file.role === 'assembly' || !['.exb', '.dwg', '.dxf'].includes(extension) || !file.storageKey) {
       throw new Error('只有已关联存储位置的零件图支持重新识别')
     }
-    const result = await legacyDrawingModuleService.reidentifyDrawingFile(file.storageKey, newPartNo)
+    const result = await drawingFileService.reidentify(file.storageKey, newPartNo)
     const oldPart = structure.value.find((part) => part.no === result.oldPartNo)
     const targetPart = structure.value.find((part) => part.no === result.partNo)
 
@@ -1323,7 +1226,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
       return borrowedPart
     }
 
-    throw new Error('当前 JSON Debug 模式不支持借用命令，请切换到服务端存储模式')
+    throw new Error('借用命令需要有效的服务端图纸和零件身份，请刷新后重试')
   }
   async function replaceDrawingFile(
     drawingNo: string,
@@ -1410,7 +1313,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
       // 只有替换产生新版本时重新读取标题栏材料，避免点击详情时重复请求。
       if ('parentNo' in target && content) {
         try {
-          const identity = await legacyDrawingModuleService.identifyDrawingMaterial(content, updatedFile.name)
+          const identity = await drawingFileService.identifyMaterial(content, updatedFile.name)
           const material = identity.material
             || identity.titleBlock?.['材料名称']
             || identity.titleBlock?.['材料']
@@ -1476,7 +1379,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
       })
     } catch (saveError) {
       target.otherFiles = originalFiles
-      if (storageKey) await legacyDrawingModuleService.deleteAttachment(storageKey).catch(() => undefined)
+      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
       throw saveError
     }
   }
@@ -1490,7 +1393,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     if (!file) throw new Error(`未找到其他文件：${fileId}`)
     target.otherFiles = otherFiles.filter((item) => item.id !== fileId)
     try {
-      if (file.storageKey) await legacyDrawingModuleService.deleteAttachment(file.storageKey)
+      if (file.storageKey) await drawingFileService.delete(file.storageKey)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1517,7 +1420,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     target.files = files.filter((item) => item.id !== fileId)
     target.hasFile = target.files.length > 0
     try {
-      if (file.storageKey) await legacyDrawingModuleService.deleteAttachment(file.storageKey)
+      if (file.storageKey) await drawingFileService.delete(file.storageKey)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1582,7 +1485,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     } catch (saveError) {
       target.materialFiles = originalMaterialFiles
       bomItems.value = originalBom
-      if (storageKey) await legacyDrawingModuleService.deleteAttachment(storageKey).catch(() => undefined)
+      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
       throw saveError
     }
   }
@@ -1657,7 +1560,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     bomItems.value = bomItems.value.filter((item) => item.sourceFileId !== fileId)
     try {
       await saveBomForDrawing(drawingNo)
-      if (file.storageKey) await legacyDrawingModuleService.deleteAttachment(file.storageKey)
+      if (file.storageKey) await drawingFileService.delete(file.storageKey)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1682,7 +1585,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     if (!file) throw new Error(`未找到备料表文件：${fileId}`)
     if (!file.storageKey) throw new Error(`备料表「${file.name}」没有可读取的附件内容`)
 
-    const content = await legacyDrawingModuleService.readAttachment(file.storageKey)
+    const content = await drawingFileService.read(file.storageKey)
     const parseResult = await parseMaterialFileContent(content, file.name, drawingNo, file.id)
     if (parseResult.author) {
       file.author = parseResult.author
@@ -1770,7 +1673,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     } catch (saveError) {
       target.craftFiles = originalCraftFiles
       craftFiles.value = originalGlobalCraftFiles
-      if (storageKey) await legacyDrawingModuleService.deleteAttachment(storageKey).catch(() => undefined)
+      if (storageKey) await drawingFileService.delete(storageKey).catch(() => undefined)
       throw saveError
     }
   }
@@ -1844,7 +1747,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
     target.craftFiles = attachments.craftFiles.filter((item) => item.id !== fileId)
     craftFiles.value = craftFiles.value.filter((item) => item.id !== fileId)
     try {
-      if (file.storageKey) await legacyDrawingModuleService.deleteAttachment(file.storageKey)
+      if (file.storageKey) await drawingFileService.delete(file.storageKey)
       recordActivity({
         drawingNo: target.no,
         drawingName: target.name,
@@ -1862,7 +1765,7 @@ type LegacyModule = 'structure' | 'attributes' | 'bom'
 
   async function downloadAttachment(file: DrawingFile | MaterialFile | CraftFile): Promise<void> {
     if (!file.storageKey) throw new Error(`文件「${file.name}」没有可用的存储键`)
-    const content = await legacyDrawingModuleService.readAttachment(file.storageKey)
+    const content = await drawingFileService.read(file.storageKey)
     const url = URL.createObjectURL(content)
     const anchor = document.createElement('a')
     anchor.href = url

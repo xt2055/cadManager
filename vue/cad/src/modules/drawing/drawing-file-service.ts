@@ -2,7 +2,7 @@ import type {
   DrawingFileIdentity,
   DrawingFileIdentifyOptions,
   ReidentifyDrawingFileResult,
-} from '@/services/data-manager/data-provider'
+} from '@/types/application.types'
 
 export interface DrawingFileGateway {
   readAttachment(storageKey: string): Promise<Blob>
@@ -14,7 +14,7 @@ export interface DrawingFileGateway {
   deleteAttachment(storageKey: string): Promise<void>
 }
 
-/** 图纸文件应用服务：识别、读取和导出能力通过 Gateway 注入，页面不接触 dataManager。 */
+/** 图纸文件应用服务：识别、读取和导出能力通过 Gateway 注入，页面不接触底层 HTTP 客户端。 */
 export class DrawingFileService {
   public constructor(private readonly gateway: DrawingFileGateway) {}
 

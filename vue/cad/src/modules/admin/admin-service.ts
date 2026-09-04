@@ -1,5 +1,5 @@
 import type { UserAccount } from '@/types/domain.types'
-import type { UserManagementInput } from '@/services/data-manager/data-provider'
+import type { UserManagementInput } from '@/types/application.types'
 import type { SystemLogFile, SystemLogLine, UpdateRecord } from '@/services/admin.service'
 import type {
   AdminAttachment,

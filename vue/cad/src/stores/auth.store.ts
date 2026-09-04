@@ -102,12 +102,8 @@ export const useAuthStore = defineStore('auth', () => {
     initialized.value = true
   }
 
-  function resetProvider() {
-    providerPromise = null
-  }
-
   function getProvider() {
-    if (!providerPromise) providerPromise = createAuthProvider()
+    if (!providerPromise) providerPromise = Promise.resolve(createAuthProvider())
     return providerPromise
   }
 
@@ -141,7 +137,6 @@ export const useAuthStore = defineStore('auth', () => {
     restoreSession,
     login,
     logout,
-    resetProvider,
     hasRole,
     hasAnyRole,
     hasPermission,

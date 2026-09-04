@@ -2,7 +2,7 @@ import type {
   ActiveEditSessionInfo,
   EditSessionControlResult,
   EditSessionOpenResult,
-} from '@/services/data-manager/data-provider'
+} from '@/types/application.types'
 
 export interface NativeEditOpenPayload {
   sessionId: string

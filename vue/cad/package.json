@@ -7,6 +7,7 @@
     "dev": "vite",
     "tauri": "tauri",
     "build": "run-p type-check \"build-only {@}\" --",
+    "test": "node scripts/architecture-check.mjs",
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build"

@@ -1,5 +1,5 @@
 import type { BomItem } from '@/types/domain.types'
-import type { DrawingBomSnapshot, ReplaceDrawingBomInput } from '@/services/data-manager/data-provider'
+import type { DrawingBomSnapshot, ReplaceDrawingBomInput } from '@/types/application.types'
 
 export interface BomCommandGateway {
   load(drawingId: string): Promise<DrawingBomSnapshot>

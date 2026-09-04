@@ -1,4 +1,4 @@
-import type { BorrowPartInput, DrawingBorrowResult } from '@/services/data-manager/data-provider'
+import type { BorrowPartInput, DrawingBorrowResult } from '@/types/application.types'
 
 export interface BorrowCommandGateway {
   borrow(drawingId: string, input: BorrowPartInput): Promise<DrawingBorrowResult>

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { drawingFileService, versioningService } from '@/app/container'
-import type { FileVersionInfo } from '@/services/data-manager/data-provider'
+import type { FileVersionInfo } from '@/types/application.types'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
 import { formatReadableDateTime } from '@/utils/date-time'

@@ -8,7 +8,7 @@ import type {
   UploadSession,
   UploadSessionItem,
   UploadSessionSnapshot,
-} from '@/services/data-manager/data-provider'
+} from '@/types/application.types'
 
 export interface UploadGateway {
   createSession(input: CreateUploadSessionInput): Promise<UploadSession>

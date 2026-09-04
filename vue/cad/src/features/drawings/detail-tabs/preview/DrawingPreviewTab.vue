@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { drawingFileService, editingService } from '@/app/container'
-import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/services/data-manager/data-provider'
+import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/types/application.types'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'

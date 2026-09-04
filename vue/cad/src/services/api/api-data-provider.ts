@@ -1,8 +1,8 @@
-import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart } from '@/types/domain.types'
-import { normalizeAttributes, normalizeBom, normalizeBranches, normalizeBorrows, normalizeDrawings, normalizeStructure, normalizeVersions } from './data.types'
-import type { BorrowPartInput, CreatePartInput, DataProvider, DrawingBomSnapshot, DrawingBorrowResult, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo, UpdateDrawingInput, UpdatePartInput, ReplaceDrawingBomInput } from './data-provider'
+import type { BomItem, Branch, BorrowRecord, Drawing, DrawingAttribute, StructurePart } from '@/types/domain.types'
+import { normalizeAttributes, normalizeBom, normalizeBranches, normalizeBorrows, normalizeDrawings, normalizeStructure } from './data.types'
+import type { BorrowPartInput, CreatePartInput, DrawingBomSnapshot, DrawingBorrowResult, DrawingFileIdentity, DrawingFileIdentifyOptions, EditSessionControlResult, EditSessionOpenResult, ActiveEditSessionInfo, FileVersionInfo, ReidentifyDrawingFileResult, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo, UpdateDrawingInput, UpdatePartInput, ReplaceDrawingBomInput } from '@/types/application.types'
 import type { UserAccount } from '@/types/domain.types'
-import type { UserManagementInput } from './data-provider'
+import type { UserManagementInput } from '@/types/application.types'
 import { getApiBaseUrl } from '@/services/api-base.service'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -23,17 +23,14 @@ function unwrapResponseData(value: unknown): unknown {
   return current
 }
 
-export class ApiDataProvider implements DataProvider {
+/** 面向服务端最终 API 的 HTTP 客户端。按能力注入各 Application Service，不提供整表写入门面。 */
+export class ApiDataProvider {
   private readonly baseUrl: string
   /** 最近一次读取/保存确认的文档更新时间，用于乐观并发校验（防止旧窗口覆盖新数据）。 */
   private documentStamp = ''
 
   constructor(baseUrl = getApiBaseUrl()) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
-  }
-
-  private rejectBulkWrite(module: string): Promise<void> {
-    return Promise.reject(new Error(`服务端模式不支持 ${module} 整表写入，请使用原子命令`))
   }
 
 	async loadDrawings(): Promise<Drawing[]> {
@@ -59,7 +56,6 @@ export class ApiDataProvider implements DataProvider {
     }))
     return snapshots.flat()
   }
-  saveStructure(_items: StructurePart[]): Promise<void> { return this.rejectBulkWrite('structure') }
   async createPart(drawingId: string, input: CreatePartInput): Promise<StructurePart> {
     const item = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}/parts`, {
       method: 'POST', body: JSON.stringify(input),
@@ -69,9 +65,6 @@ export class ApiDataProvider implements DataProvider {
     return normalized
   }
   async loadAttributes(): Promise<DrawingAttribute[]> { return normalizeAttributes(await this.request<unknown>('/drawing-attributes', { method: 'GET' })) }
-  saveAttributes(_items: DrawingAttribute[]): Promise<void> { return this.rejectBulkWrite('attributes') }
-  async loadVersions(): Promise<DrawingVersion[]> { return normalizeVersions([]) }
-  saveVersions(_items: DrawingVersion[]): Promise<void> { return Promise.resolve() }
   async loadBranches(): Promise<Branch[]> { return normalizeBranches(await this.request<unknown>('/drawing-relations/branches', { method: 'GET' })) }
   async loadBorrows(): Promise<BorrowRecord[]> { return normalizeBorrows(await this.request<unknown>('/drawing-relations/borrows', { method: 'GET' })) }
   async loadBom(): Promise<BomItem[]> {
@@ -83,11 +76,6 @@ export class ApiDataProvider implements DataProvider {
     }))
     return snapshots.flat()
   }
-  saveBom(_items: BomItem[]): Promise<void> { return this.rejectBulkWrite('bom') }
-  async loadCrafts(): Promise<CraftFile[]> {
-    return []
-  }
-  saveCrafts(_items: CraftFile[]): Promise<void> { return Promise.resolve() }
   loadAttachments(): Promise<StoredAttachment[]> { return this.request<StoredAttachment[]>('/attachments', { method: 'GET' }) }
 
   async updateDrawing(drawingId: string, input: UpdateDrawingInput): Promise<Drawing> {

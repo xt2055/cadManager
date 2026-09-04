@@ -1,5 +1,5 @@
 import type { Drawing, StructurePart } from '@/types/domain.types'
-import type { CreatePartInput, UpdateDrawingInput, UpdatePartInput } from '@/services/data-manager/data-provider'
+import type { CreatePartInput, UpdateDrawingInput, UpdatePartInput } from '@/types/application.types'
 
 export interface DrawingLifecycle {
   id: string

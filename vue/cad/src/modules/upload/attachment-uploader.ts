@@ -1,4 +1,4 @@
-import type { UploadHashCheckResult } from '@/services/data-manager/data-provider'
+import type { UploadHashCheckResult } from '@/types/application.types'
 import type { UploadGateway } from './upload-gateway'
 
 export type AttachmentRole = 'assembly' | 'part' | 'material' | 'craft' | 'other'

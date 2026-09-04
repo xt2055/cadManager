@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { appContainer, drawingUploadCoordinator } from '@/app/container'
 import type { PendingDrawingUploadEntry } from '@/modules/upload'
 import type { DrawingUploadPlan } from '@/modules/upload'
-import type { UploadSession, UploadSessionItem, UploadSessionSnapshot } from '@/services/data-manager/data-provider'
+import type { UploadSession, UploadSessionItem, UploadSessionSnapshot } from '@/types/application.types'
 
 /** 上传会话 Read Model：保存进度、失败项和恢复状态，不保存上传事务细节。 */
 export const useUploadStore = defineStore('upload', () => {

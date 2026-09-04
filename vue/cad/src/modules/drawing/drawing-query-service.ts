@@ -1,5 +1,5 @@
 import type { BomItem, Drawing, StructurePart } from '@/types/domain.types'
-import type { StoredAttachment } from '@/services/data-manager/data-provider'
+import type { StoredAttachment } from '@/types/application.types'
 
 export interface DrawingQueryGateway {
   loadDrawings(): Promise<Drawing[]>

@@ -8,7 +8,6 @@ import type {
   DrawingAttributeField,
   DrawingFile,
   DrawingFileHistoryItem,
-  DrawingVersion,
   MaterialFile,
   StructurePart,
   UserAccount,
@@ -301,8 +300,4 @@ export function normalizeBorrows(value: unknown): BorrowRecord[] {
       status: source.status === '已归档' || source.status === 'archived' ? '已归档' : '使用中',
     }
   })
-}
-
-export function normalizeVersions(value: unknown): DrawingVersion[] {
-  return array<unknown>(value) as DrawingVersion[]
 }
