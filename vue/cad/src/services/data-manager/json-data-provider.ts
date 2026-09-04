@@ -1,19 +1,17 @@
-import { invoke } from '@tauri-apps/api/core'
-
-import { normalizeAttributes, normalizeBom, normalizeBranches, normalizeBorrows, normalizeCraftFile, normalizeDrawings, normalizeStructure, normalizeVersions, readSeedModule } from './data.types'
+import { normalizeAttributes, normalizeBranches, normalizeBorrows, normalizeCraftFile, normalizeVersions, readSeedModule } from './data.types'
 import type { BomItem, Branch, BorrowRecord, CraftFile, Drawing, DrawingAttribute, DrawingVersion, StructurePart } from '@/types/domain.types'
-import { deleteBrowserAttachment, readBrowserAttachment } from './attachment-storage'
 import type { DataProvider, UserManagementInput, StoredAttachment, CreateUploadSessionInput, CreateUploadSessionItemInput, UploadSession, UploadSessionItem, UploadSessionSnapshot, UploadHashCheckResult, UploadChunkManifest, UploadChunkSnapshot, UploadChunkInfo } from './data-provider'
 import type { UserAccount } from '@/types/domain.types'
 import seedDocument from './data.seed.json'
+import { JsonAttachmentRepository } from './json-attachment-repository'
+import { JsonDrawingRepository } from './json-drawing-repository'
 
 const MODULE_STORAGE_PREFIX = 'cad:data-module:v1:'
 
-function isTauriRuntime(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-}
-
 export class JsonDataProvider implements DataProvider {
+  private readonly drawingRepository = new JsonDrawingRepository()
+  private readonly attachmentRepository = new JsonAttachmentRepository()
+
   private readModule<T>(name: string, fallback: T): T {
     const raw = window.localStorage.getItem(`${MODULE_STORAGE_PREFIX}${name}`)
     if (!raw) return fallback
@@ -28,9 +26,9 @@ export class JsonDataProvider implements DataProvider {
     window.localStorage.setItem(`${MODULE_STORAGE_PREFIX}${name}`, JSON.stringify(value, null, 2))
   }
 
-	loadDrawings(): Promise<Drawing[]> { return Promise.resolve(normalizeDrawings(this.readModule('drawings', readSeedModule(seedDocument, 'drawings', [])))) }
-  loadStructure(): Promise<StructurePart[]> { return Promise.resolve(normalizeStructure(this.readModule('structure', readSeedModule(seedDocument, 'structure', [])))) }
-  saveStructure(items: StructurePart[]): Promise<void> { this.writeModule('structure', items); return Promise.resolve() }
+	loadDrawings(): Promise<Drawing[]> { return Promise.resolve(this.drawingRepository.listDrawings()) }
+	  loadStructure(): Promise<StructurePart[]> { return Promise.resolve(this.drawingRepository.listStructure()) }
+	  saveStructure(items: StructurePart[]): Promise<void> { this.drawingRepository.saveStructure(items); return Promise.resolve() }
   loadAttributes(): Promise<DrawingAttribute[]> { return Promise.resolve(normalizeAttributes(this.readModule('attributes', readSeedModule(seedDocument, 'attributes', [])))) }
   saveAttributes(items: DrawingAttribute[]): Promise<void> { this.writeModule('attributes', items); return Promise.resolve() }
   loadVersions(): Promise<DrawingVersion[]> { return Promise.resolve(normalizeVersions(this.readModule('versions', [] as DrawingVersion[]))) }
@@ -39,11 +37,11 @@ export class JsonDataProvider implements DataProvider {
   saveBranches(items: Branch[]): Promise<void> { this.writeModule('branches', items); return Promise.resolve() }
   loadBorrows(): Promise<BorrowRecord[]> { return Promise.resolve(normalizeBorrows(this.readModule('borrows', readSeedModule(seedDocument, 'borrows', [])))) }
   saveBorrows(items: BorrowRecord[]): Promise<void> { this.writeModule('borrows', items); return Promise.resolve() }
-  loadBom(): Promise<BomItem[]> { return Promise.resolve(normalizeBom(this.readModule('bom', readSeedModule(seedDocument, 'bom', [])))) }
-  saveBom(items: BomItem[]): Promise<void> { this.writeModule('bom', items); return Promise.resolve() }
+	  loadBom(): Promise<BomItem[]> { return Promise.resolve(this.drawingRepository.listBom()) }
+	  saveBom(items: BomItem[]): Promise<void> { this.drawingRepository.saveBom(items); return Promise.resolve() }
   loadCrafts(): Promise<CraftFile[]> { return Promise.resolve(this.readModule('crafts', [] as CraftFile[])) }
   saveCrafts(items: CraftFile[]): Promise<void> { this.writeModule('crafts', items); return Promise.resolve() }
-  loadAttachments(): Promise<StoredAttachment[]> { return Promise.resolve(this.readModule('attachments', [] as StoredAttachment[])) }
+	  loadAttachments(): Promise<StoredAttachment[]> { return Promise.resolve(this.attachmentRepository.list()) }
 
   async createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession> {
     const now = new Date().toISOString()
@@ -115,19 +113,11 @@ export class JsonDataProvider implements DataProvider {
   }
 
   async deleteAttachment(storageKey: string): Promise<void> {
-    if (isTauriRuntime()) {
-      await invoke('delete_attachment', { storageKey })
-      return
-    }
-    await deleteBrowserAttachment(storageKey)
+	    await this.attachmentRepository.delete(storageKey)
   }
 
   async readAttachment(storageKey: string): Promise<Blob> {
-    if (isTauriRuntime()) {
-      const bytes = await invoke<number[]>('read_attachment', { storageKey })
-      return new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' })
-    }
-    return readBrowserAttachment(storageKey)
+	    return this.attachmentRepository.read(storageKey)
   }
 
   async exportBOM(drawingNo: string, _storageKey: string, items: unknown[]): Promise<Blob> {

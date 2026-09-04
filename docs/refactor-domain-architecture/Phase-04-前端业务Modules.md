@@ -148,10 +148,12 @@ Admin
 
 ## 验收标准
 
-- [ ] 新业务代码不依赖 domain.store。
-- [ ] Module Domain 不依赖 Vue/Pinia/Tauri。
-- [ ] Repository 不经过 dataManager。
-- [ ] JSON provider 如保留则按 Repository 独立实现。
+- [x] 新业务代码不依赖 domain.store。
+- [x] Module Domain 不依赖 Vue/Pinia/Tauri。
+- [x] Repository 不经过 dataManager；旧 dataManager 只在 composition root 作为迁移适配器存在。
+- [x] JSON provider 保留的图纸/结构/BOM 与附件能力已分别由 `JsonDrawingRepository`、`JsonAttachmentRepository` 承担。
+
+迁移期说明：旧 `domain.store` 和 `DataManager` 仍服务于尚未完成页面迁移的兼容路径；新 Modules、Query Service 和 Read Model 不通过它们承载业务规则。
 
 ## 当前实施记录
 
@@ -164,6 +166,7 @@ Admin
 - 已建立 `AttachmentUploader` 和 `DrawingUploadCoordinator`；普通附件创建/替换、drawing-create 会话编排、批量/单文件重试已从 Store 移出。
 - 已建立 `DrawingCommandService`；图纸和零件的原子更新入口不再由 Store 直接调用 `dataManager`。
 - 已建立 `DrawingQueryService`；图纸、结构和 BOM 的读取入口由容器统一提供，Store 的初始化和刷新已改用查询服务快照。
+- 已建立 `JsonDrawingRepository` 与 `JsonAttachmentRepository`；JSON 调试模式的图纸、结构、BOM 和附件读取不再由 `JsonDataProvider` 直接实现。
 - 已建立 `DrawingFileService`；图纸识别、附件读取和 BOM 导出由 Drawing 文件边界统一提供。
 - 已建立 `ReviewService`；审核案例、节点提交、流程模板管理和签署角色映射统一通过容器提供。
 - 已建立 `EditingService`；编辑会话、心跳、关闭、版本查询/下载/恢复，以及 CAXA/SMB 桌面能力统一通过容器提供。

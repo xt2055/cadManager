@@ -1,6 +1,6 @@
 import { dataManager } from '@/services/data-manager'
 import { ApiUploadGateway, AttachmentUploader, BrowserUploadRecoveryStore, DrawingUploadCoordinator } from '@/modules/upload'
-import { DrawingCommandService, DrawingFileService, DrawingQueryService } from '@/modules/drawing'
+import { DrawingCommandService, DrawingFileService, DrawingQueryService, DrawingReadModelMapper } from '@/modules/drawing'
 import { ReviewService } from '@/modules/review'
 import { reviewCaseService } from '@/services/review-case.service'
 import { reviewFlowService } from '@/services/review-flow.service'
@@ -72,6 +72,8 @@ export const drawingQueryService = new DrawingQueryService({
   loadStructure: () => dataManager.loadStructure(),
   loadBom: () => dataManager.loadBom(),
 })
+
+export const drawingReadModelMapper = new DrawingReadModelMapper()
 
 export const reviewService = new ReviewService(reviewCaseService, reviewFlowService)
 
