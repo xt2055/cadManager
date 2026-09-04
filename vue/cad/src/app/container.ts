@@ -1,6 +1,6 @@
 import { dataManager } from '@/services/data-manager'
 import { ApiUploadGateway, AttachmentUploader, BrowserUploadRecoveryStore, DrawingUploadCoordinator } from '@/modules/upload'
-import { DrawingCommandService, DrawingFileService } from '@/modules/drawing'
+import { DrawingCommandService, DrawingFileService, DrawingQueryService } from '@/modules/drawing'
 import { ReviewService } from '@/modules/review'
 import { reviewCaseService } from '@/services/review-case.service'
 import { reviewFlowService } from '@/services/review-flow.service'
@@ -65,6 +65,12 @@ export const drawingFileService = new DrawingFileService({
   reidentifyDrawingFile: (storageKey, partNo) => dataManager.reidentifyDrawingFile(storageKey, partNo),
   scanDrawingDesigner: (drawingNo) => dataManager.scanDrawingDesigner(drawingNo),
   deleteAttachment: (storageKey) => dataManager.deleteAttachment(storageKey),
+})
+
+export const drawingQueryService = new DrawingQueryService({
+  loadDrawings: () => dataManager.loadDrawings(),
+  loadStructure: () => dataManager.loadStructure(),
+  loadBom: () => dataManager.loadBom(),
 })
 
 export const reviewService = new ReviewService(reviewCaseService, reviewFlowService)

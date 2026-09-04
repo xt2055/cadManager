@@ -163,6 +163,7 @@ Admin
 - `domain.store.ts` 的分片上传、上传进度和恢复文件访问已改为通过容器能力。
 - 已建立 `AttachmentUploader` 和 `DrawingUploadCoordinator`；普通附件创建/替换、drawing-create 会话编排、批量/单文件重试已从 Store 移出。
 - 已建立 `DrawingCommandService`；图纸和零件的原子更新入口不再由 Store 直接调用 `dataManager`。
+- 已建立 `DrawingQueryService`；图纸、结构和 BOM 的读取入口由容器统一提供，Store 的初始化和刷新已改用查询服务快照。
 - 已建立 `DrawingFileService`；图纸识别、附件读取和 BOM 导出由 Drawing 文件边界统一提供。
 - 已建立 `ReviewService`；审核案例、节点提交、流程模板管理和签署角色映射统一通过容器提供。
 - 已建立 `EditingService`；编辑会话、心跳、关闭、版本查询/下载/恢复，以及 CAXA/SMB 桌面能力统一通过容器提供。

@@ -9,7 +9,7 @@ import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-numb
 import { useAuthStore } from '@/stores/auth.store'
 import type { ApiReviewCase } from '@/modules/review'
 import { formatReadableDateTime } from '@/utils/date-time'
-import { adminService, appContainer, attributeService, attachmentUploader, auditService, drawingCommandService, drawingUploadCoordinator, editingService, reviewService } from '@/app/container'
+import { adminService, appContainer, attributeService, attachmentUploader, auditService, drawingCommandService, drawingFileService, drawingQueryService, drawingUploadCoordinator, editingService, reviewService } from '@/app/container'
 import { signerRoleForNode } from '@/modules/review'
 import type { PendingDrawingUploadEntry } from '@/modules/upload'
 import type {
@@ -426,17 +426,16 @@ export const useDomainStore = defineStore('domain', () => {
   // 保证前端文件列表/版本号以后端数据库为准，不用旧数据覆盖服务端状态。
   async function reloadFromServer(): Promise<void> {
     try {
-      const [loadedDrawings, loadedStructure, loadedAttributes, loadedVersions, loadedBranches, loadedBorrows, loadedBom, loadedCrafts, loadedAttachments] = await Promise.all([
-        dataManager.loadDrawings(),
-        dataManager.loadStructure(),
+      const [drawingSnapshot, loadedAttributes, loadedVersions, loadedBranches, loadedBorrows, loadedCrafts, loadedAttachments] = await Promise.all([
+        drawingQueryService.loadSnapshot(),
         dataManager.loadAttributes(),
         dataManager.loadVersions(),
         dataManager.loadBranches(),
         dataManager.loadBorrows(),
-        dataManager.loadBom(),
         dataManager.loadCrafts(),
         dataManager.loadAttachments(),
       ])
+      const { drawings: loadedDrawings, structure: loadedStructure, bom: loadedBom } = drawingSnapshot
       drawings.value = loadedDrawings
       structure.value = loadedStructure
       attributes.value = loadedAttributes
@@ -461,17 +460,16 @@ export const useDomainStore = defineStore('domain', () => {
     error.value = null
     initializationPromise = (async () => {
       try {
-        const [loadedDrawings, loadedStructure, loadedAttributes, loadedVersions, loadedBranches, loadedBorrows, loadedBom, loadedCrafts, loadedAttachments] = await Promise.all([
-          dataManager.loadDrawings(),
-          dataManager.loadStructure(),
+        const [drawingSnapshot, loadedAttributes, loadedVersions, loadedBranches, loadedBorrows, loadedCrafts, loadedAttachments] = await Promise.all([
+          drawingQueryService.loadSnapshot(),
           dataManager.loadAttributes(),
           dataManager.loadVersions(),
           dataManager.loadBranches(),
           dataManager.loadBorrows(),
-          dataManager.loadBom(),
           dataManager.loadCrafts(),
           dataManager.loadAttachments(),
         ])
+        const { drawings: loadedDrawings, structure: loadedStructure, bom: loadedBom } = drawingSnapshot
         drawings.value = loadedDrawings
         structure.value = loadedStructure
         attributes.value = loadedAttributes
@@ -563,7 +561,7 @@ export const useDomainStore = defineStore('domain', () => {
       if (file.scanned || !file.name.toLowerCase().endsWith('.docx') || !file.storageKey) continue
 
       try {
-        const content = await dataManager.readAttachment(file.storageKey)
+        const content = await drawingFileService.read(file.storageKey)
         file.author = await readDocxAuthor(content)
         file.scanned = true
 
@@ -587,7 +585,7 @@ export const useDomainStore = defineStore('domain', () => {
     for (const file of allMaterialFiles) {
       if (file.author || !file.storageKey) continue
       try {
-        const content = await dataManager.readAttachment(file.storageKey)
+        const content = await drawingFileService.read(file.storageKey)
         const parseResult = await parseMaterialFileContent(content, file.name, file.drawingNo, file.id)
         if (parseResult.author) {
           file.author = parseResult.author
@@ -679,7 +677,7 @@ export const useDomainStore = defineStore('domain', () => {
     for (const drawing of drawings.value) {
       if (drawing.designer || drawing.kind !== '总图') continue
       try {
-        const designer = await dataManager.scanDrawingDesigner(drawing.no)
+        const designer = await drawingFileService.scanDesigner(drawing.no)
         if (designer) {
           drawing.designer = designer
           changed = true
@@ -700,7 +698,7 @@ export const useDomainStore = defineStore('domain', () => {
       visited.add(targetNo)
       const drawing = drawings.value.find((item) => item.no === targetNo)
       if (drawing) {
-        const designer = await dataManager.scanDrawingDesigner(drawing.no)
+        const designer = await drawingFileService.scanDesigner(drawing.no)
         if (designer && designer !== drawing.designer) {
           drawing.designer = designer
           await persist()
