@@ -8,12 +8,12 @@ import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-number-parser'
 import { useAuthStore } from '@/stores/auth.store'
 import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
-import { reviewFlowService, signerRoleForNode } from '@/services/review-flow.service'
-import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.service'
+import type { ApiReviewCase } from '@/modules/review'
 import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
 import { ensureSmbCredential } from '@/services/tauri/cad-edit.service'
 import { formatReadableDateTime } from '@/utils/date-time'
-import { appContainer, attachmentUploader, drawingCommandService, drawingUploadCoordinator } from '@/app/container'
+import { appContainer, attachmentUploader, drawingCommandService, drawingUploadCoordinator, reviewService } from '@/app/container'
+import { signerRoleForNode } from '@/modules/review'
 import type { PendingDrawingUploadEntry } from '@/modules/upload'
 import type {
   ActivityLog,
@@ -301,8 +301,8 @@ export const useDomainStore = defineStore('domain', () => {
   async function refreshReviewData(): Promise<void> {
     try {
       const [cases, completed] = await Promise.all([
-        reviewCaseService.list(),
-        reviewCaseService.completed(),
+        reviewService.listCases(),
+        reviewService.listCompleted(),
       ])
       reviewCases.value = cases.map(mapApiReviewCase)
       completedReviews.value = completed.map((item) => ({
@@ -2151,8 +2151,8 @@ export const useDomainStore = defineStore('domain', () => {
     if (!target) throw new Error(`未找到待审核对象：${drawingNo}`)
 
     // 审核案例权威数据在 Go 后端（总图与零件统一处理），由后端强制顺序与责任人。
-    await reviewCaseService.start(drawingNo)
-    const refreshed = await reviewCaseService.list().catch(() => [])
+    await reviewService.startCase(drawingNo)
+    const refreshed = await reviewService.listCases().catch(() => [])
     const created = refreshed.find((item) => item.drawingNo === drawingNo && item.status === 'reviewing')
     if (created) {
       // 用后端节点责任人同步图纸签署栏展示。
@@ -2201,7 +2201,7 @@ export const useDomainStore = defineStore('domain', () => {
     }
 
     // 签署权威校验与落库在 Go 后端：顺序、责任人、状态推进全部由后端事务保证。
-    await reviewCaseService.submit(reviewCase.id, nodeName, action, opinion)
+    await reviewService.submitNode(reviewCase.id, nodeName, action, opinion)
 
     const target = findDrawingOrPart(drawingNo)
     if (target) {

@@ -2,7 +2,8 @@
 import { onMounted, ref, watch } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useUiStore } from '@/stores/ui.store'
-import { reviewFlowService, type ReviewFlowDto } from '@/services/review-flow.service'
+import { reviewService } from '@/app/container'
+import type { ReviewFlowDto } from '@/modules/review'
 
 defineOptions({ name: 'ReviewFlowManagementPage' })
 
@@ -13,7 +14,7 @@ const loading = ref(false)
 async function loadFlows() {
   loading.value = true
   try {
-    flows.value = await reviewFlowService.list()
+    flows.value = await reviewService.listFlows()
   } catch (error) {
     console.error('读取审核流程失败', error)
     uiStore.toast(error instanceof Error ? error.message : '审核流程读取失败', 'warn')
@@ -28,7 +29,7 @@ function editFlow(flow?: ReviewFlowDto) {
 
 async function toggleFlow(flow: ReviewFlowDto) {
   try {
-    const updated = await reviewFlowService.toggle(flow.id, !flow.enabled)
+    const updated = await reviewService.toggleFlow(flow.id, !flow.enabled)
     flow.enabled = updated.enabled
     uiStore.toast(flow.enabled ? '审核流程已启用' : '审核流程已停用')
   } catch (error) {

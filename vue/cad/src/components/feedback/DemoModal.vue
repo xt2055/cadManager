@@ -5,7 +5,8 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useUiStore } from '@/stores/ui.store'
 import { useDomainStore } from '@/stores/domain.store'
 import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
-import { reviewFlowService, signerRoleForNode, type ReviewAccountRole } from '@/services/review-flow.service'
+import { reviewService } from '@/app/container'
+import { signerRoleForNode, type ReviewAccountRole } from '@/modules/review'
 import type { UserRole } from '@/types/domain.types'
 
 defineOptions({
@@ -72,7 +73,7 @@ async function loadFlowForm(flowId?: string) {
     resetFlowForm()
     return
   }
-  const flow = await reviewFlowService.get(flowId)
+  const flow = await reviewService.getFlow(flowId)
   flowName.value = flow.name
   flowNodes.value = flow.nodes.map((node, index) => ({
     name: node.name?.trim() || DEFAULT_FLOW_NODES[index]?.name || `审核节点 ${index + 1}`,
@@ -161,8 +162,8 @@ function toggleRole(role: UserRole) {
       }
       if (!input.name) throw new Error('审核流程名称不能为空')
       if (input.nodes.some((node) => !node.name)) throw new Error('审核节点名称不能为空')
-      if (flowId) await reviewFlowService.update(flowId, input)
-      else await reviewFlowService.create(input)
+      if (flowId) await reviewService.updateFlow(flowId, input)
+      else await reviewService.createFlow(input)
       uiStore.toast('审核流程已保存到数据库')
     }
 

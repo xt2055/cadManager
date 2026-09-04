@@ -1,6 +1,9 @@
 import { dataManager } from '@/services/data-manager'
 import { ApiUploadGateway, AttachmentUploader, BrowserUploadRecoveryStore, DrawingUploadCoordinator } from '@/modules/upload'
 import { DrawingCommandService } from '@/modules/drawing'
+import { ReviewService } from '@/modules/review'
+import { reviewCaseService } from '@/services/review-case.service'
+import { reviewFlowService } from '@/services/review-flow.service'
 
 /** Composition root：页面和 Store 只从这里取得上传能力，不自行创建基础设施。 */
 export const appContainer = {
@@ -18,3 +21,5 @@ export const drawingCommandService = new DrawingCommandService({
   updateDrawing: (drawingId, input) => dataManager.updateDrawing(drawingId, input),
   updatePart: (partId, input) => dataManager.updatePart(partId, input),
 })
+
+export const reviewService = new ReviewService(reviewCaseService, reviewFlowService)
