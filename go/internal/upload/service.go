@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -753,12 +752,11 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 	processedSHA256 := ""
 	processedMimeType := ""
 	convertedSourceKey := ""
-	cadProcessingErr := error(nil)
 	if isCAD(name) {
 		if service.converter == nil {
-			cadProcessingErr = errors.New("CAD 转换服务未配置")
+			err = errors.New("CAD 转换服务未配置")
 		} else {
-			convertedSourceKey, cadProcessingErr = service.converter.EnsureDwg(ctx, attachment.Attachment{
+			convertedSourceKey, err = service.converter.EnsureDwg(ctx, attachment.Attachment{
 				StorageKey:        stagingKey,
 				CurrentStorageKey: stagingKey,
 				Name:              name,
@@ -770,34 +768,18 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 				SHA256:            object.SHA256,
 				CurrentSHA256:     object.SHA256,
 			})
-			if cadProcessingErr == nil {
+			if err == nil {
 				convertedObject, openErr := service.openObjectInfo(ctx, convertedSourceKey)
 				if openErr != nil {
-					cadProcessingErr = openErr
+					err = openErr
 				} else {
-					processedBlobID, processedKey, cadProcessingErr = service.ensureBlob(ctx, convertedSourceKey, convertedObject)
+					processedBlobID, processedKey, err = service.ensureBlob(ctx, convertedSourceKey, convertedObject)
 					processedSize = convertedObject.Size
 					processedSHA256 = convertedObject.SHA256
 					processedMimeType = convertedObject.MimeType
 				}
 			}
 		}
-	}
-	if cadProcessingErr != nil {
-		// 原始上传对象才是事实来源，DWG 只是可选的派生预览对象。
-		// CAXA 不支持某个 EXB、输出为空或暂时不可用时，不能让整批项目上传失败；
-		// 保留原始 EXB/DWG/DXF，后续仍可下载、重试转换或由客户端打开。
-		log.Printf("[上传] CAD 派生 DWG 生成失败，保留原始文件: name=%q item=%s err=%v", name, itemID, cadProcessingErr)
-		if convertedSourceKey != "" && convertedSourceKey != blobKey {
-			if deleteErr := service.storage.Delete(ctx, convertedSourceKey); deleteErr != nil {
-				service.scheduleCleanup(ctx, convertedSourceKey, "cad-processing")
-			}
-		}
-		processedKey = ""
-		processedBlobID = ""
-		processedSize = 0
-		processedSHA256 = ""
-		processedMimeType = ""
 	}
 	if err != nil {
 		service.markItemFailed(ctx, itemID, err)
