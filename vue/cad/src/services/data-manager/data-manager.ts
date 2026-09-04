@@ -32,7 +32,8 @@ export interface DataManager {
 	uploadSessionChunk(sessionId: string, itemId: string, partNumber: number, chunk: Blob): Promise<UploadChunkInfo>
 	completeUploadChunks(sessionId: string, itemId: string): Promise<UploadSessionItem>
   uploadSessionItem(sessionId: string, itemId: string, file: Blob, name?: string): Promise<UploadSessionItem>
-  retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem>
+	 retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem>
+	 retryUploadSessionConversion(sessionId: string, itemId: string): Promise<UploadSessionItem>
   getUploadSession(sessionId: string): Promise<UploadSessionSnapshot>
   commitUploadSession(sessionId: string): Promise<Record<string, unknown>>
   cancelUploadSession(sessionId: string): Promise<void>
@@ -136,6 +137,10 @@ export class DefaultDataManager implements DataManager {
   }
   retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem> {
     return this.getProvider().then((provider) => provider.retryUploadSessionItem(sessionId, itemId))
+  }
+
+  retryUploadSessionConversion(sessionId: string, itemId: string): Promise<UploadSessionItem> {
+    return this.getProvider().then((provider) => provider.retryUploadSessionConversion(sessionId, itemId))
   }
   getUploadSession(sessionId: string): Promise<UploadSessionSnapshot> {
     return this.getProvider().then((provider) => provider.getUploadSession(sessionId))

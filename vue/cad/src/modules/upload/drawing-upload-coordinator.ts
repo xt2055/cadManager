@@ -111,8 +111,17 @@ export class DrawingUploadCoordinator {
     if (!failed.length && snapshot.items.some((item) => item.status !== 'ready')) throw new Error('仍有文件未准备完成')
 
     const errors: string[] = []
-    for (const item of failed) {
-      const entry = [...entries.values()].find((candidate) => candidate.itemId === item.id)
+	    for (const item of failed) {
+	      if (item.failureStage === 'conversion') {
+	        try {
+	          await this.gateway.retryConversion(sessionId, item.id)
+	          onProgress?.(item.id, 100)
+	        } catch (error) {
+	          errors.push(`${item.originalName}：${error instanceof Error ? error.message : String(error)}`)
+	        }
+	        continue
+	      }
+	      const entry = [...entries.values()].find((candidate) => candidate.itemId === item.id)
       if (!entry) {
         errors.push(`${item.originalName}：浏览器中已找不到原始文件`)
         continue
@@ -138,8 +147,13 @@ export class DrawingUploadCoordinator {
     const snapshot = await this.gateway.getSession(sessionId)
     const item = snapshot.items.find((candidate) => candidate.id === itemId)
     if (!item) throw new Error('上传文件项不存在')
-    if (item.status === 'ready' || item.status === 'committed') return
-    const entry = [...entries.values()].find((candidate) => candidate.itemId === itemId)
+	    if (item.status === 'ready' || item.status === 'committed') return
+	    if (item.failureStage === 'conversion') {
+	      await this.gateway.retryConversion(sessionId, itemId)
+	      onProgress?.(itemId, 100)
+	      return
+	    }
+	    const entry = [...entries.values()].find((candidate) => candidate.itemId === itemId)
     if (!entry) throw new Error(`浏览器中已找不到原始文件：${item.originalName}`)
     await this.retryItem(sessionId, item, entry, onProgress)
   }

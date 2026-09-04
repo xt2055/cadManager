@@ -65,6 +65,7 @@ type Item struct {
 	MimeType         string    `json:"mimeType"`
 	ExpectedRevision *int64    `json:"expectedRevision,omitempty"`
 	Status           string    `json:"status"`
+	FailureStage     string    `json:"failureStage,omitempty"`
 	Size             int64     `json:"size"`
 	SHA256           string    `json:"sha256,omitempty"`
 	Attempts         int       `json:"attempts"`
@@ -460,7 +461,7 @@ func (service *Service) CreateItem(ctx context.Context, userID, sessionID string
 		ON CONFLICT (session_id, client_ref) DO UPDATE SET
 			attachment_id = EXCLUDED.attachment_id, drawing_no = EXCLUDED.drawing_no, part_no = EXCLUDED.part_no,
 			file_role = EXCLUDED.file_role, original_name = EXCLUDED.original_name, mime_type = EXCLUDED.mime_type,
-			expected_revision = EXCLUDED.expected_revision, status = EXCLUDED.status, staging_object_key = NULL,
+			expected_revision = EXCLUDED.expected_revision, status = EXCLUDED.status, failure_stage = NULL, staging_object_key = NULL,
 			object_key = EXCLUDED.object_key, blob_id = EXCLUDED.blob_id, processed_object_key = NULL, processed_blob_id = NULL,
 			size_bytes = EXCLUDED.size_bytes, sha256 = EXCLUDED.sha256, error_message = NULL, updated_at = now()
 		RETURNING id::text`, sessionID, input.ClientRef, input.AttachmentID, input.DrawingNo, input.PartNo, input.Role, input.OriginalName, input.MimeType, input.ExpectedRevision, status, objectKey, blobID, size, sha256).Scan(&id)
@@ -501,7 +502,7 @@ func (service *Service) InitChunks(ctx context.Context, userID, sessionID, itemI
 	if currentChunkSize != nil && (currentSize == nil || *currentSize != input.TotalSize || *currentChunkSize != input.ChunkSize || currentHash != hash) {
 		return ChunkSnapshot{}, ErrConflict
 	}
-	if _, err := service.pool.Exec(ctx, `UPDATE upload_session_items SET expected_size_bytes = $2, expected_sha256 = $3, chunk_size_bytes = $4, status = CASE WHEN status = 'failed' THEN 'pending' ELSE status END, error_message = NULL, updated_at = now() WHERE id = $1::uuid`, itemID, input.TotalSize, hash, input.ChunkSize); err != nil {
+	if _, err := service.pool.Exec(ctx, `UPDATE upload_session_items SET expected_size_bytes = $2, expected_sha256 = $3, chunk_size_bytes = $4, status = CASE WHEN status = 'failed' THEN 'pending' ELSE status END, failure_stage = NULL, error_message = NULL, updated_at = now() WHERE id = $1::uuid`, itemID, input.TotalSize, hash, input.ChunkSize); err != nil {
 		return ChunkSnapshot{}, fmt.Errorf("初始化分片上传失败: %w", err)
 	}
 	return service.ListChunks(ctx, userID, sessionID, itemID)
@@ -684,7 +685,7 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 	if mimeType == "" {
 		mimeType = item.MimeType
 	}
-	if _, err := service.pool.Exec(ctx, `UPDATE upload_session_items SET status = 'uploading', attempts = attempts + 1, error_message = NULL, updated_at = now() WHERE id = $1::uuid AND status IN ('pending', 'failed')`, itemID); err != nil {
+	if _, err := service.pool.Exec(ctx, `UPDATE upload_session_items SET status = 'uploading', failure_stage = NULL, attempts = attempts + 1, error_message = NULL, updated_at = now() WHERE id = $1::uuid AND status IN ('pending', 'failed')`, itemID); err != nil {
 		return Item{}, fmt.Errorf("更新上传状态失败: %w", err)
 	}
 	stagingKey := filepath.ToSlash(filepath.Join(".staging", sessionID, itemID, fmt.Sprintf("%d-%s", time.Now().UnixNano(), safeName(name))))
@@ -693,17 +694,17 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 	}
 	object, err := service.storage.Put(ctx, stagingKey, reader, mimeType)
 	if err != nil {
-		service.markItemFailed(ctx, itemID, err)
+		service.markItemFailed(ctx, itemID, "upload", err)
 		return Item{}, fmt.Errorf("写入暂存文件失败: %w", err)
 	}
 	if (item.ExpectedSize != nil && object.Size != *item.ExpectedSize) || (item.ExpectedSHA256 != "" && !strings.EqualFold(object.SHA256, item.ExpectedSHA256)) {
-		service.markItemFailed(ctx, itemID, errors.New("文件内容校验失败"))
+		service.markItemFailed(ctx, itemID, "validation", errors.New("文件内容校验失败"))
 		_ = service.storage.Delete(ctx, stagingKey)
 		return Item{}, errors.New("文件内容校验失败")
 	}
 	blobID, blobKey, err := service.ensureBlob(ctx, stagingKey, object)
 	if err != nil {
-		service.markItemFailed(ctx, itemID, err)
+		service.markItemFailed(ctx, itemID, "upload", err)
 		service.scheduleCleanup(ctx, stagingKey, "upload-staging")
 		return Item{}, err
 	}
@@ -743,7 +744,7 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 		}
 	}
 	if err != nil {
-		service.markItemFailed(ctx, itemID, err)
+		service.markItemFailed(ctx, itemID, "conversion", err)
 		service.scheduleCleanup(ctx, stagingKey, "upload-staging")
 		if processedKey != "" {
 			service.scheduleCleanup(ctx, processedKey, "cad-processing")
@@ -756,9 +757,9 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 			processed_object_key = NULLIF($4, ''), processed_blob_id = NULLIF($5, '')::uuid,
 			processed_size_bytes = $6, processed_sha256 = NULLIF($7, ''), processed_mime_type = NULLIF($8, ''),
 			size_bytes = $9, sha256 = $10, original_name = $11, mime_type = $12,
-			error_message = NULL, updated_at = now()
+				failure_stage = NULL, error_message = NULL, updated_at = now()
 		WHERE id = $1::uuid`, itemID, blobKey, blobID, processedKey, processedBlobID, processedSize, processedSHA256, processedMimeType, object.Size, object.SHA256, name, mimeType); err != nil {
-		service.markItemFailed(ctx, itemID, err)
+		service.markItemFailed(ctx, itemID, "commit", err)
 		service.scheduleCleanup(ctx, stagingKey, "upload-staging")
 		if processedKey != "" {
 			service.scheduleCleanup(ctx, processedKey, "cad-processing")
@@ -789,7 +790,7 @@ func (service *Service) RetryItem(ctx context.Context, userID, sessionID, itemID
 	}
 	result, err := service.pool.Exec(ctx, `
 		UPDATE upload_session_items
-		SET status = 'pending', staging_object_key = NULL, object_key = NULL, blob_id = NULL,
+		SET status = 'pending', failure_stage = NULL, staging_object_key = NULL, object_key = NULL, blob_id = NULL,
 			processed_object_key = NULL, processed_blob_id = NULL, processed_size_bytes = 0, processed_sha256 = NULL, processed_mime_type = NULL, size_bytes = 0, sha256 = NULL,
 			error_message = NULL, updated_at = now()
 		WHERE id = $1::uuid AND session_id = $2::uuid AND status = 'failed'`, itemID, sessionID)
@@ -814,6 +815,99 @@ func (service *Service) RetryItem(ctx context.Context, userID, sessionID, itemID
 			}
 			_, _ = service.pool.Exec(ctx, `DELETE FROM file_blobs WHERE id = $1::uuid AND NOT EXISTS (SELECT 1 FROM attachment_versions WHERE blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM upload_session_items WHERE blob_id = $1::uuid OR processed_blob_id = $1::uuid)`, value)
 		}
+	}
+	return service.getItem(ctx, userID, sessionID, itemID)
+}
+
+// RetryConversion 只重跑失败的 CAD 转换，复用已经落入 Blob 的原始文件，不重新上传。
+func (service *Service) RetryConversion(ctx context.Context, userID, sessionID, itemID string) (Item, error) {
+	if service == nil || service.pool == nil || service.storage == nil {
+		return Item{}, errors.New("上传服务未配置")
+	}
+	if err := service.touchSession(ctx, userID, sessionID); err != nil {
+		return Item{}, err
+	}
+	var item Item
+	var objectKey, blobID string
+	var rawSize int64
+	var rawSHA256 string
+	var rawMimeType string
+	var failureStage string
+	err := service.pool.QueryRow(ctx, `
+		SELECT id::text, drawing_no, COALESCE(part_no, ''), file_role, original_name, mime_type,
+		       status, COALESCE(failure_stage, ''), COALESCE(object_key, ''), COALESCE(blob_id::text, ''),
+		       size_bytes, COALESCE(sha256, '')
+		FROM upload_session_items
+		WHERE id = $1::uuid AND session_id = $2::uuid`, itemID, sessionID).
+		Scan(&item.ID, &item.DrawingNo, &item.PartNo, &item.Role, &item.OriginalName, &rawMimeType,
+			&item.Status, &failureStage, &objectKey, &blobID, &rawSize, &rawSHA256)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Item{}, ErrConflict
+	}
+	if err != nil {
+		return Item{}, fmt.Errorf("读取待转换文件失败: %w", err)
+	}
+	if item.Status != "failed" || failureStage != "conversion" || objectKey == "" || blobID == "" {
+		return Item{}, ErrConflict
+	}
+	if _, err := service.pool.Exec(ctx, `
+		UPDATE upload_session_items
+		SET status = 'uploading', failure_stage = NULL, error_message = NULL, attempts = attempts + 1, updated_at = now()
+		WHERE id = $1::uuid AND session_id = $2::uuid AND status = 'failed' AND failure_stage = 'conversion'`, itemID, sessionID); err != nil {
+		return Item{}, fmt.Errorf("准备转换重试失败: %w", err)
+	}
+	failConversion := func(err error) (Item, error) {
+		service.markItemFailed(ctx, itemID, "conversion", err)
+		return Item{}, fmt.Errorf("CAD 转换重试失败: %w", err)
+	}
+	if service.converter == nil {
+		return failConversion(errors.New("CAD 转换服务未配置"))
+	}
+	reader, _, err := service.storage.Open(ctx, objectKey)
+	if err != nil {
+		return failConversion(fmt.Errorf("打开原始 Blob 失败: %w", err))
+	}
+	reader.Close()
+	convertedSourceKey, err := service.converter.EnsureDwg(ctx, attachment.Attachment{
+		StorageKey:        objectKey,
+		CurrentStorageKey: objectKey,
+		Name:              item.OriginalName,
+		CurrentName:       item.OriginalName,
+		DrawingNo:         item.DrawingNo,
+		PartNo:            nullableString(item.PartNo),
+		Size:              rawSize,
+		MimeType:          rawMimeType,
+		SHA256:            rawSHA256,
+		CurrentSHA256:     rawSHA256,
+	})
+	if err != nil {
+		return failConversion(err)
+	}
+	convertedObject, err := service.openObjectInfo(ctx, convertedSourceKey)
+	if err != nil {
+		return failConversion(err)
+	}
+	processedBlobID, processedKey, err := service.ensureBlob(ctx, convertedSourceKey, convertedObject)
+	if err != nil {
+		return failConversion(err)
+	}
+	if _, err := service.pool.Exec(ctx, `
+		UPDATE upload_session_items
+		SET status = 'ready', failure_stage = NULL, staging_object_key = NULL,
+		    object_key = $2, blob_id = $3::uuid, processed_object_key = $4,
+		    processed_blob_id = $5::uuid, processed_size_bytes = $6,
+		    processed_sha256 = $7, processed_mime_type = $8, error_message = NULL, updated_at = now()
+		WHERE id = $1::uuid AND session_id = $9::uuid`, itemID, objectKey, blobID, processedKey, processedBlobID,
+		convertedObject.Size, convertedObject.SHA256, convertedObject.MimeType, sessionID); err != nil {
+		return failConversion(fmt.Errorf("登记转换结果失败: %w", err))
+	}
+	if convertedSourceKey != processedKey {
+		if deleteErr := service.storage.Delete(ctx, convertedSourceKey); deleteErr != nil {
+			service.scheduleCleanup(ctx, convertedSourceKey, "cad-retry-staging")
+		}
+	}
+	if err := service.touchSession(ctx, userID, sessionID); err != nil {
+		return Item{}, err
 	}
 	return service.getItem(ctx, userID, sessionID, itemID)
 }
@@ -1199,9 +1293,9 @@ func (service *Service) Snapshot(ctx context.Context, userID, sessionID string) 
 		return Snapshot{}, err
 	}
 	rows, err := service.pool.Query(ctx, `
-		SELECT id::text, client_ref, COALESCE(attachment_id::text, ''), drawing_no, part_no, file_role,
-		       original_name, mime_type, expected_revision, status, size_bytes, COALESCE(sha256, ''),
-		       attempts, COALESCE(error_message, ''), updated_at
+			SELECT id::text, client_ref, COALESCE(attachment_id::text, ''), drawing_no, part_no, file_role,
+			       original_name, mime_type, expected_revision, status, COALESCE(failure_stage, ''), size_bytes, COALESCE(sha256, ''),
+			       attempts, COALESCE(error_message, ''), updated_at
 		FROM upload_session_items WHERE session_id = $1::uuid ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("读取上传文件项失败: %w", err)
@@ -1210,7 +1304,7 @@ func (service *Service) Snapshot(ctx context.Context, userID, sessionID string) 
 	items := make([]Item, 0)
 	for rows.Next() {
 		var item Item
-		if err := rows.Scan(&item.ID, &item.ClientRef, &item.AttachmentID, &item.DrawingNo, &item.PartNo, &item.Role, &item.OriginalName, &item.MimeType, &item.ExpectedRevision, &item.Status, &item.Size, &item.SHA256, &item.Attempts, &item.ErrorMessage, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.ClientRef, &item.AttachmentID, &item.DrawingNo, &item.PartNo, &item.Role, &item.OriginalName, &item.MimeType, &item.ExpectedRevision, &item.Status, &item.FailureStage, &item.Size, &item.SHA256, &item.Attempts, &item.ErrorMessage, &item.UpdatedAt); err != nil {
 			return Snapshot{}, fmt.Errorf("读取上传文件项失败: %w", err)
 		}
 		items = append(items, item)
@@ -1385,9 +1479,9 @@ func (service *Service) getItem(ctx context.Context, userID, sessionID, itemID s
 	var item Item
 	err := service.pool.QueryRow(ctx, `
 		SELECT id::text, client_ref, COALESCE(attachment_id::text, ''), drawing_no, part_no, file_role,
-		       original_name, mime_type, expected_revision, expected_size_bytes, COALESCE(expected_sha256, ''), status, size_bytes, COALESCE(sha256, ''),
+		       original_name, mime_type, expected_revision, expected_size_bytes, COALESCE(expected_sha256, ''), status, COALESCE(failure_stage, ''), size_bytes, COALESCE(sha256, ''),
 		       attempts, COALESCE(error_message, ''), updated_at
-		FROM upload_session_items WHERE id = $1::uuid AND session_id = $2::uuid`, itemID, sessionID).Scan(&item.ID, &item.ClientRef, &item.AttachmentID, &item.DrawingNo, &item.PartNo, &item.Role, &item.OriginalName, &item.MimeType, &item.ExpectedRevision, &item.ExpectedSize, &item.ExpectedSHA256, &item.Status, &item.Size, &item.SHA256, &item.Attempts, &item.ErrorMessage, &item.UpdatedAt)
+		FROM upload_session_items WHERE id = $1::uuid AND session_id = $2::uuid`, itemID, sessionID).Scan(&item.ID, &item.ClientRef, &item.AttachmentID, &item.DrawingNo, &item.PartNo, &item.Role, &item.OriginalName, &item.MimeType, &item.ExpectedRevision, &item.ExpectedSize, &item.ExpectedSHA256, &item.Status, &item.FailureStage, &item.Size, &item.SHA256, &item.Attempts, &item.ErrorMessage, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, ErrNotFound
 	}
@@ -1412,8 +1506,8 @@ func (service *Service) touchSession(ctx context.Context, userID, sessionID stri
 	return nil
 }
 
-func (service *Service) markItemFailed(ctx context.Context, itemID string, err error) {
-	_, _ = service.pool.Exec(ctx, `UPDATE upload_session_items SET status = 'failed', error_message = $2, updated_at = now() WHERE id = $1::uuid`, itemID, err.Error())
+func (service *Service) markItemFailed(ctx context.Context, itemID, stage string, err error) {
+	_, _ = service.pool.Exec(ctx, `UPDATE upload_session_items SET status = 'failed', failure_stage = $2, error_message = $3, updated_at = now() WHERE id = $1::uuid`, itemID, stage, err.Error())
 }
 
 func (service *Service) cleanupSessionObjects(ctx context.Context, sessionID string, removeSession bool) error {

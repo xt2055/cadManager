@@ -25,6 +25,7 @@ export interface UploadSessionItem {
   mimeType: string
   expectedRevision?: number
   status: 'pending' | 'uploading' | 'ready' | 'failed' | 'committed' | string
+  failureStage?: 'hash' | 'upload' | 'validation' | 'conversion' | 'commit' | string
   size: number
   sha256?: string
   attempts: number
@@ -244,6 +245,7 @@ export interface DataProvider {
 	completeUploadChunks(sessionId: string, itemId: string): Promise<UploadSessionItem>
   uploadSessionItem(sessionId: string, itemId: string, file: Blob, name?: string): Promise<UploadSessionItem>
   retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem>
+  retryUploadSessionConversion(sessionId: string, itemId: string): Promise<UploadSessionItem>
   getUploadSession(sessionId: string): Promise<UploadSessionSnapshot>
   commitUploadSession(sessionId: string): Promise<Record<string, unknown>>
   cancelUploadSession(sessionId: string): Promise<void>

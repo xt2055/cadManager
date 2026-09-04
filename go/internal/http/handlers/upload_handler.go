@@ -251,6 +251,15 @@ func UploadSessionResource(service *upload.Service) http.Handler {
 					response.WriteData(writer, http.StatusOK, item)
 					return
 				}
+				if request.URL.Query().Get("action") == "retry-conversion" {
+					item, err := service.RetryConversion(request.Context(), user.ID, sessionID, itemID)
+					if err != nil {
+						writeUploadError(writer, err)
+						return
+					}
+					response.WriteData(writer, http.StatusOK, item)
+					return
+				}
 				if err := request.ParseMultipartForm(32 << 20); err != nil {
 					response.WriteError(writer, http.StatusBadRequest, "上传文件请求格式无效")
 					return

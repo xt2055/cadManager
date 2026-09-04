@@ -179,6 +179,10 @@ export class ApiDataProvider implements DataProvider {
     return this.request<UploadSessionItem>(`/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(itemId)}?action=retry`, { method: 'POST' })
   }
 
+  retryUploadSessionConversion(sessionId: string, itemId: string): Promise<UploadSessionItem> {
+    return this.request<UploadSessionItem>(`/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(itemId)}?action=retry-conversion`, { method: 'POST' })
+  }
+
   getUploadSession(sessionId: string): Promise<UploadSessionSnapshot> {
     return this.request<UploadSessionSnapshot>(`/upload-sessions/${encodeURIComponent(sessionId)}`, { method: 'GET' })
   }

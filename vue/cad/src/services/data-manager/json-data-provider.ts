@@ -86,6 +86,10 @@ export class JsonDataProvider implements DataProvider {
     throw new Error('本地 JSON 模式暂不支持上传会话，请切换到服务端存储模式')
   }
 
+  async retryUploadSessionConversion(_sessionId: string, _itemId: string): Promise<UploadSessionItem> {
+    throw new Error('本地 JSON 模式暂不支持上传会话，请切换到服务端存储模式')
+  }
+
   async getUploadSession(sessionId: string): Promise<UploadSessionSnapshot> {
     return this.readModule(`upload-session:${sessionId}`, { session: {} as UploadSession, items: [] })
   }

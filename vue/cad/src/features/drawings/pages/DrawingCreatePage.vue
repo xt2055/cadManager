@@ -116,8 +116,13 @@ async function refreshUploadSnapshot() {
 	  }
 }
 
-function uploadStatusLabel(status: string): string {
-  return ({ pending: '待上传', uploading: '上传中', ready: '已完成', committed: '已提交', failed: '失败' } as Record<string, string>)[status] ?? status
+function uploadStatusLabel(item: { status: string; failureStage?: string }): string {
+  if (item.status === 'failed' && item.failureStage === 'conversion') return '转换失败'
+  return ({ pending: '待上传', uploading: '上传中', ready: '已完成', committed: '已提交', failed: '失败' } as Record<string, string>)[item.status] ?? item.status
+}
+
+function uploadRetryLabel(item: { failureStage?: string }): string {
+  return item.failureStage === 'conversion' ? '重试转换' : '重试上传'
 }
 
 function isExpiredUploadError(error: unknown): boolean {
@@ -616,11 +621,11 @@ async function retryFailedUpload() {
       <div v-if="uploadSnapshot" class="create-upload-recovery-list">
         <div v-for="item in uploadSnapshot.items" :key="item.id" class="create-upload-recovery-item">
           <span class="mono">{{ item.originalName }}</span>
-          <span>{{ uploadStatusLabel(item.status) }}</span>
+          <span>{{ uploadStatusLabel(item) }}</span>
           <span class="upload-progress-value">{{ domainStore.uploadProgress[item.id] ?? (item.status === 'ready' || item.status === 'committed' ? 100 : 0) }}%</span>
           <span class="upload-progress-track" aria-hidden="true"><span class="upload-progress-fill" :style="{ width: `${domainStore.uploadProgress[item.id] ?? (item.status === 'ready' || item.status === 'committed' ? 100 : 0)}%` }"></span></span>
           <small v-if="item.errorMessage">{{ item.errorMessage }}</small>
-          <button v-if="item.status === 'failed'" class="btn sm" type="button" :disabled="isCreating" @click="retryUploadItem(item.id)">重试</button>
+          <button v-if="item.status === 'failed'" class="btn sm" type="button" :disabled="isCreating" @click="retryUploadItem(item.id)">{{ uploadRetryLabel(item) }}</button>
         </div>
       </div>
     </div>

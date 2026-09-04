@@ -23,6 +23,7 @@ export interface UploadGateway {
     options?: { name?: string; sha256?: string; chunkSize?: number; onProgress?: (percent: number) => void },
   ): Promise<UploadSessionItem>
   retryItem(sessionId: string, itemId: string): Promise<UploadSessionItem>
+  retryConversion(sessionId: string, itemId: string): Promise<UploadSessionItem>
   commitSession(sessionId: string): Promise<Record<string, unknown>>
   cancelSession(sessionId: string): Promise<void>
 }
@@ -37,6 +38,7 @@ export interface UploadGatewayClient {
   completeUploadChunks(sessionId: string, itemId: string): Promise<UploadSessionItem>
   uploadSessionItem(sessionId: string, itemId: string, file: Blob, name?: string): Promise<UploadSessionItem>
   retryUploadSessionItem(sessionId: string, itemId: string): Promise<UploadSessionItem>
+  retryUploadSessionConversion(sessionId: string, itemId: string): Promise<UploadSessionItem>
   getUploadSession(sessionId: string): Promise<UploadSessionSnapshot>
   commitUploadSession(sessionId: string): Promise<Record<string, unknown>>
   cancelUploadSession(sessionId: string): Promise<void>
@@ -96,6 +98,10 @@ export class ApiUploadGateway implements UploadGateway {
 
   retryItem(sessionId: string, itemId: string): Promise<UploadSessionItem> {
     return this.client.retryUploadSessionItem(sessionId, itemId)
+  }
+
+  retryConversion(sessionId: string, itemId: string): Promise<UploadSessionItem> {
+    return this.client.retryUploadSessionConversion(sessionId, itemId)
   }
 
   commitSession(sessionId: string): Promise<Record<string, unknown>> {
