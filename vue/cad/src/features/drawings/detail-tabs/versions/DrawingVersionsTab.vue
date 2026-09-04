@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { editingService } from '@/app/container'
+import { versioningService } from '@/app/container'
 import type { FileVersionInfo } from '@/services/data-manager/data-provider'
 import type { DrawingFile } from '@/types/domain.types'
 import { useDomainStore } from '@/stores/domain.store'
@@ -72,7 +72,7 @@ async function loadVersions() {
   }
   loading.value = true
   try {
-    versions.value = await editingService.listVersions(key)
+    versions.value = await versioningService.list(key)
   } catch (error) {
     console.warn('加载版本列表失败', error)
     versions.value = []
@@ -105,7 +105,7 @@ async function downloadVersion(version: FileVersionInfo) {
   if (busyVersionId.value) return
   busyVersionId.value = version.id
   try {
-    const blob = await editingService.downloadVersion(version.id)
+    const blob = await versioningService.download(version.id)
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
@@ -129,7 +129,7 @@ async function restoreVersion(version: FileVersionInfo) {
   if (!confirmed) return
   busyVersionId.value = version.id
   try {
-    await editingService.restoreVersion(version.id)
+    await versioningService.restore(version.id)
     uiStore.toast(`已回退到 ${version.version}，当前内容已更新`, 'ok')
     await loadVersions()
   } catch (error) {

@@ -165,6 +165,7 @@ Admin
 - 已建立 `DrawingCommandService`；图纸和零件的原子更新入口不再由 Store 直接调用 `dataManager`。
 - 已建立 `ReviewService`；审核案例、节点提交、流程模板管理和签署角色映射统一通过容器提供。
 - 已建立 `EditingService`；编辑会话、心跳、关闭、版本查询/下载/恢复，以及 CAXA/SMB 桌面能力统一通过容器提供。
+- 已建立 `VersioningService`；版本列表、版本下载和回退操作从 Editing 边界中独立出来。
 - 当前仍保留 Store 对领域 Read Model 的组装和提交后刷新；页面失败列表的过期提示、转换专门重试和重新选择文件交互属于后续页面迁移验收项。
 
 ## 建议提交

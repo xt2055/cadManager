@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { editingService } from '@/app/container'
+import { versioningService } from '@/app/container'
 import type { FileVersionInfo } from '@/services/data-manager/data-provider'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
@@ -78,7 +78,7 @@ async function loadFile() {
   const currentKey = file.currentStorageKey || file.storageKey
   if (currentKey) {
     try {
-      versionRecords.value = await editingService.listVersions(currentKey)
+      versionRecords.value = await versioningService.list(currentKey)
     } catch (error) {
       console.warn('加载后端版本记录失败，回退文档历史记录', error)
     }
@@ -206,7 +206,7 @@ async function downloadFile(node: HistoryTreeNode) {
   }
   try {
     if (node.versionId) {
-      const blob = await editingService.downloadVersion(node.versionId)
+      const blob = await versioningService.download(node.versionId)
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url

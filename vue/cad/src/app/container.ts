@@ -5,6 +5,7 @@ import { ReviewService } from '@/modules/review'
 import { reviewCaseService } from '@/services/review-case.service'
 import { reviewFlowService } from '@/services/review-flow.service'
 import { EditingService } from '@/modules/editing'
+import { VersioningService } from '@/modules/versioning'
 import { ensureSmbCredential, openCadEditSession, openCadReadonly, openDefaultAppsSettings, pickCaxaExecutable, saveLocalCaxaPath } from '@/services/tauri/cad-edit.service'
 
 /** Composition root：页面和 Store 只从这里取得上传能力，不自行创建基础设施。 */
@@ -34,3 +35,5 @@ export const editingService = new EditingService(dataManager, {
   openDefaultAppsSettings,
   ensureSmbCredential,
 })
+
+export const versioningService = new VersioningService(dataManager)
