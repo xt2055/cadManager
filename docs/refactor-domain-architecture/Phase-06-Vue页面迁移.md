@@ -85,6 +85,16 @@ rg "useDomainStore" src/features
 - [ ] Borrow UI 明确区分“编辑关系”和“分叉并编辑”。
 - [ ] 相关类型、单元和页面测试通过。
 
+## 当前实施记录
+
+执行日期：2026-09-04
+
+- 已迁移管理员图纸、管理员操作日志、账号管理、系统日志、更新管理和审核流程页面到对应的 Application Service/Store。
+- 已迁移审核待办、已办归档、普通操作日志和工作台首页到新的 Review/Audit/Drawing Store。
+- 管理后台布局初始化已改为加载 `admin.store` 与 `review.store`，不再依赖旧 `domain.store` 初始化。
+- 图纸库页面已改为使用 Drawing Read Model 与 Attribute Store，列表筛选不再读取领域实体。
+- 本批次 `npm run type-check` 已通过；复杂图纸详情 Tab、创建页和 CAD 页面仍待后续批次迁移。
+
 ## 建议提交
 
 ```text
@@ -94,4 +104,3 @@ refactor(drawing-ui): migrate drawing library
 refactor(drawing-ui): migrate detail tabs
 refactor(drawing-ui): migrate drawing creation
 ```
-

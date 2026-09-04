@@ -1,25 +1,24 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, watch } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useUiStore } from '@/stores/ui.store'
-import { reviewService } from '@/app/container'
 import type { ReviewFlowDto } from '@/modules/review'
+import { useReviewStore } from '@/stores/review.store'
 
 defineOptions({ name: 'ReviewFlowManagementPage' })
 
 const uiStore = useUiStore()
-const flows = ref<ReviewFlowDto[]>([])
-const loading = ref(false)
+const reviewStore = useReviewStore()
+const flows = reviewStore.flows
+const loading = () => reviewStore.loading
 
 async function loadFlows() {
-  loading.value = true
   try {
-    flows.value = await reviewService.listFlows()
+    await reviewStore.loadFlows()
   } catch (error) {
     console.error('读取审核流程失败', error)
     uiStore.toast(error instanceof Error ? error.message : '审核流程读取失败', 'warn')
   } finally {
-    loading.value = false
   }
 }
 
@@ -29,7 +28,7 @@ function editFlow(flow?: ReviewFlowDto) {
 
 async function toggleFlow(flow: ReviewFlowDto) {
   try {
-    const updated = await reviewService.toggleFlow(flow.id, !flow.enabled)
+    const updated = await reviewStore.toggleFlow(flow.id, !flow.enabled)
     flow.enabled = updated.enabled
     uiStore.toast(flow.enabled ? '审核流程已启用' : '审核流程已停用')
   } catch (error) {
@@ -50,7 +49,7 @@ watch(() => uiStore.modal, (current, previous) => {
       <div class="flow-head"><DemoIcon name="workflow" :size="16" /><b>{{ flow.name }}</b><span class="tag" :class="flow.enabled ? 'ok' : 'mute'">{{ flow.enabled ? '启用中' : '已停用' }}</span><span class="tag info">{{ flow.nodes.length }} 个节点</span><div class="flow-actions"><button class="btn sm" type="button" @click="editFlow(flow)"><DemoIcon name="pencil" :size="14" />编辑节点</button><button class="btn sm" type="button" @click="toggleFlow(flow)">{{ flow.enabled ? '停用' : '启用' }}</button></div></div>
        <div class="flow-nodes"><span v-for="node in flow.nodes" :key="node.id || node.order" class="tag plain">{{ node.name }} · {{ node.candidateRole }}</span></div><div class="flow-desc">{{ flow.description || '未填写流程说明' }} · 创建人：{{ flow.createdBy || '待定' }}</div>
      </div>
-      <div v-if="!loading && !flows.length" class="card empty"><DemoIcon name="workflow" :size="34" /><div class="t">暂无审核流程</div></div>
+      <div v-if="!loading() && !flows.length" class="card empty"><DemoIcon name="workflow" :size="34" /><div class="t">暂无审核流程</div></div>
   </div>
 </template>
 

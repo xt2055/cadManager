@@ -6,23 +6,28 @@ import DemoToast from '@/components/feedback/DemoToast.vue'
 import DesktopStatusBar from '@/layouts/components/DesktopStatusBar/DesktopStatusBar.vue'
 import DesktopTitleBar from '@/layouts/components/DesktopTitleBar/DesktopTitleBar.vue'
 import { windowService } from '@/services/tauri/window.service'
-import { useDomainStore } from '@/stores/domain.store'
+import { useAdminStore } from '@/stores/admin.store'
+import { useReviewStore } from '@/stores/review.store'
 import { useThemeStore } from '@/stores/theme.store'
 import { useUiStore } from '@/stores/ui.store'
 import AdminSidebar from '../components/AdminSidebar.vue'
 
 defineOptions({ name: 'AdminLayout' })
 
-const domainStore = useDomainStore()
+const adminStore = useAdminStore()
+const reviewStore = useReviewStore()
 const uiStore = useUiStore()
 const themeStore = useThemeStore()
 const isStarrySkin = computed(() => themeStore.skin === 'starry')
 const StarryGalaxy = defineAsyncComponent(() => import('@/components/common/StarryGalaxy.vue'))
 
 onMounted(async () => {
-  const initializePromise = domainStore.initialize().catch((error: unknown) => {
+  const initializePromise = Promise.all([
+    adminStore.loadUsers(),
+    reviewStore.loadFlows(),
+  ]).catch((error: unknown) => {
     console.error('初始化后台数据失败', error)
-    uiStore.toast('后台数据加载失败，请检查 JSON 数据', 'warn')
+    uiStore.toast('后台数据加载失败，请检查服务配置', 'warn')
   })
   try {
     await windowService.setWorkspaceWindowSize()

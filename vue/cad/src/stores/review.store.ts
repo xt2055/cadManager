@@ -2,15 +2,46 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { reviewService } from '@/app/container'
 import type { ApiCompletedAction, ApiReviewCase, ReviewFlowDto } from '@/modules/review'
+import { useAuthStore } from '@/stores/auth.store'
+
+export interface PendingReviewView {
+  reviewCaseId: string
+  no: string
+  name: string
+  node: string
+  by: string
+  time: string
+}
 
 /** 审核 Read Model 和轮询状态；审核事务仍由 ReviewService 执行。 */
 export const useReviewStore = defineStore('review', () => {
+  const authStore = useAuthStore()
   const cases = ref<ApiReviewCase[]>([])
   const completed = ref<ApiCompletedAction[]>([])
   const flows = ref<ReviewFlowDto[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
   let pollTimer: number | null = null
+
+  const myPendingReviews = () => {
+    const user = authStore.currentUser
+    if (!user) return [] as PendingReviewView[]
+    return cases.value.flatMap((reviewCase) => {
+      if (reviewCase.status !== 'reviewing') return []
+      const activeNode = [...reviewCase.nodes]
+        .filter((node) => node.status === 'pending')
+        .sort((a, b) => a.order - b.order)[0]
+      if (!activeNode || (activeNode.assignedName !== user.displayName && activeNode.assignedName !== user.account)) return []
+      return [{
+        reviewCaseId: reviewCase.id,
+        no: reviewCase.drawingNo,
+        name: reviewCase.drawingName || reviewCase.drawingNo,
+        node: activeNode.name,
+        by: activeNode.assignedName,
+        time: reviewCase.startedAt,
+      }]
+    })
+  }
 
   async function load(): Promise<void> {
     loading.value = true
@@ -35,6 +66,10 @@ export const useReviewStore = defineStore('review', () => {
     const candidates = cases.value.filter((item) => item.drawingNo === drawingNo)
     if (caseId) return candidates.find((item) => item.id === caseId) ?? null
     return candidates.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''))[0] ?? null
+  }
+
+  function getFlow(id: string): ReviewFlowDto | null {
+    return flows.value.find((flow) => flow.id === id) ?? null
   }
 
   async function startCase(drawingNo: string): Promise<ApiReviewCase> {
@@ -82,11 +117,13 @@ export const useReviewStore = defineStore('review', () => {
     cases,
     completed,
     flows,
+    myPendingReviews,
     loading,
     error,
     load,
     loadFlows,
     getCase,
+    getFlow,
     startCase,
     submitNode,
     createFlow,

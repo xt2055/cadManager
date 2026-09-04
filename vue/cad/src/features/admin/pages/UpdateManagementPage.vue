@@ -2,14 +2,15 @@
 import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { adminService } from '@/app/container'
 import type { UpdateRecord } from '@/modules/admin'
 import { useUiStore } from '@/stores/ui.store'
+import { useAdminStore } from '@/stores/admin.store'
 
 defineOptions({ name: 'UpdateManagementPage' })
 
 const uiStore = useUiStore()
-const records = ref<UpdateRecord[]>([])
+const adminStore = useAdminStore()
+const records = computed(() => adminStore.updates)
 const loading = ref(false)
 const uploading = ref(false)
 const version = ref('')
@@ -52,7 +53,7 @@ function onFileChange(event: Event) {
 async function load(showError = false) {
   loading.value = true
   try {
-    records.value = await adminService.fetchUpdateList()
+    await adminStore.loadUpdates()
   } catch (error) {
     if (showError) uiStore.toast(error instanceof Error ? error.message : '读取更新列表失败', 'warn')
   } finally {
@@ -65,7 +66,7 @@ async function submit() {
   if (!version.value.trim()) { uiStore.toast('请填写版本号', 'warn'); return }
   uploading.value = true
   try {
-    await adminService.uploadUpdatePackage({ file: file.value, version: version.value.trim(), notes: notes.value.trim(), mandatory: mandatory.value })
+    await adminStore.uploadUpdatePackage({ file: file.value, version: version.value.trim(), notes: notes.value.trim(), mandatory: mandatory.value })
     uiStore.toast(`版本 ${version.value.trim()} 已发布，客户端将提示更新`, 'ok')
     version.value = ''
     notes.value = ''
@@ -86,7 +87,7 @@ async function remove(record: UpdateRecord) {
     confirmText: '删除',
     onConfirm: async () => {
       try {
-        await adminService.deleteUpdatePackage(record.id)
+        await adminStore.deleteUpdatePackage(record.id)
         uiStore.toast('已删除', 'ok')
         await load()
       } catch (error) {
@@ -119,7 +120,7 @@ onMounted(() => load(true))
           <template v-else>上传第一个版本后，客户端启动时会自动检查更新</template>
         </div>
       </div>
-      <a v-if="latest" class="ghost-btn" :href="adminService.updatePackageDownloadUrl(latest)"><DemoIcon name="download" :size="14" /><span>下载安装包</span></a>
+      <a v-if="latest" class="ghost-btn" :href="adminStore.updatePackageDownloadUrl(latest)"><DemoIcon name="download" :size="14" /><span>下载安装包</span></a>
     </section>
 
     <section class="card upload-card">
@@ -162,7 +163,7 @@ onMounted(() => load(true))
               <span v-if="record.mandatory" class="tag tag--mandatory">强制</span>
             </td>
             <td class="row-actions">
-              <a class="ghost-btn" :href="adminService.updatePackageDownloadUrl(record)"><DemoIcon name="download" :size="13" /></a>
+              <a class="ghost-btn" :href="adminStore.updatePackageDownloadUrl(record)"><DemoIcon name="download" :size="13" /></a>
               <button class="ghost-btn danger" type="button" @click="remove(record)"><DemoIcon name="trash-2" :size="13" /></button>
             </td>
           </tr>

@@ -3,9 +3,9 @@ import { computed, ref, watch } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useUiStore } from '@/stores/ui.store'
-import { useDomainStore } from '@/stores/domain.store'
 import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
-import { reviewService } from '@/app/container'
+import { useAdminStore } from '@/stores/admin.store'
+import { useReviewStore } from '@/stores/review.store'
 import { signerRoleForNode, type ReviewAccountRole } from '@/modules/review'
 import type { UserRole } from '@/types/domain.types'
 
@@ -14,7 +14,8 @@ defineOptions({
 })
 
 const uiStore = useUiStore()
-const domainStore = useDomainStore()
+const adminStore = useAdminStore()
+const reviewStore = useReviewStore()
 const formReason = ref('')
 const selectedVersion = ref('')
 const userAccount = ref('')
@@ -73,7 +74,8 @@ async function loadFlowForm(flowId?: string) {
     resetFlowForm()
     return
   }
-  const flow = await reviewService.getFlow(flowId)
+  const flow = reviewStore.getFlow(flowId) ?? (await reviewStore.loadFlows(), reviewStore.getFlow(flowId))
+  if (!flow) throw new Error('未找到目标审核流程')
   flowName.value = flow.name
   flowNodes.value = flow.nodes.map((node, index) => ({
     name: node.name?.trim() || DEFAULT_FLOW_NODES[index]?.name || `审核节点 ${index + 1}`,
@@ -137,12 +139,25 @@ function toggleRole(role: UserRole) {
     } else if (current.type === 'exit') {
     uiStore.toast('窗口关闭请求已提交', 'info')
     } else if (current.type === 'add-user') {
-      await domainStore.createUser(userAccount.value, userName.value, userPassword.value, userRoles.value)
+      await adminStore.createUser({
+        account: userAccount.value,
+        displayName: userName.value,
+        password: userPassword.value,
+        roles: userRoles.value,
+      })
       uiStore.toast('账号已分配 · 初始密码已保存')
     } else if (current.type === 'reset-user') {
       const userId = current.payload?.userId
       if (!userId) throw new Error('未找到目标账号')
-      await domainStore.resetUserPassword(userId, resetPassword.value)
+      const user = adminStore.users.find((item) => item.id === userId)
+      if (!user) throw new Error('未找到目标账号')
+      await adminStore.updateUser(userId, {
+        account: user.account,
+        displayName: user.displayName,
+        password: resetPassword.value,
+        roles: user.roles,
+        status: user.status,
+      })
       uiStore.toast('密码已重置 · 请通过内部渠道通知用户')
     } else if (current.type === 'edit-flow') {
       const flowId = current.payload?.flowId
@@ -162,8 +177,8 @@ function toggleRole(role: UserRole) {
       }
       if (!input.name) throw new Error('审核流程名称不能为空')
       if (input.nodes.some((node) => !node.name)) throw new Error('审核节点名称不能为空')
-      if (flowId) await reviewService.updateFlow(flowId, input)
-      else await reviewService.createFlow(input)
+      if (flowId) await reviewStore.updateFlow(flowId, input)
+      else await reviewStore.createFlow(input)
       uiStore.toast('审核流程已保存到数据库')
     }
 

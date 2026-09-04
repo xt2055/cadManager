@@ -3,14 +3,17 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { STATUS, useDomainStore } from '@/stores/domain.store'
+import { STATUS } from '@/stores/domain.store'
 import { useAuthStore } from '@/stores/auth.store'
-import type { DrawingStatus, StructurePart } from '@/types/domain.types'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useAttributeStore } from '@/stores/attribute.store'
+import type { DrawingStatus } from '@/types/domain.types'
 import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({ name: 'DrawingLibraryPage' })
 
-const domainStore = useDomainStore()
+const drawingStore = useDrawingStore()
+const attributeStore = useAttributeStore()
 const authStore = useAuthStore()
 const router = useRouter()
 
@@ -25,7 +28,7 @@ const isAdmin = computed(() => authStore.hasRole('admin'))
 const activeFilterCount = computed(() => Object.values(attributeFilters.value).filter(Boolean).length)
 
 const activeFiltersList = computed(() => {
-  return domainStore.sortedAttributes
+  return attributeStore.sortedAttributes
     .map((attr) => {
       const fieldId = attributeFilters.value[attr.id]
       if (!fieldId) return null
@@ -40,26 +43,24 @@ const activeFiltersList = computed(() => {
 })
 
 function partsForDrawing(drawingNo: string) {
-  return domainStore.structure.filter((part) => part.parentNo === drawingNo)
+  return drawingStore.parts.filter((part) => part.parentNo === drawingNo)
 }
 
 function partMatchesQuery(part: ReturnType<typeof partsForDrawing>[number], q: string): boolean {
-  const fileNames = (part.files ?? [])
-    .flatMap((file) => [file.name, file.rawName ?? ''])
-  return [part.no, ...fileNames].some((value) => value.toLowerCase().includes(q))
+  return [part.no, ...part.fileNames].some((value) => value.toLowerCase().includes(q))
 }
 
-function projectNoForPart(part: StructurePart): string {
-  return part.project || domainStore.drawings.find((drawing) => drawing.no === part.parentNo)?.project || ''
+function projectNoForPart(part: ReturnType<typeof partsForDrawing>[number]): string {
+  return part.project || drawingStore.getDrawing(part.parentNo)?.project || ''
 }
 
-function partFileNames(part: StructurePart): string[] {
-  return [...new Set((part.files ?? []).map((file) => file.name).filter(Boolean))]
+function partFileNames(part: ReturnType<typeof partsForDrawing>[number]): string[] {
+  return part.fileNames
 }
 
-function matchesPartSearch(part: StructurePart, q: string): boolean {
+function matchesPartSearch(part: ReturnType<typeof partsForDrawing>[number], q: string): boolean {
   if (!q) return true
-  return [part.no, part.parentNo, projectNoForPart(part), ...partFileNames(part), ...(part.files ?? []).flatMap((file) => file.rawName || '')]
+  return [part.no, part.parentNo, projectNoForPart(part), ...partFileNames(part)]
     .some((value) => value.toLowerCase().includes(q))
 }
 
@@ -67,7 +68,7 @@ const matchingPartProjects = computed(() => {
   const q = query.value.trim().toLowerCase()
   if (!q) return new Set<string>()
   return new Set(
-    domainStore.structure
+    drawingStore.parts
       .filter((part) => partMatchesQuery(part, q))
       .map((part) => part.parentNo),
   )
@@ -76,13 +77,13 @@ const matchingPartProjects = computed(() => {
 const rows = computed(() => {
   const q = query.value.trim().toLowerCase()
   const st = status.value
-  return domainStore.drawings.filter((drawing) => {
+  return drawingStore.drawings.filter((drawing) => {
     if (drawing.status === 'disabled') return false
     if (st && drawing.status !== st) return false
 
-    const attributeText = domainStore.sortedAttributes.flatMap((attribute) => [
+    const attributeText = attributeStore.sortedAttributes.flatMap((attribute) => [
       attribute.name,
-      domainStore.attributeFieldName(attribute.id, drawing.attributeValues?.[attribute.id]),
+      attributeStore.fieldName(attribute.id, drawing.attributeValues?.[attribute.id]),
     ]).join(' ').toLowerCase()
 
     const matchesQuery = !q || [
@@ -96,7 +97,7 @@ const rows = computed(() => {
     const matchesPart = Boolean(q) && partsForDrawing(drawing.no).some((part) => partMatchesQuery(part, q))
     if (!matchesQuery && !matchesPart) return false
 
-    const matchesAttributes = domainStore.sortedAttributes.every((attribute) => {
+    const matchesAttributes = attributeStore.sortedAttributes.every((attribute) => {
       const selected = attributeFilters.value[attribute.id]
       return !selected || drawing.attributeValues?.[attribute.id] === selected
     })
@@ -107,7 +108,7 @@ const rows = computed(() => {
 const partRows = computed(() => {
   const q = query.value.trim().toLowerCase()
   const st = status.value
-  return domainStore.structure.filter((part) => {
+  return drawingStore.parts.filter((part) => {
     if (part.status === 'disabled') return false
     if (st && part.status !== st) return false
     return matchesPartSearch(part, q)
@@ -136,7 +137,6 @@ function removeFilter(attributeId: string) {
 
 function openDetail(drawingNo: string) {
   menuFor.value = null
-  domainStore.openDrawing(drawingNo)
   router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
 }
 
@@ -150,7 +150,7 @@ function menuAction(action: 'detail', drawingNo: string) {
 }
 
 onMounted(() => {
-  domainStore.initialize().catch(() => undefined)
+  void Promise.all([drawingStore.load(), attributeStore.load()]).catch(() => undefined)
 })
 </script>
 
@@ -174,7 +174,7 @@ onMounted(() => {
     </header>
 
     <!-- 属性筛选面板 -->
-    <section v-if="mode === 'drawing' && domainStore.sortedAttributes.length" class="attribute-filter-panel card">
+    <section v-if="mode === 'drawing' && attributeStore.sortedAttributes.length" class="attribute-filter-panel card">
       <div class="filter-panel-head">
         <div class="filter-head-title">
           <DemoIcon name="filter" :size="14" />
@@ -187,7 +187,7 @@ onMounted(() => {
       </div>
 
       <div class="filter-grid">
-        <div v-for="attribute in domainStore.sortedAttributes" :key="attribute.id" class="filter-field">
+        <div v-for="attribute in attributeStore.sortedAttributes" :key="attribute.id" class="filter-field">
           <div class="filter-label">
             <span>{{ attribute.name }}</span>
             <em v-if="attribute.required">必填项</em>
@@ -284,11 +284,11 @@ onMounted(() => {
 
                 <!-- 属性规格标签化展示 -->
                 <td class="attribute-summary-cell">
-                  <div v-if="domainStore.sortedAttributes.some((attr) => drawing.attributeValues?.[attr.id])" class="attr-pill-group">
-                    <template v-for="attr in domainStore.sortedAttributes" :key="attr.id">
+                  <div v-if="attributeStore.sortedAttributes.some((attr) => drawing.attributeValues?.[attr.id])" class="attr-pill-group">
+                    <template v-for="attr in attributeStore.sortedAttributes" :key="attr.id">
                       <span v-if="drawing.attributeValues?.[attr.id]" class="attr-tag">
                         <span class="attr-k">{{ attr.name }}:</span>
-                        <span class="attr-v">{{ domainStore.attributeFieldName(attr.id, drawing.attributeValues?.[attr.id]) }}</span>
+                        <span class="attr-v">{{ attributeStore.fieldName(attr.id, drawing.attributeValues?.[attr.id]) }}</span>
                       </span>
                     </template>
                   </div>
@@ -297,8 +297,8 @@ onMounted(() => {
 
                 <td>{{ drawing.vendor || '—' }}</td>
                 <td><span class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span></td>
-                <td class="mono">{{ drawing.ver }}</td>
-                <td class="mono text-time">{{ formatReadableDateTime(drawing.updated, '—') }}</td>
+                <td class="mono">{{ drawing.version }}</td>
+                <td class="mono text-time">{{ formatReadableDateTime(drawing.updatedAt, '—') }}</td>
                 <td class="row-actions">
                   <button class="btn sm" type="button" @click="openDetail(drawing.no)">
                     <DemoIcon name="eye" :size="13" />详情
@@ -382,7 +382,7 @@ onMounted(() => {
                 <small v-if="part.remark">{{ part.remark }}</small>
               </td>
               <td><span class="tag" :class="STATUS[part.status].c">{{ STATUS[part.status].t }}</span></td>
-              <td class="mono">{{ part.ver }}</td>
+              <td class="mono">{{ part.version }}</td>
               <td class="row-actions">
                 <button class="btn sm" type="button" @click="openDetail(part.no)">
                   <DemoIcon name="eye" :size="13" />详情

@@ -2,20 +2,26 @@
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { onMounted, onUnmounted } from 'vue'
+import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'ReviewPendingPage' })
 
 const router = useRouter()
-const domainStore = useDomainStore()
+const reviewStore = useReviewStore()
 const uiStore = useUiStore()
 
 function startReviewingFlow(no: string) {
-  domainStore.openDrawing(no)
   uiStore.toast(`进入图纸「${no}」详情：请先查阅图纸文件，再前往审核流程签署意见`, 'info')
   router.push({ name: 'drawing-preview', params: { drawingId: no } })
 }
+
+onMounted(() => {
+  void reviewStore.load().catch(() => undefined)
+  reviewStore.startPolling()
+})
+onUnmounted(() => reviewStore.stopPolling())
 </script>
 
 <template>
@@ -25,8 +31,8 @@ function startReviewingFlow(no: string) {
       <span class="lib-count">点击进入图纸详情 · 审阅图纸后完成签署与意见录入</span>
     </div>
 
-    <template v-if="domainStore.myPendingReviews.length">
-      <div v-for="review in domainStore.myPendingReviews" :key="`${review.reviewCaseId}-${review.node}`" class="card review-row">
+    <template v-if="reviewStore.myPendingReviews().length">
+      <div v-for="review in reviewStore.myPendingReviews()" :key="`${review.reviewCaseId}-${review.node}`" class="card review-row">
         <div class="feed-ic review-icon">
           <DemoIcon name="clipboard-check" :size="20" />
         </div>

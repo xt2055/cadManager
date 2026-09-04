@@ -2,15 +2,16 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { adminService } from '@/app/container'
 import type { SystemLogFile, SystemLogLine } from '@/modules/admin'
 import { useUiStore } from '@/stores/ui.store'
+import { useAdminStore } from '@/stores/admin.store'
 
 defineOptions({ name: 'SystemLogPage' })
 
 const uiStore = useUiStore()
-const lines = ref<SystemLogLine[]>([])
-const files = ref<SystemLogFile[]>([])
+const adminStore = useAdminStore()
+const lines = computed(() => adminStore.systemLogs)
+const files = computed(() => adminStore.systemLogFiles)
 const keyword = ref('')
 const level = ref<'all' | 'INFO' | 'WARN' | 'ERROR'>('all')
 const autoRefresh = ref(true)
@@ -33,12 +34,10 @@ function formatSize(size: number): string {
 async function load(showError = false) {
   loading.value = true
   try {
-    const [logResult, fileResult] = await Promise.all([
-      adminService.fetchSystemLogs(500, keyword.value.trim()),
-      adminService.fetchSystemLogFiles(),
+    await Promise.all([
+      adminStore.loadSystemLogs(500, keyword.value.trim()),
+      adminStore.loadSystemLogFiles(),
     ])
-    lines.value = logResult
-    files.value = fileResult
   } catch (error) {
     if (showError) uiStore.toast(error instanceof Error ? error.message : '读取日志失败', 'warn')
   } finally {
@@ -74,7 +73,7 @@ onBeforeUnmount(() => {
           <input v-model="autoRefresh" type="checkbox" @change="toggleAuto" />
           <span>2 秒自动刷新</span>
         </label>
-        <a class="ghost-btn" :href="latestFile ? adminService.systemLogDownloadUrl(latestFile.name) : undefined" :class="{ disabled: !latestFile }">
+        <a class="ghost-btn" :href="latestFile ? adminStore.systemLogDownloadUrl(latestFile.name) : undefined" :class="{ disabled: !latestFile }">
           <DemoIcon name="download" :size="14" /><span>下载最新日志</span>
         </a>
         <button class="ghost-btn" type="button" @click="load(true)"><DemoIcon name="refresh-cw" :size="14" /><span>刷新</span></button>
@@ -114,7 +113,7 @@ onBeforeUnmount(() => {
             <td class="mono">{{ file.name }}</td>
             <td>{{ formatSize(file.size) }}</td>
             <td>{{ file.modTime }}</td>
-            <td><a class="ghost-btn" :href="adminService.systemLogDownloadUrl(file.name)"><DemoIcon name="download" :size="13" /><span>下载</span></a></td>
+            <td><a class="ghost-btn" :href="adminStore.systemLogDownloadUrl(file.name)"><DemoIcon name="download" :size="13" /><span>下载</span></a></td>
           </tr>
         </tbody>
       </table>

@@ -10,7 +10,10 @@ export interface DrawingSummaryView {
   name: string
   kind: Drawing['kind']
   project: string
-  status: string
+  vendor: string
+  remark?: string
+  attributeValues: Record<string, string>
+  status: Drawing['status']
   version: string
   updatedAt: string
   designer?: string
@@ -28,10 +31,12 @@ export interface PartView {
   project?: string
   material: string
   spec: string
+  remark?: string
   qty: number
-  status: string
+  status: StructurePart['status']
   version: string
   updatedAt: string
+  fileNames: string[]
   borrowed: boolean
   sourcePartId?: PartId
   sourceDrawing?: string
@@ -84,6 +89,9 @@ export class DrawingReadModelMapper {
       name: drawing.name,
       kind: drawing.kind,
       project: drawing.project,
+      vendor: drawing.vendor,
+      ...(drawing.remark ? { remark: drawing.remark } : {}),
+      attributeValues: { ...(drawing.attributeValues ?? {}) },
       status: drawing.status,
       version: drawing.ver,
       updatedAt: drawing.updatedAt ?? drawing.updated,
@@ -106,10 +114,12 @@ export class DrawingReadModelMapper {
       ...(part.project ? { project: part.project } : {}),
       material: part.material,
       spec: part.spec,
+      ...(part.remark ? { remark: part.remark } : {}),
       qty: part.qty,
       status: part.status,
       version: part.ver,
       updatedAt: part.updatedAt ?? part.createdAt ?? '',
+      fileNames: [...new Set([...(part.files ?? []), ...(part.otherFiles ?? [])].map((file) => file.name).filter(Boolean))],
       borrowed: Boolean(part.borrowFrom),
       ...(sourcePart ? { sourcePartId: sourcePart.id ?? sourcePart.no } : {}),
       ...(sourceDrawing ? { sourceDrawing } : {}),

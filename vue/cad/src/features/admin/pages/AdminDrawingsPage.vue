@@ -11,12 +11,14 @@ import type {
   AdminPartSummary,
 } from '@/modules/admin'
 import { useUiStore } from '@/stores/ui.store'
-import { useDomainStore } from '@/stores/domain.store'
+import { useAdminStore } from '@/stores/admin.store'
+import { useDrawingStore } from '@/stores/drawing.store'
 
 defineOptions({ name: 'AdminDrawingsPage' })
 
 const uiStore = useUiStore()
-const domainStore = useDomainStore()
+const adminStore = useAdminStore()
+const drawingStore = useDrawingStore()
 const mode = ref<'drawing' | 'part'>('drawing')
 const keyword = ref('')
 const status = ref('')
@@ -58,7 +60,7 @@ async function load() {
   loading.value = true
   errorMessage.value = ''
   try {
-    result.value = await adminService.listDrawings({ page: page.value, pageSize: pageSize.value, keyword: keyword.value.trim() || undefined, status: status.value || undefined, kind: mode.value })
+    result.value = await adminStore.loadDrawings({ page: page.value, pageSize: pageSize.value, keyword: keyword.value.trim() || undefined, status: status.value || undefined, kind: mode.value })
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '后台图纸列表读取失败'
     result.value = { list: [], total: 0, page: page.value, pageSize: pageSize.value }
@@ -86,7 +88,7 @@ async function toggleDrawing(item: { id: string; no: string; status: string }) {
   const confirmed = window.confirm(`确定要${action}图纸「${item.no}」吗？${nextStatus === 'disabled' ? '\n禁用后普通图纸库将不再显示。' : ''}`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await adminService.setDrawingStatus(item.id, nextStatus); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`图纸「${item.no}」已${action}`, 'ok'); if (detail.value?.drawing.id === item.id) detail.value = await adminService.getDrawing(item.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : `图纸${action}失败`, 'warn') } finally { busyId.value = '' }
+  try { await adminService.setDrawingStatus(item.id, nextStatus); drawingStore.invalidate(); await Promise.all([load(), drawingStore.refresh()]); uiStore.toast(`图纸「${item.no}」已${action}`, 'ok'); if (detail.value?.drawing.id === item.id) detail.value = await adminService.getDrawing(item.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : `图纸${action}失败`, 'warn') } finally { busyId.value = '' }
 }
 
 async function togglePart(item: AdminPartSummary) {
@@ -96,7 +98,7 @@ async function togglePart(item: AdminPartSummary) {
   const confirmed = window.confirm(`确定要${action}零件「${item.no}」吗？`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await adminService.setPartStatus(item.id, nextStatus); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`零件「${item.no}」已${action}`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : `零件${action}失败`, 'warn') } finally { busyId.value = '' }
+  try { await adminService.setPartStatus(item.id, nextStatus); drawingStore.invalidate(); await Promise.all([load(), drawingStore.refresh()]); uiStore.toast(`零件「${item.no}」已${action}`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : `零件${action}失败`, 'warn') } finally { busyId.value = '' }
 }
 
 async function hardDelete(item: { id: string; no: string }) {
@@ -104,7 +106,7 @@ async function hardDelete(item: { id: string; no: string }) {
   const confirmed = window.confirm(`确定永久删除图纸「${item.no}」吗？\n\n这将同时删除其零件、附件、CAD 版本和物理文件，无法恢复。`)
   if (!confirmed) return
   busyId.value = item.id
-  try { await adminService.deleteDrawing(item.id); closeDetail(); await Promise.all([load(), domainStore.reloadFromServer()]); uiStore.toast(`图纸「${item.no}」已永久删除`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : '图纸永久删除失败', 'warn') } finally { busyId.value = '' }
+  try { await adminService.deleteDrawing(item.id); closeDetail(); drawingStore.invalidate(); await Promise.all([load(), drawingStore.refresh()]); uiStore.toast(`图纸「${item.no}」已永久删除`, 'ok') } catch (error) { uiStore.toast(error instanceof Error ? error.message : '图纸永久删除失败', 'warn') } finally { busyId.value = '' }
 }
 
 async function removeAttachment(item: AdminAttachment) {

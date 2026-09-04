@@ -6,7 +6,7 @@ import { reviewCaseService } from '@/services/review-case.service'
 import { reviewFlowService } from '@/services/review-flow.service'
 import { EditingService } from '@/modules/editing'
 import { VersioningService } from '@/modules/versioning'
-import { AttributeService } from '@/modules/attribute'
+import { AttributeQueryService, AttributeService } from '@/modules/attribute'
 import { AuditService } from '@/modules/audit'
 import { AdminService } from '@/modules/admin'
 import {
@@ -89,6 +89,9 @@ export const editingService = new EditingService(dataManager, {
 export const versioningService = new VersioningService(dataManager)
 
 export const attributeService = new AttributeService()
+export const attributeQueryService = new AttributeQueryService({
+  loadAttributes: () => dataManager.loadAttributes(),
+})
 
 export const auditService = new AuditService({
   create: createDrawingOperationLog,

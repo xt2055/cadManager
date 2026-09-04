@@ -3,19 +3,28 @@ import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
 import { useSystemStatusStore } from '@/stores/system-status.store'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useReviewStore } from '@/stores/review.store'
+import { useAuditStore } from '@/stores/audit.store'
 
 defineOptions({
   name: 'DashboardPage',
 })
 
-const domainStore = useDomainStore()
 const systemStore = useSystemStatusStore()
+const drawingStore = useDrawingStore()
+const reviewStore = useReviewStore()
+const auditStore = useAuditStore()
 const router = useRouter()
 
 onMounted(() => {
   systemStore.fetchStatus()
+  void Promise.all([
+    drawingStore.load(),
+    reviewStore.load(),
+    auditStore.loadDrawing({ page: 1, pageSize: 20 }),
+  ]).catch(() => undefined)
 })
 const currentHour = new Date().getHours()
 const greeting = currentHour < 6 ? '晚上好' : currentHour < 12 ? '早上好' : currentHour < 18 ? '下午好' : '晚上好'
@@ -34,12 +43,15 @@ const feedIcons: Record<string, string> = {
 }
 
 const stats = computed(() => {
-  const { total, assemblies, parts } = domainStore.drawingStats ?? { total: 0, assemblies: 0, parts: 0 }
+  const assemblies = drawingStore.drawings.filter((item) => item.kind === '总图').length
+  const parts = drawingStore.parts.length
+  const total = assemblies + parts
+  const reviewCount = reviewStore.myPendingReviews().length
 
   return [
     { label: '图纸总数', value: String(total), icon: 'layers', delta: total ? '当前库内总计' : '暂无图纸数据' },
     { label: '总图 / 零件图', value: `${assemblies} / ${parts}`, icon: 'box', delta: `总图 ${assemblies} · 零件 ${parts}` },
-    { label: '待我审核', value: String(domainStore.reviewCount), icon: 'clipboard-check', delta: domainStore.reviewCount ? '请及时处理待办' : '暂无待审核记录' },
+    { label: '待我审核', value: String(reviewCount), icon: 'clipboard-check', delta: reviewCount ? '请及时处理待办' : '暂无待审核记录' },
   ]
 })
 
@@ -52,7 +64,6 @@ function openLibrary() {
 }
 
 function openReview(no: string) {
-  domainStore.openDrawing(no)
   router.push({ name: 'drawing-preview', params: { drawingId: no } })
 }
 </script>
@@ -62,7 +73,7 @@ function openReview(no: string) {
     <div class="dash-hero">
       <div>
         <h1>{{ greeting }}</h1>
-        <p>{{ todayText }} · 有 {{ domainStore.reviewCount }} 份审核任务等待处理</p>
+        <p>{{ todayText }} · 有 {{ reviewStore.myPendingReviews().length }} 份审核任务等待处理</p>
       </div>
       <div class="acts">
         <button class="btn primary" type="button" @click="openCreateDrawing">
@@ -88,12 +99,12 @@ function openReview(no: string) {
           <span class="hint">谁查看 · 谁修改 · 谁分叉 · 谁上传</span>
         </div>
          <div class="feed recent-activity-feed">
-          <div v-for="item in domainStore.logs" :key="`${item.user}-${item.time}-${item.txt}`" class="feed-item">
+          <div v-for="item in auditStore.drawingLogs.list" :key="`${item.user}-${item.time}-${item.txt}`" class="feed-item">
             <div class="feed-ic" :class="item.act"><DemoIcon :name="feedIcons[item.act] ?? 'activity'" :size="14" /></div>
             <div class="feed-txt"><b>{{ item.user }}</b> <span v-html="item.txt"></span></div>
             <div class="feed-time">{{ item.time }}</div>
           </div>
-          <div v-if="!domainStore.logs.length" class="empty">
+          <div v-if="!auditStore.drawingLogs.list.length" class="empty">
             <DemoIcon name="activity" :size="34" />
             <div class="t">暂无动态记录</div>
           </div>
@@ -103,10 +114,10 @@ function openReview(no: string) {
       <div class="card">
         <div class="card-title">
           <DemoIcon name="stamp" :size="16" />待我审核
-          <span class="hint">{{ domainStore.reviewCount }} 项</span>
+          <span class="hint">{{ reviewStore.myPendingReviews().length }} 项</span>
         </div>
-        <div v-if="domainStore.myPendingReviews.length" class="todo-list">
-          <div v-for="item in domainStore.myPendingReviews" :key="`${item.reviewCaseId}-${item.node}`" class="todo-item">
+        <div v-if="reviewStore.myPendingReviews().length" class="todo-list">
+          <div v-for="item in reviewStore.myPendingReviews()" :key="`${item.reviewCaseId}-${item.node}`" class="todo-item">
             <div class="todo-info">
               <b>{{ item.name }} · {{ item.node }}</b>
               <span>{{ item.no }} · 责任人 {{ item.by }} · 发起于 {{ item.time }}</span>

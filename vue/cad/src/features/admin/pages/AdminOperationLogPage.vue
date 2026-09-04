@@ -2,14 +2,15 @@
 import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { auditService } from '@/app/container'
 import type { OperationLogPage } from '@/services/drawing-operation-log.service'
-import { useDomainStore } from '@/stores/domain.store'
+import { useAdminStore } from '@/stores/admin.store'
+import { useAuditStore } from '@/stores/audit.store'
 import { ACTIVITY_LABELS, type ActivityLog, type ActivityResult, type ActivityTargetType, type ActivityType } from '@/types/domain.types'
 
 defineOptions({ name: 'AdminOperationLogPage' })
 
-const domainStore = useDomainStore()
+const adminStore = useAdminStore()
+const auditStore = useAuditStore()
 const page = ref(1)
 const pageSize = ref(20)
 const query = ref('')
@@ -33,7 +34,7 @@ const targetOptions: Array<[ActivityTargetType, string]> = [
   ['review', '审核'],
   ['branch', '分支'],
 ]
-const adminUsers = computed(() => domainStore.users.filter((user) => user.roles.includes('admin')))
+const adminUsers = computed(() => adminStore.users.filter((user) => user.roles.includes('admin')))
 const totalPages = computed(() => Math.max(1, Math.ceil(resultPage.value.total / pageSize.value)))
 const rows = computed(() => resultPage.value.list)
 
@@ -58,7 +59,7 @@ async function loadLogs() {
   loading.value = true
   errorMessage.value = ''
   try {
-    resultPage.value = await auditService.listAdmin({
+    resultPage.value = await auditStore.loadAdmin({
       page: page.value,
       pageSize: pageSize.value,
       keyword: query.value.trim() || undefined,
@@ -111,7 +112,7 @@ function openDetail(log: ActivityLog) {
 }
 
 onMounted(() => {
-  void loadLogs()
+  void Promise.all([loadLogs(), adminStore.loadUsers()])
 })
 </script>
 

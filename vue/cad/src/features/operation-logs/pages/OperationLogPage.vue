@@ -1,24 +1,24 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { useAuditStore } from '@/stores/audit.store'
 import { ACTIVITY_LABELS } from '@/types/domain.types'
 
 defineOptions({ name: 'OperationLogPage' })
 
-const domainStore = useDomainStore()
+const auditStore = useAuditStore()
 const filterAct = ref('')
 const filterDrawing = ref('')
 const filterUser = ref('')
 const keyword = ref('')
 const options = ['', ...Object.values(ACTIVITY_LABELS)]
 
-const drawingOptions = computed(() => Array.from(new Set(domainStore.logs.map((item) => item.drawingNo).filter(Boolean))).sort())
-const userOptions = computed(() => Array.from(new Set(domainStore.logs.map((item) => item.user).filter(Boolean))).sort())
+const drawingOptions = computed(() => Array.from(new Set(auditStore.drawingLogs.list.map((item) => item.drawingNo).filter(Boolean))).sort())
+const userOptions = computed(() => Array.from(new Set(auditStore.drawingLogs.list.map((item) => item.user).filter(Boolean))).sort())
 
 const rows = computed(() =>
-  domainStore.logs.filter((item) => {
+  auditStore.drawingLogs.list.filter((item) => {
     if (filterAct.value && ACTIVITY_LABELS[item.act] !== filterAct.value) return false
     if (filterDrawing.value && item.drawingNo !== filterDrawing.value) return false
     if (filterUser.value && item.user !== filterUser.value) return false
@@ -30,6 +30,8 @@ const rows = computed(() =>
     return true
   }),
 )
+
+onMounted(() => { void auditStore.loadDrawing({ page: 1, pageSize: 200 }).catch(() => undefined) })
 
 function resetFilters() {
   filterAct.value = ''

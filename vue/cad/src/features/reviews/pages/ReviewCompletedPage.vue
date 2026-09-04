@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { onMounted } from 'vue'
+import { useReviewStore } from '@/stores/review.store'
 
 defineOptions({ name: 'ReviewCompletedPage' })
 
-const domainStore = useDomainStore()
+const reviewStore = useReviewStore()
+
+onMounted(() => { void reviewStore.load().catch(() => undefined) })
 </script>
 
 <template>
@@ -14,7 +17,7 @@ const domainStore = useDomainStore()
       <span class="lib-count">所有历史审核意见与流转结果永久追溯</span>
     </div>
 
-    <div v-if="domainStore.completedReviews.length" class="card history-card">
+    <div v-if="reviewStore.completed.length" class="card history-card">
       <div class="table-pad">
         <table class="tbl">
           <thead>
@@ -29,7 +32,7 @@ const domainStore = useDomainStore()
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in domainStore.completedReviews" :key="item.id">
+            <tr v-for="item in reviewStore.completed" :key="item.id">
               <td class="num mono link">{{ item.no }}</td>
               <td><b>{{ item.name }}</b></td>
               <td><span class="tag plain">{{ item.node }}</span></td>

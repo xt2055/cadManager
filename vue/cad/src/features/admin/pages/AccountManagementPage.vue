@@ -2,25 +2,25 @@
 import { onMounted } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { useAdminStore } from '@/stores/admin.store'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'AccountManagementPage' })
 
-const domainStore = useDomainStore()
+const adminStore = useAdminStore()
 const uiStore = useUiStore()
 
 // 进入页面即重拉一次账号列表：initialize 是一次性快照，
 // 初始化时机早于角色恢复或他人新建账号时，快照会漏掉最新数据。
 onMounted(() => {
-  void domainStore.refreshUsers()
+  void adminStore.loadUsers()
 })
 
 async function toggleUser(index: number) {
   try {
-    const user = domainStore.users[index]
+    const user = adminStore.users[index]
     if (!user) return
-    await domainStore.toggleUser(user.id)
+    await adminStore.toggleUser(user.id)
   } catch (error) {
     console.error('保存账号状态失败', error)
     uiStore.toast(error instanceof Error ? error.message : '账号状态保存失败，请稍后重试', 'warn')
@@ -46,13 +46,13 @@ function openResetPassword(user: { id: string; account: string }) {
       <table class="tbl">
         <thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>状态</th><th>最近活跃</th><th>操作</th></tr></thead>
         <tbody>
-              <tr v-for="(user, index) in domainStore.users" :key="user.id">
+              <tr v-for="(user, index) in adminStore.users" :key="user.id">
             <td class="num">{{ user.account }}</td><td class="user-name"><span class="mini-avatar">{{ user.displayName[0] }}</span>{{ user.displayName }}</td>
             <td><span v-for="role in user.roles" :key="role" class="tag plain role-tag">{{ roleLabel(role) }}</span></td>
             <td><span class="tag" :class="user.status === 'active' ? 'ok' : 'danger'">{{ user.status === 'active' ? '正常' : '已禁用' }}</span></td><td class="num updated">{{ user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : '从未登录' }}</td>
             <td class="admin-row-actions"><button class="btn sm" :class="{ danger: user.status === 'active' }" type="button" @click="toggleUser(index)">{{ user.status === 'active' ? '禁用' : '启用' }}</button><button class="btn sm" type="button" @click="openResetPassword(user)">重置密码</button></td>
           </tr>
-              <tr v-if="!domainStore.users.length"><td colspan="6"><div class="empty"><DemoIcon name="user-plus" :size="34" /><div class="t">暂无账号数据</div></div></td></tr>
+              <tr v-if="!adminStore.users.length"><td colspan="6"><div class="empty"><DemoIcon name="user-plus" :size="34" /><div class="t">暂无账号数据</div></div></td></tr>
         </tbody>
       </table>
     </div>
