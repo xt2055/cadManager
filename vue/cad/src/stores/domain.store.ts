@@ -13,7 +13,7 @@ import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.se
 import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
 import { ensureSmbCredential } from '@/services/tauri/cad-edit.service'
 import { formatReadableDateTime } from '@/utils/date-time'
-import { appContainer, attachmentUploader, drawingUploadCoordinator } from '@/app/container'
+import { appContainer, attachmentUploader, drawingCommandService, drawingUploadCoordinator } from '@/app/container'
 import type { PendingDrawingUploadEntry } from '@/modules/upload'
 import type {
   ActivityLog,
@@ -915,7 +915,7 @@ export const useDomainStore = defineStore('domain', () => {
     if (errors.length) throw new Error(errors[0])
     if (!drawing.id || !drawing.revision) throw new Error('图纸缺少服务端版本信息，请刷新后重试')
     const attributeValues = Object.fromEntries(Object.entries(values).filter(([, value]) => value))
-    await dataManager.updateDrawing(drawing.id, {
+    await drawingCommandService.updateDrawing(drawing.id, {
       expectedRevision: drawing.revision,
       attributeValues,
     })
@@ -2254,7 +2254,7 @@ export const useDomainStore = defineStore('domain', () => {
     if (!Number.isFinite(payload.weight) || payload.weight < 0) throw new Error('理论重量不能小于 0')
     if (!part.id || !part.revision) throw new Error('零件缺少服务端版本信息，请刷新后重试')
 
-    await dataManager.updatePart(part.id, {
+    await drawingCommandService.updatePart(part.id, {
       expectedRevision: part.revision,
       ...(nextPartNo !== part.no ? { no: nextPartNo } : {}),
       name,
