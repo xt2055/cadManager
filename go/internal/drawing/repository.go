@@ -12,11 +12,12 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("drawing resource not found")
-	ErrConflict          = errors.New("drawing resource conflict")
-	ErrRevisionConflict  = errors.New("drawing resource revision conflict")
-	ErrRevisionRequired  = errors.New("drawing resource revision required")
-	ErrInvalidTransition = errors.New("drawing status transition not allowed")
+	ErrNotFound            = errors.New("drawing resource not found")
+	ErrConflict            = errors.New("drawing resource conflict")
+	ErrRevisionConflict    = errors.New("drawing resource revision conflict")
+	ErrRevisionRequired    = errors.New("drawing resource revision required")
+	ErrInvalidTransition   = errors.New("drawing status transition not allowed")
+	ErrIdempotencyConflict = errors.New("idempotency key conflict")
 )
 
 type PGRepository struct {
@@ -252,25 +253,29 @@ func (repository *PGRepository) SetStatusByNo(ctx context.Context, no string, fr
 
 func (repository *PGRepository) ListParts(ctx context.Context, drawingID string) ([]Part, error) {
 	rows, err := repository.pool.Query(ctx, `
-		SELECT p.id::text, p.drawing_id::text, p.part_no, p.name, COALESCE(parent.part_no, ''),
-		       COALESCE(p.project, d.project, ''), p.material, p.spec, p.weight, p.surface_treatment,
-		       p.manufacturing_type, p.quantity, p.status, p.version, p.revision, p.vendor, p.borrow_from, p.remark,
-		       COALESCE(created_user.display_name, created_user.account, ''), p.created_at,
-		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), p.updated_at
-		FROM structure_parts p
-		JOIN drawings d ON d.id = p.drawing_id
-		LEFT JOIN structure_parts parent ON parent.id = p.parent_part_id
-		LEFT JOIN users created_user ON created_user.id = p.created_by
-		LEFT JOIN users updated_user ON updated_user.id = p.updated_by
-		WHERE p.drawing_id = $1::uuid
-		ORDER BY p.part_no`, drawingID)
+			SELECT p.id::text, r.id::text, r.drawing_id::text, p.part_no,
+			       COALESCE(pr.name, p.part_no), COALESCE(parent_part.part_no, ''), d.project,
+			       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
+			       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'),
+			       r.qty, COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
+			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, p.lifecycle_status,
+			       COALESCE(pr.created_by::text, p.created_by::text, ''), COALESCE(pr.created_at, p.created_at),
+			       COALESCE(pr.published_by::text, p.updated_by::text, ''), COALESCE(pr.published_at, p.updated_at)
+		FROM drawing_part_relations r
+		JOIN parts p ON p.id = r.part_id
+		JOIN drawings d ON d.id = r.drawing_id
+		LEFT JOIN drawing_part_relations parent_rel ON parent_rel.id = r.parent_relation_id
+		LEFT JOIN parts parent_part ON parent_part.id = parent_rel.part_id
+		LEFT JOIN part_revisions pr ON pr.id = COALESCE(p.published_revision_id, (SELECT latest.id FROM part_revisions latest WHERE latest.part_id = p.id ORDER BY latest.revision_no DESC LIMIT 1))
+		WHERE r.drawing_id = $1::uuid AND r.status = 'active'
+		ORDER BY p.part_no, r.created_at`, drawingID)
 	if err != nil {
 		return nil, fmt.Errorf("查询结构树失败: %w", err)
 	}
 	defer rows.Close()
 	parts := make([]Part, 0)
 	for rows.Next() {
-		part, err := scanPart(rows)
+		part, err := scanFinalPart(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -285,18 +290,23 @@ func (repository *PGRepository) ListParts(ctx context.Context, drawingID string)
 
 func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, error) {
 	row := repository.pool.QueryRow(ctx, `
-		SELECT p.id::text, p.drawing_id::text, p.part_no, p.name, COALESCE(parent.part_no, ''),
-		       COALESCE(p.project, d.project, ''), p.material, p.spec, p.weight, p.surface_treatment,
-		       p.manufacturing_type, p.quantity, p.status, p.version, p.revision, p.vendor, p.borrow_from, p.remark,
-		       COALESCE(created_user.display_name, created_user.account, ''), p.created_at,
-		       COALESCE(updated_user.display_name, updated_user.account, created_user.display_name, created_user.account, ''), p.updated_at
-		FROM structure_parts p
-		JOIN drawings d ON d.id = p.drawing_id
-		LEFT JOIN structure_parts parent ON parent.id = p.parent_part_id
-		LEFT JOIN users created_user ON created_user.id = p.created_by
-		LEFT JOIN users updated_user ON updated_user.id = p.updated_by
-		WHERE p.id = $1::uuid`, id)
-	part, err := scanPart(row)
+			SELECT p.id::text, r.id::text, r.drawing_id::text, p.part_no,
+			       COALESCE(pr.name, p.part_no), COALESCE(parent_part.part_no, ''), d.project,
+			       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
+			       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'), r.qty,
+			       COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
+			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, p.lifecycle_status,
+			       COALESCE(pr.created_by::text, p.created_by::text, ''), COALESCE(pr.created_at, p.created_at),
+			       COALESCE(pr.published_by::text, p.updated_by::text, ''), COALESCE(pr.published_at, p.updated_at)
+		FROM parts p
+		JOIN drawing_part_relations r ON r.part_id = p.id AND r.status = 'active'
+		JOIN drawings d ON d.id = r.drawing_id
+		LEFT JOIN drawing_part_relations parent_rel ON parent_rel.id = r.parent_relation_id
+		LEFT JOIN parts parent_part ON parent_part.id = parent_rel.part_id
+		LEFT JOIN part_revisions pr ON pr.id = COALESCE(p.published_revision_id, (SELECT latest.id FROM part_revisions latest WHERE latest.part_id = p.id ORDER BY latest.revision_no DESC LIMIT 1))
+		WHERE p.id = $1::uuid
+		ORDER BY r.created_at DESC LIMIT 1`, id)
+	part, err := scanFinalPart(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Part{}, ErrNotFound
 	}
@@ -305,6 +315,24 @@ func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, 
 	}
 	part.Signers, err = repository.loadPartSigners(ctx, part.ID)
 	return part, err
+}
+
+func scanFinalPart(row rowScanner) (Part, error) {
+	var part Part
+	var status, relationType, lifecycle string
+	var createdAt, updatedAt time.Time
+	if err := row.Scan(&part.ID, &part.RelationID, &part.DrawingID, &part.No, &part.Name, &part.ParentNo,
+		&part.Project, &part.Material, &part.Spec, &part.Weight, &part.SurfaceTreatment,
+		&part.ManufacturingType, &part.Quantity, &status, &part.Version, &part.Revision,
+		&part.RelationRevision, &relationType, &lifecycle, &part.CreatedBy, &createdAt, &part.UpdatedBy, &updatedAt); err != nil {
+		return Part{}, err
+	}
+	part.Status = Status(status)
+	part.RelationType = relationType
+	part.LifecycleStatus = lifecycle
+	part.CreatedAt = createdAt.Format(time.RFC3339)
+	part.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return part, nil
 }
 
 func scanPart(row rowScanner) (Part, error) {
@@ -322,10 +350,18 @@ func scanPart(row rowScanner) (Part, error) {
 }
 
 func (repository *PGRepository) CreatePart(ctx context.Context, drawingID string, input CreatePartInput, userID string) (Part, error) {
+	tx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		return Part{}, fmt.Errorf("开始创建零件事务失败: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, drawingID); err != nil {
+		return Part{}, fmt.Errorf("锁定图纸结构失败: %w", err)
+	}
 	var parentID *string
 	if strings.TrimSpace(input.ParentNo) != "" {
 		var value string
-		err := repository.pool.QueryRow(ctx, `SELECT id::text FROM structure_parts WHERE drawing_id = $1::uuid AND part_no = $2`, drawingID, input.ParentNo).Scan(&value)
+		err := tx.QueryRow(ctx, `SELECT r.id::text FROM drawing_part_relations r JOIN parts p ON p.id = r.part_id WHERE r.drawing_id = $1::uuid AND p.normalized_part_no = $2 AND r.status = 'active' LIMIT 1`, drawingID, NormalizePartNo(input.ParentNo)).Scan(&value)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Part{}, ErrNotFound
 		}
@@ -350,34 +386,73 @@ func (repository *PGRepository) CreatePart(ctx context.Context, drawingID string
 	if quantity == 0 {
 		quantity = 1
 	}
-	var id string
-	err := repository.pool.QueryRow(ctx, `
-		INSERT INTO structure_parts (drawing_id, parent_part_id, part_no, name, project, material, spec, weight,
-			surface_treatment, manufacturing_type, quantity, status, version, vendor, borrow_from, remark, created_by, updated_by)
-		VALUES ($1::uuid, $2::uuid, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::uuid, $17::uuid)
-		RETURNING id::text`, drawingID, parentID, input.No, input.Name, input.Project, input.Material, input.Spec, input.Weight, input.SurfaceTreatment, partType, quantity, status, version, input.Vendor, input.BorrowFrom, input.Remark, userID).Scan(&id)
+	var partID string
+	partNo := strings.TrimSpace(input.No)
+	err = tx.QueryRow(ctx, `INSERT INTO parts (part_no, normalized_part_no, created_by, updated_by) VALUES ($1, $2, $3::uuid, $3::uuid) RETURNING id::text`, partNo, NormalizePartNo(partNo), userID).Scan(&partID)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Part{}, ErrConflict
 		}
 		return Part{}, fmt.Errorf("创建零件失败: %w", err)
 	}
-	return repository.FindPart(ctx, id)
+	var revisionID string
+	err = tx.QueryRow(ctx, `INSERT INTO part_revisions (part_id, revision_no, version, name, material, spec, weight, surface_treatment, part_type, workflow_status, created_by) VALUES ($1::uuid, 1, $2, $3, COALESCE(NULLIF($4, ''), '—'), $5, $6, COALESCE(NULLIF($7, ''), ''), COALESCE(NULLIF($8, ''), '自制件'), $9, $10::uuid) RETURNING id::text`, partID, version, input.Name, input.Material, input.Spec, input.Weight, input.SurfaceTreatment, partType, status, userID).Scan(&revisionID)
+	if err != nil {
+		return Part{}, fmt.Errorf("创建零件版本失败: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, parent_relation_id, relation_type, qty, remark, created_by, updated_by) VALUES ($1::uuid, $2::uuid, NULLIF($3, '')::uuid, 'owned', $4, COALESCE($5, ''), $6::uuid, $6::uuid)`, drawingID, partID, nullableString(parentID), quantity, input.Remark, userID); err != nil {
+		return Part{}, fmt.Errorf("创建零件结构关系失败: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE parts SET published_revision_id = CASE WHEN $2 = 'published' THEN $1::uuid ELSE NULL END WHERE id = $3::uuid`, revisionID, status, partID); err != nil {
+		return Part{}, fmt.Errorf("设置零件发布指针失败: %w", err)
+	}
+	if err := savePartSigners(ctx, tx, revisionID, input.Signers); err != nil {
+		return Part{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Part{}, fmt.Errorf("提交创建零件事务失败: %w", err)
+	}
+	return repository.FindPart(ctx, partID)
 }
 
 func (repository *PGRepository) UpdatePart(ctx context.Context, id string, input UpdatePartInput, userID string) (Part, error) {
 	if input.ExpectedRevision == nil || *input.ExpectedRevision < 1 {
 		return Part{}, ErrRevisionRequired
 	}
-	tag, err := repository.pool.Exec(ctx, `
-		UPDATE structure_parts
-		SET part_no = COALESCE($2, part_no), name = COALESCE($3, name), material = COALESCE($4, material), spec = COALESCE($5, spec),
-		    weight = COALESCE($6, weight), surface_treatment = COALESCE($7, surface_treatment),
-		    manufacturing_type = COALESCE($8, manufacturing_type), quantity = COALESCE($9, quantity),
-		    status = COALESCE($10, status), version = COALESCE($11, version), vendor = COALESCE($12, vendor),
-		    borrow_from = COALESCE($13, borrow_from), remark = COALESCE($14, remark), updated_by = $15::uuid,
-		    revision = revision + 1
-		WHERE id = $1::uuid AND revision = $16`, id, input.No, input.Name, input.Material, input.Spec, input.Weight, input.SurfaceTreatment, input.ManufacturingType, input.Quantity, input.Status, input.Version, input.Vendor, input.BorrowFrom, input.Remark, userID, *input.ExpectedRevision)
+	tx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		return Part{}, fmt.Errorf("开始修改零件事务失败: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var partNo string
+	if err := tx.QueryRow(ctx, `SELECT part_no FROM parts WHERE id = $1::uuid FOR UPDATE`, id).Scan(&partNo); errors.Is(err, pgx.ErrNoRows) {
+		return Part{}, ErrNotFound
+	} else if err != nil {
+		return Part{}, fmt.Errorf("读取零件失败: %w", err)
+	}
+	var revisionID, workflow string
+	if err := tx.QueryRow(ctx, `SELECT id::text, workflow_status FROM part_revisions WHERE part_id = $1::uuid ORDER BY revision_no DESC LIMIT 1 FOR UPDATE`, id).Scan(&revisionID, &workflow); err != nil {
+		return Part{}, fmt.Errorf("读取零件版本失败: %w", err)
+	}
+	if workflow == "published" || workflow == "reviewing" {
+		return Part{}, ErrInvalidTransition
+	}
+	var newNo string
+	if input.No != nil {
+		newNo = strings.TrimSpace(*input.No)
+		if newNo == "" {
+			return Part{}, ErrConflict
+		}
+	}
+	if newNo != "" {
+		if _, err := tx.Exec(ctx, `UPDATE parts SET part_no = $2, normalized_part_no = $3, updated_by = $4::uuid WHERE id = $1::uuid`, id, newNo, NormalizePartNo(newNo), userID); err != nil {
+			if isUniqueViolation(err) {
+				return Part{}, ErrConflict
+			}
+			return Part{}, fmt.Errorf("更新零件图号失败: %w", err)
+		}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE part_revisions SET name = COALESCE($2, name), material = COALESCE($3, material), spec = COALESCE($4, spec), weight = COALESCE($5, weight), surface_treatment = COALESCE($6, surface_treatment), part_type = COALESCE($7, part_type), version = COALESCE($8, version), row_revision = row_revision + 1 WHERE id = $1::uuid AND row_revision = $9`, revisionID, input.Name, input.Material, input.Spec, input.Weight, input.SurfaceTreatment, input.ManufacturingType, input.Version, *input.ExpectedRevision)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Part{}, ErrConflict
@@ -386,7 +461,7 @@ func (repository *PGRepository) UpdatePart(ctx context.Context, id string, input
 	}
 	if tag.RowsAffected() == 0 {
 		var exists bool
-		if err := repository.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM structure_parts WHERE id = $1::uuid)`, id).Scan(&exists); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM parts WHERE id = $1::uuid)`, id).Scan(&exists); err != nil {
 			return Part{}, fmt.Errorf("检查零件版本失败: %w", err)
 		}
 		if !exists {
@@ -394,7 +469,40 @@ func (repository *PGRepository) UpdatePart(ctx context.Context, id string, input
 		}
 		return Part{}, ErrRevisionConflict
 	}
+	if input.Quantity != nil || input.Remark != nil {
+		var relationID string
+		if err := tx.QueryRow(ctx, `SELECT id::text FROM drawing_part_relations WHERE part_id = $1::uuid AND status = 'active' ORDER BY created_at DESC LIMIT 1`, id).Scan(&relationID); err == nil {
+			if input.Quantity != nil {
+				_, err = tx.Exec(ctx, `UPDATE drawing_part_relations SET qty = $2, revision = revision + 1, updated_by = $3::uuid WHERE id = $1::uuid`, relationID, *input.Quantity, userID)
+			}
+			if err == nil && input.Remark != nil {
+				_, err = tx.Exec(ctx, `UPDATE drawing_part_relations SET remark = $2, revision = revision + 1, updated_by = $3::uuid WHERE id = $1::uuid`, relationID, *input.Remark, userID)
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Part{}, fmt.Errorf("提交零件修改事务失败: %w", err)
+	}
 	return repository.FindPart(ctx, id)
+}
+
+func nullableString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func savePartSigners(ctx context.Context, tx pgx.Tx, revisionID string, signers Signers) error {
+	for role, name := range signers {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO drawing_signers (part_revision_id, role, signer_name) VALUES ($1::uuid, $2, $3)`, revisionID, role, name); err != nil {
+			return fmt.Errorf("保存零件签署人员失败: %w", err)
+		}
+	}
+	return nil
 }
 
 func (repository *PGRepository) replaceDrawingAttributeValues(ctx context.Context, tx pgx.Tx, drawingID string, values map[string]string) error {
@@ -442,7 +550,25 @@ func (repository *PGRepository) loadDrawingAttributeValues(ctx context.Context, 
 }
 
 func (repository *PGRepository) loadPartSigners(ctx context.Context, id string) (Signers, error) {
-	return repository.loadSigners(ctx, "part_id", id)
+	rows, err := repository.pool.Query(ctx, `
+		SELECT s.role, s.signer_name
+		FROM drawing_signers s
+		JOIN part_revisions pr ON pr.id = s.part_revision_id
+		WHERE pr.part_id = $1::uuid
+		ORDER BY pr.revision_no DESC`, id)
+	if err != nil {
+		return nil, fmt.Errorf("读取零件签署人员失败: %w", err)
+	}
+	defer rows.Close()
+	signers := Signers{}
+	for rows.Next() {
+		var role, name string
+		if err := rows.Scan(&role, &name); err != nil {
+			return nil, err
+		}
+		signers[role] = name
+	}
+	return signers, rows.Err()
 }
 
 func (repository *PGRepository) loadSigners(ctx context.Context, ownerColumn string, id string) (Signers, error) {

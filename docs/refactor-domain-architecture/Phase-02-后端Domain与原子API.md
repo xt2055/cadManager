@@ -178,14 +178,42 @@ DELETE
 /api/data/branches
 ```
 
+当前状态：已完成后端原子入口；前端尚未切换，旧模块接口将在 Phase 8 统一删除。
+
 必须测试：
 
-- revision conflict。
-- duplicate part number。
-- cycle。
-- obsolete borrow。
-- fork idempotency。
-- publish transaction。
+- [x] revision conflict：结构关系和 Revision 更新均使用 CAS。
+- [x] duplicate part number：后端统一规范化并由 `normalized_part_no UNIQUE` 兜底。
+- [x] cycle：结构父关系写入执行同图校验和递归环检查。
+- [x] obsolete borrow：借用前校验 Part lifecycle 与 Published Revision。
+- [x] fork idempotency：持久化 `domain_idempotency_records`，按命令范围和幂等键返回第一次结果。
+- [x] publish transaction：Revision 发布、Part 发布指针和审计记录在同一事务中完成。
+
+## 本次实施记录
+
+执行日期：2026-09-04
+
+- 新增 `internal/drawing/normalizer.go`，后端统一执行 Trim、NFKC 全角转换和大写规范化。
+- `drawing.PGRepository` 已迁移到 `parts`、`part_revisions`、`drawing_part_relations`，不再查询 `structure_parts`。
+- 新增结构关系 CAS、单 Part Borrow、Borrow Fork 命令；Fork 复用不可变附件版本和 Blob，归档旧借用关系并写 lineage/audit。
+- 新增 Part Revision Draft、CAS 更新、submit/reject/publish 生命周期 API。
+- 新增 Drawing BOM GET/PUT，BOM revision 独立 CAS 并按图纸锁串行化。
+- 新增图纸属性原子 CRUD：`/api/drawing-attributes`。
+- 新增路由：
+  - `POST /api/drawings/{drawingId}/borrows`
+  - `PATCH /api/drawing-part-relations/{relationId}`
+  - `POST /api/drawing-part-relations/{relationId}/fork`
+  - `POST /api/parts/{partId}/revisions`
+  - `GET/PATCH /api/part-revisions/{revisionId}`
+  - `POST /api/part-revisions/{revisionId}/{submit|reject|publish}`
+  - `GET/PUT /api/drawings/{drawingId}/bom`
+- 新增迁移 `000023_domain_command_idempotency.sql`。
+- 已增加图号规范化测试和原子命令 HTTP characterization tests。
+- `go test ./...`、`go build` 均通过。
+
+## 阶段边界
+
+上传会话、Blob 物理对象读取、附件/版本仓储迁移属于 Phase 3；前端 Modules/Pinia 接入属于 Phase 4/5。当前旧 `/api/data/*` 仍保留到前端切换完成，新的 Domain/Attachment/Version 核心路径已经不再依赖旧表。
 
 ## 建议提交
 
@@ -197,4 +225,3 @@ feat(part): add borrowed part fork transaction
 feat(bom): add drawing scoped revisioned api
 feat(attribute): add atomic attribute api
 ```
-

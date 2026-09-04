@@ -70,6 +70,42 @@ func (r *characterizationDrawingRepository) UpdatePart(_ context.Context, _ stri
 	return r.createdPart, nil
 }
 
+func (r *characterizationDrawingRepository) UpdateRelation(context.Context, string, drawing.UpdateRelationInput, string) (drawing.Relation, error) {
+	return drawing.Relation{}, drawing.ErrRevisionRequired
+}
+
+func (r *characterizationDrawingRepository) Borrow(context.Context, string, drawing.BorrowInput, string) (drawing.Relation, error) {
+	return drawing.Relation{ID: "relation-1", RelationType: "borrowed"}, nil
+}
+
+func (r *characterizationDrawingRepository) ForkBorrowedPart(context.Context, string, drawing.ForkInput, string, string) (drawing.Part, error) {
+	return drawing.Part{ID: "part-forked", No: "P002"}, nil
+}
+
+func (r *characterizationDrawingRepository) CreateDraftRevision(context.Context, string, drawing.CreateRevisionInput, string) (drawing.PartRevision, error) {
+	return drawing.PartRevision{ID: "revision-1", WorkflowStatus: "draft"}, nil
+}
+
+func (r *characterizationDrawingRepository) UpdateDraftRevision(context.Context, string, drawing.UpdateRevisionInput, string) (drawing.PartRevision, error) {
+	return drawing.PartRevision{}, drawing.ErrRevisionConflict
+}
+
+func (r *characterizationDrawingRepository) TransitionRevision(context.Context, string, string, string) (drawing.PartRevision, error) {
+	return drawing.PartRevision{ID: "revision-1", WorkflowStatus: "published"}, nil
+}
+
+func (r *characterizationDrawingRepository) GetRevision(context.Context, string) (drawing.PartRevision, error) {
+	return drawing.PartRevision{ID: "revision-1"}, nil
+}
+
+func (r *characterizationDrawingRepository) GetBOM(context.Context, string) (drawing.BOM, error) {
+	return drawing.BOM{DrawingID: "drawing-1", Revision: 1}, nil
+}
+
+func (r *characterizationDrawingRepository) ReplaceBOM(context.Context, string, drawing.UpdateBOMInput, string) (drawing.BOM, error) {
+	return drawing.BOM{DrawingID: "drawing-1", Revision: 2}, nil
+}
+
 func authenticatedRequest(method, target, body string) *http.Request {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	return request.WithContext(context.WithValue(request.Context(), middleware.AuthUserContextKey, auth.AuthUser{
@@ -166,6 +202,33 @@ func TestPartCharacterizationRevisionConflictReturns409(t *testing.T) {
 	}
 	if !repository.updateCalled {
 		t.Fatal("repository UpdatePart was not called")
+	}
+}
+
+func TestAtomicRelationCharacterizationRequiresRevision(t *testing.T) {
+	request := authenticatedRequest(http.MethodPatch, "/api/drawing-part-relations/relation-1", `{}`)
+	recorder := httptest.NewRecorder()
+	DrawingPartRelationResource(&characterizationDrawingRepository{}).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusPreconditionRequired {
+		t.Fatalf("status = %d, expected %d", recorder.Code, http.StatusPreconditionRequired)
+	}
+}
+
+func TestAtomicBorrowCharacterizationUsesDrawingCommand(t *testing.T) {
+	request := authenticatedRequest(http.MethodPost, "/api/drawings/drawing-1/borrows", `{"sourcePartId":"part-1"}`)
+	recorder := httptest.NewRecorder()
+	DrawingResource(&characterizationDrawingRepository{}).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, expected %d", recorder.Code, http.StatusCreated)
+	}
+}
+
+func TestPartRevisionCharacterizationPublishesThroughCommand(t *testing.T) {
+	request := authenticatedRequest(http.MethodPost, "/api/part-revisions/revision-1/publish", ``)
+	recorder := httptest.NewRecorder()
+	PartRevisionResource(&characterizationDrawingRepository{}).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, expected %d", recorder.Code, http.StatusOK)
 	}
 }
 

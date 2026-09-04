@@ -153,6 +153,15 @@ Admin
 - [ ] Repository 不经过 dataManager。
 - [ ] JSON provider 如保留则按 Repository 独立实现。
 
+## 当前实施记录
+
+执行日期：2026-09-04
+
+- 已建立 `src/modules/upload/UploadGateway` 和 `ApiUploadGateway`。
+- 已建立 `BrowserUploadRecoveryStore`，统一适配现有 IndexedDB 恢复实现。
+- 已建立 `src/app/container.ts` 作为上传基础设施 composition root。
+- `domain.store.ts` 的分片上传、上传进度和恢复文件访问已改为通过容器能力；完整 Drawing/Attachment Service 抽取仍待本阶段后续工作。
+
 ## 建议提交
 
 ```text
@@ -166,4 +175,3 @@ refactor(attribute): extract attribute module
 refactor(audit): extract audit module
 refactor(admin): extract admin module
 ```
-

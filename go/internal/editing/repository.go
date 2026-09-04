@@ -101,20 +101,22 @@ func (repository *PGRepository) ListActiveSessions(ctx context.Context, now time
 
 	// 列出所有未关闭的会话（含离线），Online 标记最近 5 分钟内有心跳的会话。
 	baseQuery := `
-		SELECT s.id::text, s.attachment_id::text, s.storage_key, COALESCE(s.work_storage_key, ''),
-		       COALESCE(a.current_name, a.original_name, ''),
-		       COALESCE(d.drawing_no, parent.drawing_no, ''),
-		       COALESCE(p.part_no, ''),
+			SELECT s.id::text, s.attachment_id::text, s.storage_key, COALESCE(s.work_storage_key, ''),
+			       COALESCE(v.original_name, a.logical_name, ''),
+			       COALESCE(d.drawing_no, parent.drawing_no, ''),
+			       COALESCE(p.part_no, ''),
 		       s.user_id::text,
 		       COALESCE(u.display_name, u.account, ''),
 		       COALESCE(u.account, ''),
 		       s.status, s.started_at, s.last_seen_at, s.last_seen_at >= $1
-		FROM edit_sessions s
-		JOIN users u ON u.id = s.user_id
-		LEFT JOIN attachments a ON a.id = s.attachment_id
-		LEFT JOIN drawings d ON d.id = a.drawing_id
-		LEFT JOIN structure_parts p ON p.id = a.part_id
-		LEFT JOIN drawings parent ON parent.id = p.drawing_id
+			FROM edit_sessions s
+			JOIN users u ON u.id = s.user_id
+			LEFT JOIN attachments a ON a.id = s.attachment_id
+			LEFT JOIN attachment_versions v ON v.id = a.current_version_id
+			LEFT JOIN drawings d ON d.id = a.drawing_id
+		LEFT JOIN parts p ON p.id = a.part_id
+		LEFT JOIN drawing_part_relations owner_relation ON owner_relation.part_id = p.id AND owner_relation.relation_type = 'owned' AND owner_relation.status = 'active'
+		LEFT JOIN drawings parent ON parent.id = owner_relation.drawing_id
 		WHERE s.status = 'active'`
 
 	if strings.TrimSpace(drawingNo) != "" {

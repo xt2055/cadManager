@@ -95,6 +95,57 @@ func DrawingResource(repository drawing.Repository) http.HandlerFunc {
 			response.WriteError(writer, http.StatusBadRequest, "图纸编号无效")
 			return
 		}
+		if len(parts) == 2 && parts[1] == "bom" {
+			atomic, ok := repository.(drawing.AtomicRepository)
+			if !ok {
+				response.WriteError(writer, http.StatusNotImplemented, "BOM 命令尚未配置")
+				return
+			}
+			if request.Method == http.MethodGet {
+				item, err := atomic.GetBOM(request.Context(), id)
+				if err != nil {
+					writeAtomicDrawingError(writer, err, "BOM 读取失败")
+					return
+				}
+				response.WriteData(writer, http.StatusOK, item)
+				return
+			}
+			if request.Method == http.MethodPut {
+				var input drawing.UpdateBOMInput
+				if err := decodeJSON(request, &input); err != nil {
+					response.WriteError(writer, http.StatusBadRequest, "BOM 参数格式无效")
+					return
+				}
+				item, err := atomic.ReplaceBOM(request.Context(), id, input, user.ID)
+				if err != nil {
+					writeAtomicDrawingError(writer, err, "BOM 修改失败")
+					return
+				}
+				response.WriteData(writer, http.StatusOK, item)
+				return
+			}
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if len(parts) == 2 && parts[1] == "borrows" && request.Method == http.MethodPost {
+			atomic, ok := repository.(drawing.AtomicRepository)
+			if !ok {
+				response.WriteError(writer, http.StatusNotImplemented, "借用命令尚未配置")
+				return
+			}
+			var input drawing.BorrowInput
+			if err := decodeJSON(request, &input); err != nil {
+				response.WriteError(writer, http.StatusBadRequest, "借用零件参数格式无效")
+				return
+			}
+			item, err := atomic.Borrow(request.Context(), id, input, user.ID)
+			if err != nil {
+				writeAtomicDrawingError(writer, err, "借用零件失败")
+				return
+			}
+			response.WriteData(writer, http.StatusCreated, item)
+			return
+		}
 		if len(parts) == 2 && parts[1] == "structure" && request.Method == http.MethodGet {
 			items, err := repository.ListParts(request.Context(), id)
 			if err != nil {
@@ -177,6 +228,60 @@ func DrawingResource(repository drawing.Repository) http.HandlerFunc {
 	}
 }
 
+// DrawingPartRelationResource 提供结构关系自己的原子写接口，不再通过整表 PUT。
+func DrawingPartRelationResource(repository drawing.AtomicRepository) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		resourcePath := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/drawing-part-relations/"), "/")
+		resourceParts := strings.Split(resourcePath, "/")
+		id := resourceParts[0]
+		action := ""
+		if len(resourceParts) == 2 {
+			action = resourceParts[1]
+		}
+		if id == "" || len(resourceParts) > 2 {
+			response.WriteError(writer, http.StatusNotFound, "结构关系不存在")
+			return
+		}
+		switch request.Method {
+		case http.MethodPatch:
+			var input drawing.UpdateRelationInput
+			if err := decodeJSON(request, &input); err != nil {
+				response.WriteError(writer, http.StatusBadRequest, "结构关系修改参数格式无效")
+				return
+			}
+			item, err := repository.UpdateRelation(request.Context(), id, input, user.ID)
+			if err != nil {
+				writeAtomicDrawingError(writer, err, "结构关系修改失败")
+				return
+			}
+			response.WriteData(writer, http.StatusOK, item)
+		case http.MethodPost:
+			if action != "fork" {
+				response.WriteError(writer, http.StatusNotFound, "结构关系接口不存在")
+				return
+			}
+			var input drawing.ForkInput
+			if err := decodeJSON(request, &input); err != nil {
+				response.WriteError(writer, http.StatusBadRequest, "Fork 参数格式无效")
+				return
+			}
+			item, err := repository.ForkBorrowedPart(request.Context(), id, input, user.ID, request.Header.Get("Idempotency-Key"))
+			if err != nil {
+				writeAtomicDrawingError(writer, err, "Fork 零件失败")
+				return
+			}
+			response.WriteData(writer, http.StatusCreated, item)
+		default:
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	}
+}
+
 func PartResource(repository drawing.Repository) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := middleware.UserFromContext(request.Context())
@@ -184,8 +289,29 @@ func PartResource(repository drawing.Repository) http.HandlerFunc {
 			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
 			return
 		}
-		id := strings.TrimPrefix(request.URL.Path, "/api/parts/")
-		if id == "" || strings.Contains(id, "/") {
+		resourcePath := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/parts/"), "/")
+		resourceParts := strings.Split(resourcePath, "/")
+		id := resourceParts[0]
+		if len(resourceParts) == 2 && resourceParts[1] == "revisions" && request.Method == http.MethodPost {
+			atomic, ok := repository.(drawing.AtomicRepository)
+			if !ok {
+				response.WriteError(writer, http.StatusNotImplemented, "零件版本命令尚未配置")
+				return
+			}
+			var input drawing.CreateRevisionInput
+			if err := decodeJSON(request, &input); err != nil {
+				response.WriteError(writer, http.StatusBadRequest, "零件版本参数格式无效")
+				return
+			}
+			item, err := atomic.CreateDraftRevision(request.Context(), id, input, user.ID)
+			if err != nil {
+				writeAtomicDrawingError(writer, err, "创建零件版本失败")
+				return
+			}
+			response.WriteData(writer, http.StatusCreated, item)
+			return
+		}
+		if id == "" || len(resourceParts) != 1 {
 			response.WriteError(writer, http.StatusNotFound, "零件不存在")
 			return
 		}
@@ -223,6 +349,56 @@ func PartResource(repository drawing.Repository) http.HandlerFunc {
 	}
 }
 
+func PartRevisionResource(repository drawing.AtomicRepository) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		resourcePath := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/part-revisions/"), "/")
+		parts := strings.Split(resourcePath, "/")
+		id := parts[0]
+		if id == "" || len(parts) > 2 {
+			response.WriteError(writer, http.StatusNotFound, "零件版本不存在")
+			return
+		}
+		if request.Method == http.MethodGet && len(parts) == 1 {
+			item, err := repository.GetRevision(request.Context(), id)
+			if err != nil {
+				writeAtomicDrawingError(writer, err, "零件版本读取失败")
+				return
+			}
+			response.WriteData(writer, http.StatusOK, item)
+			return
+		}
+		if request.Method == http.MethodPatch && len(parts) == 1 {
+			var input drawing.UpdateRevisionInput
+			if err := decodeJSON(request, &input); err != nil {
+				response.WriteError(writer, http.StatusBadRequest, "零件版本修改参数格式无效")
+				return
+			}
+			item, err := repository.UpdateDraftRevision(request.Context(), id, input, user.ID)
+			if err != nil {
+				writeAtomicDrawingError(writer, err, "零件版本修改失败")
+				return
+			}
+			response.WriteData(writer, http.StatusOK, item)
+			return
+		}
+		if request.Method == http.MethodPost && len(parts) == 2 && (parts[1] == "submit" || parts[1] == "reject" || parts[1] == "publish") {
+			item, err := repository.TransitionRevision(request.Context(), id, parts[1], user.ID)
+			if err != nil {
+				writeAtomicDrawingError(writer, err, "零件版本流转失败")
+				return
+			}
+			response.WriteData(writer, http.StatusOK, item)
+			return
+		}
+		response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
 func decodeJSON(request *http.Request, target any) error {
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
@@ -249,6 +425,28 @@ func writeDrawingError(writer http.ResponseWriter, err error, fallback string) {
 	case errors.Is(err, drawing.ErrRevisionRequired):
 		response.WriteError(writer, http.StatusPreconditionRequired, "修改请求缺少当前 revision")
 	default:
+		response.WriteError(writer, http.StatusInternalServerError, fallback)
+	}
+}
+
+func writeAtomicDrawingError(writer http.ResponseWriter, err error, fallback string) {
+	log.Printf("atomic drawing request failed: %v", err)
+	switch {
+	case errors.Is(err, drawing.ErrNotFound):
+		response.WriteError(writer, http.StatusNotFound, "图纸、零件或结构关系不存在")
+	case errors.Is(err, drawing.ErrConflict):
+		response.WriteError(writer, http.StatusConflict, "图号已存在或资源冲突")
+	case errors.Is(err, drawing.ErrRevisionConflict):
+		response.WriteError(writer, http.StatusConflict, "结构关系已被其他用户修改，请刷新后重试")
+	case errors.Is(err, drawing.ErrRevisionRequired):
+		response.WriteError(writer, http.StatusPreconditionRequired, "请求必须提供当前 revision")
+	case errors.Is(err, drawing.ErrIdempotencyConflict):
+		response.WriteError(writer, http.StatusConflict, "Idempotency-Key conflict")
+	default:
+		if strings.Contains(err.Error(), "不能") || strings.Contains(err.Error(), "必须") || strings.Contains(err.Error(), "无效") {
+			response.WriteError(writer, http.StatusBadRequest, err.Error())
+			return
+		}
 		response.WriteError(writer, http.StatusInternalServerError, fallback)
 	}
 }

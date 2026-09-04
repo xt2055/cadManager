@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,21 +12,13 @@ import (
 
 var ErrNotFound = errors.New("文件版本不存在")
 
-type PGRepository struct {
-	pool *pgxpool.Pool
-}
+type PGRepository struct{ pool *pgxpool.Pool }
 
-func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
-	return &PGRepository{pool: pool}
-}
+func NewPGRepository(pool *pgxpool.Pool) *PGRepository { return &PGRepository{pool: pool} }
 
 func (repository *PGRepository) Create(ctx context.Context, input CreateInput, storageKey string) (Version, error) {
 	var id string
-	err := repository.pool.QueryRow(ctx, `
-		INSERT INTO file_versions (attachment_id, storage_key, blob_id, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, expires_at)
-		VALUES ($1::uuid, $2, (SELECT id FROM file_blobs WHERE storage_key = $2 LIMIT 1), $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10)
-		RETURNING id::text`, input.AttachmentID, storageKey, input.SourceStorageKey, input.Version, input.VersionKind,
-		input.Size, input.MimeType, input.SHA256, input.CreatedBy, input.ExpiresAt).Scan(&id)
+	err := repository.pool.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, version_kind, created_by) VALUES ($1::uuid, $2, (SELECT id FROM file_blobs WHERE storage_key = $3), COALESCE(NULLIF($4, ''), '未命名文件'), COALESCE(NULLIF($5, ''), 'application/octet-stream'), $6, COALESCE(NULLIF($7, ''), 'working'), NULLIF($8, '')::uuid) RETURNING id::text`, input.AttachmentID, input.Version, storageKey, input.CurrentName, input.MimeType, input.Size, input.VersionKind, input.CreatedBy).Scan(&id)
 	if err != nil {
 		return Version{}, fmt.Errorf("保存文件版本失败: %w", err)
 	}
@@ -37,171 +28,80 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateInput, s
 func (repository *PGRepository) GetByID(ctx context.Context, versionID string) (Version, error) {
 	return repository.find(ctx, versionID)
 }
-
-// GetByStorageKey 按版本文件存储键精确查找版本记录（file_versions.storage_key 唯一）。
 func (repository *PGRepository) GetByStorageKey(ctx context.Context, storageKey string) (Version, error) {
-	query := versionSelect + ` WHERE (v.storage_key = $1 OR b.storage_key = $1) AND v.deleted_at IS NULL LIMIT 1`
-	row := repository.pool.QueryRow(ctx, query, storageKey)
-	item, err := scanVersion(row)
+	item, err := scanVersion(repository.pool.QueryRow(ctx, versionSelect+` WHERE b.storage_key = $1 AND v.deleted_at IS NULL LIMIT 1`, storageKey))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Version{}, ErrNotFound
 	}
 	return item, err
 }
 
-// CreateWithPromotion 事务内完成：锁定附件行 → 插入版本记录 → 切换当前版本指针。
-// 任一步失败整体回滚，不会出现「版本已登记但当前指针未切换」或反向的中间状态。
 func (repository *PGRepository) CreateWithPromotion(ctx context.Context, input CreateInput, storageKey string) (Version, error) {
 	tx, err := repository.pool.Begin(ctx)
 	if err != nil {
 		return Version{}, fmt.Errorf("开始版本登记事务失败: %w", err)
 	}
 	defer tx.Rollback(ctx)
-
-	// 锁定附件行，串行化同一附件的并发版本写入（双击结束编辑等场景）。
-	var attachmentExists bool
-	err = tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM attachments a
-			LEFT JOIN file_blobs b ON b.id = COALESCE(a.current_blob_id, a.blob_id)
-			WHERE (a.storage_key = $1 OR a.current_storage_key = $1 OR b.storage_key = $1)
-			  AND a.deleted_at IS NULL
-			FOR UPDATE
-		)`, input.SourceStorageKey).Scan(&attachmentExists)
-	if err != nil {
-		return Version{}, fmt.Errorf("锁定附件失败: %w", err)
+	var attachmentID string
+	if err := tx.QueryRow(ctx, `SELECT id::text FROM attachments WHERE id = $1::uuid AND deleted_at IS NULL FOR UPDATE`, input.AttachmentID).Scan(&attachmentID); errors.Is(err, pgx.ErrNoRows) {
+		return Version{}, ErrNotFound
+	} else if err != nil {
+		return Version{}, err
 	}
-	if !attachmentExists {
-		return Version{}, fmt.Errorf("附件不存在或已删除: %s", input.SourceStorageKey)
-	}
-
 	var id string
-	err = tx.QueryRow(ctx, `
-		INSERT INTO file_versions (attachment_id, storage_key, blob_id, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, expires_at)
-		VALUES ($1::uuid, $2, (SELECT id FROM file_blobs WHERE storage_key = $2 LIMIT 1), $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10)
-		RETURNING id::text`, input.AttachmentID, storageKey, input.SourceStorageKey, input.Version, input.VersionKind,
-		input.Size, input.MimeType, input.SHA256, input.CreatedBy, input.ExpiresAt).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, version_kind, created_by) VALUES ($1::uuid, $2, (SELECT id FROM file_blobs WHERE storage_key = $3), COALESCE(NULLIF($4, ''), '未命名文件'), COALESCE(NULLIF($5, ''), 'application/octet-stream'), $6, COALESCE(NULLIF($7, ''), 'working'), NULLIF($8, '')::uuid) RETURNING id::text`, attachmentID, input.Version, storageKey, input.CurrentName, input.MimeType, input.Size, input.VersionKind, input.CreatedBy).Scan(&id)
 	if err != nil {
 		return Version{}, fmt.Errorf("保存文件版本失败: %w", err)
 	}
-
-	if strings.TrimSpace(input.CurrentName) != "" {
-		result, err := tx.Exec(ctx, `
-			UPDATE attachments
-			SET current_storage_key = $2, current_blob_id = (SELECT id FROM file_blobs WHERE storage_key = $2 LIMIT 1),
-			    current_name = $3, current_size_bytes = $4, current_mime_type = $5,
-			    current_sha256 = $6, version = $7
-			WHERE (storage_key = $1 OR current_storage_key = $1
-			       OR current_blob_id IN (SELECT id FROM file_blobs WHERE storage_key = $1))
-			  AND deleted_at IS NULL`,
-			input.SourceStorageKey, storageKey, input.CurrentName, input.Size, input.MimeType, input.SHA256, input.Version)
-		if err != nil {
-			return Version{}, fmt.Errorf("切换附件当前版本失败: %w", err)
-		}
-		if result.RowsAffected() == 0 {
-			return Version{}, fmt.Errorf("附件不存在或已删除: %s", input.SourceStorageKey)
-		}
+	if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, revision = revision + 1 WHERE id = $1::uuid`, attachmentID, id); err != nil {
+		return Version{}, fmt.Errorf("切换附件当前版本失败: %w", err)
 	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return Version{}, fmt.Errorf("提交版本登记事务失败: %w", err)
 	}
 	return repository.find(ctx, id)
 }
 
-// PromoteInitial 将登记的初始版本标记为当前正式版本（不过期、置顶）。
 func (repository *PGRepository) PromoteInitial(ctx context.Context, versionID string) error {
-	_, err := repository.pool.Exec(ctx, `
-		UPDATE file_versions
-		SET version_kind = 'release', is_pinned = true, expires_at = NULL, is_current_release = true
-		WHERE id = $1::uuid AND deleted_at IS NULL`, versionID)
+	result, err := repository.pool.Exec(ctx, `UPDATE attachment_versions SET version_kind = 'release' WHERE id = $1::uuid AND deleted_at IS NULL`, versionID)
 	if err != nil {
-		return fmt.Errorf("登记初始正式版本失败: %w", err)
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
-
 func (repository *PGRepository) ListByAttachment(ctx context.Context, attachmentID string) ([]Version, error) {
-	rows, err := repository.pool.Query(ctx, versionSelect+` WHERE v.attachment_id = $1::uuid ORDER BY v.created_at DESC`, attachmentID)
-	if err != nil {
-		return nil, fmt.Errorf("查询文件版本失败: %w", err)
-	}
-	defer rows.Close()
-	versions := make([]Version, 0)
-	for rows.Next() {
-		item, scanErr := scanVersion(rows)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		versions = append(versions, item)
-	}
-	return versions, rows.Err()
+	return repository.list(ctx, versionSelect+` WHERE v.attachment_id = $1::uuid AND v.deleted_at IS NULL ORDER BY v.created_at DESC`, attachmentID)
 }
-
 func (repository *PGRepository) LatestByAttachment(ctx context.Context, attachmentID string) (Version, error) {
-	return repository.find(ctx, "", attachmentID)
+	item, err := scanVersion(repository.pool.QueryRow(ctx, versionSelect+` WHERE v.attachment_id = $1::uuid AND v.deleted_at IS NULL ORDER BY v.created_at DESC LIMIT 1`, attachmentID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Version{}, ErrNotFound
+	}
+	return item, err
 }
-
-func (repository *PGRepository) Retain(ctx context.Context, versionID, userID string) (Version, error) {
-	return repository.updateProtection(ctx, versionID, userID, false)
+func (repository *PGRepository) Retain(ctx context.Context, versionID, _ string) (Version, error) {
+	return repository.find(ctx, versionID)
 }
-
-func (repository *PGRepository) Release(ctx context.Context, versionID, userID string) (Version, error) {
-	tx, err := repository.pool.Begin(ctx)
+func (repository *PGRepository) Release(ctx context.Context, versionID, _ string) (Version, error) {
+	result, err := repository.pool.Exec(ctx, `UPDATE attachment_versions SET version_kind = 'release' WHERE id = $1::uuid AND deleted_at IS NULL`, versionID)
 	if err != nil {
-		return Version{}, fmt.Errorf("开始发布文件版本事务失败: %w", err)
+		return Version{}, err
 	}
-	defer tx.Rollback(ctx)
-
-	var attachmentID string
-	if err := tx.QueryRow(ctx, `SELECT attachment_id::text FROM file_versions WHERE id = $1::uuid AND deleted_at IS NULL`, versionID).Scan(&attachmentID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Version{}, ErrNotFound
-		}
-		return Version{}, fmt.Errorf("读取待发布文件版本失败: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `UPDATE file_versions SET is_current_release = false WHERE attachment_id = $1::uuid AND is_current_release = true`, attachmentID); err != nil {
-		return Version{}, fmt.Errorf("取消旧正式版本标记失败: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE file_versions
-		SET version_kind = 'release', is_pinned = true, expires_at = NULL,
-		    released_by = NULLIF($2, '')::uuid, released_at = now(),
-		    pinned_by = NULLIF($2, '')::uuid, pinned_at = now(), is_current_release = true
-		WHERE id = $1::uuid AND deleted_at IS NULL`, versionID, userID); err != nil {
-		return Version{}, fmt.Errorf("发布文件版本失败: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Version{}, fmt.Errorf("提交文件版本发布事务失败: %w", err)
+	if result.RowsAffected() == 0 {
+		return Version{}, ErrNotFound
 	}
 	return repository.find(ctx, versionID)
 }
-
-func (repository *PGRepository) ListExpired(ctx context.Context, now time.Time) ([]Version, error) {
-	rows, err := repository.pool.Query(ctx, versionSelect+`
-		WHERE v.version_kind = 'working' AND v.is_pinned = false AND v.deleted_at IS NULL
-		  AND v.expires_at IS NOT NULL AND v.expires_at < $1
-		ORDER BY v.expires_at`, now)
-	if err != nil {
-		return nil, fmt.Errorf("查询过期文件版本失败: %w", err)
-	}
-	defer rows.Close()
-	versions := make([]Version, 0)
-	for rows.Next() {
-		item, scanErr := scanVersion(rows)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		versions = append(versions, item)
-	}
-	return versions, rows.Err()
+func (repository *PGRepository) ListExpired(ctx context.Context, _ time.Time) ([]Version, error) {
+	return []Version{}, nil
 }
-
 func (repository *PGRepository) MarkDeleted(ctx context.Context, versionID string) error {
-	result, err := repository.pool.Exec(ctx, `UPDATE file_versions SET deleted_at = now() WHERE id = $1::uuid AND deleted_at IS NULL`, versionID)
+	result, err := repository.pool.Exec(ctx, `UPDATE attachment_versions SET deleted_at = now() WHERE id = $1::uuid AND deleted_at IS NULL`, versionID)
 	if err != nil {
-		return fmt.Errorf("标记文件版本已清理失败: %w", err)
+		return err
 	}
 	if result.RowsAffected() == 0 {
 		return ErrNotFound
@@ -209,57 +109,36 @@ func (repository *PGRepository) MarkDeleted(ctx context.Context, versionID strin
 	return nil
 }
 
-func (repository *PGRepository) find(ctx context.Context, versionID string, attachmentID ...string) (Version, error) {
-	query := versionSelect + ` WHERE v.id = $1::uuid`
-	args := []any{versionID}
-	if versionID == "" {
-		query = versionSelect + ` WHERE v.attachment_id = $1::uuid AND v.deleted_at IS NULL ORDER BY (v.version_kind = 'working') DESC, v.created_at DESC LIMIT 1`
-		args = []any{attachmentID[0]}
-	}
-	row := repository.pool.QueryRow(ctx, query, args...)
-	item, err := scanVersion(row)
+func (repository *PGRepository) find(ctx context.Context, versionID string) (Version, error) {
+	item, err := scanVersion(repository.pool.QueryRow(ctx, versionSelect+` WHERE v.id = $1::uuid`, versionID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Version{}, ErrNotFound
 	}
 	return item, err
 }
-
-func (repository *PGRepository) updateProtection(ctx context.Context, versionID, userID string, release bool) (Version, error) {
-	var query string
-	if release {
-		query = `UPDATE file_versions SET version_kind = 'release', is_pinned = true, expires_at = NULL, released_by = NULLIF($2, '')::uuid, released_at = now(), pinned_by = NULLIF($2, '')::uuid, pinned_at = now() WHERE id = $1::uuid AND deleted_at IS NULL`
-	} else {
-		query = `UPDATE file_versions SET is_pinned = true, expires_at = NULL, pinned_by = NULLIF($2, '')::uuid, pinned_at = now() WHERE id = $1::uuid AND deleted_at IS NULL`
-	}
-	result, err := repository.pool.Exec(ctx, query, versionID, userID)
+func (repository *PGRepository) list(ctx context.Context, query string, args ...any) ([]Version, error) {
+	rows, err := repository.pool.Query(ctx, query, args...)
 	if err != nil {
-		return Version{}, fmt.Errorf("更新文件版本保护状态失败: %w", err)
+		return nil, err
 	}
-	if result.RowsAffected() == 0 {
-		return Version{}, ErrNotFound
+	defer rows.Close()
+	result := make([]Version, 0)
+	for rows.Next() {
+		item, err := scanVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
 	}
-	return repository.find(ctx, versionID)
+	return result, rows.Err()
 }
 
-const versionSelect = `
-		SELECT v.id::text, v.attachment_id::text, COALESCE(b.storage_key, v.storage_key), v.source_storage_key, v.version, v.version_kind,
-	       v.size_bytes, v.mime_type, v.sha256, COALESCE(v.created_by::text, ''),
-	       COALESCE(cu.display_name, cu.account, ''), v.created_at, v.expires_at,
-	       v.is_pinned, COALESCE(v.pinned_by::text, ''), v.pinned_at, COALESCE(v.released_by::text, ''),
-	       v.released_at, v.is_current_release, v.deleted_at
-		FROM file_versions v
-		LEFT JOIN users cu ON cu.id = v.created_by
-		LEFT JOIN file_blobs b ON b.id = v.blob_id`
+const versionSelect = `SELECT v.id::text, v.attachment_id::text, COALESCE(b.storage_key, ''), '', v.version, v.version_kind, v.size_bytes, v.mime_type, COALESCE(b.sha256, ''), COALESCE(v.created_by::text, ''), COALESCE(u.display_name, u.account, ''), v.created_at, NULL::timestamptz, false, '', NULL::timestamptz, '', NULL::timestamptz, (a.current_version_id = v.id), v.deleted_at FROM attachment_versions v JOIN attachments a ON a.id = v.attachment_id LEFT JOIN file_blobs b ON b.id = v.blob_id LEFT JOIN users u ON u.id = v.created_by`
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
+type rowScanner interface{ Scan(...any) error }
 
 func scanVersion(row rowScanner) (Version, error) {
 	var item Version
-	err := row.Scan(&item.ID, &item.AttachmentID, &item.StorageKey, &item.SourceStorageKey, &item.Version,
-		&item.VersionKind, &item.Size, &item.MimeType, &item.SHA256, &item.CreatedBy, &item.CreatedByName,
-		&item.CreatedAt, &item.ExpiresAt, &item.IsPinned, &item.PinnedBy, &item.PinnedAt, &item.ReleasedBy,
-		&item.ReleasedAt, &item.IsCurrentRelease, &item.DeletedAt)
+	err := row.Scan(&item.ID, &item.AttachmentID, &item.StorageKey, &item.SourceStorageKey, &item.Version, &item.VersionKind, &item.Size, &item.MimeType, &item.SHA256, &item.CreatedBy, &item.CreatedByName, &item.CreatedAt, &item.ExpiresAt, &item.IsPinned, &item.PinnedBy, &item.PinnedAt, &item.ReleasedBy, &item.ReleasedAt, &item.IsCurrentRelease, &item.DeletedAt)
 	return item, err
 }

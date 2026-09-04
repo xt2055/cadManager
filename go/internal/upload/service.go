@@ -15,6 +15,7 @@ import (
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/converter"
+	"cadguanliq/internal/drawing"
 	"cadguanliq/internal/storage"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -316,48 +317,11 @@ func (service *Service) HashCheck(ctx context.Context, _ string, input HashCheck
 // 该操作只使用数据库中已经保存的 SHA-256 与大小，不会删除或覆盖任何旧物理文件；
 // 同一内容对象通过 (sha256, size_bytes) 合并，重复执行安全幂等。
 func (service *Service) BackfillLegacyBlobs(ctx context.Context) error {
+	// 最终模型从空开发库建立，历史 attachments/file_versions 不再存在，
+	// 因此这里保留接口但不执行“旧字段回填”。新对象只能通过
+	// attachment_versions -> file_blobs 建立引用。
 	if service == nil || service.pool == nil {
 		return errors.New("上传服务未配置")
-	}
-	_, err := service.pool.Exec(ctx, `
-		INSERT INTO file_blobs (sha256, size_bytes, mime_type, storage_key)
-		SELECT DISTINCT ON (trim(a.sha256), a.size_bytes)
-		       trim(a.sha256), a.size_bytes, COALESCE(NULLIF(a.mime_type, ''), 'application/octet-stream'), a.storage_key
-		FROM attachments a
-		WHERE a.blob_id IS NULL AND a.storage_key <> '' AND length(trim(a.sha256)) = 64
-		ORDER BY trim(a.sha256), a.size_bytes, a.created_at, a.id
-		ON CONFLICT (sha256, size_bytes) DO NOTHING;
-		INSERT INTO file_blobs (sha256, size_bytes, mime_type, storage_key)
-		SELECT DISTINCT ON (trim(COALESCE(a.current_sha256, '')), COALESCE(a.current_size_bytes, a.size_bytes))
-		       trim(a.current_sha256), COALESCE(a.current_size_bytes, a.size_bytes),
-		       COALESCE(NULLIF(a.current_mime_type, ''), NULLIF(a.mime_type, ''), 'application/octet-stream'),
-		       COALESCE(NULLIF(a.current_storage_key, ''), a.storage_key)
-		FROM attachments a
-		WHERE a.current_blob_id IS NULL AND COALESCE(NULLIF(a.current_storage_key, ''), a.storage_key) <> ''
-		  AND length(trim(COALESCE(a.current_sha256, ''))) = 64
-		ORDER BY trim(COALESCE(a.current_sha256, '')), COALESCE(a.current_size_bytes, a.size_bytes), a.created_at, a.id
-		ON CONFLICT (sha256, size_bytes) DO NOTHING;
-		INSERT INTO file_blobs (sha256, size_bytes, mime_type, storage_key)
-		SELECT DISTINCT ON (trim(v.sha256), v.size_bytes)
-		       trim(v.sha256), v.size_bytes, COALESCE(NULLIF(v.mime_type, ''), 'application/octet-stream'), v.storage_key
-		FROM file_versions v
-		WHERE v.blob_id IS NULL AND v.storage_key <> '' AND length(trim(v.sha256)) = 64
-		ORDER BY trim(v.sha256), v.size_bytes, v.created_at, v.id
-		ON CONFLICT (sha256, size_bytes) DO NOTHING;
-		UPDATE attachments a SET blob_id = b.id
-		FROM file_blobs b
-		WHERE a.blob_id IS NULL AND b.sha256 = trim(a.sha256) AND b.size_bytes = a.size_bytes;
-		UPDATE attachments a SET current_blob_id = b.id
-		FROM file_blobs b
-		WHERE a.current_blob_id IS NULL
-		  AND b.sha256 = trim(COALESCE(a.current_sha256, a.sha256))
-		  AND b.size_bytes = COALESCE(a.current_size_bytes, a.size_bytes);
-		UPDATE file_versions v SET blob_id = b.id
-		FROM file_blobs b
-		WHERE v.blob_id IS NULL AND b.sha256 = trim(v.sha256) AND b.size_bytes = v.size_bytes;
-	`)
-	if err != nil {
-		return fmt.Errorf("回填历史内容对象失败: %w", err)
 	}
 	return nil
 }
@@ -373,12 +337,12 @@ func (service *Service) Reconcile(ctx context.Context) (ReconciliationReport, er
 		sql  string
 	}{
 		{&report.AttachmentsTotal, `SELECT count(*) FROM attachments WHERE deleted_at IS NULL`},
-		{&report.AttachmentsBlobLinked, `SELECT count(*) FROM attachments WHERE deleted_at IS NULL AND blob_id IS NOT NULL`},
-		{&report.AttachmentsCurrentBlob, `SELECT count(*) FROM attachments WHERE deleted_at IS NULL AND current_blob_id IS NOT NULL`},
-		{&report.VersionsTotal, `SELECT count(*) FROM file_versions WHERE deleted_at IS NULL`},
-		{&report.VersionsBlobLinked, `SELECT count(*) FROM file_versions WHERE deleted_at IS NULL AND blob_id IS NOT NULL`},
+		{&report.AttachmentsBlobLinked, `SELECT count(*) FROM attachments a JOIN attachment_versions v ON v.id = a.current_version_id WHERE a.deleted_at IS NULL AND v.blob_id IS NOT NULL`},
+		{&report.AttachmentsCurrentBlob, `SELECT count(*) FROM attachments WHERE deleted_at IS NULL AND current_version_id IS NOT NULL`},
+		{&report.VersionsTotal, `SELECT count(*) FROM attachment_versions WHERE deleted_at IS NULL`},
+		{&report.VersionsBlobLinked, `SELECT count(*) FROM attachment_versions WHERE deleted_at IS NULL AND blob_id IS NOT NULL`},
 		{&report.BlobsTotal, `SELECT count(*) FROM file_blobs`},
-		{&report.OrphanBlobs, `SELECT count(*) FROM file_blobs b WHERE NOT EXISTS (SELECT 1 FROM attachments a WHERE a.blob_id = b.id OR a.current_blob_id = b.id) AND NOT EXISTS (SELECT 1 FROM file_versions v WHERE v.blob_id = b.id) AND NOT EXISTS (SELECT 1 FROM upload_session_items i WHERE i.blob_id = b.id OR i.processed_blob_id = b.id)`},
+		{&report.OrphanBlobs, `SELECT count(*) FROM file_blobs b WHERE NOT EXISTS (SELECT 1 FROM attachment_versions v WHERE v.blob_id = b.id) AND NOT EXISTS (SELECT 1 FROM upload_session_items i WHERE i.blob_id = b.id OR i.processed_blob_id = b.id)`},
 		{&report.CleanupPending, `SELECT count(*) FROM storage_cleanup_jobs WHERE status <> 'completed'`},
 	}
 	for _, query := range queries {
@@ -413,10 +377,7 @@ func (service *Service) Reconcile(ctx context.Context) (ReconciliationReport, er
 		}
 		refs := make(map[string]struct{})
 		refRows, err := service.pool.Query(ctx, `
-			SELECT storage_key FROM file_blobs
-			UNION SELECT storage_key FROM attachments WHERE deleted_at IS NULL
-			UNION SELECT current_storage_key FROM attachments WHERE deleted_at IS NULL AND current_storage_key IS NOT NULL
-			UNION SELECT storage_key FROM file_versions
+				SELECT storage_key FROM file_blobs
 			UNION SELECT staging_object_key FROM upload_session_items WHERE staging_object_key IS NOT NULL
 			UNION SELECT object_key FROM upload_session_items WHERE object_key IS NOT NULL
 			UNION SELECT processed_object_key FROM upload_session_items WHERE processed_object_key IS NOT NULL
@@ -845,13 +806,13 @@ func (service *Service) RetryItem(ctx context.Context, userID, sessionID, itemID
 	}
 	for _, value := range uniqueKeys(blobID, processedBlobID) {
 		var used bool
-		if err := service.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM attachments WHERE blob_id = $1::uuid OR current_blob_id = $1::uuid UNION ALL SELECT 1 FROM upload_session_items WHERE (blob_id = $1::uuid OR processed_blob_id = $1::uuid) AND id <> $2::uuid)`, value, itemID).Scan(&used); err == nil && !used {
+		if err := service.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM attachment_versions WHERE blob_id = $1::uuid UNION ALL SELECT 1 FROM upload_session_items WHERE (blob_id = $1::uuid OR processed_blob_id = $1::uuid) AND id <> $2::uuid)`, value, itemID).Scan(&used); err == nil && !used {
 			if err := service.pool.QueryRow(ctx, `SELECT storage_key FROM file_blobs WHERE id = $1::uuid`, value).Scan(&objectKey); err == nil {
 				if deleteErr := service.storage.Delete(ctx, objectKey); deleteErr != nil {
 					service.scheduleCleanup(ctx, objectKey, "upload-retry-blob")
 				}
 			}
-			_, _ = service.pool.Exec(ctx, `DELETE FROM file_blobs WHERE id = $1::uuid AND NOT EXISTS (SELECT 1 FROM attachments WHERE blob_id = $1::uuid OR current_blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM upload_session_items WHERE blob_id = $1::uuid OR processed_blob_id = $1::uuid)`, value)
+			_, _ = service.pool.Exec(ctx, `DELETE FROM file_blobs WHERE id = $1::uuid AND NOT EXISTS (SELECT 1 FROM attachment_versions WHERE blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM upload_session_items WHERE blob_id = $1::uuid OR processed_blob_id = $1::uuid)`, value)
 		}
 	}
 	return service.getItem(ctx, userID, sessionID, itemID)
@@ -905,14 +866,16 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		return result, nil
 	}
 	var item Item
-	var objectKey, blobID, processedKey, processedBlobID string
+	var objectKey, blobID, processedKey, processedBlobID, processedMime, processedSHA256 string
+	var processedSize int64
 	err = tx.QueryRow(ctx, `
 		SELECT i.id::text, i.client_ref, COALESCE(i.attachment_id::text, ''), i.drawing_no, i.part_no,
 		       i.file_role, i.original_name, i.mime_type, i.expected_revision, i.status,
 		       COALESCE(i.object_key, ''), COALESCE(i.blob_id::text, ''), COALESCE(i.processed_object_key, ''),
-		       COALESCE(i.processed_blob_id::text, ''), i.size_bytes, COALESCE(i.sha256, ''), i.attempts,
+		       COALESCE(i.processed_blob_id::text, ''), COALESCE(i.processed_size_bytes, 0), COALESCE(i.processed_mime_type, ''), COALESCE(i.processed_sha256, ''),
+		       i.size_bytes, COALESCE(i.sha256, ''), i.attempts,
 		       COALESCE(i.error_message, ''), i.updated_at
-		FROM upload_session_items i WHERE i.session_id = $1::uuid ORDER BY i.created_at, i.id LIMIT 1`, sessionID).Scan(&item.ID, &item.ClientRef, &item.AttachmentID, &item.DrawingNo, &item.PartNo, &item.Role, &item.OriginalName, &item.MimeType, &item.ExpectedRevision, &item.Status, &objectKey, &blobID, &processedKey, &processedBlobID, &item.Size, &item.SHA256, &item.Attempts, &item.ErrorMessage, &item.UpdatedAt)
+		FROM upload_session_items i WHERE i.session_id = $1::uuid ORDER BY i.created_at, i.id LIMIT 1`, sessionID).Scan(&item.ID, &item.ClientRef, &item.AttachmentID, &item.DrawingNo, &item.PartNo, &item.Role, &item.OriginalName, &item.MimeType, &item.ExpectedRevision, &item.Status, &objectKey, &blobID, &processedKey, &processedBlobID, &processedSize, &processedMime, &processedSHA256, &item.Size, &item.SHA256, &item.Attempts, &item.ErrorMessage, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrIncomplete
 	}
@@ -935,13 +898,28 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 	if currentBlobID == "" {
 		return nil, errors.New("待提交文件缺少内容对象")
 	}
-	var attachmentID, version string
+	currentName := item.OriginalName
+	currentMime := item.MimeType
+	currentSize := item.Size
+	if processedKey != "" {
+		currentName = processedCADName(item.OriginalName)
+		currentMime = firstNonEmpty(processedMime, "application/acad")
+		currentSize = processedSize
+	}
+	var attachmentID, version, versionID string
 	if item.AttachmentID == "" {
 		var ownerID string
 		if item.PartNo == "" {
 			err = tx.QueryRow(ctx, `SELECT id::text FROM drawings WHERE drawing_no = $1`, item.DrawingNo).Scan(&ownerID)
 		} else {
-			err = tx.QueryRow(ctx, `SELECT p.id::text FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id WHERE d.drawing_no = $1 AND p.part_no = $2`, item.DrawingNo, item.PartNo).Scan(&ownerID)
+			err = tx.QueryRow(ctx, `
+				SELECT p.id::text
+				FROM parts p
+				JOIN drawing_part_relations r ON r.part_id = p.id AND r.status = 'active'
+				JOIN drawings d ON d.id = r.drawing_id
+				WHERE d.drawing_no = $1 AND lower(trim(p.part_no)) = lower(trim($2))
+				ORDER BY r.relation_type = 'owned' DESC, r.created_at
+				LIMIT 1`, item.DrawingNo, item.PartNo).Scan(&ownerID)
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -950,9 +928,15 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 			return nil, fmt.Errorf("查询附件所属对象失败: %w", err)
 		}
 		if item.PartNo == "" {
-			err = tx.QueryRow(ctx, `INSERT INTO attachments (drawing_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by, blob_id, current_blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $5, $6, $6, $7, $7, $8, $8, 'v1.0', true, $9::uuid, $10::uuid, $11::uuid) RETURNING id::text`, ownerID, item.Role, objectKey, currentKey, item.OriginalName, item.MimeType, item.Size, item.SHA256, userID, blobID, currentBlobID).Scan(&attachmentID)
+			err = tx.QueryRow(ctx, `INSERT INTO attachments (drawing_id, file_role, logical_name, uploaded_by) VALUES ($1::uuid, $2, $3, $4::uuid) RETURNING id::text`, ownerID, item.Role, item.OriginalName, userID).Scan(&attachmentID)
 		} else {
-			err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by, blob_id, current_blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $5, $6, $6, $7, $7, $8, $8, 'v1.0', true, $9::uuid, $10::uuid, $11::uuid) RETURNING id::text`, ownerID, item.Role, objectKey, currentKey, item.OriginalName, item.MimeType, item.Size, item.SHA256, userID, blobID, currentBlobID).Scan(&attachmentID)
+			err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, logical_name, uploaded_by) VALUES ($1::uuid, $2, $3, $4::uuid) RETURNING id::text`, ownerID, item.Role, item.OriginalName, userID).Scan(&attachmentID)
+		}
+		if err == nil {
+			err = tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, 'v1.0', $2::uuid, $3, $4, $5, $6, 'release', $7::uuid) RETURNING id::text`, attachmentID, currentBlobID, currentName, currentMime, currentSize, isPreviewable(currentName, currentMime), userID).Scan(&versionID)
+		}
+		if err == nil {
+			_, err = tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid WHERE id = $1::uuid`, attachmentID, versionID)
 		}
 		version = "v1.0"
 	} else {
@@ -970,7 +954,10 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 			return nil, fmt.Errorf("文件版本已被其他用户修改，请刷新后重试: %w", ErrConflict)
 		}
 		version = fmt.Sprintf("v1.0-w%03d", currentRevision)
-		result, updateErr := tx.Exec(ctx, `UPDATE attachments SET current_storage_key = $2, current_blob_id = $3::uuid, current_name = $4, current_mime_type = $5, current_size_bytes = $6, current_sha256 = $7, revision = revision + 1, version = $8 WHERE id = $1::uuid AND revision = $9 AND deleted_at IS NULL`, item.AttachmentID, currentKey, currentBlobID, item.OriginalName, item.MimeType, item.Size, item.SHA256, version, *item.ExpectedRevision)
+		if err := tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, 'working', $8::uuid) RETURNING id::text`, item.AttachmentID, version, currentBlobID, currentName, currentMime, currentSize, isPreviewable(currentName, currentMime), userID).Scan(&versionID); err != nil {
+			return nil, fmt.Errorf("登记替换文件版本失败: %w", err)
+		}
+		result, updateErr := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, revision = revision + 1 WHERE id = $1::uuid AND revision = $3 AND deleted_at IS NULL`, item.AttachmentID, versionID, *item.ExpectedRevision)
 		if updateErr != nil {
 			return nil, fmt.Errorf("切换附件当前版本失败: %w", updateErr)
 		}
@@ -979,10 +966,7 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		}
 		attachmentID = item.AttachmentID
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO file_versions (attachment_id, storage_key, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, expires_at, is_pinned, is_current_release, blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid, CASE WHEN $5 = 'working' THEN now() + interval '90 days' ELSE NULL END, $5 = 'release', $5 = 'release', $10::uuid)`, attachmentID, currentKey, objectKey, version, map[bool]string{true: "release", false: "working"}[item.AttachmentID == ""], item.Size, item.MimeType, item.SHA256, userID, currentBlobID); err != nil {
-		return nil, fmt.Errorf("登记文件版本失败: %w", err)
-	}
-	result := map[string]any{"sessionId": sessionID, "attachmentId": attachmentID, "storageKey": objectKey, "currentStorageKey": currentKey, "version": version, "status": "committed"}
+	result := map[string]any{"sessionId": sessionID, "attachmentId": attachmentID, "storageKey": currentKey, "currentStorageKey": currentKey, "version": version, "status": "committed"}
 	resultBytes, _ := json.Marshal(result)
 	if _, err := tx.Exec(ctx, `UPDATE upload_sessions SET status = 'committed', committed_at = now(), result = $2::jsonb, last_activity_at = now(), error_message = NULL WHERE id = $1::uuid AND status IN ('open', 'failed')`, sessionID, string(resultBytes)); err != nil {
 		return nil, fmt.Errorf("保存上传会话结果失败: %w", err)
@@ -1010,24 +994,12 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 	if strings.TrimSpace(manifest.Drawing.No) == "" || strings.TrimSpace(manifest.Drawing.Name) == "" || strings.TrimSpace(manifest.Drawing.Project) == "" {
 		return nil, errors.New("图号、名称和项目不能为空")
 	}
-	if manifest.Drawing.Kind == "" {
-		manifest.Drawing.Kind = "总图"
-	}
-	if manifest.Drawing.Material == "" {
-		manifest.Drawing.Material = "—"
-	}
-	if manifest.Drawing.Status == "" {
-		manifest.Drawing.Status = "draft"
-	}
-	if manifest.Drawing.Version == "" {
-		manifest.Drawing.Version = "v1.0"
-	}
-	var count int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM upload_session_items WHERE session_id = $1::uuid`, sessionID).Scan(&count); err != nil {
-		return nil, err
-	}
-	var ready int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM upload_session_items WHERE session_id = $1::uuid AND status = 'ready'`, sessionID).Scan(&ready); err != nil {
+	manifest.Drawing.Kind = firstNonEmpty(manifest.Drawing.Kind, "总图")
+	manifest.Drawing.Material = firstNonEmpty(manifest.Drawing.Material, "—")
+	manifest.Drawing.Status = firstNonEmpty(manifest.Drawing.Status, "draft")
+	manifest.Drawing.Version = firstNonEmpty(manifest.Drawing.Version, "v1.0")
+	var count, ready int
+	if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE status = 'ready') FROM upload_session_items WHERE session_id = $1::uuid`, sessionID).Scan(&count, &ready); err != nil {
 		return nil, err
 	}
 	if count != ready {
@@ -1044,11 +1016,7 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		return nil, fmt.Errorf("创建项目图纸失败: %w", err)
 	}
 	for attributeID, fieldID := range manifest.Drawing.AttributeValues {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO drawing_attribute_values (drawing_id, attribute_id, field_id)
-			SELECT $1::uuid, f.attribute_id, f.id
-			FROM drawing_attribute_fields f
-			WHERE f.attribute_id = $2::uuid AND f.id = $3::uuid`, drawingID, attributeID, fieldID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO drawing_attribute_values (drawing_id, attribute_id, field_id) SELECT $1::uuid, f.attribute_id, f.id FROM drawing_attribute_fields f WHERE f.attribute_id = $2::uuid AND f.id = $3::uuid`, drawingID, attributeID, fieldID); err != nil {
 			return nil, fmt.Errorf("保存图纸属性失败: %w", err)
 		}
 	}
@@ -1056,55 +1024,70 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		return nil, fmt.Errorf("保存图纸签署人失败: %w", err)
 	}
 	partIDs := make(map[string]string, len(manifest.Parts))
+	partRevisionIDs := make(map[string]string, len(manifest.Parts))
 	for _, part := range manifest.Parts {
-		if strings.TrimSpace(part.No) == "" || strings.TrimSpace(part.Name) == "" {
+		part.No = strings.TrimSpace(part.No)
+		part.Name = strings.TrimSpace(part.Name)
+		if part.No == "" || part.Name == "" {
 			return nil, errors.New("零件图号和名称不能为空")
 		}
-		var id string
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO structure_parts (drawing_id, part_no, name, project, material, spec, weight, surface_treatment, manufacturing_type, quantity, status, version, vendor, borrow_from, remark, created_by, updated_by)
-			VALUES ($1::uuid, $2, $3, NULLIF($4, ''), COALESCE(NULLIF($5, ''), '—'), $6, $7, $8, COALESCE(NULLIF($9, ''), '自制件'), COALESCE(NULLIF($10, 0), 1), COALESCE(NULLIF($11, ''), 'draft'), COALESCE(NULLIF($12, ''), 'v1.0'), $13, $14, $15, $16::uuid, $16::uuid)
-			RETURNING id::text`, drawingID, part.No, part.Name, firstNonEmpty(part.Project, manifest.Drawing.Project), part.Material, part.Spec, part.Weight, part.SurfaceTreatment, part.ManufacturingType, part.Quantity, part.Status, part.Version, part.Vendor, part.BorrowFrom, part.Remark, userID).Scan(&id); err != nil {
+		normalized := drawing.NormalizePartNo(part.No)
+		var partID string
+		if err := tx.QueryRow(ctx, `INSERT INTO parts (part_no, normalized_part_no, lifecycle_status, created_by, updated_by) VALUES ($1, $2, 'active', $3::uuid, $3::uuid) RETURNING id::text`, part.No, normalized, userID).Scan(&partID); err != nil {
 			if isUniqueViolation(err) {
 				return nil, fmt.Errorf("零件图号已存在，请刷新后重试: %w", ErrConflict)
 			}
 			return nil, fmt.Errorf("创建零件失败: %w", err)
 		}
-		partIDs[part.No] = id
+		workflowStatus := normalizePartWorkflowStatus(part.Status)
+		version := firstNonEmpty(part.Version, "v1.0")
+		var revisionID string
+		if err := tx.QueryRow(ctx, `INSERT INTO part_revisions (part_id, revision_no, version, name, material, spec, weight, surface_treatment, part_type, workflow_status, created_by) VALUES ($1::uuid, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10::uuid) RETURNING id::text`, partID, version, part.Name, firstNonEmpty(part.Material, "—"), part.Spec, part.Weight, firstNonEmpty(part.SurfaceTreatment, ""), firstNonEmpty(part.ManufacturingType, "自制件"), workflowStatus, userID).Scan(&revisionID); err != nil {
+			return nil, fmt.Errorf("创建零件版本失败: %w", err)
+		}
+		if workflowStatus == "published" {
+			if _, err := tx.Exec(ctx, `UPDATE parts SET published_revision_id = $2::uuid WHERE id = $1::uuid`, partID, revisionID); err != nil {
+				return nil, fmt.Errorf("设置零件发布版本失败: %w", err)
+			}
+		}
+		partIDs[part.No] = partID
+		partRevisionIDs[part.No] = revisionID
 	}
+	relationIDs := make(map[string]string, len(manifest.Parts))
 	for _, part := range manifest.Parts {
-		if strings.TrimSpace(part.ParentNo) == "" || part.ParentNo == manifest.Drawing.No {
-			continue
+		qty := part.Quantity
+		if qty <= 0 {
+			qty = 1
 		}
-		parentID := partIDs[part.ParentNo]
-		if parentID == "" {
-			return nil, fmt.Errorf("零件父级不存在: %s", part.ParentNo)
-		}
-		if _, err := tx.Exec(ctx, `UPDATE structure_parts SET parent_part_id = $2::uuid WHERE id = $1::uuid`, partIDs[part.No], parentID); err != nil {
+		var relationID string
+		if err := tx.QueryRow(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, remark, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'owned', $3, COALESCE($4, ''), $5::uuid, $5::uuid) RETURNING id::text`, drawingID, partIDs[part.No], qty, part.Remark, userID).Scan(&relationID); err != nil {
 			return nil, fmt.Errorf("保存零件层级失败: %w", err)
 		}
-		if err := saveUploadSigners(ctx, tx, partIDs[part.No], part.Signers, false); err != nil {
+		relationIDs[part.No] = relationID
+		if err := saveUploadSigners(ctx, tx, partRevisionIDs[part.No], part.Signers, false); err != nil {
 			return nil, fmt.Errorf("保存零件签署人失败: %w", err)
 		}
 	}
 	for _, part := range manifest.Parts {
-		if part.ParentNo == "" || part.ParentNo == manifest.Drawing.No {
-			if err := saveUploadSigners(ctx, tx, partIDs[part.No], part.Signers, false); err != nil {
-				return nil, fmt.Errorf("保存零件签署人失败: %w", err)
-			}
+		parentNo := strings.TrimSpace(part.ParentNo)
+		if parentNo == "" || parentNo == manifest.Drawing.No {
+			continue
+		}
+		parentRelationID := relationIDs[parentNo]
+		if parentRelationID == "" {
+			return nil, fmt.Errorf("零件父级不存在: %s", parentNo)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE drawing_part_relations SET parent_relation_id = $2::uuid WHERE id = $1::uuid AND drawing_id = $3::uuid`, relationIDs[part.No], parentRelationID, drawingID); err != nil {
+			return nil, fmt.Errorf("保存零件层级父级失败: %w", err)
 		}
 	}
 	type projectAttachment struct {
-		id, partNo, role, name, mime, objectKey, blobID string
-		processedKey, processedBlobID, sha256           string
-		processedMime, processedSHA256                  string
-		size, processedSize                             int64
+		id, partNo, role, name, mime, objectKey, blobID               string
+		processedKey, processedBlobID, processedMime, processedSHA256 string
+		size, processedSize                                           int64
+		sha256                                                        string
 	}
-	rows, err := tx.Query(ctx, `
-		SELECT id::text, part_no, file_role, original_name, mime_type,
-		       object_key, blob_id::text, COALESCE(processed_object_key, ''), COALESCE(processed_blob_id::text, ''),
-		       size_bytes, sha256, COALESCE(processed_size_bytes, 0), COALESCE(processed_mime_type, ''), COALESCE(processed_sha256, '')
-		FROM upload_session_items WHERE session_id = $1::uuid AND status = 'ready' ORDER BY created_at, id`, sessionID)
+	rows, err := tx.Query(ctx, `SELECT id::text, part_no, file_role, original_name, mime_type, object_key, blob_id::text, COALESCE(processed_object_key, ''), COALESCE(processed_blob_id::text, ''), size_bytes, sha256, COALESCE(processed_size_bytes, 0), COALESCE(processed_mime_type, ''), COALESCE(processed_sha256, '') FROM upload_session_items WHERE session_id = $1::uuid AND status = 'ready' ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -1121,95 +1104,67 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		rows.Close()
 		return nil, err
 	}
-	// pgx does not allow another command on the same transaction connection while
-	// query rows are still open. Materialize the ready items first, then perform
-	// attachment/version writes after closing the result set.
 	rows.Close()
 	for _, item := range projectAttachments {
-		ownerID := drawingID
+		partID := ""
 		if item.partNo != "" {
-			ownerID = partIDs[item.partNo]
-			if ownerID == "" {
+			partID = partIDs[item.partNo]
+			if partID == "" {
 				return nil, fmt.Errorf("附件所属零件不存在: %s", item.partNo)
 			}
 		}
-		currentKey := item.objectKey
-		currentBlobID := item.blobID
-		currentName := item.name
-		currentMime := item.mime
-		currentSize := item.size
-		currentSHA256 := item.sha256
+		currentName, currentMime, currentSize, currentBlobID := item.name, item.mime, item.size, item.blobID
 		if item.processedKey != "" {
-			currentKey = item.processedKey
-			currentBlobID = item.processedBlobID
-			currentName = processedCADName(item.name)
-			currentMime = firstNonEmpty(item.processedMime, "application/acad")
-			currentSize = item.processedSize
-			currentSHA256 = item.processedSHA256
+			currentName, currentMime, currentSize, currentBlobID = processedCADName(item.name), firstNonEmpty(item.processedMime, "application/acad"), item.processedSize, item.processedBlobID
 		}
-		var attachmentID string
-		if item.partNo == "" {
-			err = tx.QueryRow(ctx, `INSERT INTO attachments (drawing_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by, blob_id, current_blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'v1.0', true, $13::uuid, $14::uuid, $15::uuid) RETURNING id::text`, ownerID, item.role, item.objectKey, currentKey, item.name, currentName, item.mime, currentMime, item.size, currentSize, item.sha256, currentSHA256, userID, item.blobID, currentBlobID).Scan(&attachmentID)
-		} else {
-			err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, storage_key, current_storage_key, original_name, current_name, mime_type, current_mime_type, size_bytes, current_size_bytes, sha256, current_sha256, version, previewable, uploaded_by, blob_id, current_blob_id) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'v1.0', true, $13::uuid, $14::uuid, $15::uuid) RETURNING id::text`, ownerID, item.role, item.objectKey, currentKey, item.name, currentName, item.mime, currentMime, item.size, currentSize, item.sha256, currentSHA256, userID, item.blobID, currentBlobID).Scan(&attachmentID)
-		}
+		attachmentID, err := insertAttachmentVersionTx(ctx, tx, drawingID, partID, item.role, item.name, currentName, currentMime, currentSize, currentBlobID, userID, "v1.0", "release")
 		if err != nil {
 			return nil, fmt.Errorf("创建项目附件失败: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO file_versions (attachment_id, storage_key, source_storage_key, version, version_kind, size_bytes, mime_type, sha256, created_by, is_pinned, is_current_release, blob_id) VALUES ($1::uuid, $2, $3, 'v1.0', 'release', $4, $5, $6, $7::uuid, true, true, $8::uuid)`, attachmentID, currentKey, item.objectKey, currentSize, currentMime, currentSHA256, userID, currentBlobID); err != nil {
-			return nil, fmt.Errorf("创建项目初始版本失败: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE upload_session_items SET attachment_id = $2::uuid, status = 'committed', updated_at = now() WHERE id = $1::uuid`, item.id, attachmentID); err != nil {
 			return nil, err
 		}
 	}
-	for _, bom := range manifest.BOM {
-		if bom.No <= 0 || strings.TrimSpace(bom.Name) == "" || bom.Quantity < 0 || bom.Weight < 0 {
-			return nil, errors.New("BOM 项目字段无效")
+	if len(manifest.BOM) > 0 {
+		var bomID string
+		if err := tx.QueryRow(ctx, `INSERT INTO drawing_boms (drawing_id, updated_by) VALUES ($1::uuid, $2::uuid) RETURNING id::text`, drawingID, userID).Scan(&bomID); err != nil {
+			return nil, fmt.Errorf("创建项目 BOM 失败: %w", err)
 		}
-		if bom.DrawingNo != "" && bom.DrawingNo != manifest.Drawing.No {
-			continue
-		}
-		if bom.PartNo == "" {
-			if _, err := tx.Exec(ctx, `INSERT INTO bom_items (drawing_id, item_no, name, spec, quantity, weight, remark) VALUES ($1::uuid, $2, $3, COALESCE(NULLIF($4, ''), '—'), $5, $6, COALESCE($7, ''))`, drawingID, bom.No, bom.Name, bom.Spec, bom.Quantity, bom.Weight, bom.Remark); err != nil {
+		for _, bom := range manifest.BOM {
+			if bom.No <= 0 || strings.TrimSpace(bom.Name) == "" || bom.Quantity < 0 || bom.Weight < 0 || (bom.DrawingNo != "" && bom.DrawingNo != manifest.Drawing.No) {
+				return nil, errors.New("BOM 项目字段无效")
+			}
+			partID := nullableString(partIDs[bom.PartNo])
+			if bom.PartNo != "" && partID == nil {
+				return nil, fmt.Errorf("BOM 所属零件不存在: %s", bom.PartNo)
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO bom_items (bom_id, item_no, part_id, name, spec, quantity, weight, remark) VALUES ($1::uuid, $2, $3::uuid, $4, COALESCE(NULLIF($5, ''), '—'), $6, $7, COALESCE($8, ''))`, bomID, bom.No, partID, bom.Name, bom.Spec, bom.Quantity, bom.Weight, bom.Remark); err != nil {
 				return nil, fmt.Errorf("保存项目 BOM 失败: %w", err)
 			}
-			continue
-		}
-		partID := partIDs[bom.PartNo]
-		if partID == "" {
-			return nil, fmt.Errorf("BOM 所属零件不存在: %s", bom.PartNo)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO bom_items (part_id, item_no, name, spec, quantity, weight, remark) VALUES ($1::uuid, $2, $3, COALESCE(NULLIF($4, ''), '—'), $5, $6, COALESCE($7, ''))`, partID, bom.No, bom.Name, bom.Spec, bom.Quantity, bom.Weight, bom.Remark); err != nil {
-			return nil, fmt.Errorf("保存零件 BOM 失败: %w", err)
 		}
 	}
 	for _, borrow := range manifest.Borrows {
 		if borrow.Direction != "in" && borrow.Direction != "out" {
 			return nil, errors.New("借用记录方向无效")
 		}
-		if borrow.TargetPartNo != "" && partIDs[borrow.TargetPartNo] == "" {
-			return nil, fmt.Errorf("借用目标零件不存在: %s", borrow.TargetPartNo)
+		if strings.TrimSpace(borrow.SourcePartNo) == "" {
+			return nil, errors.New("借用来源零件图号不能为空")
 		}
-		status := borrow.Status
-		if status == "" {
-			status = "active"
+		status := normalizeRelationStatus(borrow.Status)
+		var sourcePartID string
+		query := `SELECT p.id::text FROM parts p WHERE lower(trim(p.part_no)) = lower(trim($1))`
+		args := []any{borrow.SourcePartNo}
+		if borrow.SourceDrawingNo != "" {
+			query = `SELECT p.id::text FROM parts p JOIN drawing_part_relations r ON r.part_id = p.id AND r.status = 'active' JOIN drawings d ON d.id = r.drawing_id WHERE d.drawing_no = $2 AND lower(trim(p.part_no)) = lower(trim($1)) LIMIT 1`
+			args = []any{borrow.SourcePartNo, borrow.SourceDrawingNo}
 		}
-		if status == "使用中" {
-			status = "active"
-		} else if status == "已归档" {
-			status = "archived"
+		if err := tx.QueryRow(ctx, query, args...).Scan(&sourcePartID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("借用来源零件不存在: %s", borrow.SourcePartNo)
+			}
+			return nil, err
 		}
-		if status != "active" && status != "archived" {
-			return nil, errors.New("借用记录状态无效")
-		}
-		if _, err := tx.Exec(ctx, `
-				INSERT INTO borrow_records (source_drawing_id, source_part_id, target_drawing_id, target_part_id, direction, status, created_by)
-				VALUES (
-					NULLIF((SELECT id::text FROM drawings WHERE drawing_no = NULLIF($1, '')), '')::uuid,
-					NULLIF((SELECT p.id::text FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id WHERE d.drawing_no = NULLIF($1, '') AND p.part_no = NULLIF($2, '')), '')::uuid,
-					$3::uuid, NULLIF($4, '')::uuid, $5, $6, $7::uuid)`,
-			borrow.SourceDrawingNo, borrow.SourcePartNo, drawingID, partIDs[borrow.TargetPartNo], borrow.Direction, status, userID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, borrow_reason, borrowed_by, borrowed_at, status, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'borrowed', 1, $3, $4::uuid, now(), $5, $4::uuid, $4::uuid)`, drawingID, sourcePartID, firstNonEmpty(borrow.Direction, "in"), userID, status); err != nil {
 			return nil, fmt.Errorf("保存借用记录失败: %w", err)
 		}
 	}
@@ -1217,14 +1172,8 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		if strings.TrimSpace(branch.SourceDrawingNo) == "" {
 			return nil, errors.New("分支来源图号不能为空")
 		}
-		status := branch.Status
-		if status == "" {
-			status = "使用中"
-		}
-		result, err := tx.Exec(ctx, `
-				INSERT INTO drawing_branches (source_drawing_id, target_drawing_id, name, description, status, created_by)
-				SELECT id, $1::uuid, COALESCE(NULLIF($2, ''), $3), COALESCE($4, ''), $5, $6::uuid
-				FROM drawings WHERE drawing_no = $7`, drawingID, branch.Name, manifest.Drawing.No, branch.Description, status, userID, branch.SourceDrawingNo)
+		status := normalizeRelationStatus(branch.Status)
+		result, err := tx.Exec(ctx, `INSERT INTO drawing_branches (source_drawing_id, target_drawing_id, name, description, status, created_by) SELECT id, $1::uuid, COALESCE(NULLIF($2, ''), $3), COALESCE($4, ''), $5, $6::uuid FROM drawings WHERE drawing_no = $7`, drawingID, branch.Name, manifest.Drawing.No, branch.Description, status, userID, branch.SourceDrawingNo)
 		if err != nil {
 			return nil, fmt.Errorf("保存项目分支记录失败: %w", err)
 		}
@@ -1497,12 +1446,10 @@ func (service *Service) cleanupSessionObjects(ctx context.Context, sessionID str
 			if ref.object != "" && blobID != "" {
 				var used bool
 				if err := service.pool.QueryRow(ctx, `
-					SELECT EXISTS (
-						SELECT 1 FROM attachments WHERE blob_id = $1::uuid OR current_blob_id = $1::uuid
-						UNION ALL
-						SELECT 1 FROM file_versions WHERE blob_id = $1::uuid
-						UNION ALL
-						SELECT 1 FROM upload_session_items WHERE (blob_id = $1::uuid OR processed_blob_id = $1::uuid) AND session_id <> $2::uuid
+						SELECT EXISTS (
+							SELECT 1 FROM attachment_versions WHERE blob_id = $1::uuid
+							UNION ALL
+							SELECT 1 FROM upload_session_items WHERE (blob_id = $1::uuid OR processed_blob_id = $1::uuid) AND session_id <> $2::uuid
 				)`, blobID, sessionID).Scan(&used); err == nil && !used {
 					var blobKey string
 					if err := service.pool.QueryRow(ctx, `SELECT storage_key FROM file_blobs WHERE id = $1::uuid`, blobID).Scan(&blobKey); err != nil {
@@ -1511,7 +1458,7 @@ func (service *Service) cleanupSessionObjects(ctx context.Context, sessionID str
 					if err := service.storage.Delete(ctx, blobKey); err != nil {
 						service.scheduleCleanup(ctx, blobKey, "upload-session-blob")
 					} else {
-						_, _ = service.pool.Exec(ctx, `DELETE FROM file_blobs WHERE id = $1::uuid AND NOT EXISTS (SELECT 1 FROM attachments WHERE blob_id = $1::uuid OR current_blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM file_versions WHERE blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM upload_session_items WHERE blob_id = $1::uuid OR processed_blob_id = $1::uuid)`, blobID)
+						_, _ = service.pool.Exec(ctx, `DELETE FROM file_blobs WHERE id = $1::uuid AND NOT EXISTS (SELECT 1 FROM attachment_versions WHERE blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM upload_session_items WHERE blob_id = $1::uuid OR processed_blob_id = $1::uuid)`, blobID)
 					}
 				}
 			}
@@ -1596,8 +1543,7 @@ func (service *Service) cleanupOrphanBlobs(ctx context.Context) error {
 	rows, err := service.pool.Query(ctx, `
 		SELECT b.id::text, b.storage_key FROM file_blobs b
 		WHERE b.created_at < now() - interval '1 hour'
-		  AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.blob_id = b.id OR a.current_blob_id = b.id)
-		  AND NOT EXISTS (SELECT 1 FROM file_versions v WHERE v.blob_id = b.id)
+		  AND NOT EXISTS (SELECT 1 FROM attachment_versions v WHERE v.blob_id = b.id)
 		  AND NOT EXISTS (SELECT 1 FROM upload_session_items i WHERE i.blob_id = b.id OR i.processed_blob_id = b.id)`)
 	if err != nil {
 		return err
@@ -1618,7 +1564,7 @@ func (service *Service) cleanupOrphanBlobs(ctx context.Context) error {
 			service.scheduleCleanup(ctx, item.key, "orphan-blob")
 			continue
 		}
-		_, _ = service.pool.Exec(ctx, `DELETE FROM file_blobs WHERE id = $1::uuid AND NOT EXISTS (SELECT 1 FROM attachments WHERE blob_id = $1::uuid OR current_blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM file_versions WHERE blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM upload_session_items WHERE blob_id = $1::uuid OR processed_blob_id = $1::uuid)`, item.id)
+		_, _ = service.pool.Exec(ctx, `DELETE FROM file_blobs WHERE id = $1::uuid AND NOT EXISTS (SELECT 1 FROM attachment_versions WHERE blob_id = $1::uuid) AND NOT EXISTS (SELECT 1 FROM upload_session_items WHERE blob_id = $1::uuid OR processed_blob_id = $1::uuid)`, item.id)
 	}
 	return nil
 }
@@ -1698,12 +1644,78 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func normalizePartWorkflowStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "published", "已发布":
+		return "published"
+	case "reviewing", "审核中":
+		return "reviewing"
+	case "rejected", "已驳回":
+		return "rejected"
+	default:
+		return "draft"
+	}
+}
+
+func normalizeRelationStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "archived", "已归档", "inactive", "停用":
+		return "archived"
+	default:
+		return "active"
+	}
+}
+
+func isPreviewable(name, mimeType string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == ".pdf" || ext == ".dwg" || ext == ".dxf" || ext == ".exb" {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(mimeType), "image/")
+}
+
+func insertAttachmentVersionTx(ctx context.Context, tx pgx.Tx, drawingID, partID, role, logicalName, currentName, mimeType string, size int64, blobID, userID, version, versionKind string) (string, error) {
+	if drawingID == "" && partID == "" || drawingID != "" && partID != "" {
+		return "", errors.New("附件所属对象无效")
+	}
+	if blobID == "" {
+		return "", errors.New("附件缺少内容对象")
+	}
+	if logicalName == "" {
+		logicalName = currentName
+	}
+	if currentName == "" {
+		currentName = logicalName
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	var attachmentID string
+	var err error
+	if drawingID != "" {
+		err = tx.QueryRow(ctx, `INSERT INTO attachments (drawing_id, file_role, logical_name, uploaded_by) VALUES ($1::uuid, $2, $3, $4::uuid) RETURNING id::text`, drawingID, role, logicalName, userID).Scan(&attachmentID)
+	} else {
+		err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, logical_name, uploaded_by) VALUES ($1::uuid, $2, $3, $4::uuid) RETURNING id::text`, partID, role, logicalName, userID).Scan(&attachmentID)
+	}
+	if err != nil {
+		return "", err
+	}
+	var versionID string
+	if err := tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, $9::uuid) RETURNING id::text`, attachmentID, version, blobID, currentName, mimeType, size, isPreviewable(currentName, mimeType), versionKind, userID).Scan(&versionID); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid WHERE id = $1::uuid`, attachmentID, versionID); err != nil {
+		return "", err
+	}
+	return attachmentID, nil
+}
+
 func isUniqueViolation(err error) bool {
 	return strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "SQLSTATE 23505")
 }
 
 func saveUploadSigners(ctx context.Context, tx pgx.Tx, ownerID string, signers map[string]string, drawing bool) error {
-	column := "part_id"
+	column := "part_revision_id"
 	if drawing {
 		column = "drawing_id"
 	}

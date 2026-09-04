@@ -42,6 +42,7 @@ type Signers map[string]string
 
 type Part struct {
 	ID                string  `json:"id"`
+	RelationID        string  `json:"relationId,omitempty"`
 	DrawingID         string  `json:"drawingId"`
 	No                string  `json:"no"`
 	Name              string  `json:"name"`
@@ -64,6 +65,24 @@ type Part struct {
 	UpdatedAt         string  `json:"updatedAt,omitempty"`
 	Signers           Signers `json:"signers"`
 	Revision          int64   `json:"revision"`
+	RelationRevision  int64   `json:"relationRevision,omitempty"`
+	RelationType      string  `json:"relationType,omitempty"`
+	LifecycleStatus   string  `json:"lifecycleStatus,omitempty"`
+}
+
+type Relation struct {
+	ID               string  `json:"id"`
+	DrawingID        string  `json:"drawingId"`
+	PartID           string  `json:"partId"`
+	ParentRelationID *string `json:"parentRelationId,omitempty"`
+	RelationType     string  `json:"relationType"`
+	Quantity         float64 `json:"qty"`
+	Position         *string `json:"position,omitempty"`
+	LineNo           *int    `json:"lineNo,omitempty"`
+	Remark           string  `json:"remark"`
+	BorrowReason     *string `json:"borrowReason,omitempty"`
+	Revision         int64   `json:"revision"`
+	Status           string  `json:"status"`
 }
 
 type ListFilter struct {
@@ -144,6 +163,93 @@ type UpdatePartInput struct {
 	Vendor            *string  `json:"vendor"`
 	BorrowFrom        *string  `json:"borrowFrom"`
 	Remark            *string  `json:"remark"`
+}
+
+type UpdateRelationInput struct {
+	ExpectedRevision *int64   `json:"expectedRevision"`
+	Qty              *float64 `json:"qty"`
+	Remark           *string  `json:"remark"`
+	Position         *string  `json:"position"`
+	ParentRelationID *string  `json:"parentRelationId"`
+}
+
+type BorrowInput struct {
+	SourcePartID     string  `json:"sourcePartId"`
+	Qty              float64 `json:"qty"`
+	Position         *string `json:"position"`
+	LineNo           *int    `json:"lineNo"`
+	Remark           string  `json:"remark"`
+	BorrowReason     string  `json:"borrowReason"`
+	ParentRelationID *string `json:"parentRelationId"`
+}
+
+type ForkInput struct {
+	NewPartNo string `json:"newPartNo"`
+	Name      string `json:"name"`
+}
+
+type PartRevision struct {
+	ID                string  `json:"id"`
+	PartID            string  `json:"partId"`
+	RevisionNo        int     `json:"revisionNo"`
+	Version           string  `json:"ver"`
+	RowRevision       int64   `json:"rowRevision"`
+	Name              string  `json:"name"`
+	Material          string  `json:"material"`
+	Spec              string  `json:"spec"`
+	Weight            float64 `json:"weight"`
+	SurfaceTreatment  string  `json:"surfaceTreatment"`
+	PartType          string  `json:"partType"`
+	WorkflowStatus    string  `json:"workflowStatus"`
+	BasedOnRevisionID *string `json:"basedOnRevisionId,omitempty"`
+	CreatedBy         string  `json:"createdBy,omitempty"`
+	CreatedAt         string  `json:"createdAt,omitempty"`
+	PublishedBy       string  `json:"publishedBy,omitempty"`
+	PublishedAt       string  `json:"publishedAt,omitempty"`
+}
+
+type CreateRevisionInput struct {
+	Name             string  `json:"name"`
+	Material         string  `json:"material"`
+	Spec             string  `json:"spec"`
+	Weight           float64 `json:"weight"`
+	SurfaceTreatment string  `json:"surfaceTreatment"`
+	PartType         string  `json:"partType"`
+	Version          string  `json:"ver"`
+}
+
+type UpdateRevisionInput struct {
+	ExpectedRowRevision *int64   `json:"expectedRowRevision"`
+	Name                *string  `json:"name"`
+	Material            *string  `json:"material"`
+	Spec                *string  `json:"spec"`
+	Weight              *float64 `json:"weight"`
+	SurfaceTreatment    *string  `json:"surfaceTreatment"`
+	PartType            *string  `json:"partType"`
+	Version             *string  `json:"ver"`
+}
+
+type BOMItem struct {
+	ID                      string  `json:"id,omitempty"`
+	ItemNo                  int     `json:"no"`
+	PartID                  *string `json:"partId,omitempty"`
+	SourceAttachmentVersion *string `json:"sourceAttachmentVersionId,omitempty"`
+	Name                    string  `json:"name"`
+	Spec                    string  `json:"spec"`
+	Quantity                float64 `json:"qty"`
+	Weight                  float64 `json:"weight"`
+	Remark                  string  `json:"remark"`
+}
+
+type BOM struct {
+	DrawingID string    `json:"drawingId"`
+	Revision  int64     `json:"revision"`
+	Items     []BOMItem `json:"items"`
+}
+
+type UpdateBOMInput struct {
+	ExpectedRevision *int64    `json:"expectedRevision"`
+	Items            []BOMItem `json:"items"`
 }
 
 type Repository interface {

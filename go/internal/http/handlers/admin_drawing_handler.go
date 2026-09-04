@@ -149,9 +149,9 @@ func AdminDrawingResource(pool *pgxpool.Pool, objectStorage storage.ObjectStorag
 			var no string
 			var status string
 			if action == "disable" {
-				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status_before_disabled = CASE WHEN status <> 'disabled' THEN status ELSE status_before_disabled END, status = 'disabled', updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
+				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status = 'disabled', updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
 			} else {
-				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status = COALESCE(status_before_disabled, 'draft'), status_before_disabled = NULL, updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid AND status = 'disabled' RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
+				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status = 'draft', updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid AND status = 'disabled' RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
 			}
 			if errors.Is(err, pgx.ErrNoRows) {
 				writeAdminDrawingError(writer, ErrAdminDrawingNotFound)
@@ -206,9 +206,9 @@ func AdminPartResource(pool *pgxpool.Pool, objectStorage storage.ObjectStorage, 
 		var no string
 		var status string
 		if action == "disable" {
-			err = pool.QueryRow(request.Context(), `UPDATE structure_parts SET status_before_disabled = CASE WHEN status <> 'disabled' THEN status ELSE status_before_disabled END, status = 'disabled', updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid RETURNING part_no, status`, id, user.ID).Scan(&no, &status)
+			err = pool.QueryRow(request.Context(), `UPDATE parts SET lifecycle_status = 'archived', updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid RETURNING part_no, lifecycle_status`, id, user.ID).Scan(&no, &status)
 		} else {
-			err = pool.QueryRow(request.Context(), `UPDATE structure_parts SET status = COALESCE(status_before_disabled, 'draft'), status_before_disabled = NULL, updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid AND status = 'disabled' RETURNING part_no, status`, id, user.ID).Scan(&no, &status)
+			err = pool.QueryRow(request.Context(), `UPDATE parts SET lifecycle_status = 'active', updated_by = $2::uuid, updated_at = now() WHERE id = $1::uuid AND lifecycle_status = 'archived' RETURNING part_no, lifecycle_status`, id, user.ID).Scan(&no, &status)
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeAdminDrawingError(writer, ErrAdminDrawingNotFound)
@@ -295,7 +295,7 @@ func listAdminDrawings(ctx context.Context, pool *pgxpool.Pool, request *http.Re
 	offset := (page - 1) * pageSize
 	rows, err := pool.Query(ctx, `SELECT d.id::text, d.drawing_no, d.name, d.kind, d.project, d.material, d.vendor, d.status, d.version,
 		COALESCE(c.display_name, c.account, ''), d.created_at, COALESCE(u.display_name, u.account, ''), d.updated_at,
-		(SELECT count(*) FROM structure_parts p WHERE p.drawing_id = d.id),
+		(SELECT count(*) FROM drawing_part_relations r WHERE r.drawing_id = d.id AND r.status = 'active'),
 		(SELECT count(*) FROM attachments a WHERE a.drawing_id = d.id AND a.deleted_at IS NULL),
 		(SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.drawing_id = d.id AND s.status = 'active')
 		FROM drawings d LEFT JOIN users c ON c.id = d.created_by LEFT JOIN users u ON u.id = d.updated_by `+where+` ORDER BY d.updated_at DESC, d.drawing_no LIMIT $3 OFFSET $4`, keyword, status, pageSize, offset)
@@ -320,17 +320,17 @@ func listAdminDrawings(ctx context.Context, pool *pgxpool.Pool, request *http.Re
 func listAdminParts(ctx context.Context, pool *pgxpool.Pool, request *http.Request, page, pageSize int) (AdminPartPage, error) {
 	keyword := "%" + strings.ToLower(strings.TrimSpace(request.URL.Query().Get("keyword"))) + "%"
 	status := strings.TrimSpace(request.URL.Query().Get("status"))
-	where := `WHERE ($1 = '%' OR lower(p.part_no) LIKE $1 OR lower(p.name) LIKE $1 OR lower(d.drawing_no) LIKE $1)
-		AND ($2 = '' OR p.status = $2)`
+	where := `WHERE ($1 = '%' OR lower(p.part_no) LIKE $1 OR lower(pr.name) LIKE $1 OR lower(d.drawing_no) LIKE $1)
+		AND ($2 = '' OR p.lifecycle_status = $2)`
 	var total int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id `+where, keyword, status).Scan(&total); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM parts p JOIN drawing_part_relations r ON r.part_id = p.id AND r.status = 'active' JOIN drawings d ON d.id = r.drawing_id LEFT JOIN LATERAL (SELECT * FROM part_revisions x WHERE x.part_id = p.id ORDER BY x.revision_no DESC LIMIT 1) pr ON true `+where, keyword, status).Scan(&total); err != nil {
 		return AdminPartPage{}, err
 	}
-	rows, err := pool.Query(ctx, `SELECT p.id::text, p.drawing_id::text, d.drawing_no, p.part_no, p.name, COALESCE(parent.part_no, ''), COALESCE(p.project, d.project, ''), p.material, p.status, p.version,
+	rows, err := pool.Query(ctx, `SELECT p.id::text, r.drawing_id::text, d.drawing_no, p.part_no, pr.name, COALESCE(parentPart.part_no, ''), d.project, pr.material, p.lifecycle_status, pr.version,
 		COALESCE(c.display_name, c.account, ''), p.created_at, COALESCE(u.display_name, u.account, ''), p.updated_at,
 		(SELECT count(*) FROM attachments a WHERE a.part_id = p.id AND a.deleted_at IS NULL),
 		(SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.part_id = p.id AND s.status = 'active')
-		FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id LEFT JOIN structure_parts parent ON parent.id = p.parent_part_id LEFT JOIN users c ON c.id = p.created_by LEFT JOIN users u ON u.id = p.updated_by `+where+` ORDER BY p.updated_at DESC, p.part_no LIMIT $3 OFFSET $4`, keyword, status, pageSize, (page-1)*pageSize)
+		FROM parts p JOIN drawing_part_relations r ON r.part_id = p.id AND r.status = 'active' JOIN drawings d ON d.id = r.drawing_id LEFT JOIN part_revisions pr ON pr.id = COALESCE(p.published_revision_id, (SELECT x.id FROM part_revisions x WHERE x.part_id = p.id ORDER BY x.revision_no DESC LIMIT 1)) LEFT JOIN drawing_part_relations parentRelation ON parentRelation.id = r.parent_relation_id LEFT JOIN parts parentPart ON parentPart.id = parentRelation.part_id LEFT JOIN users c ON c.id = p.created_by LEFT JOIN users u ON u.id = p.updated_by `+where+` ORDER BY p.updated_at DESC, p.part_no LIMIT $3 OFFSET $4`, keyword, status, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return AdminPartPage{}, err
 	}
@@ -353,7 +353,7 @@ func findAdminDrawing(ctx context.Context, pool *pgxpool.Pool, id string) (Admin
 	var item AdminDrawingSummary
 	var createdAt, updatedAt time.Time
 	err := pool.QueryRow(ctx, `SELECT d.id::text, d.drawing_no, d.name, d.kind, d.project, d.material, d.vendor, d.status, d.version, COALESCE(c.display_name, c.account, ''), d.created_at, COALESCE(u.display_name, u.account, ''), d.updated_at,
-		(SELECT count(*) FROM structure_parts p WHERE p.drawing_id = d.id), (SELECT count(*) FROM attachments a WHERE a.drawing_id = d.id AND a.deleted_at IS NULL), (SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.drawing_id = d.id AND s.status = 'active')
+		(SELECT count(*) FROM drawing_part_relations r WHERE r.drawing_id = d.id AND r.status = 'active'), (SELECT count(*) FROM attachments a WHERE a.drawing_id = d.id AND a.deleted_at IS NULL), (SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.drawing_id = d.id AND s.status = 'active')
 		FROM drawings d LEFT JOIN users c ON c.id = d.created_by LEFT JOIN users u ON u.id = d.updated_by WHERE d.id = $1::uuid`, id).Scan(&item.ID, &item.No, &item.Name, &item.Kind, &item.Project, &item.Material, &item.Vendor, &item.Status, &item.Version, &item.CreatedBy, &createdAt, &item.UpdatedBy, &updatedAt, &item.PartCount, &item.AttachmentCount, &item.SessionCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AdminDrawingDetail{}, ErrAdminDrawingNotFound
@@ -387,7 +387,7 @@ func listAllAdminParts(ctx context.Context, pool *pgxpool.Pool, drawingID string
 }
 
 func queryAllAdminParts(ctx context.Context, pool *pgxpool.Pool, drawingID string) ([]AdminPartSummary, error) {
-	rows, err := pool.Query(ctx, `SELECT p.id::text, p.drawing_id::text, d.drawing_no, p.part_no, p.name, COALESCE(parent.part_no, ''), COALESCE(p.project, d.project, ''), p.material, p.status, p.version, COALESCE(c.display_name, c.account, ''), p.created_at, COALESCE(u.display_name, u.account, ''), p.updated_at, (SELECT count(*) FROM attachments a WHERE a.part_id = p.id AND a.deleted_at IS NULL), (SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.part_id = p.id AND s.status = 'active') FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id LEFT JOIN structure_parts parent ON parent.id = p.parent_part_id LEFT JOIN users c ON c.id = p.created_by LEFT JOIN users u ON u.id = p.updated_by WHERE p.drawing_id = $1::uuid ORDER BY p.part_no`, drawingID)
+	rows, err := pool.Query(ctx, `SELECT p.id::text, r.drawing_id::text, d.drawing_no, p.part_no, pr.name, COALESCE(parentPart.part_no, ''), d.project, pr.material, p.lifecycle_status, pr.version, COALESCE(c.display_name, c.account, ''), p.created_at, COALESCE(u.display_name, u.account, ''), p.updated_at, (SELECT count(*) FROM attachments a WHERE a.part_id = p.id AND a.deleted_at IS NULL), (SELECT count(*) FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id WHERE a.part_id = p.id AND s.status = 'active') FROM parts p JOIN drawing_part_relations r ON r.part_id = p.id AND r.drawing_id = $1::uuid AND r.status = 'active' JOIN drawings d ON d.id = r.drawing_id LEFT JOIN part_revisions pr ON pr.id = COALESCE(p.published_revision_id, (SELECT x.id FROM part_revisions x WHERE x.part_id = p.id ORDER BY x.revision_no DESC LIMIT 1)) LEFT JOIN drawing_part_relations parentRelation ON parentRelation.id = r.parent_relation_id LEFT JOIN parts parentPart ON parentPart.id = parentRelation.part_id LEFT JOIN users c ON c.id = p.created_by LEFT JOIN users u ON u.id = p.updated_by ORDER BY p.part_no`, drawingID)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +407,7 @@ func queryAllAdminParts(ctx context.Context, pool *pgxpool.Pool, drawingID strin
 }
 
 func listAdminAttachments(ctx context.Context, pool *pgxpool.Pool, drawingID string) ([]AdminAttachment, error) {
-	rows, err := pool.Query(ctx, `SELECT a.id::text, a.original_name, COALESCE(a.current_name, a.original_name), a.file_role, a.storage_key, COALESCE(a.current_storage_key, a.storage_key), a.version, COALESCE(a.current_size_bytes, a.size_bytes), COALESCE(a.current_mime_type, a.mime_type), COALESCE(u.display_name, u.account, ''), a.created_at FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by WHERE (a.drawing_id = $1::uuid OR a.part_id IN (SELECT id FROM structure_parts WHERE drawing_id = $1::uuid)) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, drawingID)
+	rows, err := pool.Query(ctx, `SELECT a.id::text, a.logical_name, COALESCE(v.original_name, a.logical_name), a.file_role, COALESCE(b.storage_key, ''), COALESCE(b.storage_key, ''), COALESCE(v.version, 'v1.0'), COALESCE(v.size_bytes, 0), COALESCE(v.mime_type, b.mime_type, 'application/octet-stream'), COALESCE(u.display_name, u.account, ''), a.created_at FROM attachments a LEFT JOIN attachment_versions v ON v.id = a.current_version_id LEFT JOIN file_blobs b ON b.id = v.blob_id LEFT JOIN users u ON u.id = a.uploaded_by WHERE (a.drawing_id = $1::uuid OR a.part_id IN (SELECT r.part_id FROM drawing_part_relations r WHERE r.drawing_id = $1::uuid AND r.status = 'active')) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, drawingID)
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +429,7 @@ func listAdminVersions(ctx context.Context, pool *pgxpool.Pool, attachments []Ad
 	if len(attachments) == 0 {
 		return []AdminFileVersion{}, nil
 	}
-	rows, err := pool.Query(ctx, `SELECT v.id::text, v.attachment_id::text, v.storage_key, v.version, v.version_kind, v.size_bytes, v.mime_type, COALESCE(u.display_name, u.account, ''), v.created_at FROM file_versions v LEFT JOIN users u ON u.id = v.created_by WHERE v.attachment_id = ANY($1::uuid[]) AND v.deleted_at IS NULL ORDER BY v.created_at DESC`, attachmentIDs(attachments))
+	rows, err := pool.Query(ctx, `SELECT v.id::text, v.attachment_id::text, b.storage_key, v.version, v.version_kind, v.size_bytes, v.mime_type, COALESCE(u.display_name, u.account, ''), v.created_at FROM attachment_versions v JOIN file_blobs b ON b.id = v.blob_id LEFT JOIN users u ON u.id = v.created_by WHERE v.attachment_id = ANY($1::uuid[]) AND v.deleted_at IS NULL ORDER BY v.created_at DESC`, attachmentIDs(attachments))
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +446,7 @@ func listAdminVersions(ctx context.Context, pool *pgxpool.Pool, attachments []Ad
 }
 
 func listAdminSessions(ctx context.Context, pool *pgxpool.Pool, drawingNo string) ([]map[string]any, error) {
-	rows, err := pool.Query(ctx, `SELECT s.id::text, s.attachment_id::text, COALESCE(a.current_name, a.original_name, ''), COALESCE(p.part_no, ''), COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id LEFT JOIN structure_parts p ON p.id = a.part_id JOIN users u ON u.id = s.user_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN drawings parent ON parent.id = p.drawing_id WHERE s.status = 'active' AND (d.drawing_no = $1 OR parent.drawing_no = $1) ORDER BY s.started_at DESC`, drawingNo)
+	rows, err := pool.Query(ctx, `SELECT s.id::text, s.attachment_id::text, COALESCE(v.original_name, a.logical_name, ''), COALESCE(p.part_no, ''), COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at FROM edit_sessions s JOIN attachments a ON a.id = s.attachment_id LEFT JOIN attachment_versions v ON v.id = a.current_version_id LEFT JOIN parts p ON p.id = a.part_id JOIN users u ON u.id = s.user_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN drawing_part_relations ownerRelation ON ownerRelation.part_id = p.id AND ownerRelation.relation_type = 'owned' AND ownerRelation.status = 'active' LEFT JOIN drawings parent ON parent.id = ownerRelation.drawing_id WHERE s.status = 'active' AND (d.drawing_no = $1 OR parent.drawing_no = $1) ORDER BY s.started_at DESC`, drawingNo)
 	if err != nil {
 		return nil, err
 	}
@@ -465,42 +465,25 @@ func listAdminSessions(ctx context.Context, pool *pgxpool.Pool, drawingNo string
 
 func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage storage.ObjectStorage, id string) (string, error) {
 	var no string
-	partNos := make([]string, 0)
 	if err := pool.QueryRow(ctx, `SELECT drawing_no FROM drawings WHERE id = $1::uuid`, id).Scan(&no); errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrAdminDrawingNotFound
 	} else if err != nil {
 		return "", err
 	}
 	keys := make([]string, 0)
-	rows, err := pool.Query(ctx, `SELECT storage_key, COALESCE(current_storage_key, '') FROM attachments WHERE drawing_id = $1::uuid OR part_id IN (SELECT id FROM structure_parts WHERE drawing_id = $1::uuid)`, id)
+	rows, err := pool.Query(ctx, `SELECT b.storage_key FROM attachment_versions v JOIN file_blobs b ON b.id = v.blob_id JOIN attachments a ON a.id = v.attachment_id WHERE a.drawing_id = $1::uuid OR a.part_id IN (SELECT r.part_id FROM drawing_part_relations r WHERE r.drawing_id = $1::uuid)`, id)
 	if err != nil {
 		return "", err
 	}
 	for rows.Next() {
-		var original, current string
-		if err := rows.Scan(&original, &current); err != nil {
+		var original string
+		if err := rows.Scan(&original); err != nil {
 			rows.Close()
 			return "", err
 		}
 		keys = append(keys, original)
-		if current != "" {
-			keys = append(keys, current)
-		}
 	}
 	rows.Close()
-	versionRows, err := pool.Query(ctx, `SELECT v.storage_key FROM file_versions v JOIN attachments a ON a.id = v.attachment_id WHERE a.drawing_id = $1::uuid OR a.part_id IN (SELECT id FROM structure_parts WHERE drawing_id = $1::uuid)`, id)
-	if err != nil {
-		return "", err
-	}
-	for versionRows.Next() {
-		var key string
-		if err := versionRows.Scan(&key); err != nil {
-			versionRows.Close()
-			return "", err
-		}
-		keys = append(keys, key)
-	}
-	versionRows.Close()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -512,31 +495,11 @@ func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage st
 		UPDATE edit_sessions s
 		SET status = 'closed', closed_at = now(), last_seen_at = now()
 		FROM attachments a
-		LEFT JOIN structure_parts p ON p.id = a.part_id
+		LEFT JOIN drawing_part_relations ownerRelation ON ownerRelation.part_id = a.part_id AND ownerRelation.relation_type = 'owned' AND ownerRelation.status = 'active'
 		WHERE s.attachment_id = a.id
 		  AND s.status = 'active'
-		  AND (a.drawing_id = $1::uuid OR p.drawing_id = $1::uuid)`, id); err != nil {
+		  AND (a.drawing_id = $1::uuid OR ownerRelation.drawing_id = $1::uuid)`, id); err != nil {
 		return "", fmt.Errorf("释放图纸编辑会话失败: %w", err)
-	}
-	partRows, err := tx.Query(ctx, `SELECT part_no FROM structure_parts WHERE drawing_id = $1::uuid`, id)
-	if err != nil {
-		return "", err
-	}
-	for partRows.Next() {
-		var partNo string
-		if err := partRows.Scan(&partNo); err != nil {
-			partRows.Close()
-			return "", err
-		}
-		partNos = append(partNos, partNo)
-	}
-	if err := partRows.Err(); err != nil {
-		partRows.Close()
-		return "", err
-	}
-	partRows.Close()
-	if _, err := tx.Exec(ctx, `UPDATE structure_parts SET parent_part_id = NULL WHERE drawing_id = $1::uuid`, id); err != nil {
-		return "", err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM drawings WHERE id = $1::uuid`, id); err != nil {
 		return "", err
@@ -556,7 +519,7 @@ func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage st
 
 func hardDeletePart(ctx context.Context, pool *pgxpool.Pool, objectStorage storage.ObjectStorage, id string) (string, string, []string, error) {
 	var no, drawingNo string
-	err := pool.QueryRow(ctx, `SELECT p.part_no, d.drawing_no FROM structure_parts p JOIN drawings d ON d.id = p.drawing_id WHERE p.id = $1::uuid`, id).Scan(&no, &drawingNo)
+	err := pool.QueryRow(ctx, `SELECT p.part_no, d.drawing_no FROM parts p JOIN drawing_part_relations r ON r.part_id = p.id AND r.relation_type = 'owned' AND r.status = 'active' JOIN drawings d ON d.id = r.drawing_id WHERE p.id = $1::uuid LIMIT 1`, id).Scan(&no, &drawingNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", nil, ErrAdminDrawingNotFound
 	}
@@ -564,32 +527,19 @@ func hardDeletePart(ctx context.Context, pool *pgxpool.Pool, objectStorage stora
 		return "", "", nil, err
 	}
 	keys := make([]string, 0)
-	rows, err := pool.Query(ctx, `SELECT a.storage_key, COALESCE(a.current_storage_key, '') FROM attachments a WHERE a.part_id = $1::uuid`, id)
+	rows, err := pool.Query(ctx, `SELECT b.storage_key FROM attachment_versions v JOIN file_blobs b ON b.id = v.blob_id JOIN attachments a ON a.id = v.attachment_id WHERE a.part_id = $1::uuid`, id)
 	if err != nil {
 		return "", "", nil, err
 	}
 	for rows.Next() {
-		var original, current string
-		if err := rows.Scan(&original, &current); err != nil {
+		var original string
+		if err := rows.Scan(&original); err != nil {
 			rows.Close()
 			return "", "", nil, err
 		}
-		keys = append(keys, original, current)
+		keys = append(keys, original)
 	}
 	rows.Close()
-	versionRows, err := pool.Query(ctx, `SELECT v.storage_key FROM file_versions v JOIN attachments a ON a.id = v.attachment_id WHERE a.part_id = $1::uuid`, id)
-	if err != nil {
-		return "", "", nil, err
-	}
-	for versionRows.Next() {
-		var key string
-		if err := versionRows.Scan(&key); err != nil {
-			versionRows.Close()
-			return "", "", nil, err
-		}
-		keys = append(keys, key)
-	}
-	versionRows.Close()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return "", "", nil, err
@@ -603,13 +553,16 @@ func hardDeletePart(ctx context.Context, pool *pgxpool.Pool, objectStorage stora
 		return "", "", nil, fmt.Errorf("释放零件编辑会话失败: %w", err)
 	}
 	var childCount int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM structure_parts WHERE parent_part_id = $1::uuid`, id).Scan(&childCount); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM drawing_part_relations WHERE parent_relation_id IN (SELECT id FROM drawing_part_relations WHERE part_id = $1::uuid) AND status = 'active'`, id).Scan(&childCount); err != nil {
 		return "", "", nil, err
 	}
 	if childCount > 0 {
 		return "", "", nil, ErrAdminPartHasChildren
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM structure_parts WHERE id = $1::uuid`, id); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM drawing_part_relations WHERE part_id = $1::uuid`, id); err != nil {
+		return "", "", nil, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM parts WHERE id = $1::uuid AND NOT EXISTS (SELECT 1 FROM drawing_part_relations WHERE part_id = $1::uuid)`, id); err != nil {
 		return "", "", nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -627,8 +580,8 @@ func hardDeletePart(ctx context.Context, pool *pgxpool.Pool, objectStorage stora
 
 func hardDeleteAttachment(ctx context.Context, pool *pgxpool.Pool, objectStorage storage.ObjectStorage, id string) (string, string, []string, error) {
 	var no, name string
-	var original, current string
-	err := pool.QueryRow(ctx, `SELECT COALESCE(d.drawing_no, parent.drawing_no, ''), COALESCE(a.current_name, a.original_name), a.storage_key, COALESCE(a.current_storage_key, '') FROM attachments a LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN structure_parts p ON p.id = a.part_id LEFT JOIN drawings parent ON parent.id = p.drawing_id WHERE a.id = $1::uuid`, id).Scan(&no, &name, &original, &current)
+	var keys []string
+	err := pool.QueryRow(ctx, `SELECT COALESCE(d.drawing_no, parent.drawing_no, ''), COALESCE(v.original_name, a.logical_name), COALESCE(array_agg(DISTINCT b.storage_key) FILTER (WHERE b.storage_key IS NOT NULL), ARRAY[]::text[]) FROM attachments a LEFT JOIN attachment_versions v ON v.id = a.current_version_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN parts p ON p.id = a.part_id LEFT JOIN drawing_part_relations ownerRelation ON ownerRelation.part_id = p.id AND ownerRelation.relation_type = 'owned' AND ownerRelation.status = 'active' LEFT JOIN drawings parent ON parent.id = ownerRelation.drawing_id LEFT JOIN attachment_versions allVersions ON allVersions.attachment_id = a.id LEFT JOIN file_blobs b ON b.id = allVersions.blob_id WHERE a.id = $1::uuid GROUP BY d.drawing_no, parent.drawing_no, v.original_name, a.logical_name`, id).Scan(&no, &name, &keys)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", nil, ErrAdminDrawingNotFound
 	}
@@ -638,24 +591,6 @@ func hardDeleteAttachment(ctx context.Context, pool *pgxpool.Pool, objectStorage
 	if _, err := pool.Exec(ctx, `DELETE FROM attachments WHERE id = $1::uuid`, id); err != nil {
 		return "", "", nil, err
 	}
-	keys := []string{original, current}
-	versionRows, err := pool.Query(ctx, `SELECT v.storage_key FROM file_versions v WHERE v.attachment_id = $1::uuid`, id)
-	if err != nil {
-		return "", "", nil, err
-	}
-	for versionRows.Next() {
-		var key string
-		if err := versionRows.Scan(&key); err != nil {
-			versionRows.Close()
-			return "", "", nil, err
-		}
-		keys = append(keys, key)
-	}
-	if err := versionRows.Err(); err != nil {
-		versionRows.Close()
-		return "", "", nil, err
-	}
-	versionRows.Close()
 	keys = uniqueStrings(keys)
 	if objectStorage != nil {
 		for _, key := range keys {

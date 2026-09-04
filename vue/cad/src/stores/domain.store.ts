@@ -3,7 +3,6 @@ import { computed, ref } from 'vue'
 
 import { dataManager } from '@/services/data-manager'
 import type { StoredAttachment } from '@/services/data-manager/data-provider'
-import { deleteUploadRecoverySession, loadUploadRecoveryFile, saveUploadRecoveryFile } from '@/services/upload-file-storage'
 import { readDocxAuthor } from '@/utils/docx-metadata'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-number-parser'
@@ -14,6 +13,7 @@ import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.se
 import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
 import { ensureSmbCredential } from '@/services/tauri/cad-edit.service'
 import { formatReadableDateTime } from '@/utils/date-time'
+import { appContainer } from '@/app/container'
 import type {
   ActivityLog,
   ActivityResult,
@@ -103,6 +103,8 @@ function activityTime(): string {
 
 export const useDomainStore = defineStore('domain', () => {
 	const authStore = useAuthStore()
+	const uploadGateway = appContainer.uploadGateway
+	const uploadRecoveryStore = appContainer.uploadRecoveryStore
   const drawings = ref<Drawing[]>([])
   const attributes = ref<DrawingAttribute[]>([])
   const structure = ref<StructurePart[]>([])
@@ -490,7 +492,7 @@ export const useDomainStore = defineStore('domain', () => {
 	              pendingUploadSessionId.value = lastSessionId
 	              const entries = new Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile; content: Blob }>()
 	              for (const item of snapshot.items) {
-	                const content = await loadUploadRecoveryFile(lastSessionId, item.clientRef).catch(() => null)
+	                const content = await uploadRecoveryStore.load(lastSessionId, item.clientRef).catch(() => null)
 	                if (!content) continue
 	                entries.set(item.clientRef, {
 	                  itemId: item.id,
@@ -749,31 +751,12 @@ export const useDomainStore = defineStore('domain', () => {
   }
 
 	async function uploadSessionFile(sessionId: string, itemId: string, content: Blob, name: string, sha256: string): Promise<void> {
-		const chunkSize = 8 * 1024 * 1024
 		uploadProgress.value = { ...uploadProgress.value, [itemId]: 0 }
-		if (!sha256 || content.size < chunkSize) {
-			await dataManager.uploadSessionItem(sessionId, itemId, content, name)
-			uploadProgress.value = { ...uploadProgress.value, [itemId]: 100 }
-			return
-		}
-		const snapshot = await dataManager.initUploadChunks(sessionId, itemId, {
-			totalSize: content.size,
-			chunkSize,
+		await uploadGateway.uploadFile(sessionId, itemId, content, {
+			name,
 			sha256,
+			onProgress: (percent) => { uploadProgress.value = { ...uploadProgress.value, [itemId]: percent } },
 		})
-		const uploaded = new Set(snapshot.parts.map((part) => part.partNumber))
-		const partCount = Math.ceil(content.size / chunkSize)
-		uploadProgress.value = { ...uploadProgress.value, [itemId]: Math.round((uploaded.size / partCount) * 100) }
-		for (let partNumber = 0; partNumber < partCount; partNumber += 1) {
-			if (uploaded.has(partNumber)) continue
-			const start = partNumber * chunkSize
-			const end = Math.min(content.size, start + chunkSize)
-			await dataManager.uploadSessionChunk(sessionId, itemId, partNumber, content.slice(start, end))
-			uploadProgress.value = { ...uploadProgress.value, [itemId]: Math.round(((uploaded.size + 1) / partCount) * 100) }
-			uploaded.add(partNumber)
-		}
-		await dataManager.completeUploadChunks(sessionId, itemId)
-		uploadProgress.value = { ...uploadProgress.value, [itemId]: 100 }
 	}
 
 	async function uploadReplacementSession(
@@ -782,9 +765,9 @@ export const useDomainStore = defineStore('domain', () => {
 		content: Blob,
 	): Promise<Record<string, unknown>> {
 		const uploadName = content instanceof File ? content.name : file.name
-		let hash: Awaited<ReturnType<typeof dataManager.checkUploadHash>>
+		let hash: Awaited<ReturnType<typeof uploadGateway.hashCheck>>
 		try {
-			hash = await dataManager.checkUploadHash(content)
+			hash = await uploadGateway.hashCheck(content)
 		} catch (error) {
 			console.warn(`文件「${uploadName}」哈希预检失败，改为完整上传`, error)
 			hash = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
@@ -823,9 +806,9 @@ export const useDomainStore = defineStore('domain', () => {
 		content: Blob,
 	): Promise<Record<string, unknown>> {
 		const uploadName = content instanceof File ? content.name : file.name
-		let hash: Awaited<ReturnType<typeof dataManager.checkUploadHash>>
+		let hash: Awaited<ReturnType<typeof uploadGateway.hashCheck>>
 		try {
-			hash = await dataManager.checkUploadHash(content)
+			hash = await uploadGateway.hashCheck(content)
 		} catch (error) {
 			console.warn(`文件「${uploadName}」哈希预检失败，改为完整上传`, error)
 			hash = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
@@ -1134,15 +1117,15 @@ export const useDomainStore = defineStore('domain', () => {
 	    for (const file of allFiles) {
 		        const content = attachmentMap.get(file.id)
 		        if (!content) throw new Error(`文件「${file.name}」缺少文件内容（上传会话：${session.id}）`)
-	        await saveUploadRecoveryFile(session.id, file.id, content, file.name).catch((error) => {
+	        await uploadRecoveryStore.save(session.id, file.id, content, file.name).catch((error) => {
 	          console.warn(`保存文件「${file.name}」的刷新恢复副本失败`, error)
 	        })
 	        const isDrawing = isDrawingFile(file)
 	        const role = isDrawing ? file.role : ('op' in file ? 'craft' : 'material')
 	        // 客户端先算 SHA-256 做预检；预检失败时降级为普通上传，不能阻断业务。
-	        let hashCheck: Awaited<ReturnType<typeof dataManager.checkUploadHash>>
+	        let hashCheck: Awaited<ReturnType<typeof uploadGateway.hashCheck>>
 	        try {
-	          hashCheck = await dataManager.checkUploadHash(content)
+	          hashCheck = await uploadGateway.hashCheck(content)
 	        } catch (hashError) {
 	          console.warn(`文件「${file.name}」哈希预检失败，改为完整上传`, hashError)
 	          hashCheck = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
@@ -1182,7 +1165,7 @@ export const useDomainStore = defineStore('domain', () => {
 	        try {
 					let hash = ''
 					try {
-						hash = (await dataManager.checkUploadHash(content)).sha256
+						hash = (await uploadGateway.hashCheck(content)).sha256
 					} catch (hashError) {
 						console.warn(`文件「${entry.file.name}」哈希预检失败，改为完整上传`, hashError)
 					}
@@ -1199,7 +1182,7 @@ export const useDomainStore = defineStore('domain', () => {
 
     await dataManager.commitUploadSession(session.id)
 	    pendingDrawingUploads.delete(session.id)
-	    await deleteUploadRecoverySession(session.id).catch(() => undefined)
+	    await uploadRecoveryStore.clear(session.id).catch(() => undefined)
     pendingUploadSessionId.value = null
     window.localStorage.removeItem('cad:last-upload-session')
     await reloadFromServer()
@@ -1236,7 +1219,7 @@ export const useDomainStore = defineStore('domain', () => {
 			await dataManager.retryUploadSessionItem(sessionId, item.id)
 			let hash = ''
 			try {
-				hash = (await dataManager.checkUploadHash(entry.content)).sha256
+				hash = (await uploadGateway.hashCheck(entry.content)).sha256
 			} catch {
 				// 服务端预检暂时不可用时，仍允许整文件重试；服务端会校验已登记的摘要。
 			}
@@ -1250,7 +1233,7 @@ export const useDomainStore = defineStore('domain', () => {
     if (updated.items.some((item) => item.status !== 'ready')) throw new Error('仍有文件未准备完成，请继续重试失败项')
     const result = await dataManager.commitUploadSession(sessionId)
 	    pendingDrawingUploads.delete(sessionId)
-	    await deleteUploadRecoverySession(sessionId).catch(() => undefined)
+	    await uploadRecoveryStore.clear(sessionId).catch(() => undefined)
     pendingUploadSessionId.value = null
     window.localStorage.removeItem('cad:last-upload-session')
     await reloadFromServer()
@@ -1273,7 +1256,7 @@ export const useDomainStore = defineStore('domain', () => {
 	    await dataManager.retryUploadSessionItem(sessionId, itemId)
 	    let hash = ''
 	    try {
-	      hash = (await dataManager.checkUploadHash(entry.content)).sha256
+	      hash = (await uploadGateway.hashCheck(entry.content)).sha256
 	    } catch {
 	      // 哈希预检不可用时继续整文件/分片上传，服务端仍会按会话中登记的摘要校验。
 	    }
@@ -1287,7 +1270,7 @@ export const useDomainStore = defineStore('domain', () => {
 			pendingUploadSessionId.value = null
 			window.localStorage.removeItem('cad:last-upload-session')
 			uploadProgress.value = {}
-			await deleteUploadRecoverySession(sessionId).catch(() => undefined)
+			await uploadRecoveryStore.clear(sessionId).catch(() => undefined)
 		}
 
 		async function cancelPendingUploadSession(): Promise<void> {

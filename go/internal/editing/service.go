@@ -101,7 +101,7 @@ func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, 
 	// EXB 附件提交后会保留原始文件，同时把可编辑的 DWG 放到 current_blob_id。
 	// currentStorageKey 可能是 blobs/<hash>，不能靠它自身的扩展名判断格式；
 	// currentName 才是当前对象的真实文件名。已有有效 DWG 时禁止再次读取/转换原始 EXB。
-	if item.CurrentStorageKey != "" && item.CurrentStorageKey != item.StorageKey && strings.EqualFold(filepath.Ext(item.CurrentName), ".dwg") {
+	if item.CurrentStorageKey != "" && strings.EqualFold(filepath.Ext(item.CurrentName), ".dwg") {
 		if reader, _, statErr := service.storage.Open(ctx, item.CurrentStorageKey); statErr == nil {
 			_ = reader.Close()
 			return item.CurrentStorageKey, nil
@@ -148,7 +148,8 @@ func editWorkStorageKey(sessionID, sourceStorageKey string, item attachment.Atta
 	// 当前版本实际可用时使用 currentName（通常是 EXB 转换后的 DWG）。
 	// 当前版本已丢失而回退原文件时，必须保持原文件扩展名，不能把 EXB 内容伪装成 DWG。
 	name := strings.TrimSpace(item.Name)
-	if sourceStorageKey != item.StorageKey && strings.TrimSpace(item.CurrentName) != "" {
+	fallbackRawEXB := sourceStorageKey == item.StorageKey && strings.EqualFold(filepath.Ext(item.Name), ".exb") && strings.EqualFold(filepath.Ext(sourceStorageKey), ".exb")
+	if strings.TrimSpace(item.CurrentName) != "" && !fallbackRawEXB {
 		name = strings.TrimSpace(item.CurrentName)
 	}
 	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
