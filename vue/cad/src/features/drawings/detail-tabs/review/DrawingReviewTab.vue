@@ -2,39 +2,39 @@
 import { computed, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { ReviewNode } from '@/types/domain.types'
 
 defineOptions({ name: 'DrawingReviewTab' })
 
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
 
-const currentItem = computed(() => domainStore.currentDrawing)
+const currentItem = computed(() => drawingOperationsStore.currentDrawing)
 
-const done = computed(() => domainStore.currentReviewNodes.filter((node) => node.status === 'pass').length)
-const total = computed(() => domainStore.currentReviewNodes.length)
+const done = computed(() => drawingOperationsStore.currentReviewNodes.filter((node) => node.status === 'pass').length)
+const total = computed(() => drawingOperationsStore.currentReviewNodes.length)
 const percent = computed(() => (total.value ? Math.round((done.value / total.value) * 100) : 0))
 const isReviewing = computed(() => currentItem.value?.status === 'reviewing')
 const isPublished = computed(() => currentItem.value?.status === 'published')
 
 // 顺序流转：节点按 order 排序，第一个待处理节点为当前活动节点，仅它可签署。
-const sortedNodes = computed(() => domainStore.currentReviewNodes
+const sortedNodes = computed(() => drawingOperationsStore.currentReviewNodes
   .slice()
   .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)))
 const activeNodeName = computed(() => (isReviewing.value
   ? sortedNodes.value.find((node) => node.status === 'pending')?.name ?? null
   : null))
-const isRejected = computed(() => domainStore.currentReviewCase?.status === 'rejected')
+const isRejected = computed(() => drawingOperationsStore.currentReviewCase?.status === 'rejected')
 // 图纸状态是审核中但查不到任何案例：历史残留数据，提供重新初始化入口。
-const missingCase = computed(() => isReviewing.value && !domainStore.currentReviewCase)
+const missingCase = computed(() => isReviewing.value && !drawingOperationsStore.currentReviewCase)
 
 // 发起/重新发起仅创建者或管理员可用（驳回后由发起人重新发起，审核员无权）。
 const canStartReview = computed(() => {
-  const item = domainStore.currentDrawing
+  const item = drawingOperationsStore.currentDrawing
   const current = authStore.currentUser
   if (!item || !current) return false
   if (current.roles?.includes('admin')) return true
@@ -68,7 +68,7 @@ function cancelOpinion() {
 async function handleStartReview() {
   if (!currentItem.value) return
   try {
-    await domainStore.startReview(currentItem.value.no)
+    await drawingOperationsStore.startReview(currentItem.value.no)
     uiStore.toast(`图纸「${currentItem.value.no}」已发起审核，请按顺序完成各节点签署`, 'ok')
   } catch (error) {
     console.error('发起审核失败', error)
@@ -84,13 +84,13 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
   }
 
   try {
-    await domainStore.submitNodeReview(
+    await drawingOperationsStore.submitNodeReview(
       currentItem.value.no,
       nodeName,
       action,
       opinionText.value.trim(),
       authStore.currentUser?.displayName || '当前审核人',
-      domainStore.currentReviewCase?.id,
+      drawingOperationsStore.currentReviewCase?.id,
     )
     uiStore.toast(
       action === 'pass'
@@ -159,17 +159,17 @@ async function handleDecision(nodeName: string, action: 'pass' | 'rejected') {
     </div>
 
     <!-- 进度条 -->
-    <div v-if="domainStore.currentReviewNodes.length" class="review-progress card">
+    <div v-if="drawingOperationsStore.currentReviewNodes.length" class="review-progress card">
       <DemoIcon name="workflow" :size="17" />
       <b>流转进度看板</b>
       <div class="rp-track">
         <div class="rp-fill" :style="{ width: `${percent}%` }"></div>
       </div>
-      <span class="rp-txt">{{ done }} / {{ domainStore.currentReviewNodes.length }} 已完成 · {{ percent }}%</span>
+      <span class="rp-txt">{{ done }} / {{ drawingOperationsStore.currentReviewNodes.length }} 已完成 · {{ percent }}%</span>
     </div>
 
     <!-- 可视化流程拓扑图与节点列表 -->
-    <div v-if="domainStore.currentReviewNodes.length" class="review-diagram-area">
+    <div v-if="drawingOperationsStore.currentReviewNodes.length" class="review-diagram-area">
       <div class="section-subhead">
         <DemoIcon name="git-commit" :size="15" />
         <h4>审核节点流程（按顺序签署）</h4>

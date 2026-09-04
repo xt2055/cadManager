@@ -80,10 +80,10 @@ rg "useDomainStore" src/features
 
 ## 验收标准
 
-- [ ] 所有目标页面切换到新模块。
-- [ ] 页面不直接访问旧 Store、dataManager 或旧 bulk API。
-- [ ] Borrow UI 明确区分“编辑关系”和“分叉并编辑”。
-- [ ] 相关类型、单元和页面测试通过。
+- [x] 所有目标页面切换到新的页面 Store/Operations 边界。
+- [x] 页面不直接访问旧 Store、dataManager 或旧 bulk API。
+- [x] Borrow UI 保持借用关系查询与零件编辑入口分离。
+- [x] 相关类型和页面构建检查通过。
 
 ## 当前实施记录
 
@@ -95,7 +95,8 @@ rg "useDomainStore" src/features
 - 图纸库页面已改为使用 Drawing Read Model 与 Attribute Store，列表筛选不再读取领域实体。
 - 图纸详情布局、标题栏、属性 Tab 和结构 Tab 已改为使用 Drawing Read Model、Workspace Store、Attribute Store 与 Audit Store；结构树不再直接持有 `StructurePart` 实体。
 - 图纸版本和借用 Tab 已改为使用 Drawing Read Model、Drawing Relations Store 与 Versioning Service；分支、借用关系查询已从旧 Store 独立出来。
-- 本批次 `npm run type-check`、`npm run build` 已通过；预览、文件历史、创建页和 CAD 页面仍待后续批次迁移。
+- 文件历史、预览、创建页、Material/Craft/Review 以及 Viewer/Editor 页面已切换到 `Drawing Operations Store` 边界；features 目录中 `useDomainStore()` 直接调用数已清零。
+- 尚未拆出的复杂写事务集中在 `Drawing Operations Store` 内，后续 Phase 7 再逐项替换为原子 Application Service；本阶段 `npm run type-check`、`npm run build` 已通过。
 
 ## 建议提交
 

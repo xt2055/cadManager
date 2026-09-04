@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { versioningService } from '@/app/container'
 import type { FileVersionInfo } from '@/services/data-manager/data-provider'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { formatReadableDateTime } from '@/utils/date-time'
 import type { DrawingFile, DrawingFileHistoryItem } from '@/types/domain.types'
@@ -16,7 +16,7 @@ defineOptions({
 
 const route = useRoute()
 const router = useRouter()
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 const uiStore = useUiStore()
 
 const drawingId = computed(() => String(route.params.drawingId ?? ''))
@@ -46,15 +46,15 @@ interface HistoryTreeNode {
 
 // 加载指定文件
 async function loadFile() {
-  await domainStore.initialize()
+  await drawingOperationsStore.initialize()
   if (drawingId.value) {
-    domainStore.openDrawing(drawingId.value)
+    drawingOperationsStore.openDrawing(drawingId.value)
   }
 
-  const currentFiles = domainStore.currentDrawing
-    ? [...(domainStore.currentDrawing.files ?? []), ...(domainStore.currentDrawing.otherFiles ?? [])]
+  const currentFiles = drawingOperationsStore.currentDrawing
+    ? [...(drawingOperationsStore.currentDrawing.files ?? []), ...(drawingOperationsStore.currentDrawing.otherFiles ?? [])]
     : []
-  const structureFiles = domainStore.structure.flatMap((part) => [
+  const structureFiles = drawingOperationsStore.structure.flatMap((part) => [
     ...(part.files ?? []),
     ...(part.otherFiles ?? []),
   ])
@@ -226,7 +226,7 @@ async function downloadFile(node: HistoryTreeNode) {
         storageKey: node.storageKey,
         previewable: node.previewable,
       }
-      await domainStore.downloadAttachment(dummyFile)
+      await drawingOperationsStore.downloadAttachment(dummyFile)
     }
     uiStore.toast(`已触发下载 ${node.name} (${node.version})`, 'ok')
   } catch (err) {

@@ -5,7 +5,7 @@ import { AcApDocManager, AcEdOpenMode } from '@mlightcad/cad-simple-viewer'
 import { MlCadViewer } from '@mlightcad/cad-viewer'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { windowService } from '@/services/tauri/window.service'
 import { getApiBaseUrl } from '@/services/api-base.service'
@@ -19,13 +19,13 @@ defineOptions({
 
 const route = useRoute()
 const router = useRouter()
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 const uiStore = useUiStore()
 
 const drawingId = computed(() => String(route.params.drawingId ?? ''))
 const fileId = computed(() => String(route.query.fileId ?? ''))
 
-const currentDrawing = computed(() => domainStore.currentDrawing)
+const currentDrawing = computed(() => drawingOperationsStore.currentDrawing)
 const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in currentDrawing.value))
 
 const targetFile = ref<DrawingFile | null>(null)
@@ -76,17 +76,17 @@ async function loadTargetFile() {
   cadOriginalError.value = ''
   clearOriginalFile()
 
-  await domainStore.initialize()
+  await drawingOperationsStore.initialize()
 
   if (drawingId.value) {
-    domainStore.openDrawing(drawingId.value)
+    drawingOperationsStore.openDrawing(drawingId.value)
   }
 
   let file: DrawingFile | undefined
   const currentFiles = currentDrawing.value
     ? [...(currentDrawing.value.files ?? []), ...(currentDrawing.value.otherFiles ?? [])]
     : []
-  const structureFiles = domainStore.structure.flatMap((part) => [
+  const structureFiles = drawingOperationsStore.structure.flatMap((part) => [
     ...(part.files ?? []),
     ...(part.otherFiles ?? []),
   ])
@@ -133,7 +133,7 @@ async function loadTargetFile() {
       cadOriginalError.value = '当前图纸缺少 storageKey，无法加载编辑源'
     }
 
-    void domainStore.recordActivityAndPersist({
+    void drawingOperationsStore.recordActivityAndPersist({
       drawingNo: file.partNo || file.drawingNo,
       targetType: 'file',
       act: 'edit',
@@ -330,7 +330,7 @@ async function saveAsNewVersion() {
     // 保证图纸的当前文件与历史版本始终是可本地编辑/预览的 DWG。
     const dwgBlob = await convertDxfToDwgOnServer(dxfBlob, baseName)
     const savedFile = new File([dwgBlob], `${baseName}.dwg`, { type: 'application/acad' })
-    const updatedFile = await domainStore.replaceDrawingFile(
+    const updatedFile = await drawingOperationsStore.replaceDrawingFile(
       targetFile.value.partNo || targetFile.value.drawingNo || currentDrawing.value.no,
       targetFile.value.id,
       {

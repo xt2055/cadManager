@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
 import { useAuthStore } from '@/stores/auth.store'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { appContainer, drawingFileService } from '@/app/container'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
@@ -18,7 +18,7 @@ defineOptions({
 })
 
 const router = useRouter()
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
 const uploadGateway = appContainer.uploadGateway
@@ -37,10 +37,10 @@ let assemblyIdentifySequence = 0
 const createMode = ref<'blank' | 'fork'>('blank')
 const selectedForkSourceNo = ref('')
 
-const existingDrawings = computed(() => domainStore.drawings)
+const existingDrawings = computed(() => drawingOperationsStore.drawings)
 
 function onForkSourceChange() {
-  const source = domainStore.drawings.find((item) => item.no === selectedForkSourceNo.value)
+  const source = drawingOperationsStore.drawings.find((item) => item.no === selectedForkSourceNo.value)
   if (!source) return
   // 继承源项目的基本信息（均可修改）；总图图号预填源号，提交前必须改成新号。
   formProject.value = `${source.name} (改进版)`
@@ -77,13 +77,13 @@ const isDraggingParts = ref(false)
 const isCreating = ref(false)
 const createStatus = ref('正在准备创建')
 const createError = ref('')
-const canRetryUpload = computed(() => Boolean(domainStore.pendingUploadSessionId))
+const canRetryUpload = computed(() => Boolean(drawingOperationsStore.pendingUploadSessionId))
 const uploadSnapshot = ref<UploadSessionSnapshot | null>(null)
 const readyUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'ready' || item.status === 'committed').length ?? 0)
 const failedUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'failed').length ?? 0)
 
 async function refreshUploadSnapshot() {
-  const sessionId = domainStore.pendingUploadSessionId
+  const sessionId = drawingOperationsStore.pendingUploadSessionId
   if (!sessionId) {
     uploadSnapshot.value = null
     return
@@ -93,14 +93,14 @@ async function refreshUploadSnapshot() {
     uploadSnapshot.value = snapshot
     await Promise.all(snapshot.items.map(async (item) => {
       if (item.status === 'ready' || item.status === 'committed') {
-        domainStore.uploadProgress[item.id] = 100
+        drawingOperationsStore.uploadProgress[item.id] = 100
         return
       }
       try {
         const chunks = await uploadGateway.listChunks(sessionId, item.id)
         if (chunks.manifest.chunkSize > 0 && chunks.manifest.totalSize > 0) {
           const count = Math.ceil(chunks.manifest.totalSize / chunks.manifest.chunkSize)
-          domainStore.uploadProgress[item.id] = Math.round((chunks.parts.length / count) * 100)
+          drawingOperationsStore.uploadProgress[item.id] = Math.round((chunks.parts.length / count) * 100)
         }
       } catch {
         // 普通整文件上传没有分片清单，状态仍由会话快照展示。
@@ -108,7 +108,7 @@ async function refreshUploadSnapshot() {
     }))
 	  } catch (error) {
 	    if (isExpiredUploadError(error)) {
-	      await domainStore.dismissPendingUploadSession()
+	      await drawingOperationsStore.dismissPendingUploadSession()
 	      uploadSnapshot.value = null
 	      return
 	    }
@@ -134,7 +134,7 @@ async function retryUploadItem(itemId: string) {
   isCreating.value = true
   createStatus.value = '正在重试文件'
   try {
-    await domainStore.retryFailedDrawingUploadItem(itemId)
+    await drawingOperationsStore.retryFailedDrawingUploadItem(itemId)
     await refreshUploadSnapshot()
     uiStore.toast('文件已重新上传', 'ok')
   } catch (error) {
@@ -148,7 +148,7 @@ async function retryUploadItem(itemId: string) {
 }
 
 onMounted(() => { void refreshUploadSnapshot() })
-watch(() => domainStore.pendingUploadSessionId, () => { void refreshUploadSnapshot() })
+watch(() => drawingOperationsStore.pendingUploadSessionId, () => { void refreshUploadSnapshot() })
 
 const assemblyFileInput = ref<HTMLInputElement | null>(null)
 const partFilesInput = ref<HTMLInputElement | null>(null)
@@ -322,7 +322,7 @@ function triggerFolderPick() {
 }
 
 function handleCancel() {
-  void domainStore.cancelPendingUploadSession().catch((error) => {
+  void drawingOperationsStore.cancelPendingUploadSession().catch((error) => {
     console.warn('取消上传会话清理失败', error)
   })
   router.push({ name: 'drawing-library' })
@@ -361,7 +361,7 @@ async function performCreate() {
     return
   }
 
-  const attributeErrors = domainStore.validateAttributeValues(formAttributeValues.value)
+  const attributeErrors = drawingOperationsStore.validateAttributeValues(formAttributeValues.value)
   if (attributeErrors.length) {
     uiStore.toast(attributeErrors[0] ?? '请完善图纸属性', 'warn')
     return
@@ -378,7 +378,7 @@ async function performCreate() {
     }
     try {
       createStatus.value = '正在继承源图纸结构与文件'
-      await domainStore.forkDrawing(
+      await drawingOperationsStore.forkDrawing(
         selectedForkSourceNo.value,
         drawingNo,
         projectName,
@@ -388,7 +388,7 @@ async function performCreate() {
          projectNo,
          formAttributeValues.value,
        )
-      domainStore.openDrawing(drawingNo)
+      drawingOperationsStore.openDrawing(drawingNo)
       uiStore.toast(`已基于「${selectedForkSourceNo.value}」成功分叉项目「${projectNo}」，总图图号为「${drawingNo}」`, 'ok')
       router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
       return
@@ -556,7 +556,7 @@ async function performCreate() {
 
   try {
     createStatus.value = '正在保存项目结构并上传图纸文件'
-    await domainStore.addDrawing(newProjectDrawing, partsForStructure, attachments.filter((item): item is { id: string; content: File } => Boolean(item.id && item.content)))
+    await drawingOperationsStore.addDrawing(newProjectDrawing, partsForStructure, attachments.filter((item): item is { id: string; content: File } => Boolean(item.id && item.content)))
   } catch (error) {
     console.error('保存新建图纸失败', error)
     createError.value = error instanceof Error ? error.message : '项目创建失败，数据未能保存'
@@ -567,7 +567,7 @@ async function performCreate() {
     return
   }
 
-   domainStore.openDrawing(newProjectDrawing.no)
+   drawingOperationsStore.openDrawing(newProjectDrawing.no)
 
   const borrowedPartCount = groupedPartEntries.filter((entries) => entries[0]?.isBorrowed).length
    const fallbackMessage = unidentifiedPartNames.length
@@ -583,7 +583,7 @@ async function retryFailedUpload() {
   createError.value = ''
   createStatus.value = '正在重试失败文件'
   try {
-    const drawingNo = await domainStore.retryFailedDrawingUpload()
+    const drawingNo = await drawingOperationsStore.retryFailedDrawingUpload()
     uiStore.toast(`上传已恢复，项目「${drawingNo}」创建成功`, 'ok')
     router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
   } catch (error) {
@@ -622,8 +622,8 @@ async function retryFailedUpload() {
         <div v-for="item in uploadSnapshot.items" :key="item.id" class="create-upload-recovery-item">
           <span class="mono">{{ item.originalName }}</span>
           <span>{{ uploadStatusLabel(item) }}</span>
-          <span class="upload-progress-value">{{ domainStore.uploadProgress[item.id] ?? (item.status === 'ready' || item.status === 'committed' ? 100 : 0) }}%</span>
-          <span class="upload-progress-track" aria-hidden="true"><span class="upload-progress-fill" :style="{ width: `${domainStore.uploadProgress[item.id] ?? (item.status === 'ready' || item.status === 'committed' ? 100 : 0)}%` }"></span></span>
+          <span class="upload-progress-value">{{ drawingOperationsStore.uploadProgress[item.id] ?? (item.status === 'ready' || item.status === 'committed' ? 100 : 0) }}%</span>
+          <span class="upload-progress-track" aria-hidden="true"><span class="upload-progress-fill" :style="{ width: `${drawingOperationsStore.uploadProgress[item.id] ?? (item.status === 'ready' || item.status === 'committed' ? 100 : 0)}%` }"></span></span>
           <small v-if="item.errorMessage">{{ item.errorMessage }}</small>
           <button v-if="item.status === 'failed'" class="btn sm" type="button" :disabled="isCreating" @click="retryUploadItem(item.id)">{{ uploadRetryLabel(item) }}</button>
         </div>
@@ -731,7 +731,7 @@ async function retryFailedUpload() {
 
           <DrawingAttributesForm
             v-model="formAttributeValues"
-            :attributes="domainStore.sortedAttributes"
+            :attributes="drawingOperationsStore.sortedAttributes"
           />
         </section>
       </div>

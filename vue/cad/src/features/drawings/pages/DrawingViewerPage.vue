@@ -6,7 +6,7 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 // 已废弃：前端不再使用 Canvas DXF 渲染器，保留原组件引用以便回溯。
 // import CadVectorViewer from '@/features/drawings/detail-tabs/preview/CadVectorViewer.vue'
 import MlightCadViewer from '@/features/drawings/detail-tabs/preview/MlightCadViewer.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import type { DrawingFile } from '@/types/domain.types'
 
@@ -16,7 +16,7 @@ defineOptions({
 
 const route = useRoute()
 const router = useRouter()
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 
 const drawingId = computed(() => String(route.params.drawingId ?? ''))
 const fileId = computed(() => String(route.query.fileId ?? ''))
@@ -25,7 +25,7 @@ const fileId = computed(() => String(route.query.fileId ?? ''))
 const versionId = computed(() => String(route.query.versionId ?? ''))
 const versionKey = computed(() => String(route.query.versionKey ?? ''))
 
-const currentDrawing = computed(() => domainStore.currentDrawing)
+const currentDrawing = computed(() => drawingOperationsStore.currentDrawing)
 const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in currentDrawing.value))
 
 // 当前指定查看的图纸文件
@@ -60,10 +60,10 @@ function revokeOriginalUrl() {
 }
 
 async function loadTargetFile() {
-  await domainStore.initialize()
+  await drawingOperationsStore.initialize()
 
   if (drawingId.value) {
-    domainStore.openDrawing(drawingId.value)
+    drawingOperationsStore.openDrawing(drawingId.value)
   }
 
   // 优先按 fileId 在当前总图及其全部零件中精确查找，避免零件文件回退到总图。
@@ -71,7 +71,7 @@ async function loadTargetFile() {
   const currentFiles = currentDrawing.value
     ? [...(currentDrawing.value.files ?? []), ...(currentDrawing.value.otherFiles ?? [])]
     : []
-  const structureFiles = domainStore.structure.flatMap((part) => [
+  const structureFiles = drawingOperationsStore.structure.flatMap((part) => [
     ...(part.files ?? []),
     ...(part.otherFiles ?? []),
   ])
@@ -145,7 +145,7 @@ async function loadTargetFile() {
       revokeOriginalUrl()
     }
 
-    void domainStore.recordActivityAndPersist({
+    void drawingOperationsStore.recordActivityAndPersist({
       drawingNo: file.partNo || file.drawingNo,
       targetType: 'file',
       act: 'view',

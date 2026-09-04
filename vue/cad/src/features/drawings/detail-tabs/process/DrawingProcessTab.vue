@@ -3,16 +3,16 @@ import { computed, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DocxPreviewModal from './DocxPreviewModal.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { CraftFile } from '@/types/domain.types'
 
 defineOptions({ name: 'DrawingProcessTab' })
 
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 const uiStore = useUiStore()
 
-const currentItem = computed(() => domainStore.currentDrawing)
+const currentItem = computed(() => drawingOperationsStore.currentDrawing)
 const fileInput = ref<HTMLInputElement | null>(null)
 const replaceInput = ref<HTMLInputElement | null>(null)
 const replacingFileId = ref<string | null>(null)
@@ -50,7 +50,7 @@ async function onReplaceChange(event: Event) {
   const fileId = replacingFileId.value
   if (!file || !fileId || !currentItem.value) return
   try {
-    await domainStore.replaceCraftFile(currentItem.value.no, fileId, file)
+    await drawingOperationsStore.replaceCraftFile(currentItem.value.no, fileId, file)
     uiStore.toast(`工艺文件已替换：${file.name}`, 'ok')
   } catch (error) {
     console.error('替换工艺文件失败', error)
@@ -94,7 +94,7 @@ async function onFileChange(event: Event) {
       }
 
       try {
-        await domainStore.uploadCraftFile(currentItem.value.no, newFile, file)
+        await drawingOperationsStore.uploadCraftFile(currentItem.value.no, newFile, file)
         uploadedCount += 1
       } catch (error) {
         failedCount += 1
@@ -119,7 +119,7 @@ async function handleDeleteCraft(file: CraftFile) {
   if (!window.confirm(`确定要移除工艺文件「${file.name}」吗？`)) return
 
   try {
-    await domainStore.deleteCraftFile(currentItem.value.no, file.id || file.name)
+    await drawingOperationsStore.deleteCraftFile(currentItem.value.no, file.id || file.name)
     uiStore.toast(`已移除工艺文件 ${file.name}`)
   } catch (error) {
     console.error('删除工艺文件失败', error)
@@ -129,7 +129,7 @@ async function handleDeleteCraft(file: CraftFile) {
 
 async function handleDownloadCraft(file: CraftFile) {
   try {
-    await domainStore.downloadAttachment(file)
+    await drawingOperationsStore.downloadAttachment(file)
     uiStore.toast(`已开始下载 ${file.name}`, 'ok')
   } catch (error) {
     console.error('下载工艺文件失败', error)
@@ -176,7 +176,7 @@ async function handleDownloadCraft(file: CraftFile) {
 
     <!-- 工艺文件宽卡片网格布局 -->
     <div class="craft-grid">
-      <div v-for="file in domainStore.crafts" :key="file.id" class="card card-pad craft-wide-card">
+      <div v-for="file in drawingOperationsStore.crafts" :key="file.id" class="card card-pad craft-wide-card">
         <div class="craft-card-top">
           <div class="file-icon-wrap">
             <DemoIcon name="file-text" :size="24" />
@@ -222,7 +222,7 @@ async function handleDownloadCraft(file: CraftFile) {
       </div>
     </div>
 
-    <div v-if="!domainStore.crafts.length" class="card empty">
+    <div v-if="!drawingOperationsStore.crafts.length" class="card empty">
       <DemoIcon name="file-text" :size="38" />
       <div class="t">暂无工艺文件</div>
       <p>请点击右上角「上传工艺文件」上传规程与指导卡</p>

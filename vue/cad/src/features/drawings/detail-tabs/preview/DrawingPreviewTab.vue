@@ -6,7 +6,7 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import { drawingFileService, editingService } from '@/app/container'
 import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/services/data-manager/data-provider'
 import { useAuthStore } from '@/stores/auth.store'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { CAXA_NOT_FOUND_PREFIX } from '@/modules/editing'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
@@ -18,11 +18,11 @@ defineOptions({
 })
 
 const router = useRouter()
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
 
-const currentItem = computed(() => domainStore.currentDrawing)
+const currentItem = computed(() => drawingOperationsStore.currentDrawing)
 const isAssembly = computed(() => !currentItem.value || !('parentNo' in currentItem.value))
 const rootDrawingNo = computed(() => {
   if (!currentItem.value) return ''
@@ -32,9 +32,9 @@ const rootDrawingNo = computed(() => {
   const visited = new Set<string>()
   while (!visited.has(currentNo)) {
     visited.add(currentNo)
-    const part = domainStore.structure.find((item) => item.no === currentNo)
+    const part = drawingOperationsStore.structure.find((item) => item.no === currentNo)
     if (!part) return currentItem.value.parentNo
-    if (domainStore.drawings.some((drawing) => drawing.no === part.parentNo)) return part.parentNo
+    if (drawingOperationsStore.drawings.some((drawing) => drawing.no === part.parentNo)) return part.parentNo
     currentNo = part.parentNo
   }
   return currentItem.value.parentNo
@@ -51,14 +51,14 @@ const allFiles = computed<ProjectDrawingFile[]>(() => {
   if (!currentItem.value) return []
   const rootNo = rootDrawingNo.value
   // 附件接口直接反映数据库归属；优先使用它，不能让结构树的局部状态决定文件清单。
-  const attachmentFiles = domainStore.storedAttachments
+  const attachmentFiles = drawingOperationsStore.storedAttachments
     .filter((item) => item.drawingNo === rootNo && ['assembly', 'part', 'other'].includes(item.role))
     .map((item): ProjectDrawingFile => {
       const ownerNo = item.partNo || item.drawingNo
       const role: DrawingFile['role'] = item.role === 'assembly' || item.role === 'part' ? item.role : 'other'
       const owner = item.partNo
-        ? domainStore.structure.find((part) => part.no === item.partNo)
-        : domainStore.drawings.find((drawing) => drawing.no === item.drawingNo)
+        ? drawingOperationsStore.structure.find((part) => part.no === item.partNo)
+        : drawingOperationsStore.drawings.find((drawing) => drawing.no === item.drawingNo)
       return {
         id: item.id,
 				// 页面显示上传时的真实文件名；转换后的 currentName 只作为当前可打开格式。
@@ -108,14 +108,14 @@ const allFiles = computed<ProjectDrawingFile[]>(() => {
       while (parentNo && !visited.has(parentNo)) {
         if (parentNo === mainDrawing.no) return true
         visited.add(parentNo)
-        const parent = domainStore.structure.find((candidate) => candidate.no === parentNo)
+        const parent = drawingOperationsStore.structure.find((candidate) => candidate.no === parentNo)
         if (!parent) return part.no.startsWith(`${mainDrawing.no}-`)
         parentNo = parent.parentNo
       }
       return false
     }
 
-    domainStore.structure
+    drawingOperationsStore.structure
       .filter(belongsToDrawing)
       .forEach(appendOwnerFiles)
   } else {
@@ -258,7 +258,7 @@ async function openSystemDefaultApps() {
 const candidateProjects = computed(() => {
   const curNo = currentItem.value?.no || ''
   const q = projectSearchQuery.value.trim().toLowerCase()
-  const list = domainStore.drawings.filter((d) => d.no !== curNo)
+  const list = drawingOperationsStore.drawings.filter((d) => d.no !== curNo)
   if (!q) return list
   return list.filter((d) =>
     d.no.toLowerCase().includes(q) ||
@@ -271,7 +271,7 @@ const candidateProjects = computed(() => {
 // 当前选中的源项目对象
 const selectedProjectDetail = computed(() => {
   if (!selectedSourceProjectNo.value) return candidateProjects.value[0] || null
-  return domainStore.drawings.find((d) => d.no === selectedSourceProjectNo.value) || null
+  return drawingOperationsStore.drawings.find((d) => d.no === selectedSourceProjectNo.value) || null
 })
 
 // 根据模式和筛选条件获取零件列表
@@ -281,7 +281,7 @@ const candidateParts = computed(() => {
   if (borrowSearchMode.value === 'global-part') {
     // 全库全局穿透搜索（排除当前项目自身的零件）
     const curNo = currentItem.value?.no || ''
-    const allOtherParts = domainStore.structure.filter((p) => p.parentNo !== curNo)
+    const allOtherParts = drawingOperationsStore.structure.filter((p) => p.parentNo !== curNo)
     if (!q) return allOtherParts.slice(0, 100) // 默认展示前 100 项
     return allOtherParts.filter((p) =>
       p.no.toLowerCase().includes(q) ||
@@ -296,7 +296,7 @@ const candidateParts = computed(() => {
   const pNo = selectedSourceProjectNo.value || candidateProjects.value[0]?.no
   if (!pNo) return []
 
-  const parts = domainStore.structure.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`))
+  const parts = drawingOperationsStore.structure.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`))
   if (!q) return parts
 
   return parts.filter((p) =>
@@ -309,18 +309,18 @@ const candidateParts = computed(() => {
 
 // 计算各个项目的零件数量
 function getProjectPartCount(pNo: string): number {
-  return domainStore.structure.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`)).length
+  return drawingOperationsStore.structure.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`)).length
 }
 
 // 获取零件所属项目的名称
 function getPartProjectName(part: StructurePart): string {
-  const p = domainStore.drawings.find((d) => d.no === part.parentNo)
+  const p = drawingOperationsStore.drawings.find((d) => d.no === part.parentNo)
   return p ? p.name : (part.parentNo || '未知项目')
 }
 
 const selectedPartDetail = computed(() => {
   if (!selectedSourcePartNo.value) return null
-  return domainStore.structure.find((p) => p.no === selectedSourcePartNo.value) || null
+  return drawingOperationsStore.structure.find((p) => p.no === selectedSourcePartNo.value) || null
 })
 
 function openBorrowModal() {
@@ -350,7 +350,7 @@ async function confirmBorrowPart() {
   const curNo = currentItem.value.no
 
   try {
-    const borrowed = await domainStore.borrowPartToProject(
+    const borrowed = await drawingOperationsStore.borrowPartToProject(
       curNo,
       selectedSourcePartNo.value,
       borrowReasonInput.value.trim() || '跨项目工程设计借用',
@@ -490,7 +490,7 @@ async function doStopSession(targetId: string, targetFileName: string) {
     } else {
       uiStore.toast('编辑已结束，图纸无改动', 'ok')
     }
-    await domainStore.reloadFromServer()
+    await drawingOperationsStore.reloadFromServer()
   } catch (error) {
     // 捕获失败时后端保留编辑会话，用户可重试结束编辑，不会丢失工作内容。
     uiStore.toast(error instanceof Error ? error.message : '释放编辑会话失败', 'warn')
@@ -559,7 +559,7 @@ const canEditFiles = computed(() => {
   if (item.status === 'archived') return false
   if (item.status === 'reviewing') {
     if (admin) return true
-    return domainStore.myPendingReviews.some((reviewCase) => reviewCase.no === item.no)
+    return drawingOperationsStore.myPendingReviews.some((reviewCase) => reviewCase.no === item.no)
   }
   const creator = (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
   return creator || admin
@@ -745,7 +745,7 @@ async function confirmReplace() {
   const targetNo = cur.partNo || cur.drawingNo || currentItem.value?.no || ''
 
   try {
-    const updated = await domainStore.replaceDrawingFile(
+    const updated = await drawingOperationsStore.replaceDrawingFile(
       targetNo,
       cur.id,
       {
@@ -789,9 +789,9 @@ async function doDeleteFile(file: DrawingFile) {
   try {
     const targetNo = file.partNo || file.drawingNo || currentItem.value.no
     if (file.role === 'other') {
-      await domainStore.deleteOtherFile(targetNo, file.id)
+      await drawingOperationsStore.deleteOtherFile(targetNo, file.id)
     } else {
-      await domainStore.deleteDrawingFile(targetNo, file.id)
+      await drawingOperationsStore.deleteDrawingFile(targetNo, file.id)
     }
     uiStore.toast(`已删除文件 ${file.name}`)
   } catch (error) {
@@ -933,7 +933,7 @@ async function onAssemblyFileChange(event: Event) {
   }
 
   try {
-    await domainStore.uploadDrawingFile(currentItem.value.no, newFile, file)
+    await drawingOperationsStore.uploadDrawingFile(currentItem.value.no, newFile, file)
     uiStore.toast(`总图文件「${file.name}」上传成功`, 'ok')
     openBrowse(newFile)
   } catch (error) {
@@ -971,7 +971,7 @@ async function onPartFilesChange(event: Event) {
           uploadedAt: formatCurrentTime(),
           previewable: true,
         }
-        await domainStore.uploadOtherFile(rootNo, newFile, file)
+        await drawingOperationsStore.uploadOtherFile(rootNo, newFile, file)
         otherCount += 1
         continue
       }
@@ -998,22 +998,22 @@ async function onPartFilesChange(event: Event) {
       }
 
       const parentExists = Boolean(
-        domainStore.drawings.some((drawing) => drawing.no === parentNo)
-        || domainStore.structure.some((part) => part.no === parentNo),
+        drawingOperationsStore.drawings.some((drawing) => drawing.no === parentNo)
+        || drawingOperationsStore.structure.some((part) => part.no === parentNo),
       )
       const existingPart = partNo
-        ? domainStore.structure.find((part) => part.no === partNo && part.parentNo === rootNo)
+        ? drawingOperationsStore.structure.find((part) => part.no === partNo && part.parentNo === rootNo)
         : undefined
 
       if (!isStructuredPart || !parentExists) {
-        await domainStore.uploadOtherFile(rootNo, newFile, file)
+        await drawingOperationsStore.uploadOtherFile(rootNo, newFile, file)
         otherCount += 1
       } else if (existingPart) {
         if (material !== '—') existingPart.material = material
-        await domainStore.uploadDrawingFile(partNo, newFile, file)
+        await drawingOperationsStore.uploadDrawingFile(partNo, newFile, file)
         createdCount += 1
       } else {
-        await domainStore.createPartWithFile(parentNo, {
+        await drawingOperationsStore.createPartWithFile(parentNo, {
           no: partNo,
           name: cleanName,
           parentNo,
@@ -1128,7 +1128,7 @@ async function confirmBatchReidentify() {
   try {
     for (const item of selected) {
       try {
-        await domainStore.reidentifyDrawingFile(item.file, item.newPartNo)
+        await drawingOperationsStore.reidentifyDrawingFile(item.file, item.newPartNo)
         updatedCount += 1
       } catch (error) {
         executeFailures.push(`${item.file.name}：${error instanceof Error ? error.message : String(error)}`)

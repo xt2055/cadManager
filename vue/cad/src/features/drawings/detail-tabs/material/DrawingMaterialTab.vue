@@ -5,17 +5,17 @@ import { invoke } from '@tauri-apps/api/core'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { drawingFileService } from '@/app/container'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { BomItem, MaterialFile } from '@/types/domain.types'
 import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({ name: 'DrawingMaterialTab' })
 
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 const uiStore = useUiStore()
 
-const currentItem = computed(() => domainStore.currentDrawing)
+const currentItem = computed(() => drawingOperationsStore.currentDrawing)
 const fileInput = ref<HTMLInputElement | null>(null)
 const replaceInput = ref<HTMLInputElement | null>(null)
 const replacingFileId = ref<string | null>(null)
@@ -38,7 +38,7 @@ const materialAuthor = computed(() => {
 })
 
 watch(
-  () => domainStore.bom,
+  () => drawingOperationsStore.bom,
   (items) => {
     if (!isEditing.value) {
       localBom.value = items.map((item) => ({ ...item }))
@@ -68,7 +68,7 @@ async function onReplaceChange(event: Event) {
   const fileId = replacingFileId.value
   if (!file || !fileId || !currentItem.value) return
   try {
-    const result = await domainStore.replaceMaterialFile(currentItem.value.no, fileId, file)
+    const result = await drawingOperationsStore.replaceMaterialFile(currentItem.value.no, fileId, file)
     uiStore.toast(`备料表已替换，并解析出 ${result.importedCount} 条物料明细`, 'ok')
   } catch (error) {
     console.error('替换备料表失败', error)
@@ -80,12 +80,12 @@ async function onReplaceChange(event: Event) {
 }
 
 function startEdit() {
-  localBom.value = domainStore.bom.map((item) => ({ ...item }))
+  localBom.value = drawingOperationsStore.bom.map((item) => ({ ...item }))
   isEditing.value = true
 }
 
 function cancelEdit() {
-  localBom.value = domainStore.bom.map((item) => ({ ...item }))
+  localBom.value = drawingOperationsStore.bom.map((item) => ({ ...item }))
   isEditing.value = false
 }
 
@@ -115,7 +115,7 @@ async function saveEdit() {
   if (!currentItem.value) return
   isSaving.value = true
   try {
-    await domainStore.saveDrawingBom(currentItem.value.no, localBom.value)
+    await drawingOperationsStore.saveDrawingBom(currentItem.value.no, localBom.value)
     isEditing.value = false
     uiStore.toast(`备料明细已成功保存，共 ${localBom.value.length} 项`, 'ok')
   } catch (error) {
@@ -286,7 +286,7 @@ async function onFileChange(event: Event) {
   }
 
   try {
-    const result = await domainStore.uploadMaterialFile(currentItem.value.no, newFile, file)
+    const result = await drawingOperationsStore.uploadMaterialFile(currentItem.value.no, newFile, file)
     if (result.importedCount > 0) {
       uiStore.toast(`备料表「${file.name}」已保存并成功解析导入 ${result.importedCount} 条物料明细`, 'ok')
     } else {
@@ -305,7 +305,7 @@ async function handleDeleteFile(file: MaterialFile) {
   if (!window.confirm(`确定要移除备料表文件「${file.name}」吗？`)) return
 
   try {
-    await domainStore.deleteMaterialFile(currentItem.value.no, file.id)
+    await drawingOperationsStore.deleteMaterialFile(currentItem.value.no, file.id)
     uiStore.toast(`已移除备料表文件 ${file.name}`)
   } catch (error) {
     console.error('删除备料表失败', error)
@@ -315,7 +315,7 @@ async function handleDeleteFile(file: MaterialFile) {
 
 async function handleDownloadFile(file: MaterialFile) {
   try {
-    await domainStore.downloadAttachment(file)
+    await drawingOperationsStore.downloadAttachment(file)
     uiStore.toast(`已开始下载 ${file.name}`, 'ok')
   } catch (error) {
     console.error('下载备料表失败', error)
@@ -327,7 +327,7 @@ async function handleParseFile(file: MaterialFile) {
   if (!currentItem.value) return
 
   try {
-    const result = await domainStore.parseMaterialFile(currentItem.value.no, file.id)
+    const result = await drawingOperationsStore.parseMaterialFile(currentItem.value.no, file.id)
     if (result.importedCount > 0) {
       uiStore.toast(`已从「${file.name}」解析出 ${result.importedCount} 条物料明细`, 'ok')
     } else {

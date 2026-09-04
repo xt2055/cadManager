@@ -2,13 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingAttribute } from '@/types/domain.types'
 
 defineOptions({ name: 'AttributeManagementPage' })
 
-const domainStore = useDomainStore()
+const drawingOperationsStore = useDrawingOperationsStore()
 const uiStore = useUiStore()
 
 const query = ref('')
@@ -23,7 +23,7 @@ const submitting = ref(false)
 const editingFieldId = ref('')
 const editingFieldName = ref('')
 
-const attributes = computed(() => domainStore.attributes
+const attributes = computed(() => drawingOperationsStore.attributes
   .slice()
   .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'zh-CN')))
 
@@ -72,14 +72,14 @@ async function saveAttribute() {
   submitting.value = true
   try {
     if (editingAttribute.value && selectedId.value) {
-      await domainStore.updateAttribute(selectedId.value, {
+      await drawingOperationsStore.updateAttribute(selectedId.value, {
         name,
         required: attributeRequired.value,
         enabled: attributeEnabled.value,
       })
       uiStore.toast('属性配置已保存', 'ok')
     } else {
-      const created = await domainStore.addAttribute(name, attributeRequired.value)
+      const created = await drawingOperationsStore.addAttribute(name, attributeRequired.value)
       selectedId.value = created.id
       editingAttribute.value = true
       uiStore.toast(`属性「${name}」已创建，请继续添加字段选项`, 'ok')
@@ -103,7 +103,7 @@ async function addFieldsFromInput() {
   try {
     for (const token of tokens) {
       try {
-        await domainStore.addAttributeField(selectedAttribute.value.id, token)
+        await drawingOperationsStore.addAttributeField(selectedAttribute.value.id, token)
         successCount++
       } catch {
         // 跳过重复项
@@ -132,7 +132,7 @@ async function saveField(fieldId: string) {
   submitting.value = true
   try {
     const field = selectedAttribute.value.fields.find((item) => item.id === fieldId)
-    await domainStore.updateAttributeField(selectedAttribute.value.id, fieldId, editingFieldName.value, field?.enabled ?? true)
+    await drawingOperationsStore.updateAttributeField(selectedAttribute.value.id, fieldId, editingFieldName.value, field?.enabled ?? true)
     editingFieldId.value = ''
     uiStore.toast('字段选项已更新', 'ok')
   } catch (error) {
@@ -148,7 +148,7 @@ async function toggleField(fieldId: string) {
   if (!field) return
   submitting.value = true
   try {
-    await domainStore.updateAttributeField(selectedAttribute.value.id, field.id, field.name, !field.enabled)
+    await drawingOperationsStore.updateAttributeField(selectedAttribute.value.id, field.id, field.name, !field.enabled)
   } catch (error) {
     uiStore.toast(error instanceof Error ? error.message : '更新字段状态失败', 'warn')
   } finally {
@@ -171,7 +171,7 @@ async function moveField(index: number, direction: 'up' | 'down') {
 
   submitting.value = true
   try {
-    await domainStore.reorderAttributeFields(selectedAttribute.value.id, fields.map((f) => f.id))
+    await drawingOperationsStore.reorderAttributeFields(selectedAttribute.value.id, fields.map((f) => f.id))
   } catch (error) {
     uiStore.toast(error instanceof Error ? error.message : '调序失败', 'warn')
   } finally {
@@ -186,7 +186,7 @@ function deleteAttribute() {
     confirmText: '确认删除',
     onConfirm: async () => {
       try {
-        await domainStore.deleteAttribute(selectedAttribute.value!.id)
+        await drawingOperationsStore.deleteAttribute(selectedAttribute.value!.id)
         startNewAttribute()
         uiStore.toast('属性已删除', 'ok')
       } catch (error) {
@@ -197,7 +197,7 @@ function deleteAttribute() {
 }
 
 onMounted(() => {
-  domainStore.initialize().catch(() => undefined)
+  drawingOperationsStore.initialize().catch(() => undefined)
 })
 </script>
 
