@@ -2,8 +2,8 @@
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 
 import { appConfig } from '@/app/app.config'
+import { editingService } from '@/app/container'
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { dataManager } from '@/services/data-manager'
 import type { ActiveEditSessionInfo } from '@/services/data-manager/data-provider'
 import { checkForUpdates, resolveUpdateDownloadUrl, type UpdateCheckResult } from '@/services/update.service'
 import {
@@ -55,7 +55,7 @@ function refreshSystemStatus() {
 async function loadGlobalActiveSessions() {
   loadingSessions.value = true
   try {
-    const list = await dataManager.listEditSessions()
+    const list = await editingService.listSessions()
     activeSessions.value = list
   } catch {
     activeSessions.value = []
@@ -67,7 +67,7 @@ async function loadGlobalActiveSessions() {
 async function handleCloseSession(session: ActiveEditSessionInfo) {
   closingSessionId.value = session.id
   try {
-    await dataManager.closeEditSession(session.id)
+    await editingService.closeSession(session.id)
     uiStore.toast(`已成功解锁图纸「${session.fileName || session.drawingNo}」`, 'ok')
     await loadGlobalActiveSessions()
   } catch (error) {

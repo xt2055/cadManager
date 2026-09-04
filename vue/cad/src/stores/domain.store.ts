@@ -10,9 +10,8 @@ import { useAuthStore } from '@/stores/auth.store'
 import { createDrawingOperationLog, listDrawingOperationLogs } from '@/services/drawing-operation-log.service'
 import type { ApiReviewCase } from '@/modules/review'
 import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
-import { ensureSmbCredential } from '@/services/tauri/cad-edit.service'
 import { formatReadableDateTime } from '@/utils/date-time'
-import { appContainer, attachmentUploader, drawingCommandService, drawingUploadCoordinator, reviewService } from '@/app/container'
+import { appContainer, attachmentUploader, drawingCommandService, drawingUploadCoordinator, editingService, reviewService } from '@/app/container'
 import { signerRoleForNode } from '@/modules/review'
 import type { PendingDrawingUploadEntry } from '@/modules/upload'
 import type {
@@ -531,7 +530,7 @@ export const useDomainStore = defineStore('domain', () => {
         initialized.value = true
         startReviewPolling()
         // 桌面客户端：自动写入 SMB 访问凭据（失败不影响业务）。
-        void ensureSmbCredential().catch((smbError: unknown) => {
+        void editingService.ensureSmbCredential().catch((smbError: unknown) => {
           console.warn('SMB 凭据自动配置失败', smbError)
         })
       } catch (loadError: unknown) {

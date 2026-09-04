@@ -4,11 +4,12 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { dataManager } from '@/services/data-manager'
+import { editingService } from '@/app/container'
 import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/services/data-manager/data-provider'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import { CAXA_NOT_FOUND_PREFIX, openCadEditSession, openCadReadonly, openDefaultAppsSettings, pickCaxaExecutable, saveLocalCaxaPath } from '@/services/tauri/cad-edit.service'
+import { CAXA_NOT_FOUND_PREFIX } from '@/modules/editing'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 import { formatReadableDateTime } from '@/utils/date-time'
@@ -230,9 +231,9 @@ async function pickAndSaveCaxa() {
   if (isSavingCaxaPath.value) return
   isSavingCaxaPath.value = true
   try {
-    const picked = await pickCaxaExecutable()
+    const picked = await editingService.pickCaxa()
     if (!picked) return
-    await saveLocalCaxaPath(picked)
+    await editingService.saveCaxaPath(picked)
     uiStore.toast(`已记住本机 CAXA 程序：${picked}`, 'ok')
     caxaHelpVisible.value = false
     const retry = pendingCadRetry
@@ -247,7 +248,7 @@ async function pickAndSaveCaxa() {
 
 async function openSystemDefaultApps() {
   try {
-    await openDefaultAppsSettings()
+    await editingService.openDefaultApps()
     uiStore.toast('已打开系统「默认应用」设置，请为图纸扩展名配置打开方式', 'ok')
   } catch (error) {
     uiStore.toast(error instanceof Error ? error.message : '打开系统设置失败', 'warn')
@@ -409,7 +410,7 @@ async function refreshActiveSessions() {
     return
   }
   try {
-    const list = await dataManager.listEditSessions(drawingNo)
+    const list = await editingService.listSessions(drawingNo)
     activeSessionList.value = list
 
     // 同步更新 myActiveSessions：只校验当前图纸的会话（服务端已关闭则剔除）；
@@ -474,7 +475,7 @@ async function doStopSession(targetId: string, targetFileName: string) {
   if (closingSessionIds.value.has(targetId)) return
   closingSessionIds.value.add(targetId)
   try {
-    const result = await dataManager.closeEditSession(targetId)
+    const result = await editingService.closeSession(targetId)
     myActiveSessions.value = myActiveSessions.value.filter((s) => s.sessionId !== targetId)
     persistLocalSessions()
     await refreshActiveSessions()
@@ -501,7 +502,7 @@ async function doStopSession(targetId: string, targetFileName: string) {
 
 async function relaunchEditor(session: LocalActiveEditSession) {
   try {
-    await openCadEditSession({
+    await editingService.openCad({
       sessionId: session.sessionId,
       openUrl: session.openUrl,
       expiresAt: '',
@@ -524,7 +525,7 @@ async function relaunchEditorForFile(file: DrawingFile) {
   if (editingFileId.value) return
   editingFileId.value = file.id
   try {
-    const result = await dataManager.openEditSession(storageKey)
+    const result = await editingService.openSession(storageKey)
     myActiveSessions.value = [
       ...myActiveSessions.value.filter((s) => s.sessionId !== result.sessionId),
       {
@@ -539,7 +540,7 @@ async function relaunchEditorForFile(file: DrawingFile) {
       },
     ]
     persistLocalSessions()
-    await openCadEditSession(result)
+    await editingService.openCad(result)
     await refreshActiveSessions()
     uiStore.toast('已重新认领编辑会话并呼出本地 CAD', 'ok')
   } catch (error) {
@@ -580,7 +581,7 @@ async function openReadonly(file: DrawingFile) {
   if (readonlyFileId.value) return
   readonlyFileId.value = file.id
   try {
-    await openCadReadonly({ storageKey })
+    await editingService.openReadonly({ storageKey })
     uiStore.toast(`已用本机 CAD 打开「${file.name}」（只读副本，关闭后自动销毁）`, 'ok')
   } catch (error) {
     handleCadOpenError(error, () => openReadonly(file))
@@ -619,7 +620,7 @@ async function openEditor(file: DrawingFile) {  if (!currentItem.value) return
   editingFileId.value = file.id
   let sessionId: string | null = null
   try {
-    const session = await dataManager.openEditSession(file.storageKey)
+    const session = await editingService.openSession(file.storageKey)
     sessionId = session.sessionId
     window.localStorage.setItem('cad_last_edit_url', session.openUrl)
 
@@ -640,14 +641,14 @@ async function openEditor(file: DrawingFile) {  if (!currentItem.value) return
     ]
     persistLocalSessions()
 
-    await openCadEditSession(session)
+    await editingService.openCad(session)
     await refreshActiveSessions()
     uiStore.toast(`已在本地 CAD 中打开「${file.name}」，支持多开协同编辑`, 'ok')
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     // 本机未找到 CAXA 时保留服务端会话：文件已唤醒到工作区，用户在弹窗中选择程序后可直接重试。
     if (sessionId && !message.startsWith(CAXA_NOT_FOUND_PREFIX)) {
-      await dataManager.closeEditSession(sessionId).catch(() => undefined)
+      await editingService.closeSession(sessionId).catch(() => undefined)
     }
     handleCadOpenError(error, () => openEditor(file))
   } finally {
@@ -671,7 +672,7 @@ onMounted(() => {
   // 统一心跳轮询：对当前正在编辑的多开图纸批量保活，并记录最近成功时间用于状态展示
   heartbeatTimer = window.setInterval(() => {
     for (const session of myActiveSessions.value) {
-      void dataManager.heartbeatEditSession(session.sessionId)
+      void editingService.heartbeat(session.sessionId)
         .then(() => {
           session.lastHeartbeatAt = Date.now()
         })
