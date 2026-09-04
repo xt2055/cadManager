@@ -122,12 +122,12 @@ commitDrawingCreateTx()
 
 - [x] 已将底层上传和恢复能力抽成 `UploadGateway` / `UploadRecoveryStore`。
 - [x] 待上传文件已通过恢复存储持久化到 IndexedDB；分片快照由服务端会话查询恢复。
-- [ ] 将完整的 Drawing/Attachment 上传业务编排从 `domain.store.ts` 移到 Application Service。
+- [x] `AttachmentUploader` 负责普通附件创建/替换；`DrawingUploadCoordinator` 负责 drawing-create 文件编排和失败重试。
 - [ ] 将失败文件列表、逐文件重试、转换重试和会话过期交互完整接入页面。
 
 ## 验收标准
 
-- [x] Store 不再直接处理 chunk/hash，统一通过 `ApiUploadGateway`。
+- [x] Store 不再直接处理 chunk/hash/session/retry，统一通过 `ApiUploadGateway` 和上传编排器。
 - [x] 上传恢复文件通过 `BrowserUploadRecoveryStore` 适配 IndexedDB。
 - [x] 转换失败可以重试。
 - [x] Attachment upload 正常。
@@ -154,3 +154,4 @@ refactor(upload): extract drawing create uploader
 - 修复 Blob 键无扩展名导致 CAXA 工作副本命名错误的问题。
 - `go test ./...` 通过；`go build` 通过。
 - 前端新增 `ApiUploadGateway`、`BrowserUploadRecoveryStore` 和 `appContainer`；上传进度、分片续传和恢复文件不再由 Store 直接访问底层 API/IndexedDB。
+- 前端新增 `AttachmentUploader`、`DrawingUploadCoordinator`；普通附件和 drawing-create 的会话编排、重试已从 Store 移出。

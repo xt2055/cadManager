@@ -15,6 +15,7 @@ export interface UploadGateway {
   createItem(sessionId: string, input: CreateUploadSessionItemInput): Promise<UploadSessionItem>
   hashCheck(file: Blob): Promise<UploadHashCheckResult>
   getSession(sessionId: string): Promise<UploadSessionSnapshot>
+  listChunks(sessionId: string, itemId: string): Promise<UploadChunkSnapshot>
   uploadFile(
     sessionId: string,
     itemId: string,
@@ -30,6 +31,7 @@ export interface UploadGatewayClient {
   createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession>
   createUploadSessionItem(sessionId: string, input: CreateUploadSessionItemInput): Promise<UploadSessionItem>
   checkUploadHash(file: Blob): Promise<UploadHashCheckResult>
+  listUploadChunks(sessionId: string, itemId: string): Promise<UploadChunkSnapshot>
   initUploadChunks(sessionId: string, itemId: string, manifest: UploadChunkManifest): Promise<UploadChunkSnapshot>
   uploadSessionChunk(sessionId: string, itemId: string, partNumber: number, chunk: Blob): Promise<UploadChunkInfo>
   completeUploadChunks(sessionId: string, itemId: string): Promise<UploadSessionItem>
@@ -57,6 +59,10 @@ export class ApiUploadGateway implements UploadGateway {
 
   getSession(sessionId: string): Promise<UploadSessionSnapshot> {
     return this.client.getUploadSession(sessionId)
+  }
+
+  listChunks(sessionId: string, itemId: string): Promise<UploadChunkSnapshot> {
+    return this.client.listUploadChunks(sessionId, itemId)
   }
 
   async uploadFile(

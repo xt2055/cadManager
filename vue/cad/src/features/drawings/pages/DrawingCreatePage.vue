@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import { useDomainStore } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
 import { dataManager } from '@/services/data-manager'
+import { appContainer } from '@/app/container'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import type { UploadSessionSnapshot } from '@/services/data-manager/data-provider'
 import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
@@ -20,6 +21,7 @@ const router = useRouter()
 const domainStore = useDomainStore()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
+const uploadGateway = appContainer.uploadGateway
 // 创建人/上传人取当前登录人，不再写占位符（否则换账号后仍显示旧值）。
 const operatorName = authStore.currentUser?.displayName || authStore.currentUser?.account || '未知'
 
@@ -87,7 +89,7 @@ async function refreshUploadSnapshot() {
     return
   }
   try {
-    const snapshot = await dataManager.getUploadSession(sessionId)
+    const snapshot = await uploadGateway.getSession(sessionId)
     uploadSnapshot.value = snapshot
     await Promise.all(snapshot.items.map(async (item) => {
       if (item.status === 'ready' || item.status === 'committed') {
@@ -95,7 +97,7 @@ async function refreshUploadSnapshot() {
         return
       }
       try {
-        const chunks = await dataManager.listUploadChunks(sessionId, item.id)
+        const chunks = await uploadGateway.listChunks(sessionId, item.id)
         if (chunks.manifest.chunkSize > 0 && chunks.manifest.totalSize > 0) {
           const count = Math.ceil(chunks.manifest.totalSize / chunks.manifest.chunkSize)
           domainStore.uploadProgress[item.id] = Math.round((chunks.parts.length / count) * 100)

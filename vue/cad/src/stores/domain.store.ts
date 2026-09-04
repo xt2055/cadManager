@@ -13,7 +13,8 @@ import { reviewCaseService, type ApiReviewCase } from '@/services/review-case.se
 import { drawingLifecycleService } from '@/services/drawing-lifecycle.service'
 import { ensureSmbCredential } from '@/services/tauri/cad-edit.service'
 import { formatReadableDateTime } from '@/utils/date-time'
-import { appContainer } from '@/app/container'
+import { appContainer, attachmentUploader, drawingUploadCoordinator } from '@/app/container'
+import type { PendingDrawingUploadEntry } from '@/modules/upload'
 import type {
   ActivityLog,
   ActivityResult,
@@ -172,7 +173,7 @@ export const useDomainStore = defineStore('domain', () => {
 
   let initializationPromise: Promise<void> | null = null
   let saveQueue: Promise<void> = Promise.resolve()
-  const pendingDrawingUploads = new Map<string, Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile; content: Blob }>>()
+	  const pendingDrawingUploads = new Map<string, Map<string, PendingDrawingUploadEntry>>()
   const pendingUploadSessionId = ref<string | null>(null)
   const uploadProgress = ref<Record<string, number>>({})
   let persistedSnapshots = {
@@ -487,7 +488,7 @@ export const useDomainStore = defineStore('domain', () => {
 	        const lastSessionId = window.localStorage.getItem('cad:last-upload-session')
 	        if (lastSessionId) {
 	          try {
-	            const snapshot = await dataManager.getUploadSession(lastSessionId)
+	            const snapshot = await uploadGateway.getSession(lastSessionId)
 	            if (snapshot.session.status === 'open' || snapshot.session.status === 'failed') {
 	              pendingUploadSessionId.value = lastSessionId
 	              const entries = new Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile; content: Blob }>()
@@ -750,54 +751,12 @@ export const useDomainStore = defineStore('domain', () => {
     return { materialFiles: target.materialFiles, craftFiles: target.craftFiles }
   }
 
-	async function uploadSessionFile(sessionId: string, itemId: string, content: Blob, name: string, sha256: string): Promise<void> {
-		uploadProgress.value = { ...uploadProgress.value, [itemId]: 0 }
-		await uploadGateway.uploadFile(sessionId, itemId, content, {
-			name,
-			sha256,
-			onProgress: (percent) => { uploadProgress.value = { ...uploadProgress.value, [itemId]: percent } },
-		})
-	}
-
-	async function uploadReplacementSession(
+		async function uploadReplacementSession(
 		drawingNo: string,
 		file: { id: string; name: string; revision?: number; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string },
 		content: Blob,
 	): Promise<Record<string, unknown>> {
-		const uploadName = content instanceof File ? content.name : file.name
-		let hash: Awaited<ReturnType<typeof uploadGateway.hashCheck>>
-		try {
-			hash = await uploadGateway.hashCheck(content)
-		} catch (error) {
-			console.warn(`文件「${uploadName}」哈希预检失败，改为完整上传`, error)
-			hash = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
-		}
-		const session = await dataManager.createUploadSession({
-			kind: 'attachment',
-			idempotencyKey: `attachment-replace:${file.id}:${file.revision ?? 1}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-			metadata: { drawingNo, attachmentId: file.id, expectedRevision: file.revision ?? 1 },
-		})
-		try {
-			const item = await dataManager.createUploadSessionItem(session.id, {
-				clientRef: file.id,
-				attachmentId: file.id,
-				drawingNo,
-				...(file.partNo ? { partNo: file.partNo } : {}),
-				role: file.role,
-				originalName: uploadName,
-				mimeType: content.type || 'application/octet-stream',
-				expectedRevision: file.revision ?? 1,
-				sha256: hash.sha256,
-				size: content.size,
-				...(!isCADFileName(uploadName) && hash.exists && hash.blobId ? { blobId: hash.blobId } : {}),
-			})
-			if (item.status !== 'ready') await uploadSessionFile(session.id, item.id, content, uploadName, hash.sha256)
-			else uploadProgress.value = { ...uploadProgress.value, [item.id]: 100 }
-			return await dataManager.commitUploadSession(session.id)
-		} catch (error) {
-			await dataManager.cancelUploadSession(session.id).catch(() => undefined)
-			throw error
-		}
+		return attachmentUploader.replace(drawingNo, file, content)
 	}
 
 	async function uploadNewAttachmentSession(
@@ -805,48 +764,8 @@ export const useDomainStore = defineStore('domain', () => {
 		file: { id: string; name: string; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string },
 		content: Blob,
 	): Promise<Record<string, unknown>> {
-		const uploadName = content instanceof File ? content.name : file.name
-		let hash: Awaited<ReturnType<typeof uploadGateway.hashCheck>>
-		try {
-			hash = await uploadGateway.hashCheck(content)
-		} catch (error) {
-			console.warn(`文件「${uploadName}」哈希预检失败，改为完整上传`, error)
-			hash = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
-		}
-		const session = await dataManager.createUploadSession({
-			kind: 'attachment',
-			idempotencyKey: `attachment-create:${file.id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-			metadata: { drawingNo, partNo: file.partNo || '', role: file.role },
-		})
-		try {
-			const item = await dataManager.createUploadSessionItem(session.id, {
-				clientRef: file.id,
-				drawingNo,
-				...(file.partNo ? { partNo: file.partNo } : {}),
-				role: file.role,
-				originalName: uploadName,
-				mimeType: content.type || 'application/octet-stream',
-				sha256: hash.sha256,
-				size: content.size,
-				...(!isCADFileName(uploadName) && hash.exists && hash.blobId ? { blobId: hash.blobId } : {}),
-			})
-			if (item.status !== 'ready') await uploadSessionFile(session.id, item.id, content, uploadName, hash.sha256)
-			else uploadProgress.value = { ...uploadProgress.value, [item.id]: 100 }
-			return await dataManager.commitUploadSession(session.id)
-		} catch (error) {
-			await dataManager.cancelUploadSession(session.id).catch(() => undefined)
-			throw error
-		}
+		return attachmentUploader.create(drawingNo, file, content)
 	}
-
-	function isDrawingFile(file: DrawingFile | MaterialFile | CraftFile): file is DrawingFile {
-		return 'role' in file
-	}
-
-	function isCADFileName(name: string): boolean {
-		return ['.exb', '.dwg', '.dxf'].includes(name.slice(name.lastIndexOf('.')).toLowerCase())
-	}
-
   function openDrawing(no: string) {
     if (currentDrawing.value?.no === no) return
     currentDrawing.value = findDrawingOrPart(no)
@@ -1042,12 +961,8 @@ export const useDomainStore = defineStore('domain', () => {
       part.project = part.project || drawing.project
     }
 
-    const idempotencyKey = `drawing-create:${drawing.no}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
-    const session = await dataManager.createUploadSession({
-      kind: 'drawing-create',
-      idempotencyKey,
-      metadata: {
-        drawing: {
+	    const uploadMetadata = {
+	        drawing: {
           no: drawing.no,
           name: drawing.name,
           kind: drawing.kind,
@@ -1104,83 +1019,22 @@ export const useDomainStore = defineStore('domain', () => {
 	            targetPartNo: part.no,
 	            status: 'active',
 	          })),
-	        ],
-	        branches: transactionContext.branches ?? [],
+		        ],
+		        branches: transactionContext.branches ?? [],
+	    }
+	    const { session } = await drawingUploadCoordinator.create({
+	      drawingNo: drawing.no,
+	      metadata: uploadMetadata,
+	      files: allFiles.map((file) => ({ file, content: attachmentMap.get(file.id) })),
+	      onProgress: (itemId, percent) => { uploadProgress.value = { ...uploadProgress.value, [itemId]: percent } },
+	      onSessionCreated: (createdSession, entries) => {
+	        window.localStorage.setItem('cad:last-upload-session', createdSession.id)
+	        pendingDrawingUploads.set(createdSession.id, entries)
+	        pendingUploadSessionId.value = createdSession.id
 	      },
 	    })
-	    window.localStorage.setItem('cad:last-upload-session', session.id)
-	    const recoveryEntries = new Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile; content: Blob }>()
-	    pendingDrawingUploads.set(session.id, recoveryEntries)
-	    pendingUploadSessionId.value = session.id
 
-	    const uploadItems = new Map<string, { itemId: string; file: DrawingFile | MaterialFile | CraftFile }>()
-	    for (const file of allFiles) {
-		        const content = attachmentMap.get(file.id)
-		        if (!content) throw new Error(`文件「${file.name}」缺少文件内容（上传会话：${session.id}）`)
-	        await uploadRecoveryStore.save(session.id, file.id, content, file.name).catch((error) => {
-	          console.warn(`保存文件「${file.name}」的刷新恢复副本失败`, error)
-	        })
-	        const isDrawing = isDrawingFile(file)
-	        const role = isDrawing ? file.role : ('op' in file ? 'craft' : 'material')
-	        // 客户端先算 SHA-256 做预检；预检失败时降级为普通上传，不能阻断业务。
-	        let hashCheck: Awaited<ReturnType<typeof uploadGateway.hashCheck>>
-	        try {
-	          hashCheck = await uploadGateway.hashCheck(content)
-	        } catch (hashError) {
-	          console.warn(`文件「${file.name}」哈希预检失败，改为完整上传`, hashError)
-	          hashCheck = { exists: false, sha256: '', size: content.size, mimeType: content.type || 'application/octet-stream' }
-	        }
-	        const item = await dataManager.createUploadSessionItem(session.id, {
-        clientRef: file.id,
-        drawingNo: drawing.no,
-        ...(isDrawing && file.partNo ? { partNo: file.partNo } : {}),
-	          role,
-	          originalName: file.name,
-	          mimeType: content.type || 'application/octet-stream',
-	          sha256: hashCheck.sha256,
-	          size: content.size,
-	          // CAD 需要服务端生成处理对象，不能直接复用原始内容对象。
-	          ...(!isCADFileName(file.name) && hashCheck.exists && hashCheck.blobId ? { blobId: hashCheck.blobId } : {}),
-	      })
-	      uploadItems.set(file.id, { itemId: item.id, file })
-	      recoveryEntries.set(file.id, { itemId: item.id, file, content })
-	    }
-
-	    const failedFiles: string[] = []
-    const queue = [...uploadItems.values()]
-    const worker = async (): Promise<void> => {
-      while (queue.length) {
-        const entry = queue.shift()
-        if (!entry) return
-        const content = attachmentMap.get(entry.file.id)
-	        if (!content) {
-	          failedFiles.push(entry.file.name)
-	          continue
-	        }
-		        const sessionItem = uploadItems.get(entry.file.id)
-		        if (sessionItem && (await dataManager.getUploadSession(session.id)).items.find((item) => item.id === sessionItem.itemId)?.status === 'ready') {
-		          uploadProgress.value = { ...uploadProgress.value, [sessionItem.itemId]: 100 }
-		          continue
-		        }
-	        try {
-					let hash = ''
-					try {
-						hash = (await uploadGateway.hashCheck(content)).sha256
-					} catch (hashError) {
-						console.warn(`文件「${entry.file.name}」哈希预检失败，改为完整上传`, hashError)
-					}
-					await uploadSessionFile(session.id, entry.itemId, content, entry.file.name, hash)
-        } catch (uploadError) {
-          failedFiles.push(`${entry.file.name}：${uploadError instanceof Error ? uploadError.message : String(uploadError)}`)
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(4, Math.max(queue.length, 1)) }, () => worker()))
-    if (failedFiles.length) {
-      throw new Error(`有 ${failedFiles.length} 个文件上传失败，可使用会话 ${session.id} 查询并单独重试：${failedFiles.join('；')}`)
-    }
-
-    await dataManager.commitUploadSession(session.id)
+	    await uploadGateway.commitSession(session.id)
 	    pendingDrawingUploads.delete(session.id)
 	    await uploadRecoveryStore.clear(session.id).catch(() => undefined)
     pendingUploadSessionId.value = null
@@ -1202,36 +1056,11 @@ export const useDomainStore = defineStore('domain', () => {
     if (!sessionId) throw new Error('没有可恢复的上传会话')
     const entries = pendingDrawingUploads.get(sessionId)
     if (!entries) throw new Error('当前页面已无法恢复文件内容，请重新选择文件上传')
-    const snapshot = await dataManager.getUploadSession(sessionId)
-    const failed = snapshot.items.filter((item) => item.status === 'failed')
-    if (!failed.length) {
-      if (snapshot.items.some((item) => item.status !== 'ready')) throw new Error('仍有文件未准备完成')
-	}
-
-	    const errors: string[] = []
-    for (const item of failed) {
-      const entry = [...entries.values()].find((candidate) => candidate.itemId === item.id)
-      if (!entry) {
-        errors.push(`${item.originalName}：浏览器中已找不到原始文件`)
-        continue
-      }
-		try {
-			await dataManager.retryUploadSessionItem(sessionId, item.id)
-			let hash = ''
-			try {
-				hash = (await uploadGateway.hashCheck(entry.content)).sha256
-			} catch {
-				// 服务端预检暂时不可用时，仍允许整文件重试；服务端会校验已登记的摘要。
-			}
-			await uploadSessionFile(sessionId, item.id, entry.content, entry.file.name, hash)
-      } catch (retryError) {
-        errors.push(`${entry.file.name}：${retryError instanceof Error ? retryError.message : String(retryError)}`)
-      }
-    }
-    if (errors.length) throw new Error(`仍有 ${errors.length} 个文件上传失败：${errors.join('；')}`)
-    const updated = await dataManager.getUploadSession(sessionId)
-    if (updated.items.some((item) => item.status !== 'ready')) throw new Error('仍有文件未准备完成，请继续重试失败项')
-    const result = await dataManager.commitUploadSession(sessionId)
+	    const result = await drawingUploadCoordinator.retryFailed(
+	      sessionId,
+	      entries,
+	      (itemId, percent) => { uploadProgress.value = { ...uploadProgress.value, [itemId]: percent } },
+	    )
 	    pendingDrawingUploads.delete(sessionId)
 	    await uploadRecoveryStore.clear(sessionId).catch(() => undefined)
     pendingUploadSessionId.value = null
@@ -1247,20 +1076,12 @@ export const useDomainStore = defineStore('domain', () => {
 	    if (!sessionId) throw new Error('没有可恢复的上传会话')
 	    const entries = pendingDrawingUploads.get(sessionId)
 	    if (!entries) throw new Error('当前页面已无法恢复文件内容，请重新选择文件上传')
-	    const snapshot = await dataManager.getUploadSession(sessionId)
-	    const item = snapshot.items.find((candidate) => candidate.id === itemId)
-	    if (!item) throw new Error('上传文件项不存在')
-	    if (item.status === 'ready' || item.status === 'committed') return
-	    const entry = [...entries.values()].find((candidate) => candidate.itemId === itemId)
-	    if (!entry) throw new Error(`浏览器中已找不到原始文件：${item.originalName}`)
-	    await dataManager.retryUploadSessionItem(sessionId, itemId)
-	    let hash = ''
-	    try {
-	      hash = (await uploadGateway.hashCheck(entry.content)).sha256
-	    } catch {
-	      // 哈希预检不可用时继续整文件/分片上传，服务端仍会按会话中登记的摘要校验。
-	    }
-	    await uploadSessionFile(sessionId, itemId, entry.content, entry.file.name, hash)
+	    await drawingUploadCoordinator.retryOne(
+	      sessionId,
+	      itemId,
+	      entries,
+	      (progressItemId, percent) => { uploadProgress.value = { ...uploadProgress.value, [progressItemId]: percent } },
+	    )
 	  }
 
 		async function dismissPendingUploadSession(): Promise<void> {
@@ -1277,7 +1098,7 @@ export const useDomainStore = defineStore('domain', () => {
 			const sessionId = pendingUploadSessionId.value
 			if (!sessionId) return
 			try {
-				await dataManager.cancelUploadSession(sessionId)
+				await uploadGateway.cancelSession(sessionId)
 			} finally {
 				await dismissPendingUploadSession()
 			}
