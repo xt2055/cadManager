@@ -13,6 +13,7 @@
 - 旧 Store、全量快照持久化、JSON Debug、DataManager、旧 `/api/data/` 路由、bulk write Handler 和 Part clone borrow 扫描均为 0。
 - `git diff --check` 通过。
 - 本机服务在 `CAD_SMB_ENABLED=false` 下成功启动；`/api/health` 返回数据库 `ok`，管理员登录、图纸、属性、分支、借用和附件读取接口均返回 200，旧 `/api/data/structure` 返回 404。
+- 已补充可重复执行的 `scripts/phase9-api-smoke.ps1`，可在部署环境通过参数指定 API 地址和测试账号复跑上述接口冒烟。
 - SMB 自动初始化已实际尝试，但当前终端不是管理员权限，创建共享返回 Windows `System error 5 (Access is denied)`；需管理员权限部署后复测。
 - 需要对象存储、SMB/CAXA 和浏览器部署环境的业务 E2E 保留为部署后手工回归项。
 
