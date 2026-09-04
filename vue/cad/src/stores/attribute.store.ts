@@ -27,10 +27,14 @@ export const useAttributeStore = defineStore('attribute', () => {
     return attributeService.fieldName(attributes.value, attributeId, fieldId)
   }
 
+  function validate(values: Record<string, string>): string[] {
+    return attributeService.validate(attributes.value, values)
+  }
+
   function invalidate() {
     attributes.value = []
     error.value = null
   }
 
-  return { attributes, sortedAttributes, loading, error, load, fieldName, invalidate }
+  return { attributes, sortedAttributes, loading, error, load, fieldName, validate, invalidate }
 })

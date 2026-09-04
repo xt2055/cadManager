@@ -4,23 +4,36 @@ import type { DrawingQuerySnapshot } from './drawing-query-service'
 export type DrawingId = string
 export type PartId = string
 
+export interface FileView {
+  id: string
+  name: string
+  size: string
+  uploadedAt: string
+  version: string
+}
+
 export interface DrawingSummaryView {
   id: DrawingId
   no: string
   name: string
   kind: Drawing['kind']
   project: string
+  revision?: number
   vendor: string
   remark?: string
   attributeValues: Record<string, string>
   status: Drawing['status']
   version: string
   updatedAt: string
+  createdBy?: string
+  forkedFrom?: string
   designer?: string
   borrowed: boolean
   sourceDrawing?: string
   publishedVersion?: string
   fileCount: number
+  files: FileView[]
+  otherFiles: FileView[]
 }
 
 export interface PartView {
@@ -33,10 +46,17 @@ export interface PartView {
   spec: string
   remark?: string
   qty: number
+  revision?: number
+  weight: number
+  surfaceTreatment: string
+  partType: StructurePart['partType']
+  vendor?: string
   status: StructurePart['status']
   version: string
   updatedAt: string
   fileNames: string[]
+  files: FileView[]
+  otherFiles: FileView[]
   borrowed: boolean
   sourcePartId?: PartId
   sourceDrawing?: string
@@ -89,17 +109,22 @@ export class DrawingReadModelMapper {
       name: drawing.name,
       kind: drawing.kind,
       project: drawing.project,
+      ...(drawing.revision !== undefined ? { revision: drawing.revision } : {}),
       vendor: drawing.vendor,
       ...(drawing.remark ? { remark: drawing.remark } : {}),
       attributeValues: { ...(drawing.attributeValues ?? {}) },
       status: drawing.status,
       version: drawing.ver,
       updatedAt: drawing.updatedAt ?? drawing.updated,
+      ...(drawing.createdBy ? { createdBy: drawing.createdBy } : {}),
+      ...(drawing.forkedFrom ? { forkedFrom: drawing.forkedFrom } : {}),
       ...(drawing.designer ? { designer: drawing.designer } : {}),
       borrowed: Boolean(drawing.borrowFrom),
       ...(drawing.borrowFrom ? { sourceDrawing: drawing.borrowFrom } : {}),
       ...(source?.ver ? { publishedVersion: source.ver } : {}),
       fileCount: (drawing.files?.length ?? 0) + (drawing.otherFiles?.length ?? 0),
+      files: (drawing.files ?? []).map((file) => this.toFileView(file)),
+      otherFiles: (drawing.otherFiles ?? []).map((file) => this.toFileView(file)),
     }
   }
 
@@ -116,6 +141,11 @@ export class DrawingReadModelMapper {
       spec: part.spec,
       ...(part.remark ? { remark: part.remark } : {}),
       qty: part.qty,
+      ...(part.revision !== undefined ? { revision: part.revision } : {}),
+      weight: part.weight,
+      surfaceTreatment: part.surfaceTreatment,
+      partType: part.partType,
+      ...(part.vendor ? { vendor: part.vendor } : {}),
       status: part.status,
       version: part.ver,
       updatedAt: part.updatedAt ?? part.createdAt ?? '',
@@ -125,6 +155,18 @@ export class DrawingReadModelMapper {
       ...(sourceDrawing ? { sourceDrawing } : {}),
       ...(sourcePart?.ver ? { publishedVersion: sourcePart.ver } : {}),
       fileCount: (part.files?.length ?? 0) + (part.otherFiles?.length ?? 0),
+      files: (part.files ?? []).map((file) => this.toFileView(file)),
+      otherFiles: (part.otherFiles ?? []).map((file) => this.toFileView(file)),
+    }
+  }
+
+  private toFileView(file: { id: string; name: string; size: string; uploadedAt: string; version: string }): FileView {
+    return {
+      id: file.id,
+      name: file.name,
+      size: file.size,
+      uploadedAt: file.uploadedAt,
+      version: file.version,
     }
   }
 

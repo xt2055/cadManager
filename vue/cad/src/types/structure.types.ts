@@ -1,6 +1,6 @@
-import type { StructurePart } from './domain.types'
+import type { PartView } from '@/modules/drawing'
 
 export interface StructureTreeNode {
-  part: StructurePart
+  part: PartView
   children: StructureTreeNode[]
 }

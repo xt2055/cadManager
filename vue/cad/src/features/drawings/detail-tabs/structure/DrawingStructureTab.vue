@@ -4,87 +4,78 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingStructureNode from '@/features/drawings/components/detail/DrawingStructureNode.vue'
-import { STATUS, useDomainStore } from '@/stores/domain.store'
-import { isEquivalentAssemblyNo, isSameDrawingFamily, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
+import { STATUS } from '@/stores/domain.store'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useWorkspaceStore } from '@/stores/workspace.store'
 import { formatReadableDateTime } from '@/utils/date-time'
-import type { StructurePart } from '@/types/domain.types'
+import { isEquivalentAssemblyNo, isSameDrawingFamily, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
+import type { PartView } from '@/modules/drawing'
 import type { StructureTreeNode } from '@/types/structure.types'
 
 defineOptions({ name: 'DrawingStructureTab' })
 
 const router = useRouter()
-const domainStore = useDomainStore()
-const drawing = computed(() => domainStore.currentDrawing)
-const allParts = computed(() => domainStore.structure)
+const drawingStore = useDrawingStore()
+const workspaceStore = useWorkspaceStore()
+const drawing = computed(() => drawingStore.getDrawing(String(router.currentRoute.value.params.drawingId ?? '')))
+const allParts = computed(() => drawingStore.parts)
 const treeNodes = computed<StructureTreeNode[]>(() => {
   if (!drawing.value) return []
-  const childrenByParent = new Map<string, StructurePart[]>()
   const partByNo = new Map(allParts.value.map((part) => [part.no, part]))
   const knownAssemblyNos = [
     drawing.value.no,
-    ...('files' in drawing.value ? (drawing.value.files ?? []).map((file) => parseStandaloneDrawingFileName(file.name).no) : []),
+    ...drawing.value.files.map((file) => parseStandaloneDrawingFileName(file.name).no),
   ].filter(Boolean)
-  const isUnderCurrentDrawing = (part: StructurePart): boolean => {
-    if (!drawing.value) return false
-    if (isEquivalentAssemblyNo(part.no, drawing.value.no, knownAssemblyNos)) return false
-    if (isEquivalentAssemblyNo(part.parentNo, drawing.value.no, knownAssemblyNos) || isSameDrawingFamily(part.no, drawing.value.no)) return true
+  const isUnderCurrentDrawing = (part: PartView): boolean => {
+    if (isEquivalentAssemblyNo(part.no, drawing.value!.no, knownAssemblyNos)) return false
+    if (isEquivalentAssemblyNo(part.parentNo, drawing.value!.no, knownAssemblyNos) || isSameDrawingFamily(part.no, drawing.value!.no)) return true
     const visited = new Set<string>()
     let parentNo = part.parentNo
     while (parentNo && !visited.has(parentNo)) {
-      if (isEquivalentAssemblyNo(parentNo, drawing.value.no, knownAssemblyNos)) return true
+      if (isEquivalentAssemblyNo(parentNo, drawing.value!.no, knownAssemblyNos)) return true
       visited.add(parentNo)
       parentNo = partByNo.get(parentNo)?.parentNo || ''
     }
-    // 只有存在明确的当前项目编号时才使用项目字段兜底，避免把其他项目同名零件混入树。
-    const currentProject = 'project' in drawing.value ? drawing.value.project : ''
-    return Boolean(currentProject && part.project === currentProject && part.parentNo !== drawing.value.no)
+    return Boolean(drawing.value!.project && part.project === drawing.value!.project && part.parentNo !== drawing.value!.no)
   }
-
   const relevantParts = allParts.value.filter(isUnderCurrentDrawing)
   const relevantPartNos = new Set(relevantParts.map((part) => part.no))
+  const childrenByParent = new Map<string, PartView[]>()
   for (const part of relevantParts) {
-    // 父级记录缺失或不在当前相关集合中时挂回当前总图，保证历史数据与借用件始终在树中可见。
     const parentNo = part.parentNo && isEquivalentAssemblyNo(part.parentNo, drawing.value.no, knownAssemblyNos)
       ? drawing.value.no
-      : part.parentNo && relevantPartNos.has(part.parentNo)
-        ? part.parentNo
-      : drawing.value.no
+      : part.parentNo && relevantPartNos.has(part.parentNo) ? part.parentNo : drawing.value.no
     const children = childrenByParent.get(parentNo) ?? []
     children.push(part)
     childrenByParent.set(parentNo, children)
   }
-
-  const build = (parentNo: string, visited: Set<string>): StructureTreeNode[] => {
-    return (childrenByParent.get(parentNo) ?? [])
-      .slice()
-      .sort((left, right) => left.no.localeCompare(right.no, undefined, { numeric: true }))
-      .filter((part) => !visited.has(part.no))
-      .map((part) => {
-        const nextVisited = new Set(visited)
-        nextVisited.add(part.no)
-        return { part, children: build(part.no, nextVisited) }
-      })
-  }
-
+  const build = (parentNo: string, visited: Set<string>): StructureTreeNode[] => (childrenByParent.get(parentNo) ?? [])
+    .slice()
+    .sort((left, right) => left.no.localeCompare(right.no, undefined, { numeric: true }))
+    .filter((part) => !visited.has(part.no))
+    .map((part) => {
+      const nextVisited = new Set(visited)
+      nextVisited.add(part.no)
+      return { part, children: build(part.no, nextVisited) }
+    })
   return build(drawing.value.no, new Set([drawing.value.no]))
 })
 const parts = computed(() => {
-  const flatten = (nodes: StructureTreeNode[]): StructurePart[] => nodes.flatMap((node) => [node.part, ...flatten(node.children)])
+  const flatten = (nodes: StructureTreeNode[]): PartView[] => nodes.flatMap((node) => [node.part, ...flatten(node.children)])
   return flatten(treeNodes.value)
 })
-const selected = computed(() => parts.value[domainStore.selectedStructureIndex])
-const otherFiles = computed(() => {
-  return drawing.value?.otherFiles ?? []
-})
+const selected = computed(() => parts.value[workspaceStore.selectedStructureIndex])
+const otherFiles = computed(() => drawing.value?.otherFiles ?? [])
 
 function openPartDetail(partNo: string) {
-  domainStore.openDrawing(partNo)
+  const part = drawingStore.getPart(partNo)
+  if (part) workspaceStore.selectPart(part.id)
   router.push({ name: 'drawing-properties', params: { drawingId: partNo } })
 }
 
 function selectPart(partNo: string) {
   const index = parts.value.findIndex((part) => part.no === partNo)
-  if (index >= 0) domainStore.selectedStructureIndex = index
+  if (index >= 0) workspaceStore.setSelectedStructureIndex(index)
 }
 
 </script>
@@ -98,8 +89,8 @@ function selectPart(partNo: string) {
         <span class="hint">总图 → 零件图</span>
       </div>
        <div class="tree">
-         <div class="tree-node" :class="{ closed: !domainStore.treeOpen }">
-           <button class="row root-row" type="button" @click="domainStore.treeOpen = !domainStore.treeOpen">
+         <div class="tree-node" :class="{ closed: !workspaceStore.treeOpen }">
+           <button class="row root-row" type="button" @click="workspaceStore.toggleTree">
              <DemoIcon class="caret" name="chevron-down" :size="15" />
              <DemoIcon class="tico" name="box" :size="15" />
              <span class="root-copy">
@@ -142,15 +133,15 @@ function selectPart(partNo: string) {
              <div class="kv"><div class="k">零件材料</div><div class="v">{{ selected.material || '—' }}</div></div>
               <div class="kv"><div class="k">制造类别</div><div class="v"><span class="tag info">{{ selected.partType }}</span></div></div>
              <div class="kv"><div class="k">单机装配数量</div><div class="v mono">× {{ selected.qty }}</div></div>
-            <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ selected.ver }}</div></div>
+            <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ selected.version }}</div></div>
             <div class="kv"><div class="k">生命周期状态</div><div class="v"><span class="tag" :class="STATUS[selected.status].c">{{ STATUS[selected.status].t }}</span></div></div>
-             <div class="kv"><div class="k">借用来源</div><div class="v">{{ selected.borrowFrom ? selected.borrowFrom : '— 本项目原创' }}</div></div>
+             <div class="kv"><div class="k">借用来源</div><div class="v">{{ selected.sourceDrawing || '— 本项目原创' }}</div></div>
            </div>
 
            <div class="detail-files-section">
              <div class="detail-files-title"><DemoIcon name="file-text" :size="15" />关联文件</div>
-             <div v-if="selected.files?.length || selected.otherFiles?.length" class="detail-files-list">
-               <div v-for="file in [...(selected.files ?? []), ...(selected.otherFiles ?? [])]" :key="file.id" class="detail-file-row">
+             <div v-if="selected.files.length || selected.otherFiles.length" class="detail-files-list">
+               <div v-for="file in [...selected.files, ...selected.otherFiles]" :key="file.id" class="detail-file-row">
                  <div class="detail-file-name"><DemoIcon name="file" :size="14" /><span :title="file.name">{{ file.name }}</span></div>
                  <span class="detail-file-meta">大小 {{ file.size }}</span>
                  <span class="detail-file-meta">上传 {{ formatReadableDateTime(file.uploadedAt, '历史记录') }}</span>

@@ -1,33 +1,37 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
-import { STATUS, useDomainStore } from '@/stores/domain.store'
+import { STATUS } from '@/stores/domain.store'
 import { useUiStore } from '@/stores/ui.store'
-import type { Drawing, StructurePart, StructurePartEditable } from '@/types/domain.types'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useAttributeStore } from '@/stores/attribute.store'
+import { useAuditStore } from '@/stores/audit.store'
+import { useWorkspaceStore } from '@/stores/workspace.store'
+import { drawingCommandService } from '@/app/container'
+import type { StructurePartEditable } from '@/types/domain.types'
 import { formatReadableDateTime } from '@/utils/date-time'
 
 defineOptions({ name: 'DrawingPropertiesTab' })
 
-const domainStore = useDomainStore()
+const route = useRoute()
+const drawingStore = useDrawingStore()
+const attributeStore = useAttributeStore()
+const auditStore = useAuditStore()
+const workspaceStore = useWorkspaceStore()
 const router = useRouter()
 const uiStore = useUiStore()
 
-const currentItem = computed(() => domainStore.currentDrawing)
-const currentDrawing = computed<Drawing | null>(() => {
-  const item = currentItem.value
-  return item && !('parentNo' in item) ? item : null
-})
-const currentPart = computed<StructurePart | null>(() => {
-  if (!currentItem.value || !('parentNo' in currentItem.value)) return null
-  return currentItem.value
-})
+const currentId = computed(() => String(route.params.drawingId ?? ''))
+const currentDrawing = computed(() => drawingStore.getDrawing(currentId.value))
+const currentPart = computed(() => drawingStore.getPart(currentId.value))
+const currentItem = computed(() => currentDrawing.value ?? currentPart.value)
 const isPart = computed(() => Boolean(currentPart.value))
 const parentDrawing = computed(() => {
   const parentNo = currentPart.value?.parentNo
-  return parentNo ? domainStore.drawings.find((drawing) => drawing.no === parentNo) ?? domainStore.structure.find((part) => part.no === parentNo) ?? null : null
+  return parentNo ? drawingStore.getDrawing(parentNo) ?? drawingStore.getPart(parentNo) : null
 })
 
 const editing = ref(false)
@@ -55,10 +59,22 @@ const partNoEdit = ref('')
 const editForm = ref<StructurePartEditable>(emptyEditForm())
 const activityLogs = computed(() => {
   const drawingNo = currentItem.value?.no
-  return drawingNo ? domainStore.logs.filter((item) => item.drawingNo === drawingNo) : []
+  return drawingNo ? auditStore.drawingLogs.list.filter((item) => item.drawingNo === drawingNo) : []
 })
 
-function loadEditForm(part: StructurePart) {
+async function loadSupportingData() {
+  if (!currentId.value) return
+  await Promise.all([
+    attributeStore.load(),
+    auditStore.loadDrawing({ drawingNo: currentId.value, page: 1, pageSize: 100 }),
+  ]).catch(() => undefined)
+}
+
+onMounted(() => {
+  void loadSupportingData()
+})
+
+function loadEditForm(part: NonNullable<typeof currentPart.value>) {
   partNoEdit.value = part.no
   editForm.value = {
     name: part.name,
@@ -83,6 +99,10 @@ watch(currentItem, (item) => {
   attributeEditing.value = false
 }, { immediate: true })
 
+watch(currentId, () => {
+  void loadSupportingData()
+})
+
 function startEdit() {
   if (!currentPart.value) return
   loadEditForm(currentPart.value)
@@ -100,7 +120,22 @@ async function saveEdit() {
   saving.value = true
   try {
     const nextPartNo = partNoEdit.value.trim() || part.no
-    await domainStore.updateStructurePart(part.no, { ...editForm.value, partNo: nextPartNo })
+    if (!part.id || part.revision === undefined) throw new Error('零件缺少服务端版本信息，请刷新后重试')
+    await drawingCommandService.updatePart(part.id, {
+      expectedRevision: part.revision,
+      ...(nextPartNo !== part.no ? { no: nextPartNo } : {}),
+      name: editForm.value.name.trim(),
+      material: editForm.value.material.trim(),
+      spec: editForm.value.spec.trim(),
+      weight: editForm.value.weight,
+      surfaceTreatment: editForm.value.surfaceTreatment.trim(),
+      partType: editForm.value.partType,
+      qty: editForm.value.qty,
+      ...(editForm.value.vendor?.trim() ? { vendor: editForm.value.vendor.trim() } : {}),
+      ...(editForm.value.remark?.trim() ? { remark: editForm.value.remark.trim() } : {}),
+    })
+    drawingStore.invalidate()
+    await drawingStore.load()
     editing.value = false
     if (nextPartNo !== part.no) {
       await router.replace({ name: 'drawing-properties', params: { drawingId: nextPartNo } })
@@ -130,7 +165,15 @@ async function saveAttributes() {
   if (!currentDrawing.value || attributeSaving.value) return
   attributeSaving.value = true
   try {
-    await domainStore.setDrawingAttributes(currentDrawing.value.no, attributeForm.value)
+    const errors = attributeStore.validate(attributeForm.value)
+    if (errors.length) throw new Error(errors[0])
+    if (!currentDrawing.value.id || currentDrawing.value.revision === undefined) throw new Error('图纸缺少服务端版本信息，请刷新后重试')
+    await drawingCommandService.updateDrawing(currentDrawing.value.id, {
+      expectedRevision: currentDrawing.value.revision,
+      attributeValues: Object.fromEntries(Object.entries(attributeForm.value).filter(([, value]) => value)),
+    })
+    drawingStore.invalidate()
+    await drawingStore.load()
     attributeEditing.value = false
     uiStore.toast('图纸业务属性已更新', 'ok')
   } catch (error) {
@@ -143,7 +186,8 @@ async function saveAttributes() {
 function openParentDrawing() {
   const parent = parentDrawing.value
   if (!parent) return
-  domainStore.openDrawing(parent.no)
+  if ('parentNo' in parent) workspaceStore.selectPart(parent.id)
+  else workspaceStore.selectDrawing(parent.id)
   router.push({ name: 'drawing-preview', params: { drawingId: parent.no } })
 }
 
@@ -160,12 +204,12 @@ const feedIcons: Record<string, string> = {
 <template>
   <div class="properties-page-view">
     <!-- 总图专属：业务技术规格（动态属性）卡片 -->
-    <div v-if="!isPart && currentDrawing && domainStore.sortedAttributes.length" class="props-section card card-pad">
+    <div v-if="!isPart && currentDrawing && attributeStore.sortedAttributes.length" class="props-section card card-pad">
       <div class="card-title no-padding property-title">
         <div class="title-with-icon">
           <DemoIcon name="sliders-horizontal" :size="16" />
           <span>业务技术规格属性</span>
-          <span class="spec-count-tag">{{ domainStore.sortedAttributes.length }} 项规格</span>
+          <span class="spec-count-tag">{{ attributeStore.sortedAttributes.length }} 项规格</span>
         </div>
 
         <div v-if="!attributeEditing" class="property-actions">
@@ -184,7 +228,7 @@ const feedIcons: Record<string, string> = {
       <div class="attributes-tab-body">
         <DrawingAttributesForm
           v-model="attributeForm"
-          :attributes="domainStore.sortedAttributes"
+          :attributes="attributeStore.sortedAttributes"
           :readonly="!attributeEditing"
           title="业务技术参数"
           description="按企业标准化属性库定义；修改后立即生效"
@@ -276,7 +320,7 @@ const feedIcons: Record<string, string> = {
           <div class="kv"><div class="k">制造类别</div><div class="v"><span class="tag info">{{ currentPart.partType }}</span></div></div>
           <div class="kv"><div class="k">单台装配数量</div><div class="v mono">× {{ currentPart.qty }}</div></div>
           <div class="kv"><div class="k">承制厂商 / 外协单位</div><div class="v">{{ currentPart.vendor || '—' }}</div></div>
-          <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ currentPart.ver }}</div></div>
+          <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ currentPart.version }}</div></div>
           <div class="kv"><div class="k">生命周期状态</div><div class="v"><span class="tag" :class="STATUS[currentPart.status].c">{{ STATUS[currentPart.status].t }}</span></div></div>
           <div class="kv full-width"><div class="k">工程说明与备注</div><div class="v remark-txt">{{ currentPart.remark || '无特殊备忘与交底要求' }}</div></div>
         </div>
@@ -287,11 +331,11 @@ const feedIcons: Record<string, string> = {
         <div class="kv"><div class="k">总图图号</div><div class="v mono accent-txt">{{ currentItem?.no }}</div></div>
         <div class="kv"><div class="k">图纸名称</div><div class="v">{{ currentItem?.name }}</div></div>
         <div class="kv"><div class="k">对象类型</div><div class="v"><span class="tag plain">项目总图</span></div></div>
-        <div class="kv"><div class="k">责任单位</div><div class="v">{{ (currentItem as Drawing)?.vendor || '内部项目部' }}</div></div>
-        <div class="kv"><div class="k">所属项目</div><div class="v">{{ (currentItem as Drawing)?.project || '—' }}</div></div>
-        <div class="kv"><div class="k">发布版本</div><div class="v mono">{{ currentItem?.ver || 'v1.0' }}</div></div>
+        <div class="kv"><div class="k">责任单位</div><div class="v">{{ currentDrawing?.vendor || '内部项目部' }}</div></div>
+        <div class="kv"><div class="k">所属项目</div><div class="v">{{ currentDrawing?.project || '—' }}</div></div>
+        <div class="kv"><div class="k">发布版本</div><div class="v mono">{{ currentDrawing?.version || 'v1.0' }}</div></div>
         <div class="kv"><div class="k">生命周期状态</div><div class="v"><span v-if="currentItem" class="tag" :class="STATUS[currentItem.status].c">{{ STATUS[currentItem.status].t }}</span></div></div>
-        <div class="kv"><div class="k">更新时间</div><div class="v mono">{{ formatReadableDateTime(currentItem && 'updated' in currentItem ? currentItem.updated : undefined) }}</div></div>
+        <div class="kv"><div class="k">更新时间</div><div class="v mono">{{ formatReadableDateTime(currentItem?.updatedAt) }}</div></div>
         <div class="kv full-width"><div class="k">工程说明与备注</div><div class="v remark-txt">{{ currentItem?.remark || '无特殊备忘与交底要求' }}</div></div>
       </div>
     </div>

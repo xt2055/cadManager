@@ -5,23 +5,32 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
-import { STATUS, useDomainStore } from '@/stores/domain.store'
+import { STATUS } from '@/stores/domain.store'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useWorkspaceStore } from '@/stores/workspace.store'
+import { drawingCommandService } from '@/app/container'
 import { formatReadableDateTime } from '@/utils/date-time'
+import { useRoute } from 'vue-router'
 
 defineOptions({
   name: 'DrawingDetailHeader',
 })
 
 const router = useRouter()
-const domainStore = useDomainStore()
+const route = useRoute()
+const drawingStore = useDrawingStore()
+const workspaceStore = useWorkspaceStore()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
 
-const drawing = computed(() => domainStore.currentDrawing)
+const drawing = computed(() => {
+  const id = String(route.params.drawingId ?? '')
+  return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
+})
 const isPart = computed(() => Boolean(drawing.value && 'parentNo' in drawing.value))
 const parentDrawing = computed(() => {
   const parentNo = isPart.value ? (drawing.value as { parentNo: string }).parentNo : ''
-  return domainStore.drawings.find((item) => item.no === parentNo) ?? null
+  return drawingStore.getDrawing(parentNo) ?? drawingStore.getPart(parentNo)
 })
 
 const statusMeta = computed(() => (drawing.value ? STATUS[drawing.value.status] ?? null : null))
@@ -30,7 +39,7 @@ const isCreator = computed(() => {
   const item = drawing.value
   const current = authStore.currentUser
   if (!item || !current) return false
-  return (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
+  return ('createdBy' in item && item.createdBy) === current.displayName
 })
 const canArchive = computed(() => !isPart.value && drawing.value?.status === 'published' && (isCreator.value || isAdmin.value))
 const canUnarchive = computed(() => !isPart.value && drawing.value?.status === 'archived' && isAdmin.value)
@@ -43,7 +52,9 @@ function toggleArchive() {
       confirmText: '存档',
       onConfirm: async () => {
         try {
-          await domainStore.setDrawingArchived(item.no, true)
+          await drawingCommandService.archive(item.no)
+          drawingStore.invalidate()
+          await drawingStore.load()
           uiStore.toast('图纸已存档', 'ok')
         } catch (error) {
           uiStore.toast(error instanceof Error ? error.message : '图纸状态更新失败', 'warn')
@@ -52,7 +63,8 @@ function toggleArchive() {
     })
     return
   }
-  void domainStore.setDrawingArchived(item.no, false)
+  void drawingCommandService.unarchive(item.no)
+    .then(() => { drawingStore.invalidate(); return drawingStore.load() })
     .then(() => uiStore.toast('已解除存档，图纸恢复生产状态', 'ok'))
     .catch((error: unknown) => uiStore.toast(error instanceof Error ? error.message : '图纸状态更新失败', 'warn'))
 }
@@ -64,21 +76,21 @@ const designerName = computed(() => {
     const visited = new Set<string>()
     while (parentNo && !visited.has(parentNo)) {
       visited.add(parentNo)
-      const parent = domainStore.drawings.find((item) => item.no === parentNo)
+      const parent = drawingStore.getDrawing(parentNo)
       if (parent) return parent.designer || ''
-      const parentPart = domainStore.structure.find((item) => item.no === parentNo)
+      const parentPart = drawingStore.getPart(parentNo)
       if (!parentPart) break
       parentNo = parentPart.parentNo
     }
   }
-  return 'designer' in drawing.value ? drawing.value.designer || '' : ''
+  return drawing.value && 'designer' in drawing.value ? drawing.value.designer || '' : ''
 })
 
 // 创建人：历史数据可能存有「当前用户」占位符（无法追溯真实创建人），显示为 —。
 const creatorLabel = computed(() => {
-  const item = drawing.value as { createdBy?: string; by?: string } | null
+  const item = drawing.value as { createdBy?: string } | null
   if (!item) return ''
-  const value = item.createdBy || item.by || ''
+  const value = item.createdBy || ''
   return value === '当前用户' ? '—' : value
 })
 
@@ -89,7 +101,7 @@ function openProperties() {
 
 function openParentDrawing() {
   if (!parentDrawing.value) return
-  domainStore.openDrawing(parentDrawing.value.no)
+  workspaceStore.selectDrawing(parentDrawing.value.id)
   router.push({ name: 'drawing-preview', params: { drawingId: parentDrawing.value.no } })
 }
 </script>
@@ -114,14 +126,14 @@ function openParentDrawing() {
              设计：<b>{{ designerName }}</b>
            </span>
           <span class="dh-no">{{ drawing?.no }}</span>
-           <span class="tag mute tag-no-dot">{{ drawing?.ver }}</span>
+           <span class="tag mute tag-no-dot">{{ drawing?.version }}</span>
          </div>
          <div class="dh-meta">
            <span>厂商 <b>{{ ('vendor' in (drawing || {})) ? (drawing as any).vendor : '内部加工' }}</b></span>
           <span>项目 <b>{{ ('project' in (drawing || {})) ? (drawing as any).project : '—' }}</b></span>
           <span v-if="isPart">关联图号 <b class="mono">{{ drawing?.no }}</b></span>
           <span>创建人 <b>{{ creatorLabel || '待定' }}</b></span>
-          <span>更新时间 <b>{{ ('updated' in (drawing || {})) ? formatReadableDateTime((drawing as any).updated, '刚刚') : '刚刚' }}</b></span>
+          <span>更新时间 <b>{{ drawing?.updatedAt ? formatReadableDateTime(drawing.updatedAt, '刚刚') : '刚刚' }}</b></span>
           <span v-if="'forkedFrom' in (drawing || {}) && (drawing as any).forkedFrom" class="tag plain">分叉自·{{ (drawing as any).forkedFrom }}</span>
           <button v-if="isPart && parentDrawing" class="parent-link" type="button" @click="openParentDrawing">
             所属总图 <b>{{ parentDrawing.name }}</b><DemoIcon name="arrow-up-right" :size="12" />

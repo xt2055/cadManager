@@ -93,7 +93,8 @@ rg "useDomainStore" src/features
 - 已迁移审核待办、已办归档、普通操作日志和工作台首页到新的 Review/Audit/Drawing Store。
 - 管理后台布局初始化已改为加载 `admin.store` 与 `review.store`，不再依赖旧 `domain.store` 初始化。
 - 图纸库页面已改为使用 Drawing Read Model 与 Attribute Store，列表筛选不再读取领域实体。
-- 本批次 `npm run type-check` 已通过；复杂图纸详情 Tab、创建页和 CAD 页面仍待后续批次迁移。
+- 图纸详情布局、标题栏、属性 Tab 和结构 Tab 已改为使用 Drawing Read Model、Workspace Store、Attribute Store 与 Audit Store；结构树不再直接持有 `StructurePart` 实体。
+- 本批次 `npm run type-check` 已通过；版本、借用、预览、文件历史、创建页和 CAD 页面仍待后续批次迁移。
 
 ## 建议提交
 

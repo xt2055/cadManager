@@ -6,6 +6,8 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingDetailHeader from '../components/detail/DrawingDetailHeader.vue'
 import DrawingDetailSubnav from '../components/detail/DrawingDetailSubnav.vue'
 import { useDomainStore } from '@/stores/domain.store'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useWorkspaceStore } from '@/stores/workspace.store'
 
 defineOptions({
   name: 'DrawingDetailLayout',
@@ -14,17 +16,30 @@ defineOptions({
 const route = useRoute()
 const router = useRouter()
 const domainStore = useDomainStore()
+const drawingStore = useDrawingStore()
+const workspaceStore = useWorkspaceStore()
 const isPreview = computed(() => route.name === 'drawing-preview')
+const drawing = computed(() => {
+  const id = String(route.params.drawingId ?? '')
+  return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
+})
 
 async function syncDrawing() {
-  await domainStore.initialize()
-    const drawingId = String(route.params.drawingId ?? '')
-    if (drawingId) {
-      domainStore.openDrawing(drawingId)
-      await domainStore.refreshDrawingDesigner(drawingId).catch((error) => {
-        console.warn('读取图纸标题栏设计人失败', error)
-      })
-    } else {
+  const drawingId = String(route.params.drawingId ?? '')
+  await Promise.all([drawingStore.load(), domainStore.initialize()])
+  if (drawingId) {
+    const item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
+    if (item) {
+      if ('parentNo' in item) workspaceStore.selectPart(item.id)
+      else workspaceStore.selectDrawing(item.id)
+    }
+    // 详情 Tab 尚在迁移期，保留旧 Store 的当前身份桥接。
+    domainStore.openDrawing(drawingId)
+    await domainStore.refreshDrawingDesigner(drawingId).catch((error) => {
+      console.warn('读取图纸标题栏设计人失败', error)
+    })
+  } else {
+    workspaceStore.clearSelection()
     domainStore.clearCurrentDrawing()
   }
 }
@@ -39,7 +54,7 @@ watch(() => route.params.drawingId, () => {
 
 <template>
   <div class="page detail-page">
-    <template v-if="domainStore.currentDrawing">
+    <template v-if="drawing">
       <DrawingDetailHeader />
       <DrawingDetailSubnav />
       <div class="tab-body" :class="{ 'no-scroll': isPreview }">

@@ -36,13 +36,13 @@ function selectNode() {
         <span class="structure-node__main">
           <span class="structure-node__name" :title="node.part.name">{{ node.part.name }}</span>
           <span class="structure-node__badges">
-            <span v-if="node.part.otherFiles?.length" class="tag mute structure-node__other-count">其他 {{ node.part.otherFiles.length }}</span>
-            <span v-if="node.part.borrowFrom" class="tag plain structure-node__borrow">借用</span>
+            <span v-if="node.part.otherFiles.length" class="tag mute structure-node__other-count">其他 {{ node.part.otherFiles.length }}</span>
+            <span v-if="node.part.borrowed" class="tag plain structure-node__borrow">借用</span>
           </span>
         </span>
         <span class="structure-node__meta">
           <span class="structure-node__no" :title="node.part.no">{{ node.part.no }}</span>
-          <span v-if="node.part.borrowFrom" class="structure-node__source" :title="`来源：${node.part.borrowFrom}`">来源 {{ node.part.borrowFrom }}</span>
+          <span v-if="node.part.sourceDrawing" class="structure-node__source" :title="`来源：${node.part.sourceDrawing}`">来源 {{ node.part.sourceDrawing }}</span>
         </span>
       </button>
     </div>
