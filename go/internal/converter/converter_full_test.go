@@ -5,8 +5,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/storage"
@@ -206,6 +208,48 @@ func TestJobWaiterBroadcast(t *testing.T) {
 		}
 	default:
 		t.Fatalf("等待者未收到广播")
+	}
+}
+
+func TestWaitForCaxaJobFileQuarantinesStaleTask(t *testing.T) {
+	jobFile := filepath.Join(t.TempDir(), "caxa_exb_jobs.txt")
+	if err := os.WriteFile(jobFile, []byte("old-input|old-output\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	staleAt := time.Now().Add(-caxaJobStaleAfter - time.Second)
+	if err := os.Chtimes(jobFile, staleAt, staleAt); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	if err := waitForCaxaJobFile(jobFile, time.Second); err != nil {
+		t.Fatalf("waitForCaxaJobFile() error = %v", err)
+	}
+	if _, err := os.Stat(jobFile); !os.IsNotExist(err) {
+		t.Fatalf("遗留任务文件未被隔离，Stat err = %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(jobFile))
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "caxa_exb_jobs.txt.stale.") {
+			return
+		}
+	}
+	t.Fatal("未保留隔离后的遗留任务以供排查")
+}
+
+func TestPublishCaxaJobWritesCompleteTask(t *testing.T) {
+	jobFile := filepath.Join(t.TempDir(), "caxa_exb_jobs.txt")
+	if err := publishCaxaJob(jobFile, `C:\input file.exb`, `C:\output file.dwg`); err != nil {
+		t.Fatalf("publishCaxaJob() error = %v", err)
+	}
+	content, err := os.ReadFile(jobFile)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if got, want := string(content), "C:\\input file.exb|C:\\output file.dwg\n"; got != want {
+		t.Fatalf("任务内容 = %q; want %q", got, want)
 	}
 }
 

@@ -58,12 +58,15 @@ type Service struct {
 	dwg2dxfBin string
 	caxaBin    string
 	caxaMu     sync.Mutex
-	flightMu   sync.Mutex
-	highQueue  chan *Job
-	normQueue  chan *Job
-	lowQueue   chan *Job
-	inFlight   sync.Map
-	stopChan   chan struct{}
+	// caxaJobMu serializes every caller of CAXA's shared file-based protocol.
+	// Some synchronous operations do not go through workerLoop.
+	caxaJobMu sync.Mutex
+	flightMu  sync.Mutex
+	highQueue chan *Job
+	normQueue chan *Job
+	lowQueue  chan *Job
+	inFlight  sync.Map
+	stopChan  chan struct{}
 }
 
 func NewService(repo attachment.Repository, objStorage storage.ObjectStorage, tools ...string) *Service {
@@ -219,8 +222,7 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 	tempDir := os.TempDir()
 	nowNano := time.Now().UnixNano()
 	tempDwg := filepath.Join(tempDir, fmt.Sprintf("caxa_out_%d.dwg", nowNano))
-	defer os.Remove(tempDwg)
-	defer os.Remove(tempDwg + ".done")
+	defer removeCaxaTempFiles(tempDwg, tempDwg+".done")
 
 	switch {
 	case strings.EqualFold(ext, ".exb"):
@@ -235,7 +237,7 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 		defer reader.Close()
 
 		tempExb := filepath.Join(tempDir, fmt.Sprintf("caxa_in_%d.exb", nowNano))
-		defer os.Remove(tempExb)
+		defer removeCaxaTempFiles(tempExb)
 
 		outFile, err := os.Create(tempExb)
 		if err != nil {
@@ -247,36 +249,8 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 		}
 		outFile.Close()
 
-		jobFile := filepath.Join(tempDir, "caxa_exb_jobs.txt")
-		if err := waitForJobFileFree(jobFile, 15*time.Second); err != nil {
+		if err := s.runCaxaJob(ctx, tempExb, tempDwg); err != nil {
 			return err
-		}
-		line := fmt.Sprintf("%s|%s\n", tempExb, tempDwg)
-		if err := os.WriteFile(jobFile, []byte(line), 0o644); err != nil {
-			return fmt.Errorf("写入 CAXA 调度任务失败: %w", err)
-		}
-
-		doneFile := tempDwg + ".done"
-		success := false
-		nudged := false
-		for i := 0; i < 120; i++ {
-			time.Sleep(500 * time.Millisecond)
-			if _, err := os.Stat(doneFile); err == nil {
-				statusBytes, _ := os.ReadFile(doneFile)
-				if strings.TrimSpace(string(statusBytes)) == "OK" {
-					success = true
-				}
-				break
-			}
-			// CAXA 已启动但停在空界面时插件不消费任务：10 秒后补开一次哨兵图纸激活插件。
-			if !nudged && i == 20 {
-				nudged = true
-				s.nudgeSentinel(ctx)
-			}
-		}
-
-		if !success {
-			return errors.New("CAXA 转换超时或返回失败")
 		}
 
 		dwgReader, err := os.Open(tempDwg)
@@ -300,7 +274,7 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 		defer reader.Close()
 
 		tempDxf := filepath.Join(tempDir, fmt.Sprintf("caxa_in_%d.dxf", nowNano))
-		defer os.Remove(tempDxf)
+		defer removeCaxaTempFiles(tempDxf)
 
 		outFile, err := os.Create(tempDxf)
 		if err != nil {
@@ -366,9 +340,7 @@ func (s *Service) ConvertToExb(ctx context.Context, att attachment.Attachment) (
 	nowNano := time.Now().UnixNano()
 	tempIn := filepath.Join(tempDir, fmt.Sprintf("caxa_in_%d%s", nowNano, ext))
 	tempExb := filepath.Join(tempDir, fmt.Sprintf("caxa_out_%d.exb", nowNano))
-	defer os.Remove(tempIn)
-	defer os.Remove(tempExb)
-	defer os.Remove(tempExb + ".done")
+	defer removeCaxaTempFiles(tempIn, tempExb, tempExb+".done")
 
 	reader, _, err := s.storage.Open(ctx, att.StorageKey)
 	if err != nil {
@@ -431,16 +403,22 @@ func (s *Service) ConvertPathToDwg(ctx context.Context, inputPath, outputPath st
 // runCaxaJob 向 CAXA 调度器提交一条「输入路径|输出路径」任务并等待完成，
 // 输出格式由输出文件的扩展名决定（.exb/.dwg 等）。
 func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) error {
+	s.caxaJobMu.Lock()
+	defer s.caxaJobMu.Unlock()
+
 	jobFile := filepath.Join(os.TempDir(), "caxa_exb_jobs.txt")
-	if err := waitForJobFileFree(jobFile, 30*time.Second); err != nil {
+	if err := waitForCaxaJobFile(jobFile, 10*time.Second); err != nil {
 		return err
-	}
-	line := fmt.Sprintf("%s|%s\n", inputPath, outputPath)
-	if err := os.WriteFile(jobFile, []byte(line), 0o644); err != nil {
-		return fmt.Errorf("写入 CAXA 调度任务失败: %w", err)
 	}
 
 	doneFile := outputPath + ".done"
+	if err := removeCaxaDoneSignal(doneFile); err != nil {
+		return err
+	}
+	if err := publishCaxaJob(jobFile, inputPath, outputPath); err != nil {
+		return err
+	}
+
 	nudged := false
 	for i := 0; i < 180; i++ {
 		select {
@@ -507,20 +485,87 @@ func (s *Service) EnsureDwg(ctx context.Context, att attachment.Attachment) (str
 	return dwgKey, nil
 }
 
-func waitForJobFileFree(path string, timeout time.Duration) error {
+const caxaJobStaleAfter = 5 * time.Second
+
+// waitForCaxaJobFile waits for the plugin to claim its shared dispatch file.
+// A file that survives this long belongs to a failed earlier dispatch, not an
+// active request in this process, because runCaxaJob holds caxaJobMu.
+func waitForCaxaJobFile(path string, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	var lastErr error
 	for {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
 			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("检查 CAXA 调度任务失败: %w", err)
+		}
+		if time.Since(info.ModTime()) >= caxaJobStaleAfter {
+			stalePath := fmt.Sprintf("%s.stale.%d", path, time.Now().UnixNano())
+			if err := os.Rename(path, stalePath); err == nil {
+				log.Printf("[CAD Converter] 隔离未被 CAXA 消费的遗留任务: %s -> %s", path, stalePath)
+				return nil
+			} else if os.IsNotExist(err) {
+				continue
+			} else {
+				lastErr = err
+			}
 		}
 		select {
 		case <-deadline.C:
-			return fmt.Errorf("CAXA 正在处理其他转换任务，任务队列等待超时: %s", path)
+			if lastErr != nil {
+				return fmt.Errorf("CAXA 调度任务文件仍被占用，请处理 CAXA 弹窗或重启 CAXA 后重试: %w", lastErr)
+			}
+			return fmt.Errorf("CAXA 正在接收上一项转换任务，队列等待超时: %s", path)
 		case <-ticker.C:
 		}
+	}
+}
+
+// publishCaxaJob writes a complete task beside the watched file then renames
+// it into place, so the plugin never observes a partially-written task.
+func publishCaxaJob(jobFile, inputPath, outputPath string) error {
+	pendingFile := fmt.Sprintf("%s.pending.%d", jobFile, time.Now().UnixNano())
+	line := fmt.Sprintf("%s|%s\n", inputPath, outputPath)
+	if err := os.WriteFile(pendingFile, []byte(line), 0o644); err != nil {
+		return fmt.Errorf("写入 CAXA 调度任务失败: %w", err)
+	}
+	if err := os.Rename(pendingFile, jobFile); err != nil {
+		_ = os.Remove(pendingFile)
+		return fmt.Errorf("提交 CAXA 调度任务失败: %w", err)
+	}
+	return nil
+}
+
+func removeCaxaDoneSignal(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("清理上次 CAXA 完成标记失败（文件可能仍被占用）: %w", err)
+	}
+	return nil
+}
+
+// Windows can retain a CAXA document handle briefly after its .done marker is
+// created. Retry cleanup so stale caxa_in_* files do not build up indefinitely.
+func removeCaxaTempFiles(paths ...string) {
+	pending := append([]string(nil), paths...)
+	for attempt := 0; len(pending) > 0 && attempt < 5; attempt++ {
+		next := pending[:0]
+		for _, path := range pending {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				next = append(next, path)
+			}
+		}
+		pending = next
+		if len(pending) > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	for _, path := range pending {
+		log.Printf("[CAD Converter] 临时文件仍被占用，稍后可安全删除: %s", path)
 	}
 }
 
@@ -665,7 +710,8 @@ func (s *Service) nudgeSentinel(ctx context.Context) {
 	_ = exec.Command(binPath, sentinel).Start()
 }
 
-func resolveToolPath(configured, name string) (string, error) {	if strings.TrimSpace(configured) != "" {
+func resolveToolPath(configured, name string) (string, error) {
+	if strings.TrimSpace(configured) != "" {
 		for _, path := range candidatePaths(configured) {
 			if _, err := os.Stat(path); err == nil {
 				return path, nil
