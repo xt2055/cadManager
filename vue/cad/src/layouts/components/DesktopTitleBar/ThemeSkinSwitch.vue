@@ -9,6 +9,7 @@ defineOptions({
 const themeStore = useThemeStore()
 
 const skins: Array<{ key: ThemeSkin; label: string }> = [
+  { key: 'juli', label: '巨力液压' },
   { key: 'classic', label: '经典' },
   { key: 'tech', label: '科技' },
   { key: 'elegant', label: '护眼' },

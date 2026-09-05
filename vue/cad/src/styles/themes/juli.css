@@ -1,0 +1,138 @@
+html[data-skin='juli'] {
+  --bg: #030c16; --bg-soft: #071521; --panel: #0a1d2bea; --panel-2: #102a3adb; --panel-top: #091d2b;
+  --line: #204457; --line-strong: #397a91; --hover: #33d4ee12; --active: #33d4ee24;
+  --text-1: #e1f5fc; --text-2: #a4c9d7; --text-3: #7599ac; --accent: #44e1f2; --accent-2: #ffac57;
+  --accent-ink: #05212b; --accent-soft: #36d5ea18; --ok: #63dfb0; --warn: #ffc17c; --danger: #ff8189; --info: #71baff;
+  --glow: #31d8ec45; --shadow: 0 18px 50px #0006; --radius: 10px; --grid: #35b6dd0c;
+  --cad-bg: #06101d; --cad-line: #cdeeff; --cad-center: #44e1f2; --cad-dim: #83a9bf; --cad-text: #d9f4ff; --cad-hatch: #1d3a5a; --cad-frame: #6e9cc0;
+  --font-display: 'Microsoft YaHei', sans-serif;
+}
+.juli-world { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; background: radial-gradient(ellipse at 70% 40%, #103c53, #030c16 75%); }
+.juli-machine { position: absolute; inset: 0 -15% 0 22%; opacity: .8; }
+.juli-world-grid { position: absolute; inset: 0; background-image: linear-gradient(#5bd5ef08 1px, transparent 1px), linear-gradient(90deg,#5bd5ef08 1px,transparent 1px); background-size: 44px 44px; mask-image: linear-gradient(transparent,#000); }
+.juli-orbit { position: absolute; width: 65vw; height: 65vw; border: 1px dashed #55deef1c; border-radius: 50%; left: 36%; top: -12%; animation: juli-orbit 90s linear infinite; }
+.juli-orbit::before { content: ''; position: absolute; inset: 8%; border: 1px solid #55deef13; border-radius: 50%; }
+.juli-telemetry,.juli-world-caption { position: absolute; color: #8fb9cb; font: 10px/2 monospace; letter-spacing: 3px; }
+.juli-telemetry { top: 9%; right: 4%; }.juli-telemetry span { color: #ffac57; }
+.juli-world-caption { right: 4%; bottom: 4%; text-align: right; }.juli-world-caption span { letter-spacing: 2px; opacity: .65; }
+html[data-skin='juli'] #app { position: relative; isolation: isolate; }
+html[data-skin='juli'] .auth-window-root, html[data-skin='juli'] .desktop-layout { position: relative; z-index: 1; }
+html[data-skin='juli'] .card { border-color: #31718b65; box-shadow: inset 0 1px #6bd6ec12, 0 12px 30px #0003; backdrop-filter: blur(14px); animation: juli-panel .7s ease both; }
+html[data-skin='juli'] .btn { transition: box-shadow .25s, border-color .25s, transform .25s; }
+html[data-skin='juli'] .btn:hover { box-shadow: 0 0 18px #42dff22a; border-color: #44e1f2; transform: translateY(-1px); }
+html[data-skin='juli'] .btn.primary { background: linear-gradient(110deg,#44e1f2,#64b8f1); color: #05212b; }
+html[data-skin='juli'] .bg-grid,html[data-skin='juli'] .orb { display: none; }
+html[data-skin='juli'] .login-standalone-window { box-sizing: border-box; width: min(1160px,96vw); max-width: none; height: min(780px,calc(100vh - 32px)); max-height: calc(100vh - 32px); background: transparent; border: 1px solid #57c9e34d; border-radius: 12px; box-shadow: 0 0 80px #1ec8e617; }
+html[data-skin='juli'] .login-inner-container { box-sizing: border-box; min-height: 0; overflow: auto; background: linear-gradient(90deg,#061321f5 0%,#071c2deb 42%,#071c2d05 72%); padding: clamp(18px,5vh,56px) 6%; }
+html[data-skin='juli'] .login-body-content { width: 360px; max-width: 100%; justify-content: center; }
+html[data-skin='juli'] .login-brand-header { text-align: left; margin-bottom: 28px; }
+html[data-skin='juli'] .brand-logo-icon { display: none; }
+html[data-skin='juli'] .login-input { height: 46px; background: #061321a6; border-color: #396579; }
+html[data-skin='juli'] .login-window-titlebar { background: #071522ba; border-bottom: 1px solid #36647766; }
+html[data-skin='juli'] .login-form { gap: 22px; }
+html[data-skin='juli'] .login-form .btn { min-height: 46px; }
+.juli-login-kicker { font: 11px monospace; color: #ffb36d; letter-spacing: 3px; margin-bottom: 18px; }
+.juli-login-title { margin: 0; font-size: clamp(26px,3vw,38px); line-height: 1.4; font-weight: 600; color: #e7faff; }
+.juli-login-title span { display: block; color: #58e5ef; font-size: 20px; letter-spacing: 5px; margin-top: 12px; }
+.juli-login-rule { height: 1px; background: linear-gradient(90deg,#51dcec,transparent); margin: 24px 0 14px; transform-origin: left; animation: juli-rule 1.4s ease both; }
+.juli-preview-button { border: 0; background: transparent; padding: 8px 0 0; font-size: 11px; letter-spacing: 2px; color: #68bbc9; cursor: pointer; }
+.juli-preview-button:hover { color: #dbfcff; text-shadow: 0 0 12px #44e1f2; }
+html[data-skin='juli'] .login-standalone-window::after { content: ''; position: absolute; inset: 6px; border: 1px solid #56dff51c; border-radius: 8px; pointer-events: none; clip-path: polygon(0 0,18% 0,18% 1%,1% 1%,1% 25%,0 25%,0 0,100% 0,100% 100%,82% 100%,82% 99%,99% 99%,99% 75%,100% 75%,100% 0); animation: juli-frame-light 5s ease-in-out infinite; }
+html[data-skin='juli'] #titlebar { border-bottom: 1px solid #47d9ef66; box-shadow: 0 4px 22px #2bd9f012; }
+html[data-skin='juli'] .tb-logo { filter: drop-shadow(0 0 6px #40dcf15e); }
+html[data-skin='juli'] .nav-item.active { border-left: 2px solid #4ce2ed; box-shadow: inset 18px 0 25px #32d6ef12; }
+html[data-skin='juli'] .desktop-layout { animation: juli-workspace-in 1.3s cubic-bezier(.16,1,.3,1) both; }
+@keyframes juli-workspace-in { from { opacity: 0; transform: scale(.94); clip-path: inset(8% 6%); filter: brightness(1.7); } to { opacity: 1; transform: scale(1); clip-path: inset(0); filter: none; } }
+@keyframes juli-frame-light { 50% { border-color: #56dff5b0; filter: drop-shadow(0 0 5px #4ee4ff); } }
+.juli-theme-entry { position: fixed; bottom: 14px; left: 18px; z-index: 100; background: #082031; color: #a2e3ed; border: 1px solid #397184; padding: 7px 12px; border-radius: 5px; cursor: pointer; font-size: 11px; }
+.juli-transition { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: #030c16ed; overflow: hidden; }
+.juli-transition svg { width: min(1100px,94vw); overflow: visible; }
+.juli-transition .juli-draw { fill: none; stroke: #53e2f1; stroke-width: 1; stroke-dasharray: 2000; stroke-dashoffset: 2000; animation: juli-draw 3.2s ease forwards; }
+.juli-transition text { font-family: 'Microsoft YaHei',sans-serif; font-weight: 600; }
+.juli-transition .juli-company { font-size: 48px; }.juli-transition .juli-system { font-size: 31px; letter-spacing: 10px; }
+.juli-transition .juli-letter { fill: transparent; stroke: #85edfa; stroke-width: .7; stroke-dasharray: 400; stroke-dashoffset: 400; animation: juli-letter 3.6s ease forwards; }
+.juli-transition .juli-construction { stroke: #408ba166; stroke-width: .6; fill: none; }
+.juli-transition-caption { position: absolute; bottom: 15%; color: #9ccbd9; font: 11px monospace; letter-spacing: 5px; animation: juli-panel 1s ease both; }
+.juli-transition-skip { position: absolute; bottom: 25px; right: 30px; color: #b5dce7; background: transparent; border: 1px solid #43829a; padding: 8px 18px; cursor: pointer; }
+.juli-login-logo { max-width: 310px; margin-bottom: 20px; }
+.juli-logo-stage { width: min(980px,86vw); position: relative; z-index: 1; }
+.juli-transition .juli-logo-stage svg { width: 100%; }
+.juli-logo-system { text-align: center; font-size: clamp(12px,1.7vw,20px); letter-spacing: 4px; color: #bceaff; margin-top: 30px; animation: juli-logo-subtitle 5.4s ease both; }
+.juli-logo-shockwave { position: absolute; width: 50vmin; height: 50vmin; border: 1px solid #7deaff; border-radius: 50%; opacity: 0; box-shadow: 0 0 30px #41baff55, inset 0 0 30px #41baff33; animation: juli-shockwave 1.5s ease-out 3.6s both; pointer-events: none; }
+.juli-logo-flash { position: absolute; inset: 0; background: radial-gradient(ellipse,#bdefff99, #208cff33 35%,transparent 75%); pointer-events: none; opacity: 0; animation: juli-flash 1.2s ease 4.1s both; }
+@keyframes juli-logo-subtitle { 0%,45% { opacity: 0; transform: translateY(12px); letter-spacing: 8px; } 65%,90% { opacity: 1; transform: translateY(0); letter-spacing: 4px; } 100% { opacity: 0; } }
+@keyframes juli-shockwave { 0% { transform: scale(.5); opacity: 0; } 15% { opacity: .8; } 100% { transform: scale(4); opacity: 0; } }
+@keyframes juli-flash { 0%,100% { opacity: 0; } 40% { opacity: .85; } }
+/* 巨力浅色：冷白金属与工程蓝，保留独立的深色展示配色。 */
+html[data-skin='juli'][data-theme='light'] {
+  --bg: #eaf2f8; --bg-soft: #f5f9fc; --panel: #f8fcfff0; --panel-2: #e4eef6e8; --panel-top: #f4f9fc;
+  --line: #b9cddb; --line-strong: #789fb8; --hover: #167eb310; --active: #167eb320;
+  --text-1: #102d45; --text-2: #355870; --text-3: #58758b;
+  --accent: #086fa8; --accent-2: #b86b1b; --accent-ink: #fff; --accent-soft: #127cb414;
+  --ok: #157756; --warn: #9e5b12; --danger: #bc334c; --info: #1b68b0;
+  --glow: #1482b72a; --shadow: 0 18px 44px #153e531c; --grid: #1479aa0c;
+  --cad-bg: #f4f9fc; --cad-line: #1c4663; --cad-center: #087aaa; --cad-dim: #54738b;
+  --cad-text: #183b55; --cad-hatch: #bdd2df; --cad-frame: #4e829e;
+}
+html[data-skin='juli'][data-theme='light'] .juli-world { background: radial-gradient(ellipse at 70% 40%,#ffffff,#d8e8f3 75%); }
+html[data-skin='juli'][data-theme='light'] .juli-world-grid { background-image: linear-gradient(#1561930c 1px,transparent 1px),linear-gradient(90deg,#1561930c 1px,transparent 1px); }
+html[data-skin='juli'][data-theme='light'] .juli-orbit { border-color: #287dac30; }
+html[data-skin='juli'][data-theme='light'] .juli-orbit::before { border-color: #287dac20; }
+html[data-skin='juli'][data-theme='light'] .juli-telemetry,
+html[data-skin='juli'][data-theme='light'] .juli-world-caption { color: #416783; }
+html[data-skin='juli'][data-theme='light'] .card { border-color: #9bbace80; box-shadow: inset 0 1px #fff,0 12px 30px #234d6812; }
+html[data-skin='juli'][data-theme='light'] .btn.primary { background: linear-gradient(110deg,#096da8,#248dbd); color: white; }
+html[data-skin='juli'][data-theme='light'] .login-standalone-window { border-color: #8bb3ca; box-shadow: 0 16px 80px #245c7624; }
+html[data-skin='juli'][data-theme='light'] .login-inner-container { background: linear-gradient(90deg,#f6fbfff7 0%,#eff7fcec 42%,#edf7fc08 72%); }
+html[data-skin='juli'][data-theme='light'] .login-window-titlebar { background: #edf6fbdc; border-color: #b0cad9; }
+html[data-skin='juli'][data-theme='light'] .login-input { background: #ffffffb5; border-color: #a2bed0; color: #163b56; }
+html[data-skin='juli'][data-theme='light'] .juli-login-title { color: #133a58; }
+html[data-skin='juli'][data-theme='light'] .juli-login-title span { color: #086ea6; }
+html[data-skin='juli'][data-theme='light'] .juli-login-kicker { color: #94601f; }
+html[data-skin='juli'][data-theme='light'] .juli-preview-button { color: #266d92; }
+html[data-skin='juli'][data-theme='light'] .juli-login-rule { background: linear-gradient(90deg,#087db7,transparent); }
+html[data-skin='juli'][data-theme='light'] .juli-theme-entry,
+html[data-skin='juli'][data-theme='light'] .juli-mode-entry { background: #f5fbff; color: #175a80; border-color: #91b5ca; }
+.juli-mode-entry { position: fixed; bottom: 14px; right: 18px; z-index: 100; background: #082031; color: #a2e3ed; border: 1px solid #397184; padding: 7px 12px; border-radius: 5px; cursor: pointer; font-size: 11px; }
+.juli-machine { transition: inset .6s cubic-bezier(.2,.8,.2,1),opacity .4s; }
+.juli-world.is-hydraulic-transition .juli-machine { inset: 0; opacity: 1; }
+.juli-world.is-hydraulic-transition .juli-telemetry,
+.juli-world.is-hydraulic-transition .juli-world-caption,
+.juli-world.is-hydraulic-transition .juli-orbit,
+.juli-world.is-hydraulic-transition .juli-world-grid { opacity: 0; transition: opacity .25s; }
+.hydraulic-ui--withdraw { animation: hydraulic-withdraw .42s cubic-bezier(.5,0,.8,.4) both !important; pointer-events: none; }
+.hydraulic-ui--charge,.hydraulic-ui--impact { opacity: 0; visibility: hidden; pointer-events: none; }
+.hydraulic-ui--reveal { animation: hydraulic-reveal 1.21s cubic-bezier(.16,1,.3,1) both !important; pointer-events: none; }
+.hydraulic-transition-shield { position: fixed; inset: 0; z-index: 10000; overflow: hidden; cursor: progress; }
+.hydraulic-pressure-wave { position: absolute; left: 50%; top: 50%; width: 45vmin; height: 45vmin; margin: -22.5vmin; border-radius: 50%; border: 2px solid #71dfff; box-shadow: 0 0 25px #18b5ed88,inset 0 0 25px #18b5ed66; opacity: 0; }
+.hydraulic-impact-light { position: absolute; inset: 0; background: radial-gradient(ellipse at 55% 50%,#c5f0ff99,#39b6ff22 35%,transparent 70%); opacity: 0; }
+.hydraulic-transition--impact .hydraulic-pressure-wave,
+.hydraulic-transition--reveal .hydraulic-pressure-wave { animation: hydraulic-wave 1.2s ease-out both; }
+.hydraulic-transition--impact .hydraulic-impact-light,
+.hydraulic-transition--reveal .hydraulic-impact-light { animation: hydraulic-light .65s ease-out both; }
+@keyframes hydraulic-withdraw { from { opacity: 1; transform: scale(1); filter: blur(0); } to { opacity: 0; transform: translateX(-5%) scale(.91); filter: blur(8px); } }
+@keyframes hydraulic-reveal { 0% { opacity: 0; transform: perspective(1400px) translateX(32%) translateZ(-120px) rotateY(-9deg); filter: blur(12px); } 48% { opacity: 1; transform: perspective(1400px) translateX(-1.2%) translateZ(0) rotateY(.6deg); filter: blur(0); } 72% { transform: translateX(.35%); } 100% { opacity: 1; transform: none; filter: none; } }
+@keyframes hydraulic-wave { 0% { opacity: .75; transform: scale(.25); } 100% { opacity: 0; transform: scale(5); } }
+@keyframes hydraulic-light { 0% { opacity: .7; } 100% { opacity: 0; } }
+html[data-skin='juli'] .login-body-content { overflow-y: auto; scrollbar-width: thin; }
+html[data-skin='juli'] .login-brand-header { margin-bottom: 18px; }
+html[data-skin='juli'] .login-body-content { min-height: 0; }
+@keyframes juli-orbit { to { transform: rotate(360deg); } }
+@keyframes juli-panel { from { opacity: 0; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
+@keyframes juli-rule { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes juli-draw { to { stroke-dashoffset: 0; } }
+@keyframes juli-letter { 0% { stroke-dashoffset: 400; } 65% { fill: transparent; stroke-dashoffset: 0; filter: none; } 100% { fill: #d4f9ff; stroke-dashoffset: 0; filter: drop-shadow(0 0 12px #42dbff); } }
+@media(max-width:700px) { .juli-machine { inset: 0 -60% 0 -10%; opacity: .28; } .juli-telemetry { display: none; } html[data-skin='juli'] .login-body-content { margin: auto; } }
+@media(max-height:760px) {
+  html[data-skin='juli'] .login-standalone-window { height: calc(100vh - 16px); max-height: calc(100vh - 16px); }
+  html[data-skin='juli'] .login-inner-container { padding-top: 18px; padding-bottom: 18px; }
+  html[data-skin='juli'] .login-body-content { justify-content: flex-start; }
+  html[data-skin='juli'] .juli-login-logo { max-width: 220px; margin-bottom: 8px; }
+  html[data-skin='juli'] .juli-login-title { font-size: 25px; }
+  html[data-skin='juli'] .juli-login-title span { margin-top: 5px; font-size: 16px; }
+  html[data-skin='juli'] .juli-login-rule { margin: 10px 0 7px; }
+  html[data-skin='juli'] .login-form { gap: 12px; }
+  html[data-skin='juli'] .login-input { height: 38px; }
+  html[data-skin='juli'] .login-form .btn { min-height: 38px; }
+}
+@media(prefers-reduced-motion:reduce) { html[data-skin='juli'] *, .juli-transition * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }

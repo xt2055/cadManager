@@ -102,6 +102,7 @@ onBeforeUnmount(() => {
 })
 
 const skins: Array<{ key: ThemeSkin; title: string; desc: string; icon: string }> = [
+  { key: 'juli', title: '巨力液压 · 数字工场', desc: '三维液压缸、CAD 蓝图登录、工程线条描绘与机械光效转场', icon: 'layers' },
   {
     key: 'classic',
     title: '经典主题 (默认)',
