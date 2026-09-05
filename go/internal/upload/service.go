@@ -1225,13 +1225,19 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		partRevisionIDs[part.No] = revisionID
 	}
 	relationIDs := make(map[string]string, len(manifest.Parts))
+	borrowedPartNos := make(map[string]struct{}, len(manifest.Parts))
 	for _, part := range manifest.Parts {
 		qty := part.Quantity
 		if qty <= 0 {
 			qty = 1
 		}
+		relationType := "owned"
+		if part.BorrowFrom != nil && strings.TrimSpace(*part.BorrowFrom) != "" {
+			relationType = "borrowed"
+			borrowedPartNos[part.No] = struct{}{}
+		}
 		var relationID string
-		if err := tx.QueryRow(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, remark, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'owned', $3, COALESCE($4, ''), $5::uuid, $5::uuid) RETURNING id::text`, drawingID, partIDs[part.No], qty, part.Remark, userID).Scan(&relationID); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, remark, created_by, updated_by) VALUES ($1::uuid, $2::uuid, $3, $4, COALESCE($5, ''), $6::uuid, $6::uuid) RETURNING id::text`, drawingID, partIDs[part.No], relationType, qty, part.Remark, userID).Scan(&relationID); err != nil {
 			return nil, fmt.Errorf("保存零件层级失败: %w", err)
 		}
 		relationIDs[part.No] = relationID
@@ -1325,19 +1331,32 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		if strings.TrimSpace(borrow.SourcePartNo) == "" {
 			return nil, errors.New("借用来源零件图号不能为空")
 		}
+		if _, exists := borrowedPartNos[strings.TrimSpace(borrow.TargetPartNo)]; exists {
+			continue
+		}
 		status := normalizeRelationStatus(borrow.Status)
 		var sourcePartID string
-		query := `SELECT p.id::text FROM parts p WHERE lower(trim(p.part_no)) = lower(trim($1))`
-		args := []any{borrow.SourcePartNo}
-		if borrow.SourceDrawingNo != "" {
-			query = `SELECT p.id::text FROM parts p JOIN drawing_part_relations r ON r.part_id = p.id AND r.status = 'active' JOIN drawings d ON d.id = r.drawing_id WHERE d.drawing_no = $2 AND lower(trim(p.part_no)) = lower(trim($1)) LIMIT 1`
-			args = []any{borrow.SourcePartNo, borrow.SourceDrawingNo}
-		}
-		if err := tx.QueryRow(ctx, query, args...).Scan(&sourcePartID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, fmt.Errorf("借用来源零件不存在: %s", borrow.SourcePartNo)
+		var sourceDrawingExists bool
+		if strings.TrimSpace(borrow.SourceDrawingNo) != "" {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM drawings WHERE drawing_no = $1)`, borrow.SourceDrawingNo).Scan(&sourceDrawingExists); err != nil {
+				return nil, err
 			}
-			return nil, err
+			if sourceDrawingExists {
+				if err := tx.QueryRow(ctx, `SELECT p.id::text FROM parts p JOIN drawing_part_relations r ON r.part_id = p.id AND r.status = 'active' JOIN drawings d ON d.id = r.drawing_id WHERE d.drawing_no = $2 AND lower(trim(p.part_no)) = lower(trim($1)) LIMIT 1`, borrow.SourcePartNo, borrow.SourceDrawingNo).Scan(&sourcePartID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+					return nil, err
+				}
+			}
+		}
+		if sourcePartID == "" && !sourceDrawingExists {
+			if err := tx.QueryRow(ctx, `SELECT p.id::text FROM parts p WHERE lower(trim(p.part_no)) = lower(trim($1)) LIMIT 1`, borrow.SourcePartNo).Scan(&sourcePartID); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return nil, fmt.Errorf("借用来源零件不存在: %s", borrow.SourcePartNo)
+				}
+				return nil, err
+			}
+		}
+		if sourcePartID == "" {
+			return nil, fmt.Errorf("借用来源零件不存在: %s", borrow.SourcePartNo)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, borrow_reason, borrowed_by, borrowed_at, status, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'borrowed', 1, $3, $4::uuid, now(), $5, $4::uuid, $4::uuid)`, drawingID, sourcePartID, firstNonEmpty(borrow.Direction, "in"), userID, status); err != nil {
 			return nil, fmt.Errorf("保存借用记录失败: %w", err)
