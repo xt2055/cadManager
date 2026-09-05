@@ -10,6 +10,7 @@ import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { appContainer, drawingFileService } from '@/app/container'
+import { getApiBaseUrl } from '@/services/api-base.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import type { DrawingFileIdentity } from '@/modules/drawing'
 import type { UploadSessionSnapshot } from '@/types/application.types'
@@ -85,6 +86,87 @@ const canRetryUpload = computed(() => Boolean(drawingOperationsStore.pendingUplo
 const uploadSnapshot = ref<UploadSessionSnapshot | null>(null)
 const readyUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'ready' || item.status === 'committed').length ?? 0)
 const failedUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'failed').length ?? 0)
+interface ConversionProgressItem { id: string; name: string; status: string; error?: string; attempts?: number }
+const conversionModalVisible = ref(false)
+const conversionBusy = ref(false)
+const conversionDrawingNo = ref('')
+const conversionItems = ref<ConversionProgressItem[]>([])
+const conversionReadyCount = computed(() => conversionItems.value.filter((item) => item.status === 'ready').length)
+const conversionFailedCount = computed(() => conversionItems.value.filter((item) => item.status === 'failed').length)
+const conversionPendingCount = computed(() => conversionItems.value.filter((item) => !['ready', 'failed'].includes(item.status)).length)
+
+function accessToken(): string {
+  return window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token') || ''
+}
+
+function flattenConversionFiles(nodes: Array<{ files?: Array<{ id: string; name: string }>; otherFiles?: Array<{ id: string; name: string }>; children?: unknown[] }>): Array<{ id: string; name: string }> {
+  return nodes.flatMap((node) => [
+    ...(node.files ?? []), ...(node.otherFiles ?? []),
+    ...flattenConversionFiles((node.children ?? []) as Array<{ files?: Array<{ id: string; name: string }>; otherFiles?: Array<{ id: string; name: string }>; children?: unknown[] }>),
+  ])
+}
+
+function isCadFile(name: string): boolean { return /\.(exb|dwg|dxf)$/i.test(name) }
+
+async function readConversionStatus(item: ConversionProgressItem): Promise<ConversionProgressItem> {
+  const response = await fetch(`${getApiBaseUrl()}/cad/conversions/${encodeURIComponent(item.id)}`, {
+    headers: { Accept: 'application/json', Authorization: `Bearer ${accessToken()}` },
+    credentials: 'include',
+    signal: AbortSignal.timeout(10000),
+  })
+  const body = await response.json().catch(() => ({})) as { data?: { status?: string; error?: string; attempts?: number }; message?: string }
+  if (!response.ok) throw new Error(body.message || `读取转换状态失败：HTTP ${response.status}`)
+  const data = body.data ?? {}
+  return { ...item, status: data.status || 'pending', error: data.error, attempts: data.attempts }
+}
+
+function wait(milliseconds: number): Promise<void> { return new Promise((resolve) => window.setTimeout(resolve, milliseconds)) }
+
+async function waitForDrawingConversions(drawingNo: string): Promise<boolean> {
+  conversionDrawingNo.value = drawingNo
+  const drawing = drawingStore.getDrawing(drawingNo)
+  const structureFiles = flattenConversionFiles(drawingStore.getStructure(drawingNo))
+  const files = [...(drawing?.files ?? []), ...(drawing?.otherFiles ?? []), ...structureFiles]
+    .filter((file) => isCadFile(file.name))
+    .filter((file, index, all) => all.findIndex((candidate) => candidate.id === file.id) === index)
+  conversionItems.value = files.map((file) => ({ id: file.id, name: file.name, status: 'pending' }))
+  if (!conversionItems.value.length) return true
+  conversionModalVisible.value = true
+  while (conversionModalVisible.value) {
+    try {
+      conversionItems.value = await Promise.all(conversionItems.value.map(readConversionStatus))
+    } catch (error) {
+      createError.value = error instanceof Error ? error.message : '读取转换进度失败'
+      return false
+    }
+    createStatus.value = `正在转换图纸（${conversionReadyCount.value}/${conversionItems.value.length}）`
+    if (conversionReadyCount.value === conversionItems.value.length) {
+      conversionModalVisible.value = false
+      return true
+    }
+    if (conversionFailedCount.value > 0) return false
+    await wait(2000)
+  }
+  return false
+}
+
+async function retryFailedConversions() {
+  if (conversionBusy.value) return
+  conversionBusy.value = true
+  try {
+    const failed = conversionItems.value.filter((item) => item.status === 'failed')
+    await Promise.all(failed.map(async (item) => {
+      const response = await fetch(`${getApiBaseUrl()}/cad/conversions/${encodeURIComponent(item.id)}`, {
+        method: 'POST', headers: { Accept: 'application/json', Authorization: `Bearer ${accessToken()}` }, credentials: 'include',
+      })
+      if (!response.ok) throw new Error(`「${item.name}」重新转换失败`)
+    }))
+    conversionItems.value = conversionItems.value.map((item) => item.status === 'failed' ? { ...item, status: 'pending', error: undefined } : item)
+    await waitForDrawingConversions(conversionDrawingNo.value || formDrawingNo.value.trim())
+  } catch (error) {
+    createError.value = error instanceof Error ? error.message : '重新转换失败'
+  } finally { conversionBusy.value = false }
+}
 
 async function refreshUploadSnapshot() {
   const sessionId = drawingOperationsStore.pendingUploadSessionId
@@ -563,6 +645,7 @@ async function performCreate() {
     await drawingOperationsStore.addDrawing(newProjectDrawing, partsForStructure, attachments.filter((item): item is { id: string; content: File } => Boolean(item.id && item.content)))
     // 新建完成后刷新同一份结构与附件快照，进入详情页即可看到全部图纸。
     await drawingStore.refresh()
+    if (!await waitForDrawingConversions(drawingNo)) return
   } catch (error) {
     console.error('保存新建图纸失败', error)
     createError.value = error instanceof Error ? error.message : '项目创建失败，数据未能保存'
@@ -603,12 +686,27 @@ async function retryFailedUpload() {
 
 <template>
   <div class="page drawing-create-view">
-    <div v-if="isCreating" class="create-loading-overlay" role="status" aria-live="polite">
+    <div v-if="isCreating && !conversionModalVisible" class="create-loading-overlay" role="status" aria-live="polite">
       <div class="create-loading-card">
         <span class="create-spinner" aria-hidden="true"></span>
         <strong>正在创建图纸</strong>
         <span>{{ createStatus }}</span>
         <small>请勿关闭页面或重复点击</small>
+      </div>
+    </div>
+    <div v-if="conversionModalVisible" class="create-loading-overlay conversion-progress-overlay" role="dialog" aria-modal="true">
+      <div class="create-loading-card conversion-progress-card">
+        <strong>图纸转换进度</strong>
+        <span>{{ conversionReadyCount }}/{{ conversionItems.length }} 个文件已完成</span>
+        <span v-if="conversionPendingCount">还有 {{ conversionPendingCount }} 个文件正在转换，完成后将进入图纸详情</span>
+        <span v-if="conversionFailedCount" class="conversion-failed-text">{{ conversionFailedCount }} 个文件转换失败</span>
+        <div class="conversion-progress-list">
+          <div v-for="item in conversionItems" :key="item.id" class="conversion-progress-row">
+            <span>{{ item.name }}</span>
+            <span>{{ item.status === 'ready' ? '已完成' : item.status === 'failed' ? '失败' : '转换中' }}</span>
+          </div>
+        </div>
+        <button v-if="conversionFailedCount" class="btn primary" type="button" :disabled="conversionBusy" @click="retryFailedConversions">{{ conversionBusy ? '正在重新排队…' : '重试失败文件' }}</button>
       </div>
     </div>
     <div v-if="canRetryUpload" class="create-upload-recovery" :role="createError ? 'alert' : undefined">
@@ -915,6 +1013,61 @@ async function retryFailedUpload() {
 .create-loading-card small {
   color: var(--text-3);
   font-size: 11px;
+}
+
+.conversion-progress-card {
+  width: min(520px, calc(100vw - 48px));
+  align-items: stretch;
+  text-align: left;
+}
+
+.conversion-progress-card > strong,
+.conversion-progress-card > span {
+  text-align: center;
+}
+
+.conversion-progress-list {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-height: min(42vh, 360px);
+  margin-top: 8px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.conversion-progress-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.conversion-progress-row span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+.conversion-progress-row span:last-child {
+  flex: none;
+  color: var(--accent);
+}
+
+.conversion-failed-text {
+  color: var(--danger, #c45b4b) !important;
+}
+
+.conversion-progress-card .btn {
+  align-self: center;
+  margin-top: 4px;
 }
 
 .create-upload-recovery {
