@@ -526,16 +526,10 @@ func CADSource(repository attachment.Repository, objectStorage storage.ObjectSto
 		}
 
 		if sourceKey == storageKey && strings.EqualFold(ext, ".exb") {
-			if convService == nil {
-				response.WriteError(writer, http.StatusServiceUnavailable, "CAD 转换服务未启动")
-				return
-			}
-			sourceKey, err = convService.EnsureDwg(request.Context(), item)
-			if err != nil {
-				response.WriteError(writer, http.StatusUnprocessableEntity, err.Error())
-				return
-			}
-			fileName = strings.TrimSuffix(fileName, filepathExt(fileName)) + ".dwg"
+			// 上传后的 EXB 必须由持久化转换队列处理。这里不能为一次浏览
+			// 绕过队列同步启动 CAXA，否则会和后台任务争用同一个调度协议。
+			response.WriteError(writer, http.StatusConflict, "图纸正在转换，请稍候刷新")
+			return
 		}
 
 		reader, object, err := objectStorage.Open(request.Context(), sourceKey)
