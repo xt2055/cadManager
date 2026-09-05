@@ -562,6 +562,8 @@ async function performCreate() {
   try {
     createStatus.value = '正在保存项目结构并上传图纸文件'
     await drawingOperationsStore.addDrawing(newProjectDrawing, partsForStructure, attachments.filter((item): item is { id: string; content: File } => Boolean(item.id && item.content)))
+    // 新建完成后刷新同一份结构与附件快照，进入详情页即可看到全部图纸。
+    await drawingStore.refresh()
   } catch (error) {
     console.error('保存新建图纸失败', error)
     createError.value = error instanceof Error ? error.message : '项目创建失败，数据未能保存'

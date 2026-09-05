@@ -12,7 +12,7 @@ import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
 import { CAXA_NOT_FOUND_PREFIX } from '@/modules/editing'
 import type { DrawingFile } from '@/types/domain.types'
-import type { DrawingSummaryView, FileView, PartView } from '@/modules/drawing'
+import type { DrawingSummaryView, FileView, PartView, StructureNodeView } from '@/modules/drawing'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 import { formatReadableDateTime } from '@/utils/date-time'
 
@@ -63,6 +63,10 @@ function toDrawingFile(file: FileView): DrawingFile {
   }
 }
 
+function flattenStructure(nodes: StructureNodeView[]): PartView[] {
+  return nodes.flatMap((node) => [node, ...flattenStructure(node.children)])
+}
+
 // 总图页是项目级文件清单：总图与结构树内全部零件图都必须在这里出现。
 // 文件的归属从结构关系取得，而不依赖 CAD 标题栏或文件角色的历史数据。
 const allFiles = computed<ProjectDrawingFile[]>(() => {
@@ -100,9 +104,13 @@ const allFiles = computed<ProjectDrawingFile[]>(() => {
       return false
     }
 
-    drawingStore.parts
-      .filter(belongsToDrawing)
-      .forEach(appendOwnerFiles)
+    // 优先使用服务端归属到当前总图的结构树；外部借用件、图号前缀不规范的零件
+    // 与多层子件都能被递归汇总。旧快照没有结构树时才回退为父级链判断。
+    const structureParts = flattenStructure(drawingStore.getStructure(mainDrawing.no))
+    const projectParts = structureParts.length
+      ? structureParts
+      : drawingStore.parts.filter(belongsToDrawing)
+    projectParts.forEach(appendOwnerFiles)
   } else {
     // 如果当前选中的就是零件图
     appendOwnerFiles(currentItem.value as PartView)

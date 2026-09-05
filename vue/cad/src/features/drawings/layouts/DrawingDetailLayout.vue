@@ -26,7 +26,12 @@ async function syncDrawing() {
   const drawingId = String(route.params.drawingId ?? '')
   await drawingStore.load()
   if (drawingId) {
-    const item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
+    let item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
+    // 从新建页跳转时，Pinia 可能仍保留创建前的快照；目标不存在才刷新一次。
+    if (!item) {
+      await drawingStore.refresh()
+      item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
+    }
     if (item) {
       if ('parentNo' in item) workspaceStore.selectPart(item.id)
       else workspaceStore.selectDrawing(item.id)
