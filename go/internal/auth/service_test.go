@@ -132,7 +132,15 @@ func TestServiceLoginAndLogout(t *testing.T) {
 func TestServiceRejectsInvalidPassword(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.DefaultCost)
 	service := NewService(&memoryRepository{user: User{Account: "admin", PasswordHash: string(hash), Status: "active"}})
-	if _, err := service.Login(context.Background(), LoginRequest{Account: "admin", Password: "wrong"}); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := service.Login(context.Background(), LoginRequest{Account: "admin", Password: "wrong"}); !errors.Is(err, ErrInvalidPassword) {
+		t.Fatalf("login error = %v", err)
+	}
+}
+
+func TestServiceRejectsUnknownAccount(t *testing.T) {
+	hash, _ := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.DefaultCost)
+	service := NewService(&memoryRepository{user: User{Account: "admin", PasswordHash: string(hash), Status: "active"}})
+	if _, err := service.Login(context.Background(), LoginRequest{Account: "missing", Password: "secret"}); !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("login error = %v", err)
 	}
 }

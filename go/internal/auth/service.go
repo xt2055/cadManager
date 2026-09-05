@@ -15,6 +15,8 @@ import (
 
 var (
 	ErrInvalidCredentials = errors.New("账号或密码错误")
+	ErrAccountNotFound    = errors.New("账号不存在")
+	ErrInvalidPassword    = errors.New("密码错误")
 	ErrDisabledUser       = errors.New("账号已被禁用，请联系管理员")
 	ErrInvalidToken       = errors.New("登录会话无效或已过期")
 	ErrInvalidUserInput   = errors.New("账号信息不完整或角色无效")
@@ -40,7 +42,7 @@ func (service *Service) Login(ctx context.Context, request LoginRequest) (LoginR
 	user, err := service.repository.FindByAccount(ctx, account)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			return LoginResult{}, ErrInvalidCredentials
+			return LoginResult{}, ErrAccountNotFound
 		}
 		return LoginResult{}, err
 	}
@@ -48,7 +50,7 @@ func (service *Service) Login(ctx context.Context, request LoginRequest) (LoginR
 		return LoginResult{}, ErrDisabledUser
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(request.Password)); err != nil {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, ErrInvalidPassword
 	}
 
 	token, tokenHash, err := createToken()

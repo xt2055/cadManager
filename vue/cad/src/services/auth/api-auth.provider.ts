@@ -49,17 +49,24 @@ export class ApiAuthProvider implements AuthProvider {
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (options.body) headers['Content-Type'] = 'application/json'
     if (token) headers.Authorization = `Bearer ${token}`
-    const response = await fetch(`${this.baseUrl}${path}`, {
+	 const response = await fetch(`${this.baseUrl}${path}`, {
       method: options.method,
       headers,
       body: options.body,
       credentials: 'include',
-    })
-    if (!response.ok) throw new Error(`认证接口请求失败：HTTP ${response.status}`)
-    const contentType = response.headers.get('content-type') || ''
-    if (!contentType.includes('application/json')) {
-      throw new Error('认证接口未返回 JSON，请检查后端地址或调试模式配置')
-    }
-    return response.json() as Promise<T>
-  }
+	 })
+	const contentType = response.headers.get('content-type') || ''
+	if (!contentType.includes('application/json')) {
+		if (!response.ok) throw new Error('认证服务暂时不可用，请稍后重试')
+		throw new Error('认证接口未返回 JSON，请检查后端地址或调试模式配置')
+	}
+	const body: unknown = await response.json().catch(() => undefined)
+	if (!response.ok) {
+		if (isRecord(body) && typeof body.message === 'string' && body.message.trim()) {
+			throw new Error(body.message)
+		}
+		throw new Error(response.status >= 500 ? '认证服务暂时不可用，请稍后重试' : '登录失败，请检查账号和密码')
+	}
+	return body as T
+}
 }

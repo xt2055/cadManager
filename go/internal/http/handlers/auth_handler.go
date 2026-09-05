@@ -97,6 +97,10 @@ func Reviewers(service *auth.Service) http.HandlerFunc {
 
 func writeAuthError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, auth.ErrAccountNotFound):
+		response.WriteError(writer, http.StatusNotFound, err.Error())
+	case errors.Is(err, auth.ErrInvalidPassword):
+		response.WriteError(writer, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		response.WriteError(writer, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, auth.ErrDisabledUser):
