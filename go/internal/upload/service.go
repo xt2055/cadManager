@@ -1288,7 +1288,11 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		if item.processedKey != "" {
 			currentName, currentMime, currentSize, currentBlobID = processedCADName(item.name), firstNonEmpty(item.processedMime, "application/acad"), item.processedSize, item.processedBlobID
 		}
-		attachmentID, err := insertAttachmentVersionTx(ctx, tx, drawingID, partID, item.role, item.name, currentName, currentMime, currentSize, currentBlobID, userID, "v1.0", "release")
+		attachmentDrawingID := drawingID
+		if partID != "" {
+			attachmentDrawingID = ""
+		}
+		attachmentID, err := insertAttachmentVersionTx(ctx, tx, attachmentDrawingID, partID, item.role, item.name, currentName, currentMime, currentSize, currentBlobID, userID, "v1.0", "release")
 		if err != nil {
 			return nil, fmt.Errorf("创建项目附件失败: %w", err)
 		}
