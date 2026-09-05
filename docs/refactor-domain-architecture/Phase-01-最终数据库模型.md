@@ -60,6 +60,7 @@ drawing_id
 part_id
 parent_relation_id NULL
 relation_type: owned | borrowed
+source_drawing_no NULL（外部借用来源图号）
 qty
 position NULL
 line_no NULL

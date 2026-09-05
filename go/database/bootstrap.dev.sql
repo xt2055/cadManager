@@ -39,6 +39,8 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'cadguanliq')\gexec
 \ir migrations/000021_repair_current_cad_metadata.sql
 \ir migrations/000022_rebuild_final_domain_model.sql
 \ir migrations/000023_domain_command_idempotency.sql
+\ir migrations/000024_upload_failure_stages.sql
+\ir migrations/000025_borrow_external_source.sql
 
 -- 初始化脚本由管理员执行时，明确授予业务账号运行时权限。
 GRANT CONNECT ON DATABASE cadguanliq TO cadguanliq_app;

@@ -258,7 +258,7 @@ func (repository *PGRepository) ListParts(ctx context.Context, drawingID string)
 			       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
 			       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'),
 			       r.qty, COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
-			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, COALESCE(source_drawing.drawing_no, ''), p.lifecycle_status,
+			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, COALESCE(NULLIF(r.source_drawing_no, ''), source_drawing.drawing_no, ''), p.lifecycle_status,
 			       COALESCE(pr.created_by::text, p.created_by::text, ''), COALESCE(pr.created_at, p.created_at),
 			       COALESCE(pr.published_by::text, p.updated_by::text, ''), COALESCE(pr.published_at, p.updated_at)
 		FROM drawing_part_relations r
@@ -266,7 +266,7 @@ func (repository *PGRepository) ListParts(ctx context.Context, drawingID string)
 		JOIN drawings d ON d.id = r.drawing_id
 			LEFT JOIN drawing_part_relations parent_rel ON parent_rel.id = r.parent_relation_id
 			LEFT JOIN parts parent_part ON parent_part.id = parent_rel.part_id
-		LEFT JOIN LATERAL (SELECT source_drawing.drawing_no FROM drawing_part_relations source_rel JOIN drawings source_drawing ON source_drawing.id = source_rel.drawing_id WHERE source_rel.part_id = p.id AND source_rel.relation_type = 'owned' AND source_rel.status = 'active' AND source_rel.drawing_id <> r.drawing_id ORDER BY source_rel.created_at LIMIT 1) source_drawing ON true
+			LEFT JOIN LATERAL (SELECT source_drawing.drawing_no FROM drawing_part_relations source_rel JOIN drawings source_drawing ON source_drawing.id = source_rel.drawing_id WHERE source_rel.part_id = p.id AND source_rel.relation_type = 'owned' AND source_rel.status = 'active' AND source_rel.drawing_id <> r.drawing_id ORDER BY source_rel.created_at LIMIT 1) source_drawing ON true
 		LEFT JOIN part_revisions pr ON pr.id = COALESCE(p.published_revision_id, (SELECT latest.id FROM part_revisions latest WHERE latest.part_id = p.id ORDER BY latest.revision_no DESC LIMIT 1))
 		WHERE r.drawing_id = $1::uuid AND r.status = 'active'
 		ORDER BY p.part_no, r.created_at`, drawingID)
@@ -296,7 +296,7 @@ func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, 
 			       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
 			       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'), r.qty,
 			       COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
-			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, COALESCE(source_drawing.drawing_no, ''), p.lifecycle_status,
+			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, COALESCE(NULLIF(r.source_drawing_no, ''), source_drawing.drawing_no, ''), p.lifecycle_status,
 			       COALESCE(pr.created_by::text, p.created_by::text, ''), COALESCE(pr.created_at, p.created_at),
 			       COALESCE(pr.published_by::text, p.updated_by::text, ''), COALESCE(pr.published_at, p.updated_at)
 		FROM parts p

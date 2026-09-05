@@ -1232,12 +1232,14 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 			qty = 1
 		}
 		relationType := "owned"
+		sourceDrawingNo := ""
 		if part.BorrowFrom != nil && strings.TrimSpace(*part.BorrowFrom) != "" {
 			relationType = "borrowed"
+			sourceDrawingNo = strings.TrimSpace(*part.BorrowFrom)
 			borrowedPartNos[part.No] = struct{}{}
 		}
 		var relationID string
-		if err := tx.QueryRow(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, remark, created_by, updated_by) VALUES ($1::uuid, $2::uuid, $3, $4, COALESCE($5, ''), $6::uuid, $6::uuid) RETURNING id::text`, drawingID, partIDs[part.No], relationType, qty, part.Remark, userID).Scan(&relationID); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, source_drawing_no, remark, created_by, updated_by) VALUES ($1::uuid, $2::uuid, $3, $4, NULLIF($5, ''), COALESCE($6, ''), $7::uuid, $7::uuid) RETURNING id::text`, drawingID, partIDs[part.No], relationType, qty, sourceDrawingNo, part.Remark, userID).Scan(&relationID); err != nil {
 			return nil, fmt.Errorf("保存零件层级失败: %w", err)
 		}
 		relationIDs[part.No] = relationID
@@ -1358,7 +1360,7 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		if sourcePartID == "" {
 			return nil, fmt.Errorf("借用来源零件不存在: %s", borrow.SourcePartNo)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, borrow_reason, borrowed_by, borrowed_at, status, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'borrowed', 1, $3, $4::uuid, now(), $5, $4::uuid, $4::uuid)`, drawingID, sourcePartID, firstNonEmpty(borrow.Direction, "in"), userID, status); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, source_drawing_no, borrow_reason, borrowed_by, borrowed_at, status, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'borrowed', 1, NULLIF($3, ''), $4, $5::uuid, now(), $6, $5::uuid, $5::uuid)`, drawingID, sourcePartID, borrow.SourceDrawingNo, firstNonEmpty(borrow.Direction, "in"), userID, status); err != nil {
 			return nil, fmt.Errorf("保存借用记录失败: %w", err)
 		}
 	}
