@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -215,7 +216,8 @@ func Heartbeat(authService *auth.Service) http.HandlerFunc {
 			return
 		}
 		if err := authService.Heartbeat(request.Context(), middleware.BearerToken(request.Header.Get("Authorization"))); err != nil {
-			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			log.Printf("[认证] 心跳失败: %v", err)
+			writeAuthError(writer, err)
 			return
 		}
 		response.WriteData(writer, http.StatusOK, map[string]any{

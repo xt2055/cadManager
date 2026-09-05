@@ -160,6 +160,7 @@ interface LocalActiveEditSession {
   fileId: string
   fileName: string
   drawingNo: string
+  storageKey?: string
   uncPath: string
   openUrl: string
   startedAt: string
@@ -494,15 +495,28 @@ async function doStopSession(targetId: string, targetFileName: string) {
 }
 
 async function relaunchEditor(session: LocalActiveEditSession) {
+  // 打开票据是一次性的（消费即失效，5 分钟过期），不能复用首次呼出时的旧 URL；
+  // 重新呼出必须重新调 openSession 幂等认领，服务端会签发新票据且不覆盖工作文件。
+  const file = allFiles.value.find((item) => item.id === session.fileId)
+  const storageKey = session.storageKey || file?.rawStorageKey || file?.storageKey
+  if (!storageKey) {
+    uiStore.toast('本地会话缺少存储键，无法重新呼出；请改点文件行的「本地编辑」重新认领', 'warn')
+    return
+  }
+  if (editingFileId.value) return
+  editingFileId.value = session.fileId
   try {
-    await editingService.openCad({
-      sessionId: session.sessionId,
-      openUrl: session.openUrl,
-      expiresAt: '',
-    })
+    const result = await editingService.openSession(storageKey)
+    session.openUrl = result.openUrl
+    session.uncPath = result.uncPath
+    session.lastHeartbeatAt = Date.now()
+    persistLocalSessions()
+    await editingService.openCad(result)
     uiStore.toast('已重新呼出本地 CAD', 'ok')
   } catch (error) {
     handleCadOpenError(error, () => relaunchEditor(session))
+  } finally {
+    editingFileId.value = null
   }
 }
 
@@ -613,7 +627,8 @@ async function openEditor(file: DrawingFile) {  if (!currentItem.value) return
   editingFileId.value = file.id
   let sessionId: string | null = null
   try {
-    const session = await editingService.openSession(file.storageKey)
+    // 会话占用与票据都以原始存储键为准（EXB 上传场景，当前键可能指向转换产物）。
+    const session = await editingService.openSession(file.rawStorageKey || file.storageKey)
     sessionId = session.sessionId
     window.localStorage.setItem('cad_last_edit_url', session.openUrl)
 
@@ -622,6 +637,7 @@ async function openEditor(file: DrawingFile) {  if (!currentItem.value) return
       fileId: file.id,
       fileName: file.name,
       drawingNo: currentItem.value?.no || '',
+      storageKey: file.rawStorageKey || file.storageKey,
       uncPath: session.uncPath,
       openUrl: session.openUrl,
       startedAt: new Date().toLocaleTimeString(),

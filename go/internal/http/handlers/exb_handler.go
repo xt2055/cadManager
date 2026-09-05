@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -493,26 +494,38 @@ func CADSource(repository attachment.Repository, objectStorage storage.ObjectSto
 		}
 
 		storageKey := strings.TrimSpace(request.URL.Query().Get("storageKey"))
-		if storageKey == "" {
+		attachmentID := strings.TrimSpace(request.URL.Query().Get("attachmentId"))
+		if storageKey == "" && attachmentID == "" {
 			response.WriteError(writer, http.StatusBadRequest, "storageKey 必填")
 			return
 		}
-		item, err := repository.Find(request.Context(), storageKey)
+		var item attachment.Attachment
+		var err error
+		if attachmentID != "" {
+			finder, ok := repository.(interface {
+				FindByID(context.Context, string) (attachment.Attachment, error)
+			})
+			if !ok {
+				response.WriteError(writer, http.StatusServiceUnavailable, "附件查询服务不可用")
+				return
+			}
+			item, err = finder.FindByID(request.Context(), attachmentID)
+		} else {
+			item, err = repository.Find(request.Context(), storageKey)
+		}
 		if err != nil {
 			writeAttachmentError(writer, err)
 			return
 		}
 
-		ext := filepathExt(storageKey)
-		if ext == "" {
-			ext = filepathExt(item.Name)
-		}
-		sourceKey := storageKey
-		fileName := item.Name
+		// Blob keys have no extension. The current version's metadata is authoritative.
+		fileName := firstNonEmpty(item.CurrentName, item.Name)
+		ext := filepathExt(fileName)
+		sourceKey := firstNonEmpty(item.CurrentStorageKey, item.StorageKey)
 
 		// 优先使用已就绪的当前 DWG 对象。内容对象键通常是 blobs/<hash>，
 		// 因此必须依据 currentName 判断格式，不能依据 currentStorageKey 的后缀。
-		if item.CurrentStorageKey != "" && item.CurrentStorageKey != item.StorageKey && strings.EqualFold(filepathExt(item.CurrentName), ".dwg") {
+		if item.CurrentStorageKey != "" && strings.EqualFold(filepathExt(item.CurrentName), ".dwg") {
 			if reader, info, statErr := objectStorage.Open(request.Context(), item.CurrentStorageKey); statErr == nil && info.Size > 0 {
 				_ = reader.Close()
 				sourceKey = item.CurrentStorageKey
@@ -525,7 +538,7 @@ func CADSource(repository attachment.Repository, objectStorage storage.ObjectSto
 			}
 		}
 
-		if sourceKey == storageKey && strings.EqualFold(ext, ".exb") {
+		if strings.EqualFold(ext, ".exb") {
 			// 上传后的 EXB 必须由持久化转换队列处理。这里不能为一次浏览
 			// 绕过队列同步启动 CAXA，否则会和后台任务争用同一个调度协议。
 			response.WriteError(writer, http.StatusConflict, "图纸正在转换，请稍候刷新")

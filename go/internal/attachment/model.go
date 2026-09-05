@@ -29,7 +29,10 @@ type Attachment struct {
 	SHA256            string  `json:"sha256,omitempty"`
 	Version           string  `json:"version"`
 	Previewable       bool    `json:"previewable"`
+	// UploadedBy 显示名（列表/详情展示用）；UploadedByID 是 users.id 原始 UUID，
+	// 供版本登记等需要真实用户 ID 的内部链路使用，两者互不混用。
 	UploadedBy        string  `json:"uploadedBy,omitempty"`
+	UploadedByID      string  `json:"-"`
 	CreatedAt         string  `json:"createdAt,omitempty"`
 }
 

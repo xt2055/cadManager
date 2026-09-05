@@ -30,6 +30,7 @@ export interface AdminServiceGateway {
   deleteDrawing(id: string): Promise<{ no: string }>
   setPartStatus(id: string, status: 'disabled' | 'draft'): Promise<{ id: string; status: string }>
   deleteAttachment(id: string): Promise<{ id: string; name: string }>
+  reconvertAttachment(id: string): Promise<{ id: string; name: string }>
   closeEditSession(id: string): Promise<Record<string, unknown>>
   downloadVersion(id: string): Promise<Blob>
   restoreVersion(id: string): Promise<Record<string, unknown>>
@@ -55,6 +56,7 @@ export class AdminService {
   deleteDrawing(id: string) { return this.gateway.deleteDrawing(id) }
   setPartStatus(id: string, status: 'disabled' | 'draft') { return this.gateway.setPartStatus(id, status) }
   deleteAttachment(id: string) { return this.gateway.deleteAttachment(id) }
+  reconvertAttachment(id: string) { return this.gateway.reconvertAttachment(id) }
   closeEditSession(id: string) { return this.gateway.closeEditSession(id) }
   downloadVersion(id: string) { return this.gateway.downloadVersion(id) }
   restoreVersion(id: string) { return this.gateway.restoreVersion(id) }

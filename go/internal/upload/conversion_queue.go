@@ -111,7 +111,7 @@ func (service *Service) claimCADConversion(ctx context.Context) (cadConversionJo
 		       source_storage_key, source_name, source_mime_type, source_size_bytes, source_sha256, attempts
 		FROM cad_conversion_jobs
 		WHERE attachment_id IS NOT NULL
-		  AND ((status IN ('pending', 'retry') AND next_attempt_at <= now())
+		  AND ((status IN ('pending', 'retry', 'backoff') AND next_attempt_at <= now())
 		       OR (status = 'processing' AND lease_until <= now()))
 		ORDER BY created_at
 		FOR UPDATE SKIP LOCKED
@@ -162,11 +162,34 @@ func (service *Service) convertQueuedCAD(ctx context.Context, job cadConversionJ
 	if err != nil {
 		return err
 	}
-	attachmentRepo := attachment.NewPGRepository(service.pool)
-	if err := attachmentRepo.SetCurrentVersionByID(ctx, job.AttachmentID, processedKey, processedCADName(job.SourceName), "v1.0", convertedObject.Size, firstNonEmpty(convertedObject.MimeType, "application/acad")); err != nil {
+	tx, err := service.pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	if _, err := service.pool.Exec(ctx, `UPDATE upload_session_items SET processed_object_key = $2, processed_blob_id = $3::uuid, processed_size_bytes = $4, processed_sha256 = $5, processed_mime_type = $6, updated_at = now() WHERE id = $1::uuid`, job.ItemID, processedKey, processedBlobID, convertedObject.Size, convertedObject.SHA256, firstNonEmpty(convertedObject.MimeType, "application/acad")); err != nil {
+	defer tx.Rollback(ctx)
+	var versionID, currentBlobID string
+	if err := tx.QueryRow(ctx, `SELECT a.current_version_id::text, v.blob_id::text FROM attachments a JOIN attachment_versions v ON v.id=a.current_version_id WHERE a.id=$1::uuid AND a.deleted_at IS NULL FOR UPDATE OF a, v`, job.AttachmentID).Scan(&versionID, &currentBlobID); err != nil {
+		return err
+	}
+	if currentBlobID != job.SourceBlobID {
+		if _, err := tx.Exec(ctx, `DELETE FROM cad_conversion_jobs WHERE id=$1::uuid`, job.ID); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE attachment_versions SET blob_id=$2::uuid, original_name=$3, mime_type='application/acad', size_bytes=$4, previewable=true WHERE id=$1::uuid`, versionID, processedBlobID, processedCADName(job.SourceName), convertedObject.Size); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE attachments SET revision=revision+1 WHERE id=$1::uuid`, job.AttachmentID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE upload_session_items SET processed_object_key = $2, processed_blob_id = $3::uuid, processed_size_bytes = $4, processed_sha256 = $5, processed_mime_type = $6, updated_at = now() WHERE id = $1::uuid`, job.ItemID, processedKey, processedBlobID, convertedObject.Size, convertedObject.SHA256, firstNonEmpty(convertedObject.MimeType, "application/acad")); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM cad_conversion_jobs WHERE id=$1::uuid`, job.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	if convertedKey != processedKey {
@@ -174,25 +197,24 @@ func (service *Service) convertQueuedCAD(ctx context.Context, job cadConversionJ
 			service.scheduleCleanup(ctx, convertedKey, "cad-conversion-staging")
 		}
 	}
-	if _, err := service.pool.Exec(ctx, `DELETE FROM cad_conversion_jobs WHERE id = $1::uuid`, job.ID); err != nil {
-		return fmt.Errorf("删除已完成转换任务失败: %w", err)
-	}
 	log.Printf("[CAD Converter] 异步转换完成并切换当前版本: %s", job.SourceName)
 	return nil
 }
 
 func (service *Service) retryCADConversion(ctx context.Context, job cadConversionJob, cause error) error {
 	status := "retry"
+	delay := time.Duration(job.Attempts) * 15 * time.Second
 	if job.Attempts >= conversionRetryLimit {
+		// 快速重试用尽后进入 backoff：任务不删除、不放弃，进入低频慢速重试，
+		// 等 CAXA 恢复正常（如被人工关闭后重启）后自动完成转换。
 		status = "failed"
 	}
-	delay := time.Duration(job.Attempts) * 15 * time.Second
 	_, err := service.pool.Exec(ctx, `UPDATE cad_conversion_jobs SET status = $2, next_attempt_at = now() + $3::interval, lease_until = NULL, last_error = $4, updated_at = now() WHERE id = $1::uuid`, job.ID, status, intervalText(delay), strings.TrimSpace(cause.Error()))
 	if err != nil {
 		return fmt.Errorf("记录 CAD 转换失败状态失败: %w", err)
 	}
 	if status == "failed" {
-		log.Printf("[CAD Converter] 异步转换最终失败（保留任务待人工重试）: %s: %v", job.SourceName, cause)
+		log.Printf("[CAD Converter] 自动重试用尽，保留任务等待手动重试: %s: %v", job.SourceName, cause)
 	} else {
 		log.Printf("[CAD Converter] 异步转换失败，将重试（%d/%d）: %s: %v", job.Attempts, conversionRetryLimit, job.SourceName, cause)
 	}

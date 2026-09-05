@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
 	"cadguanliq/internal/upload"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type uploadSessionRequest struct {
@@ -285,6 +287,15 @@ func UploadSessionResource(service *upload.Service) http.Handler {
 
 func writeUploadError(writer http.ResponseWriter, err error) {
 	log.Printf("[上传] 请求失败: %v", err)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		response.WriteError(writer, http.StatusConflict, "创建图纸正在等待其他数据库事务释放锁，已停止本次提交；文件已保留，请结束数据库中的未提交事务后继续提交")
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		response.WriteError(writer, http.StatusGatewayTimeout, "上传提交等待超时，文件已保留，请查询会话状态后继续提交")
+		return
+	}
 	switch {
 	case errors.Is(err, upload.ErrNotFound):
 		response.WriteError(writer, http.StatusNotFound, err.Error())

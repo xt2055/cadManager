@@ -324,7 +324,7 @@ func (service *Service) ListByStorageKey(ctx context.Context, storageKey string)
 	}
 	_, latestErr := service.versions.LatestByAttachment(ctx, attachmentItem.ID)
 	if errors.Is(latestErr, ErrNotFound) {
-		if ensureErr := service.EnsureInitialVersion(ctx, attachmentItem.StorageKey, attachmentItem.UploadedBy); ensureErr != nil {
+		if ensureErr := service.EnsureInitialVersion(ctx, attachmentItem.StorageKey, attachmentItem.UploadedByID); ensureErr != nil {
 			log.Printf("[版本] 懒登记初始版本失败 storageKey=%s: %v", attachmentItem.StorageKey, ensureErr)
 		}
 	} else if latestErr != nil {

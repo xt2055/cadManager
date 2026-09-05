@@ -129,6 +129,10 @@ export function deleteAdminAttachment(id: string): Promise<{ id: string; name: s
   return request<{ id: string; name: string }>(`/admin/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
+export function reconvertAdminAttachment(id: string): Promise<{ id: string; name: string }> {
+  return request<{ id: string; name: string }>(`/admin/attachments/${encodeURIComponent(id)}/reconvert`, { method: 'POST' })
+}
+
 export function closeAdminEditSession(id: string): Promise<Record<string, unknown>> {
   return request<Record<string, unknown>>(`/admin/edit-sessions/${encodeURIComponent(id)}/close`, { method: 'POST' })
 }

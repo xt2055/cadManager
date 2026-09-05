@@ -18,7 +18,7 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository { return &PGRepository{po
 
 func (repository *PGRepository) Create(ctx context.Context, input CreateInput, storageKey string) (Version, error) {
 	var id string
-	err := repository.pool.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, version_kind, created_by) VALUES ($1::uuid, $2, (SELECT id FROM file_blobs WHERE storage_key = $3), COALESCE(NULLIF($4, ''), '未命名文件'), COALESCE(NULLIF($5, ''), 'application/octet-stream'), $6, COALESCE(NULLIF($7, ''), 'working'), NULLIF($8, '')::uuid) RETURNING id::text`, input.AttachmentID, input.Version, storageKey, input.CurrentName, input.MimeType, input.Size, input.VersionKind, input.CreatedBy).Scan(&id)
+	err := repository.pool.QueryRow(ctx, `WITH blob AS (INSERT INTO file_blobs (sha256, size_bytes, mime_type, storage_key) VALUES ($9, $6, COALESCE(NULLIF($5, ''), 'application/octet-stream'), $3) ON CONFLICT (sha256, size_bytes) DO UPDATE SET mime_type = EXCLUDED.mime_type RETURNING id) INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, version_kind, created_by) VALUES ($1::uuid, $2, (SELECT id FROM blob), COALESCE(NULLIF($4, ''), '未命名文件'), COALESCE(NULLIF($5, ''), 'application/octet-stream'), $6, COALESCE(NULLIF($7, ''), 'working'), NULLIF($8, '')::uuid) RETURNING id::text`, input.AttachmentID, input.Version, storageKey, input.CurrentName, input.MimeType, input.Size, input.VersionKind, input.CreatedBy, input.SHA256).Scan(&id)
 	if err != nil {
 		return Version{}, fmt.Errorf("保存文件版本失败: %w", err)
 	}
@@ -49,7 +49,7 @@ func (repository *PGRepository) CreateWithPromotion(ctx context.Context, input C
 		return Version{}, err
 	}
 	var id string
-	err = tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, version_kind, created_by) VALUES ($1::uuid, $2, (SELECT id FROM file_blobs WHERE storage_key = $3), COALESCE(NULLIF($4, ''), '未命名文件'), COALESCE(NULLIF($5, ''), 'application/octet-stream'), $6, COALESCE(NULLIF($7, ''), 'working'), NULLIF($8, '')::uuid) RETURNING id::text`, attachmentID, input.Version, storageKey, input.CurrentName, input.MimeType, input.Size, input.VersionKind, input.CreatedBy).Scan(&id)
+	err = tx.QueryRow(ctx, `WITH blob AS (INSERT INTO file_blobs (sha256, size_bytes, mime_type, storage_key) VALUES ($9, $6, COALESCE(NULLIF($5, ''), 'application/octet-stream'), $3) ON CONFLICT (sha256, size_bytes) DO UPDATE SET mime_type = EXCLUDED.mime_type RETURNING id) INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, version_kind, created_by) VALUES ($1::uuid, $2, (SELECT id FROM blob), COALESCE(NULLIF($4, ''), '未命名文件'), COALESCE(NULLIF($5, ''), 'application/octet-stream'), $6, COALESCE(NULLIF($7, ''), 'working'), NULLIF($8, '')::uuid) RETURNING id::text`, attachmentID, input.Version, storageKey, input.CurrentName, input.MimeType, input.Size, input.VersionKind, input.CreatedBy, input.SHA256).Scan(&id)
 	if err != nil {
 		return Version{}, fmt.Errorf("保存文件版本失败: %w", err)
 	}

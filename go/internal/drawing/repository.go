@@ -254,7 +254,7 @@ func (repository *PGRepository) SetStatusByNo(ctx context.Context, no string, fr
 func (repository *PGRepository) ListParts(ctx context.Context, drawingID string) ([]Part, error) {
 	rows, err := repository.pool.Query(ctx, `
 			SELECT p.id::text, r.id::text, r.drawing_id::text, p.part_no,
-			       COALESCE(pr.name, p.part_no), COALESCE(parent_part.part_no, ''), d.project,
+			       COALESCE(pr.name, p.part_no), COALESCE(parent_part.part_no, d.drawing_no, ''), d.project,
 			       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
 			       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'),
 			       r.qty, COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
@@ -292,10 +292,10 @@ func (repository *PGRepository) ListParts(ctx context.Context, drawingID string)
 func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, error) {
 	row := repository.pool.QueryRow(ctx, `
 			SELECT p.id::text, r.id::text, r.drawing_id::text, p.part_no,
-			       COALESCE(pr.name, p.part_no), COALESCE(parent_part.part_no, ''), d.project,
-			       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
-			       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'), r.qty,
-			       COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
+		       COALESCE(pr.name, p.part_no), COALESCE(parent_part.part_no, d.drawing_no, ''), d.project,
+		       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
+		       COALESCE(pr.surface_treatment, ''), COALESCE(pr.part_type, '自制件'),
+		       r.qty, COALESCE(pr.workflow_status, p.lifecycle_status), COALESCE(pr.version, 'v1.0'),
 			       COALESCE(pr.row_revision, 1), r.revision, r.relation_type, COALESCE(NULLIF(r.source_drawing_no, ''), source_drawing.drawing_no, ''), p.lifecycle_status,
 			       COALESCE(pr.created_by::text, p.created_by::text, ''), COALESCE(pr.created_at, p.created_at),
 			       COALESCE(pr.published_by::text, p.updated_by::text, ''), COALESCE(pr.published_at, p.updated_at)

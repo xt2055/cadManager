@@ -112,7 +112,7 @@ func (watcher *Watcher) scan(ctx context.Context) error {
 			if latestErr != nil || latestStat.Size() != state.size || !latestStat.ModTime().Equal(state.modTime) {
 				continue
 			}
-			if _, changed, captureErr := watcher.versions.CapturePath(ctx, actualKey, path, item.UploadedBy); captureErr != nil {
+			if _, changed, captureErr := watcher.versions.CapturePath(ctx, actualKey, path, item.UploadedByID); captureErr != nil {
 				log.Printf("捕获 CAD 工作版本失败 storageKey=%s: %v", actualKey, captureErr)
 			} else if changed {
 				log.Printf("已捕获 CAD 工作版本 storageKey=%s", actualKey)

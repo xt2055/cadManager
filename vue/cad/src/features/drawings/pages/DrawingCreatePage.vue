@@ -458,7 +458,7 @@ async function performCreate() {
   const assemblyNos = [
     drawingNo,
   ].filter(Boolean)
-  const structuredPartFiles = parsedPartFiles.filter(({ parsed }) => !isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
+  const structuredPartFiles = parsedPartFiles.filter(({ part, parsed }) => !isDetailListFile(part.name) && !isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
   const validPartEntries = structuredPartFiles.map(({ part, parsed, isBorrowed, material }, index) => ({
     part,
     parsed,
@@ -516,7 +516,7 @@ async function performCreate() {
     }
   })
   const otherFileEntries = parsedPartFiles
-    .filter(({ parsed }) => isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
+    .filter(({ part, parsed }) => isDetailListFile(part.name) || isEquivalentAssemblyNo(parsed.no, projectFamilyNo, assemblyNos))
   const otherDrawingFiles: DrawingFile[] = otherFileEntries
     .map(({ part }, index) => ({
       id: `${Date.now()}-other-${index}`,
@@ -553,7 +553,6 @@ async function performCreate() {
       : []),
     ...validPartEntries.map((entry) => ({ id: entry.file.id, content: entry.part.file })),
     ...otherFileEntries
-       .filter(({ parsed, isBorrowed }) => !isBorrowed && (!parsed.isStandard || parsed.level <= 0 || parsed.rootNo !== drawingNo))
        .map(({ part }, index) => ({ id: otherDrawingFiles[index]?.id ?? '', content: part.file })),
   ]
 

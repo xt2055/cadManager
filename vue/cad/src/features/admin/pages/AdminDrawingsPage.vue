@@ -116,6 +116,27 @@ async function removeAttachment(item: AdminAttachment) {
   try { await adminService.deleteAttachment(item.id); uiStore.toast(`附件「${attachmentName(item)}」已删除`, 'ok'); if (detail.value) detail.value = await adminService.getDrawing(detail.value.drawing.id) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '附件删除失败', 'warn') } finally { busyId.value = '' }
 }
 
+function attachmentNeedsConvert(item: AdminAttachment) {
+  const original = (item.originalName || '').toLowerCase()
+  const current = (item.currentName || '').toLowerCase()
+  return (original.endsWith('.exb') || original.endsWith('.exb2')) && !current.endsWith('.dwg')
+}
+
+async function reconvertAttachment(item: AdminAttachment) {
+  if (busyId.value) return
+  if (!window.confirm(`确定重新转换附件「${attachmentName(item)}」吗？\n\n将重置其 CAD 转换任务并重新排队。`)) return
+  busyId.value = item.id
+  try {
+    await adminService.reconvertAttachment(item.id)
+    uiStore.toast(`附件「${attachmentName(item)}」已重新排队转换`, 'ok')
+    if (detail.value) detail.value = await adminService.getDrawing(detail.value.drawing.id)
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '重新转换失败', 'warn')
+  } finally {
+    busyId.value = ''
+  }
+}
+
 async function downloadVersion(item: AdminDrawingDetail['versions'][number]) {
   try { const blob = await adminService.downloadVersion(item.id); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = item.storageKey.split('/').pop() || `${item.version}.dwg`; anchor.click(); URL.revokeObjectURL(url) } catch (error) { uiStore.toast(error instanceof Error ? error.message : '版本下载失败', 'warn') }
 }
@@ -177,7 +198,7 @@ onMounted(() => { void load() })
             <section class="summary-box"><div><span>状态</span><strong><span class="tag" :class="statusClass(detail.drawing.status)">{{ statusLabel(detail.drawing.status) }}</span></strong></div><div><span>当前版本</span><strong class="mono">{{ detail.drawing.version }}</strong></div><div><span>零件</span><strong>{{ detail.drawing.partCount }}</strong></div><div><span>附件</span><strong>{{ detail.drawing.attachmentCount }}</strong></div></section>
             <div class="drawer-actions"><button class="btn" type="button" :disabled="busyId === detail.drawing.id" @click="toggleDrawing(detail.drawing)">{{ detail.drawing.status === 'disabled' ? '启用图纸' : '禁用图纸' }}</button><button class="btn danger-button" type="button" :disabled="busyId === detail.drawing.id" @click="hardDelete(detail.drawing)"><DemoIcon name="trash-2" :size="14" />永久删除</button></div>
             <section class="detail-section"><h3><DemoIcon name="folder-tree" :size="15" />结构零件（{{ detailParts.length }}）</h3><div v-if="!detailParts.length" class="section-empty">暂无零件</div><div v-for="item in detailParts" :key="item.id" class="asset-row"><div><strong>{{ item.no }}</strong><span>{{ item.name }}<template v-if="item.parentNo"> · 父级 {{ item.parentNo }}</template></span></div><div class="asset-row-actions"><span class="tag" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span><button class="btn sm" type="button" @click="togglePart(item)">{{ item.status === 'disabled' ? '启用' : '禁用' }}</button></div></div></section>
-            <section class="detail-section"><h3><DemoIcon name="paperclip" :size="15" />附件（{{ detailAttachments.length }}）</h3><div v-if="!detailAttachments.length" class="section-empty">暂无附件</div><div v-for="item in detailAttachments" :key="item.id" class="asset-row"><div><strong>{{ attachmentName(item) }}</strong><span>{{ roleLabel(item.role) }} · {{ formatSize(item.size) }} · {{ item.version }}</span></div><div class="asset-row-actions"><span class="mono asset-meta">{{ item.uploadedBy || '未知' }}</span><button class="icon-btn danger-icon" type="button" title="永久删除附件" :disabled="busyId === item.id" @click="removeAttachment(item)"><DemoIcon name="trash-2" :size="14" /></button></div></div></section>
+            <section class="detail-section"><h3><DemoIcon name="paperclip" :size="15" />附件（{{ detailAttachments.length }}）</h3><div v-if="!detailAttachments.length" class="section-empty">暂无附件</div><div v-for="item in detailAttachments" :key="item.id" class="asset-row"><div><strong>{{ attachmentName(item) }}</strong><span>{{ roleLabel(item.role) }} · {{ formatSize(item.size) }} · {{ item.version }}</span></div><div class="asset-row-actions"><span class="mono asset-meta">{{ item.uploadedBy || '未知' }}</span><button v-if="attachmentNeedsConvert(item)" class="btn sm" type="button" title="重新排队转换该附件的 CAD 文件" :disabled="busyId === item.id" @click="reconvertAttachment(item)">转换</button><button class="icon-btn danger-icon" type="button" title="永久删除附件" :disabled="busyId === item.id" @click="removeAttachment(item)"><DemoIcon name="trash-2" :size="14" /></button></div></div></section>
             <section class="detail-section"><h3><DemoIcon name="history" :size="15" />CAD 版本（{{ detail.versions.length }}）</h3><div v-if="!detail.versions.length" class="section-empty">暂无版本记录</div><div v-for="item in detail.versions" :key="item.id" class="asset-row"><div><strong class="mono">{{ item.version }}</strong><span>{{ item.versionKind }} · {{ formatSize(item.size) }} · {{ item.createdBy || '未知' }}</span></div><div class="asset-row-actions"><span class="mono asset-meta">{{ formatTime(item.createdAt) }}</span><button class="btn sm" type="button" :disabled="busyId === item.id" @click="downloadVersion(item)">下载</button><button v-if="item.versionKind !== 'release'" class="btn sm" type="button" :disabled="busyId === item.id" @click="restoreVersion(item)">回退</button></div></div></section>
             <section class="detail-section"><h3><DemoIcon name="edit-3" :size="15" />活动编辑会话（{{ detail.sessions.length }}）</h3><div v-if="!detail.sessions.length" class="section-empty">暂无活动编辑</div><div v-for="item in detail.sessions" :key="String(item.id)" class="asset-row"><div><strong>{{ String(item.fileName || '未命名文件') }}</strong><span>{{ String(item.user || '未知用户') }} · {{ String(item.status || '') }}</span></div><div class="asset-row-actions"><span class="tag warn">编辑中</span><button class="btn sm" type="button" :disabled="busyId === String(item.id)" @click="closeSession(item)">强制结束</button></div></div></section>
           </div>

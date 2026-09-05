@@ -103,7 +103,7 @@ func ensureBlobTx(ctx context.Context, tx pgx.Tx, object StorageObject) (string,
 	return id, key, nil
 }
 
-const attachmentSelect = `SELECT a.id::text, COALESCE(d.drawing_no, parent.drawing_no, ''), p.part_no, a.file_role, a.logical_name, COALESCE(v.original_name, a.logical_name), COALESCE(b.storage_key, ''), COALESCE(b.storage_key, ''), COALESCE(v.mime_type, b.mime_type, 'application/octet-stream'), COALESCE(v.size_bytes, b.size_bytes, 0), COALESCE(v.size_bytes, b.size_bytes, 0), COALESCE(b.sha256, ''), COALESCE(b.sha256, ''), COALESCE(v.version, 'v1.0'), COALESCE(v.previewable, false), COALESCE(a.uploaded_by::text, ''), a.created_at, a.revision FROM attachments a LEFT JOIN attachment_versions v ON v.id = a.current_version_id LEFT JOIN file_blobs b ON b.id = v.blob_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN parts p ON p.id = a.part_id LEFT JOIN drawing_part_relations owner_relation ON owner_relation.part_id = p.id AND owner_relation.relation_type = 'owned' AND owner_relation.status = 'active' LEFT JOIN drawings parent ON parent.id = owner_relation.drawing_id`
+const attachmentSelect = `SELECT a.id::text, COALESCE(d.drawing_no, parent.drawing_no, ''), p.part_no, a.file_role, a.logical_name, COALESCE(v.original_name, a.logical_name), COALESCE(b.storage_key, ''), COALESCE(b.storage_key, ''), COALESCE(v.mime_type, b.mime_type, 'application/octet-stream'), COALESCE(v.size_bytes, b.size_bytes, 0), COALESCE(v.size_bytes, b.size_bytes, 0), COALESCE(b.sha256, ''), COALESCE(b.sha256, ''), COALESCE(v.version, 'v1.0'), COALESCE(v.previewable, false), COALESCE(a.uploaded_by::text, ''), COALESCE(NULLIF(u.display_name, ''), u.account, ''), a.created_at, a.revision FROM attachments a LEFT JOIN attachment_versions v ON v.id = a.current_version_id LEFT JOIN file_blobs b ON b.id = v.blob_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN parts p ON p.id = a.part_id LEFT JOIN drawing_part_relations owner_relation ON owner_relation.part_id = p.id AND owner_relation.relation_type = 'owned' AND owner_relation.status = 'active' LEFT JOIN drawings parent ON parent.id = owner_relation.drawing_id LEFT JOIN users u ON u.id = a.uploaded_by`
 
 func (repository *PGRepository) findByID(ctx context.Context, id, key string) (Attachment, error) {
 	query := attachmentSelect + ` WHERE a.id = $1::uuid AND a.deleted_at IS NULL`
@@ -139,7 +139,7 @@ func scanAttachment(row interface{ Scan(...any) error }) (Attachment, error) {
 	var partNo *string
 	var createdAt time.Time
 	var revision int64
-	err := row.Scan(&item.ID, &item.DrawingNo, &partNo, &item.Role, &item.Name, &item.CurrentName, &item.StorageKey, &item.CurrentStorageKey, &item.CurrentMimeType, &item.Size, &item.CurrentSize, &item.SHA256, &item.CurrentSHA256, &item.Version, &item.Previewable, &item.UploadedBy, &createdAt, &revision)
+	err := row.Scan(&item.ID, &item.DrawingNo, &partNo, &item.Role, &item.Name, &item.CurrentName, &item.StorageKey, &item.CurrentStorageKey, &item.CurrentMimeType, &item.Size, &item.CurrentSize, &item.SHA256, &item.CurrentSHA256, &item.Version, &item.Previewable, &item.UploadedByID, &item.UploadedBy, &createdAt, &revision)
 	if err != nil {
 		return Attachment{}, err
 	}

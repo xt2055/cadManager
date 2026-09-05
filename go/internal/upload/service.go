@@ -874,6 +874,10 @@ func (service *Service) RetryConversion(ctx context.Context, userID, sessionID, 
 }
 
 func (service *Service) Commit(ctx context.Context, userID, sessionID string) (json.RawMessage, error) {
+	// Project creation persists metadata and queues conversion; it must not wait
+	// indefinitely for another database client's unfinished transaction.
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
 	if service == nil || service.pool == nil {
 		return nil, errors.New("上传服务未配置")
 	}
@@ -882,6 +886,9 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		return nil, fmt.Errorf("开始上传提交事务失败: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5s'`); err != nil {
+		return nil, fmt.Errorf("设置上传提交锁等待上限失败: %w", err)
+	}
 	var session Session
 	var metadata []byte
 	err = tx.QueryRow(ctx, `
@@ -1172,7 +1179,7 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		var partID string
 		if err := tx.QueryRow(ctx, `INSERT INTO parts (part_no, normalized_part_no, lifecycle_status, created_by, updated_by) VALUES ($1, $2, 'active', $3::uuid, $3::uuid) RETURNING id::text`, part.No, normalized, userID).Scan(&partID); err != nil {
 			if isUniqueViolation(err) {
-				return nil, fmt.Errorf("零件图号已存在，请刷新后重试: %w", ErrConflict)
+				return nil, fmt.Errorf("零件图号「%s」已存在（或本次上传中存在等价图号），请检查所属项目与文件分类: %w", part.No, ErrConflict)
 			}
 			return nil, fmt.Errorf("创建零件失败: %w", err)
 		}

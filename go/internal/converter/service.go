@@ -463,7 +463,7 @@ func (s *Service) EnsureDwg(ctx context.Context, att attachment.Attachment) (str
 		}
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case <-time.After(60 * time.Second):
+	case <-time.After(3 * time.Minute):
 		return "", errors.New("EXB 转换 DWG 超时")
 	}
 

@@ -224,8 +224,14 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 				return OpenResult{}, err
 			}
 		}
-		if err := service.syncToWorkDirectory(ctx, sourceStorageKey, workStorageKey); err != nil {
-			return OpenResult{}, fmt.Errorf("准备 SMB 工作文件失败: %w", err)
+		// 重新认领（呼出 CAD）不得覆盖工作文件：用户可能已保存但尚未结束编辑，
+		// 工作文件里是未归档的最新修改；仅当工作文件丢失时才重新同步。
+		if path, pathErr := service.localPath(workStorageKey); pathErr != nil {
+			return OpenResult{}, pathErr
+		} else if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			if err := service.syncToWorkDirectory(ctx, sourceStorageKey, workStorageKey); err != nil {
+				return OpenResult{}, fmt.Errorf("准备 SMB 工作文件失败: %w", err)
+			}
 		}
 		openTicket, ticketErr := randomID()
 		if ticketErr != nil {

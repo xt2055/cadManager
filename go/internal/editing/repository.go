@@ -115,12 +115,20 @@ func (repository *PGRepository) ListActiveSessions(ctx context.Context, now time
 			LEFT JOIN attachment_versions v ON v.id = a.current_version_id
 			LEFT JOIN drawings d ON d.id = a.drawing_id
 		LEFT JOIN parts p ON p.id = a.part_id
-		LEFT JOIN drawing_part_relations owner_relation ON owner_relation.part_id = p.id AND owner_relation.relation_type = 'owned' AND owner_relation.status = 'active'
-		LEFT JOIN drawings parent ON parent.id = owner_relation.drawing_id
+		-- 零件可能以 owned 或 borrowed 关系挂到图纸；借用零件此前因 owned 过滤
+		-- 查不到所属图纸，导致其会话 drawingNo 为空、被前端轮询误清（状态栏消失）。
+		-- 这里按零件取唯一归属图纸：优先 owned，其次借用。
+		LEFT JOIN LATERAL (
+			SELECT rel.drawing_id FROM drawing_part_relations rel
+			WHERE rel.part_id = p.id AND rel.status = 'active'
+			ORDER BY CASE WHEN rel.relation_type = 'owned' THEN 0 ELSE 1 END, rel.created_at
+			LIMIT 1
+		) pick_rel ON true
+		LEFT JOIN drawings parent ON parent.id = pick_rel.drawing_id
 		WHERE s.status = 'active'`
 
 	if strings.TrimSpace(drawingNo) != "" {
-		query := baseQuery + ` AND (d.drawing_no = $2 OR parent.drawing_no = $2) ORDER BY s.started_at DESC`
+		query := baseQuery + ` AND (d.drawing_no = $2 OR parent.drawing_no = $2 OR p.part_no = $2) ORDER BY s.started_at DESC`
 		rows, err = repository.pool.Query(ctx, query, onlineSince, strings.TrimSpace(drawingNo))
 	} else {
 		query := baseQuery + ` ORDER BY s.started_at DESC`

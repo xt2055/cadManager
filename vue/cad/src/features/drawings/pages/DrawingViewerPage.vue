@@ -36,6 +36,28 @@ const targetFile = ref<FileView | null>(null)
 const cadOriginalUrl = ref<string | null>(null)
 const cadSourceFileName = ref<string | null>(null)
 const cadOriginalError = ref('')
+const conversionState = ref('')
+let conversionTimer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
+async function checkConversion(retry = false) {
+  const id = targetFile.value?.id
+  if (!id || disposed || versionId.value || versionKey.value) return
+  if (conversionTimer) clearTimeout(conversionTimer)
+  try {
+    const response = await fetch(`${getApiBaseUrl()}/cad/conversions/${encodeURIComponent(id)}`, {
+      method: retry ? 'POST' : 'GET', headers: { Authorization: `Bearer ${getAccessToken()}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    const body = await response.json()
+    if (disposed || targetFile.value?.id !== id) return
+    if (!response.ok) throw new Error(body.message || '读取转换状态失败')
+    const data = body.data ?? body
+    conversionState.value = data.status
+    if (data.status === 'ready') { await loadTargetFile(); return }
+    cadOriginalError.value = ({ pending: '文件已上传，正在排队转换', processing: '正在转换，完成后自动加载', retry: '转换失败，等待自动重试', backoff: '转换失败，等待重试', failed: '转换失败，请点击重新转换', missing: '未找到转换任务' } as Record<string,string>)[data.status] || '转换状态不可用'
+    if (['pending','processing','retry','backoff'].includes(data.status)) conversionTimer = setTimeout(() => void checkConversion(), 3000)
+  } catch (error) { cadOriginalError.value = error instanceof Error ? error.message : String(error) }
+}
 // 已废弃：Canvas 查看器引用保留，不再挂载。
 // const cadViewerRef = ref<InstanceType<typeof CadVectorViewer> | null>(null)
 const mlightCadViewerRef = ref<InstanceType<typeof MlightCadViewer> | null>(null)
@@ -61,6 +83,8 @@ function revokeOriginalUrl() {
 }
 
 async function loadTargetFile() {
+  if (conversionTimer) clearTimeout(conversionTimer)
+  conversionState.value = ''
   await drawingStore.load()
 
   // 优先按 fileId 在当前总图及其全部零件中精确查找，避免零件文件回退到总图。
@@ -106,7 +130,7 @@ async function loadTargetFile() {
                 credentials: 'include',
               })
             } else if (storageKeyValue) {
-              response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(storageKeyValue)}&_t=${cacheBuster}`, {
+              response = await fetch(`${baseUrl}/cad/source?attachmentId=${encodeURIComponent(file.id)}&_t=${cacheBuster}`, {
                 headers: token ? { Authorization: `Bearer ${token}` } : {},
                 credentials: 'include',
               })
@@ -115,7 +139,11 @@ async function loadTargetFile() {
           if (!response) {
             throw new Error('无法确定 CAD 源文件地址')
           }
-           if (!response.ok) throw new Error(`HTTP ${response.status}`)
+           if (!response.ok) {
+             if (response.status === 409 && !versionId.value && !versionKey.value) { void checkConversion(); return }
+             const body = await response.json().catch(() => ({}))
+             throw new Error(body.message || `HTTP ${response.status}`)
+           }
           const sourceName = `${file.name.replace(/\.(exb|dxf|dwg)$/i, '')}.dwg`
           const contentType = response.headers.get('content-type') || ''
           if (contentType.includes('text/html') || contentType.includes('application/json')) {
@@ -210,6 +238,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  if (conversionTimer) clearTimeout(conversionTimer)
   revokeOriginalUrl()
 })
 
@@ -316,6 +346,7 @@ watch([drawingId, fileId, versionId, versionKey], () => {
         <div v-else class="empty-prompt">
           <DemoIcon name="file-question" :size="48" />
           <p>{{ targetFile ? (cadOriginalError || '原始 CAD 文件不可用，无法使用 MLightCAD') : '暂无选中的图纸文件' }}</p>
+          <button v-if="['failed','backoff','retry'].includes(conversionState)" class="btn primary" @click="checkConversion(true)">重新转换</button>
         </div>
       </main>
 

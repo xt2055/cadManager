@@ -231,17 +231,30 @@ func AdminAttachmentResource(pool *pgxpool.Pool, objectStorage storage.ObjectSto
 			return
 		}
 		id, action, err := adminResourceParts(request.URL.Path, "/api/admin/attachments/")
-		if err != nil || action != "" || request.Method != http.MethodDelete {
+		if err != nil {
 			response.WriteError(writer, http.StatusNotFound, "后台附件接口不存在")
 			return
 		}
-		no, name, keys, err := hardDeleteAttachment(request.Context(), pool, objectStorage, id)
-		if err != nil {
-			writeAdminDrawingError(writer, err)
-			return
+		switch {
+		case action == "" && request.Method == http.MethodDelete:
+			no, name, keys, err := hardDeleteAttachment(request.Context(), pool, objectStorage, id)
+			if err != nil {
+				writeAdminDrawingError(writer, err)
+				return
+			}
+			writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{DrawingNo: no, TargetType: "file", Action: "delete", Summary: "永久删除附件「" + name + "」", Result: "success", Detail: map[string]any{"attachmentId": id, "storageKeys": keys}})
+			response.WriteData(writer, http.StatusOK, map[string]string{"id": id, "name": name})
+		case action == "reconvert" && request.Method == http.MethodPost:
+			no, name, err := requeueAttachmentConversion(request.Context(), pool, id)
+			if err != nil {
+				writeAdminDrawingError(writer, err)
+				return
+			}
+			writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{DrawingNo: no, TargetType: "file", Action: "convert", Summary: "重新转换附件「" + name + "」", Result: "success", Detail: map[string]any{"attachmentId": id}})
+			response.WriteData(writer, http.StatusOK, map[string]string{"id": id, "name": name})
+		default:
+			response.WriteError(writer, http.StatusNotFound, "后台附件接口不存在")
 		}
-		writeAdminAudit(request.Context(), auditRepository, user, audit.CreateInput{DrawingNo: no, TargetType: "file", Action: "delete", Summary: "永久删除附件「" + name + "」", Result: "success", Detail: map[string]any{"attachmentId": id, "storageKeys": keys}})
-		response.WriteData(writer, http.StatusOK, map[string]string{"id": id, "name": name})
 	}
 }
 
@@ -270,6 +283,7 @@ func AdminEditSessionResource(service *editing.Service, auditRepository audit.Re
 var ErrAdminDrawingNotFound = errors.New("后台图纸不存在")
 var ErrAdminDrawingBusy = errors.New("图纸存在活动编辑会话，请先结束编辑后再删除")
 var ErrAdminPartHasChildren = errors.New("该零件存在子零件，请先处理子零件后再删除")
+var ErrAdminAttachmentNoJob = errors.New("该附件没有转换队列任务")
 
 func listAdminDrawings(ctx context.Context, pool *pgxpool.Pool, request *http.Request) (any, error) {
 	page := parseAdminInt(request.URL.Query().Get("page"), 1)
@@ -464,15 +478,22 @@ func listAdminSessions(ctx context.Context, pool *pgxpool.Pool, drawingNo string
 }
 
 func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage storage.ObjectStorage, id string) (string, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
 	var no string
-	if err := pool.QueryRow(ctx, `SELECT drawing_no FROM drawings WHERE id = $1::uuid`, id).Scan(&no); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, `SELECT drawing_no FROM drawings WHERE id = $1::uuid FOR UPDATE`, id).Scan(&no); errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrAdminDrawingNotFound
 	} else if err != nil {
 		return "", err
 	}
 	keys := make([]string, 0)
-	ownedPartIDs := make([]string, 0)
-	partRows, err := pool.Query(ctx, `SELECT DISTINCT part_id::text FROM drawing_part_relations WHERE drawing_id = $1::uuid AND relation_type = 'owned'`, id)
+	relatedPartIDs := make([]string, 0)
+	// 收集本图纸引用的全部零件（含借用）：关系随图纸级联删除后，
+	// 不再被任何图纸引用的零件在此一并清理，避免孤儿零件占用图号。
+	partRows, err := tx.Query(ctx, `SELECT DISTINCT part_id::text FROM drawing_part_relations WHERE drawing_id = $1::uuid`, id)
 	if err != nil {
 		return "", err
 	}
@@ -482,14 +503,14 @@ func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage st
 			partRows.Close()
 			return "", err
 		}
-		ownedPartIDs = append(ownedPartIDs, partID)
+		relatedPartIDs = append(relatedPartIDs, partID)
 	}
 	if err := partRows.Err(); err != nil {
 		partRows.Close()
 		return "", err
 	}
 	partRows.Close()
-	rows, err := pool.Query(ctx, `SELECT b.storage_key FROM attachment_versions v JOIN file_blobs b ON b.id = v.blob_id JOIN attachments a ON a.id = v.attachment_id WHERE a.drawing_id = $1::uuid OR a.part_id IN (SELECT r.part_id FROM drawing_part_relations r WHERE r.drawing_id = $1::uuid AND r.relation_type = 'owned')`, id)
+	rows, err := tx.Query(ctx, `SELECT b.storage_key FROM attachment_versions v JOIN file_blobs b ON b.id = v.blob_id JOIN attachments a ON a.id = v.attachment_id WHERE a.drawing_id = $1::uuid OR a.part_id IN (SELECT r.part_id FROM drawing_part_relations r WHERE r.drawing_id = $1::uuid)`, id)
 	if err != nil {
 		return "", err
 	}
@@ -502,11 +523,6 @@ func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage st
 		keys = append(keys, original)
 	}
 	rows.Close()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback(ctx)
 	// 管理员删除是强制操作：丢弃未提交的本地编辑并释放会话，
 	// 不等待 CAXA，也不让活动编辑锁阻塞图纸删除。
 	if _, err := tx.Exec(ctx, `
@@ -522,23 +538,18 @@ func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage st
 	if _, err := tx.Exec(ctx, `DELETE FROM drawings WHERE id = $1::uuid`, id); err != nil {
 		return "", err
 	}
-	if len(ownedPartIDs) > 0 {
+	if len(relatedPartIDs) > 0 {
 		// 删除总图会级联删除其关系，但不会级联删除 parts。只有不再被
-		// 任何关系引用的自有零件才安全删除；仍被其他项目借用的源零件保留。
-		if _, err := tx.Exec(ctx, `DELETE FROM parts WHERE id = ANY($1::uuid[]) AND NOT EXISTS (SELECT 1 FROM drawing_part_relations r WHERE r.part_id = parts.id)`, ownedPartIDs); err != nil {
+		// 任何关系引用的零件才安全删除；仍被其他项目借用的源零件保留。
+		if _, err := tx.Exec(ctx, `DELETE FROM parts WHERE id = ANY($1::uuid[]) AND NOT EXISTS (SELECT 1 FROM drawing_part_relations r WHERE r.part_id = parts.id)`, relatedPartIDs); err != nil {
 			return "", fmt.Errorf("删除项目零件失败: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
-	if objectStorage != nil {
-		for _, key := range uniqueStrings(keys) {
-			if err := objectStorage.Delete(ctx, key); err != nil {
-				return "", err
-			}
-		}
-	}
+	// Content-addressed blobs may still belong to another project or upload
+	// session. Retain physical content here; only reference-aware GC may remove it.
 	return no, nil
 }
 
@@ -627,6 +638,39 @@ func hardDeleteAttachment(ctx context.Context, pool *pgxpool.Pool, objectStorage
 	return no, name, keys, nil
 }
 
+// requeueAttachmentConversion 将附件对应的 CAD 转换任务重置为待处理，
+// 用于后台手动触发重新转换（例如插件落盘失败后人工补救）。
+func requeueAttachmentConversion(ctx context.Context, pool *pgxpool.Pool, attachmentID string) (string, string, error) {
+	var no, name string
+	var requeued int64
+	err := pool.QueryRow(ctx, `
+		WITH job AS (
+			UPDATE cad_conversion_jobs
+			SET status = 'pending', attempts = 0, next_attempt_at = now(), lease_until = NULL, last_error = NULL, updated_at = now()
+			WHERE attachment_id = $1::uuid
+			RETURNING id
+		)
+		SELECT COALESCE(d.drawing_no, parent.drawing_no, ''), COALESCE(v.original_name, a.logical_name),
+		       (SELECT count(*) FROM job)
+		FROM attachments a
+		LEFT JOIN attachment_versions v ON v.id = a.current_version_id
+		LEFT JOIN drawings d ON d.id = a.drawing_id
+		LEFT JOIN parts p ON p.id = a.part_id
+		LEFT JOIN drawing_part_relations ownerRelation ON ownerRelation.part_id = p.id AND ownerRelation.relation_type = 'owned' AND ownerRelation.status = 'active'
+		LEFT JOIN drawings parent ON parent.id = ownerRelation.drawing_id
+		WHERE a.id = $1::uuid`, attachmentID).Scan(&no, &name, &requeued)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", ErrAdminDrawingNotFound
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if requeued == 0 {
+		return "", "", ErrAdminAttachmentNoJob
+	}
+	return no, name, nil
+}
+
 func attachmentIDs(items []AdminAttachment) []string {
 	ids := make([]string, 0, len(items))
 	for _, item := range items {
@@ -689,6 +733,8 @@ func writeAdminDrawingError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, ErrAdminDrawingBusy):
 		response.WriteError(writer, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrAdminPartHasChildren):
+		response.WriteError(writer, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrAdminAttachmentNoJob):
 		response.WriteError(writer, http.StatusConflict, err.Error())
 	default:
 		response.WriteError(writer, http.StatusInternalServerError, "后台图纸操作失败")
