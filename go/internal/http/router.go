@@ -61,6 +61,7 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	versionRepository := versioning.NewPGRepository(pool)
 	versionService := versioning.NewService(versionRepository, attachmentRepository, attachmentStorage)
 	uploadService := upload.NewService(pool, attachmentStorage, convService, cfg.UploadSessionTTL)
+	uploadService.StartConversionQueue(context.Background())
 	// 上传清理器将在 Phase 3 迁移到最终附件模型后启用；当前旧服务仍依赖旧附件字段。
 	// 版本捕获统一由「结束编辑」显式触发：SMB 工作文件稳定等待 + 哈希比对 + 事务切指针，
 	// 不再用后台 watcher 扫描文件变化自动捕获，避免与关闭流程竞争产生重复版本。

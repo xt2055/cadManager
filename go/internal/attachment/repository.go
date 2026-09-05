@@ -174,22 +174,35 @@ func (repository *PGRepository) SetCurrentVersion(ctx context.Context, sourceSto
 	if err != nil {
 		return err
 	}
+	return repository.SetCurrentVersionByID(ctx, item.ID, currentStorageKey, name, version, size, mimeType)
+}
+
+// SetCurrentVersionByID switches one known logical attachment to an already
+// stored content object. Conversion workers must use the attachment identity:
+// a deduplicated source blob may belong to more than one attachment.
+func (repository *PGRepository) SetCurrentVersionByID(ctx context.Context, attachmentID, currentStorageKey, name, version string, size int64, mimeType string) error {
 	tx, err := repository.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	blobID, _, err := ensureBlobTx(ctx, tx, StorageObject{Key: currentStorageKey, Size: size, MimeType: mimeType, SHA256: sha256})
+	var blobID string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM file_blobs WHERE storage_key = $1 AND size_bytes = $2`, currentStorageKey, size).Scan(&blobID)
 	if err != nil {
-		return err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("读取转换内容对象失败: %w", err)
 	}
 	var versionID string
-	err = tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, 'working', NULLIF($7, '')::uuid) ON CONFLICT (attachment_id, version) WHERE deleted_at IS NULL DO UPDATE SET blob_id = EXCLUDED.blob_id, original_name = EXCLUDED.original_name, mime_type = EXCLUDED.mime_type, size_bytes = EXCLUDED.size_bytes RETURNING id::text`, item.ID, version, blobID, name, mimeType, size, item.UploadedBy).Scan(&versionID)
+	err = tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, 'working', NULL) ON CONFLICT (attachment_id, version) WHERE deleted_at IS NULL DO UPDATE SET blob_id = EXCLUDED.blob_id, original_name = EXCLUDED.original_name, mime_type = EXCLUDED.mime_type, size_bytes = EXCLUDED.size_bytes RETURNING id::text`, attachmentID, version, blobID, name, mimeType, size).Scan(&versionID)
 	if err != nil {
 		return fmt.Errorf("保存当前附件版本失败: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, revision = revision + 1 WHERE id = $1::uuid AND deleted_at IS NULL`, item.ID, versionID); err != nil {
+	if result, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, revision = revision + 1 WHERE id = $1::uuid AND deleted_at IS NULL`, attachmentID, versionID); err != nil {
 		return err
+	} else if result.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return tx.Commit(ctx)
 }

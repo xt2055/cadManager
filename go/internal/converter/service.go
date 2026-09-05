@@ -99,7 +99,6 @@ func (s *Service) CaxaBin() string {
 func (s *Service) Start(ctx context.Context) {
 	log.Println("[CAD Converter] 转换服务已启动...")
 	go s.workerLoop(ctx)
-	go s.cronScanner(ctx)
 }
 
 func (s *Service) Stop() {
@@ -419,7 +418,6 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 		return err
 	}
 
-	nudged := false
 	for i := 0; i < 180; i++ {
 		select {
 		case <-ctx.Done():
@@ -433,11 +431,6 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 				return nil
 			}
 			return errors.New("CAXA 转换任务失败")
-		}
-		// CAXA 已启动但停在空界面时插件不消费任务：10 秒后补开一次哨兵图纸激活插件。
-		if !nudged && i == 20 {
-			nudged = true
-			s.nudgeSentinel(ctx)
 		}
 	}
 	return errors.New("CAXA 转换任务超时")
@@ -638,7 +631,7 @@ func (s *Service) ensureCaxaRunning(ctx context.Context) error {
 // 供自动启动 CAXA 时打开以激活转换插件。文件缓存在临时目录，可重复使用。
 func (s *Service) ensureSentinelDrawing(ctx context.Context) string {
 	for _, ext := range []string{".dwg", ".exb"} {
-		sentinel := filepath.Join(os.TempDir(), "caxa_sentinel"+ext)
+		sentinel := filepath.Join(os.TempDir(), "caxa_converter_sentinel"+ext)
 		if info, err := os.Stat(sentinel); err == nil && info.Size() > 0 {
 			return sentinel
 		}
@@ -652,7 +645,7 @@ func (s *Service) ensureSentinelDrawing(ctx context.Context) string {
 	found := false
 	for _, ext := range []string{".dwg", ".exb"} {
 		for _, att := range list {
-			attExt := filepathExt(att.StorageKey)
+			attExt := filepathExt(att.CurrentName)
 			if attExt == "" {
 				attExt = filepathExt(att.Name)
 			}
@@ -671,11 +664,11 @@ func (s *Service) ensureSentinelDrawing(ctx context.Context) string {
 	if !found {
 		return ""
 	}
-	ext := strings.ToLower(filepathExt(best.StorageKey))
+	ext := strings.ToLower(filepathExt(best.CurrentName))
 	if ext == "" {
 		ext = strings.ToLower(filepathExt(best.Name))
 	}
-	sentinel := filepath.Join(os.TempDir(), "caxa_sentinel"+ext)
+	sentinel := filepath.Join(os.TempDir(), "caxa_converter_sentinel"+ext)
 	reader, _, err := s.storage.Open(ctx, best.StorageKey)
 	if err != nil {
 		return ""
@@ -692,22 +685,6 @@ func (s *Service) ensureSentinelDrawing(ctx context.Context) string {
 	}
 	file.Close()
 	return sentinel
-}
-
-// nudgeSentinel 让已运行的 CAXA 再打开一次哨兵图纸：插件只在打开图纸后消费转换任务。
-// 注意不能因为 isCaxaRunning() 为 true 就跳过——CAXA 常见停在空界面（进程在、插件未激活），
-// 此时恰恰需要补开哨兵图纸，否则任务永远无人处理。
-func (s *Service) nudgeSentinel(ctx context.Context) {
-	binPath, err := ResolveCaxaPath(s.caxaBin)
-	if err != nil {
-		return
-	}
-	sentinel := s.ensureSentinelDrawing(ctx)
-	if sentinel == "" {
-		return
-	}
-	log.Printf("[CAD Converter] 转换任务迟迟未完成，尝试打开哨兵图纸激活插件: %s", sentinel)
-	_ = exec.Command(binPath, sentinel).Start()
 }
 
 func resolveToolPath(configured, name string) (string, error) {
@@ -885,71 +862,6 @@ func filepathExt(value string) string {
 	}
 	return value[index:]
 }
-
-func (s *Service) cronScanner(ctx context.Context) {
-	// 启动后先立即执行一次扫描
-	s.scanMissingDwg(ctx)
-
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.stopChan:
-			return
-		case <-ticker.C:
-			s.scanMissingDwg(ctx)
-		}
-	}
-}
-
-func (s *Service) scanMissingDwg(ctx context.Context) {
-	list, err := s.repo.ListAllCad(ctx)
-	if err != nil {
-		log.Printf("[CAD Converter] 定时扫描 CAD 列表失败: %v", err)
-		return
-	}
-
-	for _, att := range list {
-		ext := filepathExt(att.StorageKey)
-		if ext == "" {
-			ext = filepathExt(att.Name)
-		}
-		if !strings.EqualFold(ext, ".exb") && !strings.EqualFold(ext, ".dwg") && !strings.EqualFold(ext, ".dxf") {
-			continue
-		}
-		// 扫描依据：附件是否缺少 v1.0 版本目录文件（初始版本 DWG），
-		// 缺少则进入低优先级后台队列补建；不再扫描“原始文件旁边有没有 DWG”。
-		dwgKey := versionDwgKey(att)
-		if _, _, err := s.storage.Open(ctx, dwgKey); err != nil {
-			s.PushJob(att, PriorityLow)
-		}
-	}
-}
-
-// scanMissingDxf 保留旧版 DXF 扫描逻辑，仅作为迁移参考，不再执行。
-// func (s *Service) scanMissingDxf(ctx context.Context) {
-// 	list, err := s.repo.ListAllCad(ctx)
-// 	if err != nil {
-// 		log.Printf("[CAD Converter] 定时扫描 CAD 列表失败: %v", err)
-// 		return
-// 	}
-// 	for _, att := range list {
-// 		ext := filepathExt(att.StorageKey)
-// 		if ext == "" {
-// 			ext = filepathExt(att.Name)
-// 		}
-// 		if strings.EqualFold(ext, ".dxf") {
-// 			continue
-// 		}
-// 		dxfKey := strings.TrimSuffix(att.StorageKey, ext) + ".dxf"
-// 		if _, _, err := s.storage.Open(ctx, dxfKey); err != nil {
-// 			s.PushJob(att, PriorityLow)
-// 		}
-// 	}
-// }
 
 func ioCopy(dst *os.File, src interface{ Read([]byte) (int, error) }) (int64, error) {
 	buf := make([]byte, 32*1024)

@@ -127,54 +127,6 @@ func TestProcessOneSkipsNonCAD(t *testing.T) {
 // 由人工在完整环境中回归验证。
 
 // ---------------------------------------------------------------------------
-// 启动扫描：缺少 v1.0 的附件进入后台队列
-// ---------------------------------------------------------------------------
-
-func TestScanMissingDwgEnqueuesMissingV1(t *testing.T) {
-	service, objectStorage, repo := newConverterTest(t)
-
-	missing := attachment.Attachment{ID: "att-m", StorageKey: "drawings/JG-00/缺版本.dwg", Name: "缺版本.dwg"}
-	ready := attachment.Attachment{ID: "att-r", StorageKey: "drawings/JG-00/有版本.dwg", Name: "有版本.dwg"}
-	nonCad := attachment.Attachment{ID: "att-n", StorageKey: "drawings/JG-00/说明.pdf", Name: "说明.pdf"}
-	repo.list = []attachment.Attachment{missing, ready, nonCad}
-
-	raw := []byte("dwg-bytes")
-	if _, err := objectStorage.Put(context.Background(), ready.StorageKey, bytes.NewReader(raw), "application/acad"); err != nil {
-		t.Fatalf("Put() error = %v", err)
-	}
-	if _, err := objectStorage.Put(context.Background(), versionDwgKey(ready), bytes.NewReader(raw), "application/acad"); err != nil {
-		t.Fatalf("Put() error = %v", err)
-	}
-	if _, err := objectStorage.Put(context.Background(), missing.StorageKey, bytes.NewReader(raw), "application/acad"); err != nil {
-		t.Fatalf("Put() error = %v", err)
-	}
-
-	service.scanMissingDwg(context.Background())
-
-	// 缺失者已入队（inFlight 记录），就绪者与非 CAD 不入队
-	if _, loaded := service.inFlight.Load(missing.StorageKey); !loaded {
-		t.Fatalf("缺少 v1.0 的附件未被加入转换队列")
-	}
-	if _, loaded := service.inFlight.Load(ready.StorageKey); loaded {
-		t.Fatalf("已有 v1.0 的附件不应重复入队")
-	}
-	if _, loaded := service.inFlight.Load(nonCad.StorageKey); loaded {
-		t.Fatalf("非 CAD 附件不应入队")
-	}
-
-	// 队列任务执行后 DWG 复制进版本目录（DWG 分支无需 CAXA）
-	job, _ := service.inFlight.Load(missing.StorageKey)
-	if typed, ok := job.(*Job); ok {
-		if err := service.processOne(context.Background(), typed.Attachment); err != nil {
-			t.Fatalf("processOne() error = %v", err)
-		}
-		if _, _, err := objectStorage.Open(context.Background(), versionDwgKey(missing)); err != nil {
-			t.Fatalf("扫描补建后版本对象缺失: %v", err)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // CAXA 路径解析（不依赖真实安装的回归保护）
 // ---------------------------------------------------------------------------
 

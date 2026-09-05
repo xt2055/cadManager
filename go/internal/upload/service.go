@@ -713,44 +713,7 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 	processedSize := int64(0)
 	processedSHA256 := ""
 	processedMimeType := ""
-	convertedSourceKey := ""
-	if isCAD(name) {
-		if service.converter == nil {
-			err = errors.New("CAD 转换服务未配置")
-		} else {
-			convertedSourceKey, err = service.converter.EnsureDwg(ctx, attachment.Attachment{
-				StorageKey:        stagingKey,
-				CurrentStorageKey: stagingKey,
-				Name:              name,
-				CurrentName:       name,
-				DrawingNo:         item.DrawingNo,
-				PartNo:            nullableString(item.PartNo),
-				Size:              object.Size,
-				MimeType:          object.MimeType,
-				SHA256:            object.SHA256,
-				CurrentSHA256:     object.SHA256,
-			})
-			if err == nil {
-				convertedObject, openErr := service.openObjectInfo(ctx, convertedSourceKey)
-				if openErr != nil {
-					err = openErr
-				} else {
-					processedBlobID, processedKey, err = service.ensureBlob(ctx, convertedSourceKey, convertedObject)
-					processedSize = convertedObject.Size
-					processedSHA256 = convertedObject.SHA256
-					processedMimeType = convertedObject.MimeType
-				}
-			}
-		}
-	}
-	if err != nil {
-		service.markItemFailed(ctx, itemID, "conversion", err)
-		service.scheduleCleanup(ctx, stagingKey, "upload-staging")
-		if processedKey != "" {
-			service.scheduleCleanup(ctx, processedKey, "cad-processing")
-		}
-		return Item{}, fmt.Errorf("CAD 文件处理失败: %w", err)
-	}
+	// 原文件落入 Blob 即为上传成功。CAD 转换交给持久化队列，绝不占用上传请求。
 	if _, err := service.pool.Exec(ctx, `
 		UPDATE upload_session_items
 		SET status = 'ready', staging_object_key = NULL, object_key = $2, blob_id = $3::uuid,
@@ -758,21 +721,19 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 			processed_size_bytes = $6, processed_sha256 = NULLIF($7, ''), processed_mime_type = NULLIF($8, ''),
 			size_bytes = $9, sha256 = $10, original_name = $11, mime_type = $12,
 				failure_stage = NULL, error_message = NULL, updated_at = now()
-		WHERE id = $1::uuid`, itemID, blobKey, blobID, processedKey, processedBlobID, processedSize, processedSHA256, processedMimeType, object.Size, object.SHA256, name, mimeType); err != nil {
+	WHERE id = $1::uuid`, itemID, blobKey, blobID, processedKey, processedBlobID, processedSize, processedSHA256, processedMimeType, object.Size, object.SHA256, name, mimeType); err != nil {
 		service.markItemFailed(ctx, itemID, "commit", err)
 		service.scheduleCleanup(ctx, stagingKey, "upload-staging")
-		if processedKey != "" {
-			service.scheduleCleanup(ctx, processedKey, "cad-processing")
-		}
 		return Item{}, fmt.Errorf("登记暂存文件失败: %w", err)
+	}
+	if isCAD(name) {
+		if err := service.enqueueCADConversion(ctx, itemID, blobID, blobKey, name, object); err != nil {
+			service.markItemFailed(ctx, itemID, "commit", err)
+			return Item{}, fmt.Errorf("登记 CAD 异步转换任务失败: %w", err)
+		}
 	}
 	if deleteErr := service.storage.Delete(ctx, stagingKey); deleteErr != nil {
 		service.scheduleCleanup(ctx, stagingKey, "upload-staging")
-	}
-	if processedKey != "" && processedKey != blobKey {
-		if deleteErr := service.storage.Delete(ctx, convertedSourceKey); deleteErr != nil {
-			service.scheduleCleanup(ctx, convertedSourceKey, "cad-staging")
-		}
 	}
 	if err := service.touchSession(ctx, userID, sessionID); err != nil {
 		return Item{}, err
@@ -1086,6 +1047,11 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 	if _, err := tx.Exec(ctx, `UPDATE upload_sessions SET status = 'committed', committed_at = now(), result = $2::jsonb, last_activity_at = now(), error_message = NULL WHERE id = $1::uuid AND status IN ('open', 'failed')`, sessionID, string(resultBytes)); err != nil {
 		return nil, fmt.Errorf("保存上传会话结果失败: %w", err)
 	}
+	if isCAD(item.OriginalName) {
+		if err := bindCADConversionJobTx(ctx, tx, item.ID, attachmentID); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := tx.Exec(ctx, `UPDATE upload_session_items SET status = 'committed', attachment_id = $2::uuid, updated_at = now() WHERE session_id = $1::uuid`, sessionID, attachmentID); err != nil {
 		return nil, fmt.Errorf("更新上传文件项状态失败: %w", err)
 	}
@@ -1303,6 +1269,11 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		attachmentID, err := insertAttachmentVersionTx(ctx, tx, attachmentDrawingID, partID, item.role, item.name, currentName, currentMime, currentSize, currentBlobID, userID, "v1.0", "release")
 		if err != nil {
 			return nil, fmt.Errorf("创建项目附件失败: %w", err)
+		}
+		if isCAD(item.name) {
+			if err := bindCADConversionJobTx(ctx, tx, item.id, attachmentID); err != nil {
+				return nil, err
+			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE upload_session_items SET attachment_id = $2::uuid, status = 'committed', updated_at = now() WHERE id = $1::uuid`, item.id, attachmentID); err != nil {
 			return nil, err
