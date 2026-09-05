@@ -471,7 +471,25 @@ func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage st
 		return "", err
 	}
 	keys := make([]string, 0)
-	rows, err := pool.Query(ctx, `SELECT b.storage_key FROM attachment_versions v JOIN file_blobs b ON b.id = v.blob_id JOIN attachments a ON a.id = v.attachment_id WHERE a.drawing_id = $1::uuid OR a.part_id IN (SELECT r.part_id FROM drawing_part_relations r WHERE r.drawing_id = $1::uuid)`, id)
+	ownedPartIDs := make([]string, 0)
+	partRows, err := pool.Query(ctx, `SELECT DISTINCT part_id::text FROM drawing_part_relations WHERE drawing_id = $1::uuid AND relation_type = 'owned'`, id)
+	if err != nil {
+		return "", err
+	}
+	for partRows.Next() {
+		var partID string
+		if err := partRows.Scan(&partID); err != nil {
+			partRows.Close()
+			return "", err
+		}
+		ownedPartIDs = append(ownedPartIDs, partID)
+	}
+	if err := partRows.Err(); err != nil {
+		partRows.Close()
+		return "", err
+	}
+	partRows.Close()
+	rows, err := pool.Query(ctx, `SELECT b.storage_key FROM attachment_versions v JOIN file_blobs b ON b.id = v.blob_id JOIN attachments a ON a.id = v.attachment_id WHERE a.drawing_id = $1::uuid OR a.part_id IN (SELECT r.part_id FROM drawing_part_relations r WHERE r.drawing_id = $1::uuid AND r.relation_type = 'owned')`, id)
 	if err != nil {
 		return "", err
 	}
@@ -503,6 +521,13 @@ func hardDeleteDrawing(ctx context.Context, pool *pgxpool.Pool, objectStorage st
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM drawings WHERE id = $1::uuid`, id); err != nil {
 		return "", err
+	}
+	if len(ownedPartIDs) > 0 {
+		// 删除总图会级联删除其关系，但不会级联删除 parts。只有不再被
+		// 任何关系引用的自有零件才安全删除；仍被其他项目借用的源零件保留。
+		if _, err := tx.Exec(ctx, `DELETE FROM parts WHERE id = ANY($1::uuid[]) AND NOT EXISTS (SELECT 1 FROM drawing_part_relations r WHERE r.part_id = parts.id)`, ownedPartIDs); err != nil {
+			return "", fmt.Errorf("删除项目零件失败: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
