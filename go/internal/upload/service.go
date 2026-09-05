@@ -1330,11 +1330,11 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		if borrow.Direction != "in" && borrow.Direction != "out" {
 			return nil, errors.New("借用记录方向无效")
 		}
-		if strings.TrimSpace(borrow.SourcePartNo) == "" {
-			return nil, errors.New("借用来源零件图号不能为空")
-		}
 		if _, exists := borrowedPartNos[strings.TrimSpace(borrow.TargetPartNo)]; exists {
 			continue
+		}
+		if strings.TrimSpace(borrow.SourcePartNo) == "" {
+			return nil, errors.New("借用来源零件图号不能为空")
 		}
 		status := normalizeRelationStatus(borrow.Status)
 		var sourcePartID string

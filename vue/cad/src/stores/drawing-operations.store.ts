@@ -735,8 +735,8 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 				.map((item) => ({
 					direction: item.dir,
 					sourceDrawingNo: item.sourceDrawingNo || item.project,
-					sourcePartNo: item.dir === 'in' ? item.partNo : undefined,
-					targetPartNo: item.dir === 'in' ? item.partNo : undefined,
+					sourcePartNo: item.partNo,
+					targetPartNo: item.partNo,
 					status: item.status === '已归档' ? 'archived' : 'active',
 				})),
 	        ...structureParts.filter((part) => part.borrowFrom).map((part) => ({
