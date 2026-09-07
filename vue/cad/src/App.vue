@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { defineAsyncComponent, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 const HydraulicBackdrop = defineAsyncComponent(() => import('./components/common/HydraulicBackdrop.vue'))
 import './styles/themes/juli.css'
 import { useThemeStore } from './stores/theme.store'
@@ -9,6 +10,7 @@ defineOptions({
 })
 
 const themeStore = useThemeStore()
+const route = useRoute()
 
 onMounted(() => {
   themeStore.applyTheme()
@@ -16,7 +18,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <HydraulicBackdrop v-if="themeStore.skin === 'juli'" />
+  <HydraulicBackdrop v-if="themeStore.skin === 'juli' && route.path !== '/login' && route.path !== '/login/'" />
   <div class="theme-ui" :class="themeStore.skin === 'juli' ? `hydraulic-ui hydraulic-ui--${themeStore.hydraulicPhase}` : ''" :inert="themeStore.hydraulicPhase !== 'idle'">
     <RouterView />
   </div>

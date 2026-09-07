@@ -11,6 +11,7 @@ import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
 import { windowService } from '@/services/tauri/window.service'
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { installCadFontDiagnostics, logRawCadDwgModel, normalizeCadToleranceEntities, preloadCadSymbolFonts, resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
 import type { FileView } from '@/modules/drawing'
 import { assertCadWorkerAssets, getCadWorkerUrls } from '../detail-tabs/preview/cad-worker-assets'
 import { findWipeoutMasks } from '../detail-tabs/preview/cad-entity-filters'
@@ -36,12 +37,19 @@ const cadOriginalFile = ref<File | null>(null)
 const cadSourceFileName = ref<string | null>(null)
 const cadOriginalError = ref('')
 const isReady = ref(false)
+const cadFontsRoot = ref('')
+const useMainThreadCadDraw = import.meta.env.DEV
+  && (new URLSearchParams(window.location.search).get('cad-main-thread') === '1'
+    || window.localStorage.getItem('cad_use_main_thread_draw') !== '0')
 const isSaving = ref(false)
 const savedVersion = ref('')
 let editorDocumentActivatedListener: ((payload: { doc: any }) => void) | null = null
 let editorWipeoutCleanupTimer: number | null = null
 
 async function prepareCadEditor() {
+  // 与只读预览使用同一套离线 CAD 字体，避免 GDT 等符号字体回退为普通字母。
+  cadFontsRoot.value = await resolveCadFontsBaseUrl()
+  await preloadCadSymbolFonts()
   const workerUrls = getCadWorkerUrls()
   await assertCadWorkerAssets(workerUrls)
 
@@ -57,11 +65,21 @@ async function prepareCadEditor() {
 
   const converterManager = AcDbDatabaseConverterManager.instance
   if (!converterManager.get(AcDbFileType.DWG)) {
-    converterManager.register(AcDbFileType.DWG, new AcDbLibreDwgConverter({
+    const converterConfig = {
       convertByEntityType: false,
       useWorker: true,
       parserWorkerUrl: workerUrls.dwgParser,
-    }))
+    }
+    const converter = import.meta.env.DEV
+      ? new (class extends AcDbLibreDwgConverter {
+          protected override async parse(data: ArrayBuffer, timeout?: number) {
+            const model = await super.parse(data, timeout)
+            logRawCadDwgModel(model)
+            return model
+          }
+        })(converterConfig)
+      : new AcDbLibreDwgConverter(converterConfig)
+    converterManager.register(AcDbFileType.DWG, converter)
   }
 }
 
@@ -143,6 +161,10 @@ async function removeEditorWipeoutMasks(doc?: any) {
   try {
     const manager = AcApDocManager.instance
     const targetDoc = doc ?? manager.curDocument
+    const normalizedCount = normalizeCadToleranceEntities(targetDoc.database)
+    if (normalizedCount > 0) {
+      manager.curView.updateEntity(targetDoc.database)
+    }
     const wipeoutMasks = findWipeoutMasks(targetDoc.database)
     // 编辑模式由 AcApContext 监听数据库实体。不能用 removeEntity，
     // 否则上下文会在后续批量渲染时再次把 WIPEOUT 加回场景。
@@ -179,8 +201,10 @@ function scheduleEditorWipeoutCleanup() {
   editorWipeoutCleanupTimer = window.setTimeout(run, delays[0])
 }
 
-function bindEditorDocumentCleanup() {
+async function bindEditorDocumentCleanup() {
   const manager = AcApDocManager.instance
+  await installCadFontDiagnostics(manager)
+  await preloadCadSymbolFonts(manager)
   if (editorDocumentActivatedListener) {
     manager.events.documentActivated.removeEventListener(editorDocumentActivatedListener)
   }
@@ -431,8 +455,9 @@ watch([drawingId, fileId], () => {
           v-if="isReady && cadOriginalFile"
           locale="zh"
           :local-file="cadOriginalFile"
+          :base-url="cadFontsRoot"
           :mode="AcEdOpenMode.Write"
-          :use-main-thread-draw="false"
+          :use-main-thread-draw="useMainThreadCadDraw"
           theme="dark"
           @create="bindEditorDocumentCleanup"
         />

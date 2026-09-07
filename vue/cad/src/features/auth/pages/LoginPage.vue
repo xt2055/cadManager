@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import JuliLogo from '@/components/common/JuliLogo.vue'
+const HydraulicBackdrop = defineAsyncComponent(() => import('@/components/common/HydraulicBackdrop.vue'))
 import { useThemeStore } from '@/stores/theme.store'
 import { windowService } from '@/services/tauri/window.service'
 import { useUserPreferenceStore } from '@/stores/user-preference.store'
@@ -33,17 +34,8 @@ const laserStatus = ref('认证成功 · 正在建立粒子通道')
 const laserCanvas = ref<HTMLCanvasElement | null>(null)
 const submitButton = ref<HTMLButtonElement | null>(null)
 const juliTransition = ref(false)
-const juliPreview = ref(false)
 let finishJuliTransition: (() => void) | undefined
 let juliTimer: number | undefined
-
-async function toggleJuliTheme() {
-  themeStore.setSkin(themeStore.skin === 'juli' ? 'classic' : 'juli')
-  try {
-    if (themeStore.skin === 'juli') await windowService.setWorkspaceWindowSize()
-    else await windowService.setLoginWindowSize()
-  } catch (error) { console.warn('调整主题展示窗口失败', error) }
-}
 
 async function playJuliTransition() {
   juliTransition.value = true
@@ -55,12 +47,6 @@ async function playJuliTransition() {
   juliTransition.value = false
 }
 
-async function previewJuliTransition() {
-  if (juliTransition.value || loading.value) return
-  juliPreview.value = true
-  await playJuliTransition()
-  juliPreview.value = false
-}
 
 interface RememberedCredentials {
   account: string
@@ -629,17 +615,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <button v-if="!loading && !isLoginEnded" class="juli-theme-entry" type="button" @click="toggleJuliTheme">{{ themeStore.skin === 'juli' ? '返回经典主题' : '✧ 巨力液压 · 展示主题' }}</button>
-  <button v-if="themeStore.skin === 'juli' && !loading && !juliTransition" class="juli-mode-entry" type="button" :disabled="themeStore.hydraulicPhase !== 'idle'" @click="themeStore.toggleMode()">{{ themeStore.mode === 'dark' ? '☀ 切换浅色工场' : '☾ 切换深色工场' }}</button>
   <Teleport to="body">
-    <div v-if="juliTransition" class="juli-transition" role="status" :aria-label="juliPreview ? '主题动画预览' : '认证成功，正在绘制工作台'">
+    <div v-if="juliTransition" class="juli-transition" role="status" aria-label="认证成功，正在绘制工作台">
       <div class="juli-logo-stage">
         <JuliLogo animated />
         <div class="juli-logo-system">泸州巨力液压有限公司 · CAD图纸管理系统</div>
       </div>
       <div class="juli-logo-shockwave" aria-hidden="true"></div>
       <div class="juli-logo-flash" aria-hidden="true"></div>
-      <div class="juli-transition-caption">{{ juliPreview ? '动画预览' : '身份认证通过' }} ／ 正在绘制数字工场</div>
+      <div class="juli-transition-caption">身份认证通过 ／ 正在绘制数字工场</div>
       <button class="juli-transition-skip" type="button" @click="finishJuliTransition?.()">跳过动画</button>
     </div>
   </Teleport>
@@ -651,6 +635,7 @@ onBeforeUnmount(() => {
       'login-ended': isLoginEnded,
     }"
   >
+    <HydraulicBackdrop v-if="themeStore.skin === 'juli'" />
     <canvas v-if="isLaserAnimating" ref="laserCanvas" class="laser-login-canvas" aria-hidden="true"></canvas>
     <div v-if="isLaserAnimating" class="laser-login-status">{{ laserStatus }}</div>
     <!-- 顶部可拖拽条与最小化/关闭按钮 -->
@@ -702,7 +687,6 @@ onBeforeUnmount(() => {
             <h1 class="juli-login-title">泸州巨力液压<span>CAD图纸管理系统</span></h1>
             <div class="juli-login-rule"></div>
             <p class="brand-desc">从一条工程线，到每一次精准传动。</p>
-            <button class="juli-preview-button" type="button" :disabled="loading || juliTransition" @click="previewJuliTransition">▷ 预览开场动画</button>
           </template>
           <template v-else>
             <h1 class="brand-name">图枢 <span class="brand-badge">CAD·PDM</span></h1>

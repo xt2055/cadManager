@@ -7,7 +7,8 @@ html[data-skin='juli'] {
   --cad-bg: #06101d; --cad-line: #cdeeff; --cad-center: #44e1f2; --cad-dim: #83a9bf; --cad-text: #d9f4ff; --cad-hatch: #1d3a5a; --cad-frame: #6e9cc0;
   --font-display: 'Microsoft YaHei', sans-serif;
 }
-.juli-world { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; background: radial-gradient(ellipse at 70% 40%, #103c53, #030c16 75%); }
+html[data-skin='juli'] body { padding: 0; }
+.juli-world { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; background: radial-gradient(ellipse at 70% 40%, #103c53, #030c16 75%); }
 .juli-machine { position: absolute; inset: 0 -15% 0 22%; opacity: .8; }
 .juli-world-grid { position: absolute; inset: 0; background-image: linear-gradient(#5bd5ef08 1px, transparent 1px), linear-gradient(90deg,#5bd5ef08 1px,transparent 1px); background-size: 44px 44px; mask-image: linear-gradient(transparent,#000); }
 .juli-orbit { position: absolute; width: 65vw; height: 65vw; border: 1px dashed #55deef1c; border-radius: 50%; left: 36%; top: -12%; animation: juli-orbit 90s linear infinite; }
@@ -16,6 +17,30 @@ html[data-skin='juli'] {
 .juli-telemetry { top: 9%; right: 4%; }.juli-telemetry span { color: #ffac57; }
 .juli-world-caption { right: 4%; bottom: 4%; text-align: right; }.juli-world-caption span { letter-spacing: 2px; opacity: .65; }
 html[data-skin='juli'] #app { position: relative; isolation: isolate; }
+/* 登录画布归属登录卡片；外层只是透明的原生窗口承载区。 */
+html[data-skin='juli']:has(.auth-window-root),
+html[data-skin='juli'] body:has(.auth-window-root),
+html[data-skin='juli'] body:has(.auth-window-root) #app {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+html[data-skin='juli'] .auth-window-root .login-standalone-window {
+  isolation: isolate;
+  overflow: hidden;
+  clip-path: inset(0 round 12px);
+  box-shadow: none;
+}
+html[data-skin='juli'] .login-standalone-window > .juli-world {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+}
+html[data-skin='juli'] .login-standalone-window .juli-machine { inset: 0 0 0 22%; }
+html[data-skin='juli'] .login-standalone-window .juli-orbit { width: 70%; height: auto; aspect-ratio: 1; }
+html[data-skin='juli'] .login-window-titlebar,
+html[data-skin='juli'] .login-inner-container { position: relative; z-index: 1; }
 html[data-skin='juli'] .auth-window-root, html[data-skin='juli'] .desktop-layout { position: relative; z-index: 1; }
 html[data-skin='juli'] .card { border-color: #31718b65; box-shadow: inset 0 1px #6bd6ec12, 0 12px 30px #0003; backdrop-filter: blur(14px); animation: juli-panel .7s ease both; }
 html[data-skin='juli'] .btn { transition: box-shadow .25s, border-color .25s, transform .25s; }
@@ -35,8 +60,6 @@ html[data-skin='juli'] .login-form .btn { min-height: 46px; }
 .juli-login-title { margin: 0; font-size: clamp(26px,3vw,38px); line-height: 1.4; font-weight: 600; color: #e7faff; }
 .juli-login-title span { display: block; color: #58e5ef; font-size: 20px; letter-spacing: 5px; margin-top: 12px; }
 .juli-login-rule { height: 1px; background: linear-gradient(90deg,#51dcec,transparent); margin: 24px 0 14px; transform-origin: left; animation: juli-rule 1.4s ease both; }
-.juli-preview-button { border: 0; background: transparent; padding: 8px 0 0; font-size: 11px; letter-spacing: 2px; color: #68bbc9; cursor: pointer; }
-.juli-preview-button:hover { color: #dbfcff; text-shadow: 0 0 12px #44e1f2; }
 html[data-skin='juli'] .login-standalone-window::after { content: ''; position: absolute; inset: 6px; border: 1px solid #56dff51c; border-radius: 8px; pointer-events: none; clip-path: polygon(0 0,18% 0,18% 1%,1% 1%,1% 25%,0 25%,0 0,100% 0,100% 100%,82% 100%,82% 99%,99% 99%,99% 75%,100% 75%,100% 0); animation: juli-frame-light 5s ease-in-out infinite; }
 html[data-skin='juli'] #titlebar { border-bottom: 1px solid #47d9ef66; box-shadow: 0 4px 22px #2bd9f012; }
 html[data-skin='juli'] .tb-logo { filter: drop-shadow(0 0 6px #40dcf15e); }
@@ -44,7 +67,6 @@ html[data-skin='juli'] .nav-item.active { border-left: 2px solid #4ce2ed; box-sh
 html[data-skin='juli'] .desktop-layout { animation: juli-workspace-in 1.3s cubic-bezier(.16,1,.3,1) both; }
 @keyframes juli-workspace-in { from { opacity: 0; transform: scale(.94); clip-path: inset(8% 6%); filter: brightness(1.7); } to { opacity: 1; transform: scale(1); clip-path: inset(0); filter: none; } }
 @keyframes juli-frame-light { 50% { border-color: #56dff5b0; filter: drop-shadow(0 0 5px #4ee4ff); } }
-.juli-theme-entry { position: fixed; bottom: 14px; left: 18px; z-index: 100; background: #082031; color: #a2e3ed; border: 1px solid #397184; padding: 7px 12px; border-radius: 5px; cursor: pointer; font-size: 11px; }
 .juli-transition { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: #030c16ed; overflow: hidden; }
 .juli-transition svg { width: min(1100px,94vw); overflow: visible; }
 .juli-transition .juli-draw { fill: none; stroke: #53e2f1; stroke-width: 1; stroke-dasharray: 2000; stroke-dashoffset: 2000; animation: juli-draw 3.2s ease forwards; }
@@ -89,11 +111,7 @@ html[data-skin='juli'][data-theme='light'] .login-input { background: #ffffffb5;
 html[data-skin='juli'][data-theme='light'] .juli-login-title { color: #133a58; }
 html[data-skin='juli'][data-theme='light'] .juli-login-title span { color: #086ea6; }
 html[data-skin='juli'][data-theme='light'] .juli-login-kicker { color: #94601f; }
-html[data-skin='juli'][data-theme='light'] .juli-preview-button { color: #266d92; }
 html[data-skin='juli'][data-theme='light'] .juli-login-rule { background: linear-gradient(90deg,#087db7,transparent); }
-html[data-skin='juli'][data-theme='light'] .juli-theme-entry,
-html[data-skin='juli'][data-theme='light'] .juli-mode-entry { background: #f5fbff; color: #175a80; border-color: #91b5ca; }
-.juli-mode-entry { position: fixed; bottom: 14px; right: 18px; z-index: 100; background: #082031; color: #a2e3ed; border: 1px solid #397184; padding: 7px 12px; border-radius: 5px; cursor: pointer; font-size: 11px; }
 .juli-machine { transition: inset .6s cubic-bezier(.2,.8,.2,1),opacity .4s; }
 .juli-world.is-hydraulic-transition .juli-machine { inset: 0; opacity: 1; }
 .juli-world.is-hydraulic-transition .juli-telemetry,

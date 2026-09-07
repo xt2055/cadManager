@@ -2,7 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { assertCadWorkerAssets, getCadWorkerUrls } from './cad-worker-assets'
 import { findWipeoutMasks } from './cad-entity-filters'
-import { resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
+import { installCadFontDiagnostics, logRawCadDwgModel, normalizeCadToleranceEntities, preloadCadSymbolFonts, resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
 
 interface Props {
   dxfUrl?: string | null
@@ -23,6 +23,13 @@ let managerGeneration = 0
 let openGeneration = 0
 let disposed = false
 let destroyPromise: Promise<void> | null = null
+
+function useMainThreadCadDraw() {
+  if (!import.meta.env.DEV || typeof window === 'undefined') return false
+  const queryEnabled = new URLSearchParams(window.location.search).get('cad-main-thread') === '1'
+  const storageEnabled = window.localStorage.getItem('cad_use_main_thread_draw') !== '0'
+  return queryEnabled || storageEnabled
+}
 
 async function finishInitialRender(currentManager: any) {
   const view = currentManager?.curView
@@ -100,18 +107,30 @@ async function loadViewer(url: string) {
     }
     const converterManager = AcDbDatabaseConverterManager.instance
     if (!converterManager.get(AcDbFileType.DWG)) {
-      converterManager.register(AcDbFileType.DWG, new AcDbLibreDwgConverter({
+      const converterConfig = {
         convertByEntityType: false,
         useWorker: true,
         parserWorkerUrl: workerUrls.dwgParser,
-      }))
+      }
+      const converter = import.meta.env.DEV
+        ? new (class extends AcDbLibreDwgConverter {
+            protected override async parse(data: ArrayBuffer, timeout?: number) {
+              const model = await super.parse(data, timeout)
+              logRawCadDwgModel(model)
+              return model
+            }
+          })(converterConfig)
+        : new AcDbLibreDwgConverter(converterConfig)
+      converterManager.register(AcDbFileType.DWG, converter)
     }
+    const mainThreadDraw = useMainThreadCadDraw()
+    console.info('[CAD][字体诊断] 绘制线程', JSON.stringify({ mainThreadDraw }))
     manager = AcApDocManager.createInstance({
       container: containerRef.value,
       autoResize: true,
       baseUrl: await resolveCadFontsBaseUrl(),
       // 与官方示例保持一致，使用 Worker 绘制复杂标注块。
-      useMainThreadDraw: false,
+      useMainThreadDraw: mainThreadDraw,
       webworkerFileUrls: {
         ...workerUrls,
       },
@@ -126,6 +145,11 @@ async function loadViewer(url: string) {
       },
     })
     managerGeneration = generation
+
+    await installCadFontDiagnostics(manager)
+
+    // 先加载 GDT/SHX，再打开图纸，避免 TOLERANCE 首帧被普通字母字体替代。
+    await preloadCadSymbolFonts(manager)
 
     if (generation !== openGeneration || disposed) {
       await destroyViewer()
@@ -144,6 +168,7 @@ async function loadViewer(url: string) {
       },
     })
     if (!opened) throw new Error(`MLightCAD 无法解析图纸（传入文件名: ${fileName}）`)
+    normalizeCadToleranceEntities(manager.curDocument.database)
     const wipeoutMasks = findWipeoutMasks(manager.curDocument.database)
     const layers = manager.curDocument.layerStore.getLayers().map((layer: any) => ({
       name: layer.name,

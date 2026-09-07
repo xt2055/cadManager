@@ -35,6 +35,14 @@ tools/exb2dxf/plugin/*.pch
 .env
 .env.*.local
 
+# Cache / Temp / Archive
+.tmp-gocache/
+*.zip
+log/
+new/
+new2/
+任务.txt
+
 # Third-party reference projects
 test/
 deploy/pack/
