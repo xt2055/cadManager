@@ -80,10 +80,11 @@ export async function preloadCadSymbolFonts(manager?: { loadFonts?: (fonts: stri
   try {
     // 分开等待 SHX 与 mesh，避免查看器将 AIGDT 的加载延后到打开图纸之后。
     if (manager?.loadFonts) {
+      await manager.loadFonts(['simsun'])
       await manager.loadFonts(['gdt', 'amgdt', 'amgdtans', 'whgdtxt', 'CXGDT'])
       await manager.loadFonts(['AIGDT', 'gbgdt'])
     }
-    statuses = await fontManager.loadFontsByNames(CAD_SYMBOL_FONT_NAMES)
+    statuses = await fontManager.loadFontsByNames(['simsun', ...CAD_SYMBOL_FONT_NAMES])
   } catch (error) {
     // 字体缺失不能阻断整张图纸打开；调用方会继续使用 CAD 默认字体。
     console.warn('[CAD] 形位公差字体预加载失败', error)

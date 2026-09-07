@@ -15,7 +15,7 @@ import (
 // 结构写入、借用和 Fork 必须经过这些事务方法。
 type AtomicRepository interface {
 	UpdateRelation(context.Context, string, UpdateRelationInput, string) (Relation, error)
-	Borrow(context.Context, string, BorrowInput, string) (Relation, error)
+	Borrow(context.Context, string, BorrowInput, string, string) (Relation, error)
 	ForkBorrowedPart(context.Context, string, ForkInput, string, string) (Part, error)
 	CreateDraftRevision(context.Context, string, CreateRevisionInput, string) (PartRevision, error)
 	UpdateDraftRevision(context.Context, string, UpdateRevisionInput, string) (PartRevision, error)
@@ -37,17 +37,23 @@ func (repository *PGRepository) UpdateRelation(ctx context.Context, id string, i
 
 	var drawingID, relationType, status string
 	var currentRevision int64
-	if err := tx.QueryRow(ctx, `SELECT drawing_id::text, relation_type, status, revision FROM drawing_part_relations WHERE id = $1::uuid FOR UPDATE`, id).
+	if err := tx.QueryRow(ctx, `SELECT drawing_id::text, relation_type, status, revision FROM drawing_part_relations WHERE id = $1::uuid`, id).
 		Scan(&drawingID, &relationType, &status, &currentRevision); errors.Is(err, pgx.ErrNoRows) {
 		return Relation{}, ErrNotFound
 	} else if err != nil {
 		return Relation{}, fmt.Errorf("读取结构关系失败: %w", err)
 	}
-	if status != "active" {
-		return Relation{}, ErrInvalidTransition
-	}
 	if err := lockDrawing(ctx, tx, drawingID); err != nil {
 		return Relation{}, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT relation_type, status, revision FROM drawing_part_relations WHERE id = $1::uuid FOR UPDATE`, id).
+		Scan(&relationType, &status, &currentRevision); errors.Is(err, pgx.ErrNoRows) {
+		return Relation{}, ErrNotFound
+	} else if err != nil {
+		return Relation{}, fmt.Errorf("锁定结构关系失败: %w", err)
+	}
+	if status != "active" {
+		return Relation{}, ErrInvalidTransition
 	}
 
 	parentID := ""
@@ -110,18 +116,71 @@ func (repository *PGRepository) UpdateRelation(ctx context.Context, id string, i
 	return relation, nil
 }
 
-func (repository *PGRepository) Borrow(ctx context.Context, drawingID string, input BorrowInput, userID string) (Relation, error) {
+func (repository *PGRepository) Borrow(ctx context.Context, drawingID string, input BorrowInput, userID string, idempotencyKey string) (Relation, error) {
 	if strings.TrimSpace(input.SourcePartID) == "" {
 		return Relation{}, errors.New("sourcePartId 不能为空")
 	}
 	if input.Qty <= 0 {
 		input.Qty = 1
 	}
+	key := strings.TrimSpace(idempotencyKey)
 	tx, err := repository.pool.Begin(ctx)
 	if err != nil {
 		return Relation{}, fmt.Errorf("开始借用零件事务失败: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	type borrowIdempotencyPayload struct {
+		Input    BorrowInput `json:"input"`
+		Relation Relation    `json:"relation"`
+	}
+
+	scope := "borrow-drawing:" + drawingID
+	if key != "" {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, scope+":"+key); err != nil {
+			return Relation{}, fmt.Errorf("锁定借用幂等命令失败: %w", err)
+		}
+		var storedUser string
+		var storedResult []byte
+		err = tx.QueryRow(ctx, `SELECT user_id::text, result FROM domain_idempotency_records WHERE scope = $1 AND idempotency_key = $2`, scope, key).Scan(&storedUser, &storedResult)
+		if err == nil {
+			if storedUser != userID {
+				return Relation{}, ErrIdempotencyConflict
+			}
+			var payload borrowIdempotencyPayload
+			if err := json.Unmarshal(storedResult, &payload); err == nil && payload.Relation.ID != "" {
+				if payload.Input.SourcePartID != input.SourcePartID ||
+					payload.Input.Qty != input.Qty ||
+					nullableString(payload.Input.ParentRelationID) != nullableString(input.ParentRelationID) ||
+					!equalStringPtr(payload.Input.Position, input.Position) ||
+					!equalIntPtr(payload.Input.LineNo, input.LineNo) ||
+					payload.Input.Remark != input.Remark ||
+					payload.Input.BorrowReason != input.BorrowReason {
+					return Relation{}, ErrIdempotencyConflict
+				}
+				return payload.Relation, nil
+			}
+			// 兼容旧格式（纯 Relation JSON）
+			var rel Relation
+			if err := json.Unmarshal(storedResult, &rel); err != nil {
+				return Relation{}, fmt.Errorf("读取借用幂等结果失败: %w", err)
+			}
+			if rel.PartID != input.SourcePartID ||
+				rel.Quantity != input.Qty ||
+				nullableString(rel.ParentRelationID) != nullableString(input.ParentRelationID) ||
+				!equalStringPtr(rel.Position, input.Position) ||
+				!equalIntPtr(rel.LineNo, input.LineNo) ||
+				rel.Remark != input.Remark ||
+				nullableString(rel.BorrowReason) != input.BorrowReason {
+				return Relation{}, ErrIdempotencyConflict
+			}
+			return rel, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Relation{}, fmt.Errorf("读取借用幂等记录失败: %w", err)
+		}
+	}
+
 	if err := lockDrawing(ctx, tx, drawingID); err != nil {
 		return Relation{}, err
 	}
@@ -155,6 +214,16 @@ func (repository *PGRepository) Borrow(ctx context.Context, drawingID string, in
 	relation, err := scanRelation(tx.QueryRow(ctx, relationSelect+` WHERE r.id = $1::uuid`, relationID))
 	if err != nil {
 		return Relation{}, fmt.Errorf("读取借用关系失败: %w", err)
+	}
+	if key != "" {
+		payload := borrowIdempotencyPayload{
+			Input:    input,
+			Relation: relation,
+		}
+		result, _ := json.Marshal(payload)
+		if _, err := tx.Exec(ctx, `INSERT INTO domain_idempotency_records (scope, idempotency_key, user_id, result) VALUES ($1, $2, $3::uuid, $4::jsonb)`, scope, key, userID, result); err != nil {
+			return Relation{}, fmt.Errorf("保存借用幂等结果失败: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Relation{}, fmt.Errorf("提交借用零件事务失败: %w", err)
@@ -197,33 +266,56 @@ func (repository *PGRepository) ForkBorrowedPart(ctx context.Context, relationID
 		return Part{}, fmt.Errorf("读取 Fork 幂等记录失败: %w", err)
 	}
 
-	var drawingID, sourcePartID, sourceRevisionID, relationType, relationStatus string
-	var parentID *string
-	var qty float64
-	var remark string
-	var sourcePartNo, sourceName, material, spec, surfaceTreatment, partType, version string
-	var weight float64
-	err = tx.QueryRow(ctx, `SELECT r.drawing_id::text, r.parent_relation_id::text, r.relation_type, r.status, r.qty, r.remark,
-		p.id::text, p.part_no, pr.id::text, pr.name, pr.material, pr.spec, pr.weight, pr.surface_treatment, pr.part_type, pr.version
-		FROM drawing_part_relations r
-		JOIN parts p ON p.id = r.part_id
-		JOIN part_revisions pr ON pr.id = p.published_revision_id AND pr.workflow_status = 'published'
-		WHERE r.id = $1::uuid
-		FOR UPDATE OF r, p`, relationID).Scan(&drawingID, &parentID, &relationType, &relationStatus, &qty, &remark, &sourcePartID, &sourcePartNo, &sourceRevisionID, &sourceName, &material, &spec, &weight, &surfaceTreatment, &partType, &version)
+	var drawingID, sourcePartID, relationType, relationStatus string
+	err = tx.QueryRow(ctx, `SELECT drawing_id::text, part_id::text, relation_type, status FROM drawing_part_relations WHERE id = $1::uuid`, relationID).
+		Scan(&drawingID, &sourcePartID, &relationType, &relationStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Part{}, ErrNotFound
 	}
 	if err != nil {
-		return Part{}, fmt.Errorf("读取待 Fork 零件失败: %w", err)
+		return Part{}, fmt.Errorf("读取待 Fork 关系失败: %w", err)
 	}
 	if relationType != "borrowed" || relationStatus != "active" {
 		return Part{}, errors.New("只有活动借用零件关系可以 Fork")
 	}
-	if input.Name == "" {
-		input.Name = sourceName
-	}
+
+	// 统一锁顺序：图纸 advisory & 行锁 -> 目标借用关系行锁 -> 源零件行锁
 	if err := lockDrawing(ctx, tx, drawingID); err != nil {
 		return Part{}, err
+	}
+
+	var parentID *string
+	var qty float64
+	var remark string
+	var position *string
+	var lineNo *int
+	err = tx.QueryRow(ctx, `SELECT parent_relation_id::text, relation_type, status, qty, remark, position, line_no
+		FROM drawing_part_relations
+		WHERE id = $1::uuid FOR UPDATE`, relationID).
+		Scan(&parentID, &relationType, &relationStatus, &qty, &remark, &position, &lineNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Part{}, ErrNotFound
+	} else if err != nil {
+		return Part{}, fmt.Errorf("锁定待 Fork 借用关系失败: %w", err)
+	}
+	if relationType != "borrowed" || relationStatus != "active" {
+		return Part{}, errors.New("只有活动借用零件关系可以 Fork")
+	}
+
+	var sourcePartNo, sourceRevisionID, sourceName, material, spec, surfaceTreatment, partType, version string
+	var weight float64
+	err = tx.QueryRow(ctx, `SELECT p.part_no, pr.id::text, pr.name, pr.material, pr.spec, pr.weight, pr.surface_treatment, pr.part_type, pr.version
+		FROM parts p
+		JOIN part_revisions pr ON pr.id = p.published_revision_id AND pr.workflow_status = 'published'
+		WHERE p.id = $1::uuid FOR UPDATE OF p`, sourcePartID).
+		Scan(&sourcePartNo, &sourceRevisionID, &sourceName, &material, &spec, &weight, &surfaceTreatment, &partType, &version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Part{}, errors.New("源零件不存在或没有 Published 版本")
+	} else if err != nil {
+		return Part{}, fmt.Errorf("锁定源零件与版本失败: %w", err)
+	}
+	if input.Name == "" {
+		input.Name = sourceName
 	}
 	var newPartID string
 	if err := tx.QueryRow(ctx, `INSERT INTO parts (part_no, normalized_part_no, forked_from_part_id, created_by, updated_by) VALUES ($1, $2, $3::uuid, $4::uuid, $4::uuid) RETURNING id::text`, newNo, NormalizePartNo(newNo), sourcePartID, userID).Scan(&newPartID); err != nil {
@@ -239,12 +331,15 @@ func (repository *PGRepository) ForkBorrowedPart(ctx context.Context, relationID
 	if _, err := tx.Exec(ctx, `INSERT INTO part_revision_attachments (part_revision_id, attachment_version_id, role, sort_order) SELECT $1::uuid, attachment_version_id, role, sort_order FROM part_revision_attachments WHERE part_revision_id = $2::uuid`, newRevisionID, sourceRevisionID); err != nil {
 		return Part{}, fmt.Errorf("复制 Fork 零件附件关系失败: %w", err)
 	}
+	var newRelationID string
+	if err := tx.QueryRow(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, parent_relation_id, relation_type, qty, remark, position, line_no, forked_from_relation_id, created_by, updated_by) VALUES ($1::uuid, $2::uuid, $3::uuid, 'owned', $4, $5, $6, $7, $8::uuid, $9::uuid, $9::uuid) RETURNING id::text`, drawingID, newPartID, parentID, qty, remark, position, lineNo, relationID, userID).Scan(&newRelationID); err != nil {
+		return Part{}, fmt.Errorf("创建 Fork 自有关系失败: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE drawing_part_relations SET parent_relation_id = $1::uuid, revision = revision + 1, updated_by = $2::uuid WHERE drawing_id = $3::uuid AND parent_relation_id = $4::uuid AND status = 'active'`, newRelationID, userID, drawingID, relationID); err != nil {
+		return Part{}, fmt.Errorf("迁移 Fork 零件子关系失败: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `UPDATE drawing_part_relations SET status = 'archived', revision = revision + 1, updated_by = $2::uuid WHERE id = $1::uuid AND status = 'active'`, relationID, userID); err != nil {
 		return Part{}, fmt.Errorf("归档原借用关系失败: %w", err)
-	}
-	var newRelationID string
-	if err := tx.QueryRow(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, parent_relation_id, relation_type, qty, remark, forked_from_relation_id, created_by, updated_by) VALUES ($1::uuid, $2::uuid, $3::uuid, 'owned', $4, $5, $6::uuid, $7::uuid, $7::uuid) RETURNING id::text`, drawingID, newPartID, parentID, qty, remark, relationID, userID).Scan(&newRelationID); err != nil {
-		return Part{}, fmt.Errorf("创建 Fork 自有关系失败: %w", err)
 	}
 	part := Part{ID: newPartID, RelationID: newRelationID, DrawingID: drawingID, No: newNo, Name: input.Name, ParentNo: "", Material: material, Spec: spec, Weight: weight, SurfaceTreatment: surfaceTreatment, ManufacturingType: partType, Quantity: qty, Status: StatusDraft, Version: version, CreatedBy: userID, Revision: 1, RelationRevision: 1, RelationType: "owned", LifecycleStatus: "active", CreatedAt: time.Now().UTC().Format(time.RFC3339), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	result, _ := json.Marshal(part)
@@ -339,6 +434,14 @@ func (repository *PGRepository) TransitionRevision(ctx context.Context, revision
 	}
 	defer tx.Rollback(ctx)
 	var partID, status string
+	if err := tx.QueryRow(ctx, `SELECT part_id::text FROM part_revisions WHERE id = $1::uuid`, revisionID).Scan(&partID); errors.Is(err, pgx.ErrNoRows) {
+		return PartRevision{}, ErrNotFound
+	} else if err != nil {
+		return PartRevision{}, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT id::text FROM parts WHERE id = $1::uuid FOR UPDATE`, partID).Scan(&partID); err != nil {
+		return PartRevision{}, err
+	}
 	if err := tx.QueryRow(ctx, `SELECT part_id::text, workflow_status FROM part_revisions WHERE id = $1::uuid FOR UPDATE`, revisionID).Scan(&partID, &status); errors.Is(err, pgx.ErrNoRows) {
 		return PartRevision{}, ErrNotFound
 	} else if err != nil {
@@ -489,16 +592,40 @@ func (repository *PGRepository) ReplaceBOM(ctx context.Context, drawingID string
 	return repository.GetBOM(ctx, drawingID)
 }
 
+func equalStringPtr(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func equalIntPtr(a, b *int) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
 func lockDrawing(ctx context.Context, tx pgx.Tx, drawingID string) error {
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM drawings WHERE id = $1::uuid)`, drawingID).Scan(&exists); err != nil {
-		return fmt.Errorf("校验图纸失败: %w", err)
-	}
-	if !exists {
-		return ErrNotFound
-	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, drawingID); err != nil {
 		return fmt.Errorf("锁定图纸结构失败: %w", err)
+	}
+	var status string
+	err := tx.QueryRow(ctx, `SELECT status FROM drawings WHERE id = $1::uuid FOR UPDATE`, drawingID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("校验图纸失败: %w", err)
+	}
+	if status == string(StatusArchived) {
+		return errors.New("已归档图纸禁止修改结构")
 	}
 	return nil
 }

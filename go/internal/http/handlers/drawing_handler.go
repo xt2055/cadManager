@@ -138,7 +138,7 @@ func DrawingResource(repository drawing.Repository) http.HandlerFunc {
 				response.WriteError(writer, http.StatusBadRequest, "借用零件参数格式无效")
 				return
 			}
-			item, err := atomic.Borrow(request.Context(), id, input, user.ID)
+			item, err := atomic.Borrow(request.Context(), id, input, user.ID, request.Header.Get("Idempotency-Key"))
 			if err != nil {
 				writeAtomicDrawingError(writer, err, "借用零件失败")
 				return

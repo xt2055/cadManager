@@ -15,12 +15,14 @@ import (
 )
 
 type characterizationDrawingRepository struct {
-	createdDrawing drawing.Drawing
-	createdPart    drawing.Part
-	parts          []drawing.Part
-	updatePartErr  error
-	createCalled   bool
-	updateCalled   bool
+	createdDrawing     drawing.Drawing
+	createdPart        drawing.Part
+	parts              []drawing.Part
+	updatePartErr      error
+	createCalled       bool
+	updateCalled       bool
+	lastIdempotencyKey string
+	lastBorrowInput    drawing.BorrowInput
 }
 
 func (r *characterizationDrawingRepository) List(context.Context, drawing.ListFilter) (drawing.Page[drawing.Drawing], error) {
@@ -74,7 +76,9 @@ func (r *characterizationDrawingRepository) UpdateRelation(context.Context, stri
 	return drawing.Relation{}, drawing.ErrRevisionRequired
 }
 
-func (r *characterizationDrawingRepository) Borrow(context.Context, string, drawing.BorrowInput, string) (drawing.Relation, error) {
+func (r *characterizationDrawingRepository) Borrow(_ context.Context, _ string, input drawing.BorrowInput, _ string, idempotencyKey string) (drawing.Relation, error) {
+	r.lastBorrowInput = input
+	r.lastIdempotencyKey = idempotencyKey
 	return drawing.Relation{ID: "relation-1", RelationType: "borrowed"}, nil
 }
 
@@ -215,11 +219,19 @@ func TestAtomicRelationCharacterizationRequiresRevision(t *testing.T) {
 }
 
 func TestAtomicBorrowCharacterizationUsesDrawingCommand(t *testing.T) {
-	request := authenticatedRequest(http.MethodPost, "/api/drawings/drawing-1/borrows", `{"sourcePartId":"part-1"}`)
+	repository := &characterizationDrawingRepository{}
+	request := authenticatedRequest(http.MethodPost, "/api/drawings/drawing-1/borrows", `{"sourcePartId":"part-1","qty":3,"borrowReason":"测试借用"}`)
+	request.Header.Set("Idempotency-Key", "idemp-key-123")
 	recorder := httptest.NewRecorder()
-	DrawingResource(&characterizationDrawingRepository{}).ServeHTTP(recorder, request)
+	DrawingResource(repository).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, expected %d", recorder.Code, http.StatusCreated)
+	}
+	if repository.lastIdempotencyKey != "idemp-key-123" {
+		t.Fatalf("expected idempotencyKey to be passed, got %s", repository.lastIdempotencyKey)
+	}
+	if repository.lastBorrowInput.SourcePartID != "part-1" || repository.lastBorrowInput.Qty != 3 || repository.lastBorrowInput.BorrowReason != "测试借用" {
+		t.Fatalf("borrow input not received correctly: %+v", repository.lastBorrowInput)
 	}
 }
 

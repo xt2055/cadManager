@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { assertCadWorkerAssets, getCadWorkerUrls } from '../detail-tabs/preview/cad-worker-assets'
 import { findWipeoutMasks } from '../detail-tabs/preview/cad-entity-filters'
 import { resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
+import { registerCadConverters } from '@/services/cad-converters.service'
 
 const router = useRouter()
 const containerRef = ref<HTMLDivElement | null>(null)
@@ -46,25 +47,14 @@ async function openSelectedFile() {
     const buffer = await file.arrayBuffer()
     if (currentLoadId !== loadId) return
 
-    const [{ AcApDocManager, AcEdOpenMode }, { AcDbDatabaseConverterManager, AcDbFileType }, { AcDbLibreDwgConverter }] = await Promise.all([
-      import('@mlightcad/cad-simple-viewer'),
-      import('@mlightcad/data-model'),
-      import('@mlightcad/libredwg-converter'),
-    ])
+    const { AcApDocManager, AcEdOpenMode } = await import('@mlightcad/cad-simple-viewer')
     const workerUrls = getCadWorkerUrls()
     await assertCadWorkerAssets(workerUrls)
     const workersReady = await AcApDocManager.checkWebworkerReadiness(workerUrls)
     if (!workersReady) {
       throw new Error(`CAD Worker 不可访问：${JSON.stringify(workerUrls)}`)
     }
-    const converterManager = AcDbDatabaseConverterManager.instance
-    if (!converterManager.get(AcDbFileType.DWG)) {
-      converterManager.register(AcDbFileType.DWG, new AcDbLibreDwgConverter({
-        convertByEntityType: false,
-        useWorker: true,
-        parserWorkerUrl: workerUrls.dwgParser,
-      }))
-    }
+    await registerCadConverters(workerUrls.dwgParser)
 
     manager = AcApDocManager.createInstance({
       container,

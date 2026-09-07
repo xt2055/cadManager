@@ -1338,6 +1338,17 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		if sourcePartID == "" {
 			return nil, fmt.Errorf("借用来源零件不存在: %s", borrow.SourcePartNo)
 		}
+		var lifecycle string
+		var publishedRevision *string
+		if err := tx.QueryRow(ctx, `SELECT lifecycle_status, published_revision_id::text FROM parts WHERE id = $1::uuid FOR SHARE`, sourcePartID).Scan(&lifecycle, &publishedRevision); err != nil {
+			return nil, fmt.Errorf("读取借用零件状态失败: %w", err)
+		}
+		if lifecycle != "active" {
+			return nil, fmt.Errorf("借用来源零件「%s」已停用或归档，无法借用", borrow.SourcePartNo)
+		}
+		if publishedRevision == nil || *publishedRevision == "" {
+			return nil, fmt.Errorf("借用来源零件「%s」必须存在 Published Revision", borrow.SourcePartNo)
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, source_drawing_no, borrow_reason, borrowed_by, borrowed_at, status, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'borrowed', 1, NULLIF($3, ''), $4, $5::uuid, now(), $6, $5::uuid, $5::uuid)`, drawingID, sourcePartID, borrow.SourceDrawingNo, firstNonEmpty(borrow.Direction, "in"), userID, status); err != nil {
 			return nil, fmt.Errorf("保存借用记录失败: %w", err)
 		}

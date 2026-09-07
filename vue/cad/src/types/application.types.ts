@@ -98,6 +98,7 @@ export interface UpdateDrawingInput {
 
 export interface UpdatePartInput {
   expectedRevision: number
+  expectedRelationRevision?: number
   relationId?: string
   no?: string
   name?: string

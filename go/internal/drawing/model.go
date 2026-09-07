@@ -149,21 +149,22 @@ type CreatePartInput struct {
 }
 
 type UpdatePartInput struct {
-	ExpectedRevision  *int64   `json:"expectedRevision"`
-	RelationID        *string  `json:"relationId"`
-	No                *string  `json:"no"`
-	Name              *string  `json:"name"`
-	Material          *string  `json:"material"`
-	Spec              *string  `json:"spec"`
-	Weight            *float64 `json:"weight"`
-	SurfaceTreatment  *string  `json:"surfaceTreatment"`
-	ManufacturingType *string  `json:"partType"`
-	Quantity          *float64 `json:"qty"`
-	Status            *Status  `json:"status"`
-	Version           *string  `json:"ver"`
-	Vendor            *string  `json:"vendor"`
-	BorrowFrom        *string  `json:"borrowFrom"`
-	Remark            *string  `json:"remark"`
+	ExpectedRelationRevision *int64   `json:"expectedRelationRevision"`
+	ExpectedRevision         *int64   `json:"expectedRevision"`
+	RelationID               *string  `json:"relationId"`
+	No                       *string  `json:"no"`
+	Name                     *string  `json:"name"`
+	Material                 *string  `json:"material"`
+	Spec                     *string  `json:"spec"`
+	Weight                   *float64 `json:"weight"`
+	SurfaceTreatment         *string  `json:"surfaceTreatment"`
+	ManufacturingType        *string  `json:"partType"`
+	Quantity                 *float64 `json:"qty"`
+	Status                   *Status  `json:"status"`
+	Version                  *string  `json:"ver"`
+	Vendor                   *string  `json:"vendor"`
+	BorrowFrom               *string  `json:"borrowFrom"`
+	Remark                   *string  `json:"remark"`
 }
 
 type UpdateRelationInput struct {

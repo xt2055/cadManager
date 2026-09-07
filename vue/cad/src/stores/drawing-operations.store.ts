@@ -1195,6 +1195,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     targetProjectNo: string,
     sourcePartNo: string,
     borrowReason?: string,
+    idempotencyKey?: string,
   ): Promise<StructurePart> {
     await initialize()
     const targetDrawing = findDrawingOrPart(targetProjectNo)
@@ -1223,11 +1224,12 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     const sourceProjectName = drawings.value.find((d) => d.no === sourcePart.parentNo)?.name || sourcePart.parentNo
 
     if (isServerId(targetDrawing.id) && isServerId(sourcePart.id)) {
-      await borrowCommandService.borrow(targetDrawing.id, sourcePart.id, borrowReason)
+      const rel = await borrowCommandService.borrow(targetDrawing.id, sourcePart.id, borrowReason, idempotencyKey)
+      const actualPart = structure.value.find((p) => p.id === rel.partId) || sourcePart
       const borrowedPart: StructurePart = {
-        ...sourcePart,
+        ...actualPart,
         parentNo: targetProjectNo,
-        borrowFrom: sourcePart.parentNo || sourcePart.borrowFrom || '其他项目',
+        borrowFrom: actualPart.parentNo || actualPart.borrowFrom || '其他项目',
         status: 'published',
       }
       recordActivity({
@@ -1235,8 +1237,8 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
         drawingName: targetDrawing.name,
         targetType: 'drawing',
         act: 'create',
-        text: `借用了项目 <b>${sourceProjectName}</b> 的零件 <b>${sourcePart.name}</b> (${sourcePart.no})`,
-        detail: { sourcePartNo, sourceDrawingNo, reason: borrowReason || '' },
+        text: `借用了项目 <b>${sourceProjectName}</b> 的零件 <b>${actualPart.name}</b> (${actualPart.no})`,
+        detail: { sourcePartNo: actualPart.no, sourceDrawingNo, reason: borrowReason || '' },
       })
       invalidateOperationState()
       return borrowedPart
@@ -1860,6 +1862,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
     await drawingCommandService.updatePart(part.id, {
       expectedRevision: part.revision,
+      expectedRelationRevision: part.relationRevision,
       ...(part.relationId ? { relationId: part.relationId } : {}),
       ...(nextPartNo !== part.no ? { no: nextPartNo } : {}),
       name,

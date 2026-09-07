@@ -52,7 +52,7 @@ func listFinalBorrows(writer http.ResponseWriter, request *http.Request, pool *p
 		       target.name,
 		       p.part_no,
 		       COALESCE(pr.name, p.part_no),
-		       COALESCE(source.drawing_no, ''),
+		       COALESCE(NULLIF(r.source_drawing_no, ''), source.drawing_no, ''),
 		       target.drawing_no,
 		       COALESCE(r.borrowed_at, r.created_at)::text,
 		       CASE WHEN r.status = 'archived' THEN '已归档' ELSE '使用中' END,

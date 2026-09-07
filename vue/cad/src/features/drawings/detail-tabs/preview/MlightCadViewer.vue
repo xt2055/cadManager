@@ -2,7 +2,8 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { assertCadWorkerAssets, getCadWorkerUrls } from './cad-worker-assets'
 import { findWipeoutMasks } from './cad-entity-filters'
-import { installCadFontDiagnostics, logRawCadDwgModel, normalizeCadToleranceEntities, preloadCadSymbolFonts, resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
+import { installCadFontDiagnostics, normalizeCadToleranceEntities, preloadCadSymbolFonts, resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
+import { registerCadConverters } from '@/services/cad-converters.service'
 
 interface Props {
   dxfUrl?: string | null
@@ -95,34 +96,13 @@ async function loadViewer(url: string) {
     const buffer = await response.arrayBuffer()
     if (generation !== openGeneration || disposed || !containerRef.value) return
 
-    const [{ AcApDocManager, AcEdOpenMode }, { AcDbDatabaseConverterManager, AcDbFileType }, { AcDbLibreDwgConverter }] = await Promise.all([
-      import('@mlightcad/cad-simple-viewer'),
-      import('@mlightcad/data-model'),
-      import('@mlightcad/libredwg-converter'),
-    ])
+    const { AcApDocManager, AcEdOpenMode } = await import('@mlightcad/cad-simple-viewer')
     const workerUrls = getCadWorkerUrls()
     await assertCadWorkerAssets(workerUrls)
     if (!(await AcApDocManager.checkWebworkerReadiness(workerUrls))) {
       throw new Error(`CAD Worker 不可访问：${JSON.stringify(workerUrls)}`)
     }
-    const converterManager = AcDbDatabaseConverterManager.instance
-    if (!converterManager.get(AcDbFileType.DWG)) {
-      const converterConfig = {
-        convertByEntityType: false,
-        useWorker: true,
-        parserWorkerUrl: workerUrls.dwgParser,
-      }
-      const converter = import.meta.env.DEV
-        ? new (class extends AcDbLibreDwgConverter {
-            protected override async parse(data: ArrayBuffer, timeout?: number) {
-              const model = await super.parse(data, timeout)
-              logRawCadDwgModel(model)
-              return model
-            }
-          })(converterConfig)
-        : new AcDbLibreDwgConverter(converterConfig)
-      converterManager.register(AcDbFileType.DWG, converter)
-    }
+    await registerCadConverters(workerUrls.dwgParser)
     const mainThreadDraw = useMainThreadCadDraw()
     console.info('[CAD][字体诊断] 绘制线程', JSON.stringify({ mainThreadDraw }))
     manager = AcApDocManager.createInstance({

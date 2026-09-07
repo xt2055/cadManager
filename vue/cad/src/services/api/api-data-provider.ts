@@ -142,9 +142,14 @@ export class ApiDataProvider {
     return { revision: result.revision, items: normalizeBom(result.items) }
   }
 
-  async borrowPart(drawingId: string, input: BorrowPartInput): Promise<DrawingBorrowResult> {
+  async borrowPart(drawingId: string, input: BorrowPartInput, idempotencyKey?: string): Promise<DrawingBorrowResult> {
+    const headers: Record<string, string> = {}
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = idempotencyKey
+    }
     const result = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}/borrows`, {
       method: 'POST',
+      headers,
       body: JSON.stringify({
         sourcePartId: input.sourcePartId,
         qty: input.qty,

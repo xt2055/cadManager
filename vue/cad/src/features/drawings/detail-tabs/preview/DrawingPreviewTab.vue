@@ -327,8 +327,15 @@ function openBorrowModal() {
   borrowReasonInput.value = ''
 }
 
+const isSubmittingBorrow = ref(false)
+const borrowIdempotencyKey = ref('')
+const borrowKeyBoundSignature = ref('')
+
 function cancelBorrowModal() {
+  if (isSubmittingBorrow.value) return
   isBorrowing.value = false
+  borrowIdempotencyKey.value = ''
+  borrowKeyBoundSignature.value = ''
   projectSearchQuery.value = ''
   partSearchQuery.value = ''
   selectedSourcePartNo.value = ''
@@ -340,22 +347,44 @@ function selectProject(projNo: string) {
 }
 
 async function confirmBorrowPart() {
+  if (isSubmittingBorrow.value) return
   if (!selectedSourcePartNo.value || !currentItem.value) return
   const curNo = currentItem.value.no
+  const reason = borrowReasonInput.value.trim() || '跨项目工程设计借用'
+  const signature = `${curNo}::${selectedSourcePartNo.value}::${reason}`
 
+  if (!borrowIdempotencyKey.value || borrowKeyBoundSignature.value !== signature) {
+    borrowIdempotencyKey.value = `borrow-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    borrowKeyBoundSignature.value = signature
+  }
+
+  isSubmittingBorrow.value = true
+  let borrowedPartName = ''
+  let borrowedPartNo = ''
   try {
     const borrowed = await drawingOperationsStore.borrowPartToProject(
       curNo,
       selectedSourcePartNo.value,
-      borrowReasonInput.value.trim() || '跨项目工程设计借用',
+      reason,
+      borrowIdempotencyKey.value,
     )
-    await drawingStore.refresh()
-    uiStore.toast(`成功借用零件「${borrowed.name} (${borrowed.no})」到当前项目`, 'ok')
+    borrowedPartName = borrowed.name
+    borrowedPartNo = borrowed.no
+    try {
+      await drawingStore.refresh()
+    } catch (refreshErr) {
+      console.warn('借用后刷新图纸列表失败，但不影响借用结果:', refreshErr)
+    }
+    uiStore.toast(`成功借用零件「${borrowedPartName} (${borrowedPartNo})」到当前项目`, 'ok')
+    borrowIdempotencyKey.value = ''
+    borrowKeyBoundSignature.value = ''
     isBorrowing.value = false
     selectedSourcePartNo.value = ''
   } catch (err: any) {
     console.error('借用失败', err)
     uiStore.toast(err.message || '借用零件失败，请重试', 'warn')
+  } finally {
+    isSubmittingBorrow.value = false
   }
 }
 
@@ -1893,14 +1922,14 @@ function closeReidentifyModal() {
         </div>
 
         <div class="modal-foot">
-          <button class="btn" type="button" @click="cancelBorrowModal">取消</button>
+          <button class="btn" type="button" :disabled="isSubmittingBorrow" @click="cancelBorrowModal">取消</button>
           <button
             class="btn primary"
             type="button"
-            :disabled="!selectedSourcePartNo"
+            :disabled="!selectedSourcePartNo || isSubmittingBorrow"
             @click="confirmBorrowPart"
           >
-            <DemoIcon name="check" :size="14" />确认借入此零件
+            <DemoIcon name="check" :size="14" />{{ isSubmittingBorrow ? '借入中...' : '确认借入此零件' }}
           </button>
         </div>
       </div>

@@ -67,7 +67,7 @@ export const bomCommandService = new BomCommandService({
 })
 
 export const borrowCommandService = new BorrowCommandService({
-  borrow: (drawingId, input) => apiDataProvider.borrowPart(drawingId, input),
+  borrow: (drawingId, input, idempotencyKey) => apiDataProvider.borrowPart(drawingId, input, idempotencyKey),
 })
 
 export const drawingFileService = new DrawingFileService({

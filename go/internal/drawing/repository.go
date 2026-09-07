@@ -289,8 +289,19 @@ func (repository *PGRepository) ListParts(ctx context.Context, drawingID string)
 	return parts, rows.Err()
 }
 
-func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, error) {
-	row := repository.pool.QueryRow(ctx, `
+func (repository *PGRepository) FindPartWithRelation(ctx context.Context, id string, relationID string) (Part, error) {
+	part, err := findPartSnapshot(ctx, repository.pool, id, relationID, "")
+	if err != nil {
+		return Part{}, err
+	}
+	part.Signers, err = repository.loadPartSigners(ctx, part.ID)
+	return part, err
+}
+
+func findPartSnapshot(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, id, relationID, revisionID string) (Part, error) {
+	query := `
 			SELECT p.id::text, r.id::text, r.drawing_id::text, p.part_no,
 		       COALESCE(pr.name, p.part_no), COALESCE(parent_part.part_no, d.drawing_no, ''), d.project,
 		       COALESCE(pr.material, '—'), COALESCE(pr.spec, ''), COALESCE(pr.weight, 0),
@@ -305,9 +316,14 @@ func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, 
 			LEFT JOIN drawing_part_relations parent_rel ON parent_rel.id = r.parent_relation_id
 			LEFT JOIN parts parent_part ON parent_part.id = parent_rel.part_id
 		LEFT JOIN LATERAL (SELECT source_drawing.drawing_no FROM drawing_part_relations source_rel JOIN drawings source_drawing ON source_drawing.id = source_rel.drawing_id WHERE source_rel.part_id = p.id AND source_rel.relation_type = 'owned' AND source_rel.status = 'active' AND source_rel.drawing_id <> r.drawing_id ORDER BY source_rel.created_at LIMIT 1) source_drawing ON true
-		LEFT JOIN part_revisions pr ON pr.id = COALESCE(p.published_revision_id, (SELECT latest.id FROM part_revisions latest WHERE latest.part_id = p.id ORDER BY latest.revision_no DESC LIMIT 1))
-		WHERE p.id = $1::uuid
-		ORDER BY r.created_at DESC LIMIT 1`, id)
+		LEFT JOIN part_revisions pr ON pr.part_id = p.id AND pr.id = COALESCE(NULLIF($2, '')::uuid, p.published_revision_id, (SELECT latest.id FROM part_revisions latest WHERE latest.part_id = p.id ORDER BY latest.revision_no DESC LIMIT 1))
+		WHERE p.id = $1::uuid`
+	var row pgx.Row
+	if strings.TrimSpace(relationID) != "" {
+		row = db.QueryRow(ctx, query+` AND r.id = $3::uuid LIMIT 1`, id, revisionID, relationID)
+	} else {
+		row = db.QueryRow(ctx, query+` ORDER BY CASE WHEN r.relation_type = 'owned' THEN 0 ELSE 1 END, r.created_at DESC LIMIT 1`, id, revisionID)
+	}
 	part, err := scanFinalPart(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Part{}, ErrNotFound
@@ -315,8 +331,11 @@ func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, 
 	if err != nil {
 		return Part{}, fmt.Errorf("查询零件详情失败: %w", err)
 	}
-	part.Signers, err = repository.loadPartSigners(ctx, part.ID)
 	return part, err
+}
+
+func (repository *PGRepository) FindPart(ctx context.Context, id string) (Part, error) {
+	return repository.FindPartWithRelation(ctx, id, "")
 }
 
 func scanFinalPart(row rowScanner) (Part, error) {
@@ -362,6 +381,15 @@ func (repository *PGRepository) CreatePart(ctx context.Context, drawingID string
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, drawingID); err != nil {
 		return Part{}, fmt.Errorf("锁定图纸结构失败: %w", err)
+	}
+	var drawingStatus string
+	if err := tx.QueryRow(ctx, `SELECT status FROM drawings WHERE id = $1::uuid FOR UPDATE`, drawingID).Scan(&drawingStatus); errors.Is(err, pgx.ErrNoRows) {
+		return Part{}, ErrNotFound
+	} else if err != nil {
+		return Part{}, fmt.Errorf("校验图纸状态失败: %w", err)
+	}
+	if drawingStatus == string(StatusArchived) {
+		return Part{}, errors.New("已归档图纸禁止修改结构")
 	}
 	var parentID *string
 	if strings.TrimSpace(input.ParentNo) != "" {
@@ -424,11 +452,52 @@ func (repository *PGRepository) UpdatePart(ctx context.Context, id string, input
 	if input.ExpectedRevision == nil || *input.ExpectedRevision < 1 {
 		return Part{}, ErrRevisionRequired
 	}
+	changesRelation := input.Quantity != nil || input.Remark != nil
+	if changesRelation && (input.ExpectedRelationRevision == nil || *input.ExpectedRelationRevision < 1) {
+		return Part{}, ErrRevisionRequired
+	}
+	if changesRelation && strings.TrimSpace(nullableString(input.RelationID)) == "" {
+		return Part{}, errors.New("修改结构关系必须指定 relationId")
+	}
 	tx, err := repository.pool.Begin(ctx)
 	if err != nil {
 		return Part{}, fmt.Errorf("开始修改零件事务失败: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	targetRelID := strings.TrimSpace(nullableString(input.RelationID))
+	if changesRelation || targetRelID != "" {
+		if input.RelationID == nil || strings.TrimSpace(*input.RelationID) == "" {
+			return Part{}, errors.New("修改零件所属图纸的数量或备注时，必须指定明确的 relationId")
+		}
+		targetRelID = strings.TrimSpace(*input.RelationID)
+		var targetDrawingID, relStatus string
+		err := tx.QueryRow(ctx, `SELECT drawing_id::text, status FROM drawing_part_relations WHERE id = $1::uuid AND part_id = $2::uuid`, targetRelID, id).Scan(&targetDrawingID, &relStatus)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Part{}, errors.New("指定的结构关系不存在或不属于该零件")
+		} else if err != nil {
+			return Part{}, fmt.Errorf("读取结构关系失败: %w", err)
+		}
+		if relStatus != "active" {
+			return Part{}, errors.New("已归档的结构关系禁止修改")
+		}
+
+		// 统一锁顺序：先锁定图纸与目标关系，再锁定零件
+		if err := lockDrawing(ctx, tx, targetDrawingID); err != nil {
+			return Part{}, err
+		}
+
+		err = tx.QueryRow(ctx, `SELECT status FROM drawing_part_relations WHERE id = $1::uuid FOR UPDATE`, targetRelID).Scan(&relStatus)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Part{}, errors.New("指定的结构关系不存在")
+		} else if err != nil {
+			return Part{}, fmt.Errorf("锁定结构关系失败: %w", err)
+		}
+		if relStatus != "active" {
+			return Part{}, errors.New("已归档的结构关系禁止修改")
+		}
+	}
+
 	var partNo string
 	if err := tx.QueryRow(ctx, `SELECT part_no FROM parts WHERE id = $1::uuid FOR UPDATE`, id).Scan(&partNo); errors.Is(err, pgx.ErrNoRows) {
 		return Part{}, ErrNotFound
@@ -474,27 +543,40 @@ func (repository *PGRepository) UpdatePart(ctx context.Context, id string, input
 		}
 		return Part{}, ErrRevisionConflict
 	}
-	if input.Quantity != nil || input.Remark != nil {
-		var relationID string
-		relationQuery := `SELECT id::text FROM drawing_part_relations WHERE part_id = $1::uuid AND status = 'active' ORDER BY created_at DESC LIMIT 1`
-		relationArgs := []any{id}
-		if input.RelationID != nil && strings.TrimSpace(*input.RelationID) != "" {
-			relationQuery = `SELECT id::text FROM drawing_part_relations WHERE id = $1::uuid AND part_id = $2::uuid AND status = 'active'`
-			relationArgs = []any{strings.TrimSpace(*input.RelationID), id}
+	if changesRelation {
+		tag, err := tx.Exec(ctx, `UPDATE drawing_part_relations SET qty = COALESCE($2, qty), remark = COALESCE($3, remark), revision = revision + 1, updated_by = $4::uuid WHERE id = $1::uuid AND part_id = $5::uuid AND status = 'active' AND revision = $6`, targetRelID, input.Quantity, input.Remark, userID, id, *input.ExpectedRelationRevision)
+		if err != nil {
+			return Part{}, fmt.Errorf("更新结构关系失败: %w", err)
 		}
-		if err := tx.QueryRow(ctx, relationQuery, relationArgs...).Scan(&relationID); err == nil {
-			if input.Quantity != nil {
-				_, err = tx.Exec(ctx, `UPDATE drawing_part_relations SET qty = $2, revision = revision + 1, updated_by = $3::uuid WHERE id = $1::uuid`, relationID, *input.Quantity, userID)
-			}
-			if err == nil && input.Remark != nil {
-				_, err = tx.Exec(ctx, `UPDATE drawing_part_relations SET remark = $2, revision = revision + 1, updated_by = $3::uuid WHERE id = $1::uuid`, relationID, *input.Remark, userID)
-			}
+		if tag.RowsAffected() != 1 {
+			return Part{}, ErrRevisionConflict
 		}
+	}
+	part, err := findPartSnapshot(ctx, tx, id, targetRelID, revisionID)
+	if err != nil {
+		return Part{}, err
+	}
+	rows, err := tx.Query(ctx, `SELECT role, signer_name FROM drawing_signers WHERE part_revision_id = $1::uuid`, revisionID)
+	if err != nil {
+		return Part{}, err
+	}
+	part.Signers = Signers{}
+	for rows.Next() {
+		var role, name string
+		if err := rows.Scan(&role, &name); err != nil {
+			rows.Close()
+			return Part{}, err
+		}
+		part.Signers[role] = name
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return Part{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Part{}, fmt.Errorf("提交零件修改事务失败: %w", err)
 	}
-	return repository.FindPart(ctx, id)
+	return part, nil
 }
 
 func nullableString(value *string) string {

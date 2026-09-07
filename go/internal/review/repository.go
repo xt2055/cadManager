@@ -506,27 +506,25 @@ func (repository *PGRepository) SubmitNode(ctx context.Context, caseID string, i
 	if err != nil {
 		return ReviewCase{}, fmt.Errorf("读取审核节点失败: %w", err)
 	}
-	if nodeStatus == "pass" && action == "pass" {
-		return ReviewCase{}, fmt.Errorf("审核节点已完成：%s", input.NodeName)
+	if nodeStatus != "pending" {
+		return ReviewCase{}, fmt.Errorf("审核节点「%s」当前不是待处理状态，无法签署", input.NodeName)
 	}
-	if nodeStatus == "pending" {
-		// 顺序守卫：只允许处理顺序最靠前的待处理节点。
-		var minOrder int
-		var minName string
-		err = tx.QueryRow(ctx, `
-			SELECT node_order, name FROM review_case_nodes
-			WHERE review_case_id = $1::uuid AND status = 'pending'
-			ORDER BY node_order LIMIT 1`, caseID).Scan(&minOrder, &minName)
-		if err != nil {
-			return ReviewCase{}, fmt.Errorf("读取当前活动节点失败: %w", err)
-		}
-		if minOrder != nodeOrder {
-			return ReviewCase{}, fmt.Errorf("审核须按顺序流转：请先处理当前节点「%s」", minName)
-		}
-		// 责任人守卫：仅节点责任人可签署。
-		if assignedUserID == "" || assignedUserID != userID {
-			return ReviewCase{}, fmt.Errorf("节点「%s」由「%s」负责，当前登录人无权签署", input.NodeName, assignedName)
-		}
+	// 顺序守卫：只允许处理顺序最靠前的待处理节点。
+	var minOrder int
+	var minName string
+	err = tx.QueryRow(ctx, `
+		SELECT node_order, name FROM review_case_nodes
+		WHERE review_case_id = $1::uuid AND status = 'pending'
+		ORDER BY node_order LIMIT 1`, caseID).Scan(&minOrder, &minName)
+	if err != nil {
+		return ReviewCase{}, fmt.Errorf("读取当前活动节点失败: %w", err)
+	}
+	if minOrder != nodeOrder {
+		return ReviewCase{}, fmt.Errorf("审核须按顺序流转：请先处理当前节点「%s」", minName)
+	}
+	// 责任人守卫：仅节点责任人可签署。
+	if assignedUserID == "" || assignedUserID != userID {
+		return ReviewCase{}, fmt.Errorf("节点「%s」由「%s」负责，当前登录人无权签署", input.NodeName, assignedName)
 	}
 
 	opinion := input.Opinion

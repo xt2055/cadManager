@@ -9,7 +9,7 @@ export function getCadWorkerUrls(): CadWorkerUrls {
     : new URL('./', import.meta.url)
 
   return {
-    dwgParser: new URL('libredwg-parser-worker.js', assetBaseUrl).href,
+    dwgParser: new URL(cadParserWorkerUrl, window.location.href).href,
     mtextRender: new URL('mtext-renderer-worker.js', assetBaseUrl).href,
   }
 }
@@ -35,3 +35,4 @@ export async function assertCadWorkerAssets(urls: CadWorkerUrls): Promise<void> 
     throw new Error('CAD Worker 资源检查失败')
   }
 }
+import cadParserWorkerUrl from '@/services/cad-parser.worker.ts?worker&url'

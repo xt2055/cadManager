@@ -79,17 +79,17 @@ const borrowedRows = computed<BorrowRow[]>(() => {
   const knownPartNos = new Set(rows.map((row) => row.partNo))
 
   for (const record of relationsStore.borrows) {
-    if (record.dir !== 'in' || record.targetDrawingNo !== current || !record.sourceDrawingNo) continue
+    if (record.dir !== 'in' || record.targetDrawingNo !== current) continue
     const partNo = record.partNo || record.part.split(/\s+/, 1)[0] || ''
     if (!partNo || knownPartNos.has(partNo)) continue
     if (isSameDrawingFamily(partNo, current)) continue
     rows.push({
       partNo,
       partName: record.partName || record.part.replace(partNo, '').trim() || '未命名零件',
-      drawingNo: record.sourceDrawingNo,
-      user: record.user,
-      date: record.date,
-      status: record.status,
+      drawingNo: record.sourceDrawingNo || '',
+      user: record.user || '历史记录',
+      date: record.date || '历史记录',
+      status: record.status || '使用中',
     })
   }
 
@@ -136,7 +136,8 @@ function openDrawing(no: string) {
                 <button v-if="hasDrawing(row.drawingNo)" class="drawing-link mono" type="button" @click="openDrawing(row.drawingNo)">
                   {{ row.drawingNo }}<DemoIcon name="arrow-up-right" :size="12" />
                 </button>
-                <span v-else class="missing-project">没有上传该项目</span>
+                <span v-else-if="row.drawingNo" class="missing-project mono">{{ row.drawingNo }}（项目未上传）</span>
+                <span v-else class="missing-project">来源不可追溯</span>
               </td>
               <td>{{ row.user }}</td>
               <td class="num">{{ row.date }}</td>
