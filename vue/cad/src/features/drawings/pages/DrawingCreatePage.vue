@@ -703,7 +703,8 @@ async function retryFailedUpload() {
         <div class="conversion-progress-list">
           <div v-for="item in conversionItems" :key="item.id" class="conversion-progress-row">
             <span>{{ item.name }}</span>
-            <span>{{ item.status === 'ready' ? '已完成' : item.status === 'failed' ? '失败' : '转换中' }}</span>
+            <span>{{ item.status === 'ready' ? '已完成' : item.status === 'failed' ? '失败' : ['retry', 'backoff'].includes(item.status) ? '等待重试' : item.status === 'pending' ? '排队中' : '转换中' }}</span>
+            <small v-if="item.error" class="conversion-error">{{ item.error }}</small>
           </div>
         </div>
         <button v-if="conversionFailedCount" class="btn primary" type="button" :disabled="conversionBusy" @click="retryFailedConversions">{{ conversionBusy ? '正在重新排队…' : '重试失败文件' }}</button>
@@ -1041,6 +1042,7 @@ async function retryFailedUpload() {
 
 .conversion-progress-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 16px;
   padding: 6px 8px;
@@ -1056,7 +1058,13 @@ async function retryFailedUpload() {
   color: var(--text-2);
 }
 
-.conversion-progress-row span:last-child {
+.conversion-error {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+  color: var(--danger, #c45b4b);
+}
+
+.conversion-progress-row span:nth-child(2) {
   flex: none;
   color: var(--accent);
 }

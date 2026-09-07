@@ -225,10 +225,6 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 
 	switch {
 	case strings.EqualFold(ext, ".exb"):
-		if err := s.ensureCaxaRunning(ctx); err != nil {
-			return err
-		}
-
 		reader, _, err := s.storage.Open(ctx, att.StorageKey)
 		if err != nil {
 			return fmt.Errorf("读取原始 EXB 失败: %w", err)
@@ -262,10 +258,6 @@ func (s *Service) processOne(ctx context.Context, att attachment.Attachment) err
 			return fmt.Errorf("保存 DWG 附件失败: %w", putErr)
 		}
 	case strings.EqualFold(ext, ".dxf"):
-		if err := s.ensureCaxaRunning(ctx); err != nil {
-			return err
-		}
-
 		reader, _, err := s.storage.Open(ctx, att.StorageKey)
 		if err != nil {
 			return fmt.Errorf("读取原始 DXF 失败: %w", err)
@@ -331,10 +323,6 @@ func (s *Service) ConvertToExb(ctx context.Context, att attachment.Attachment) (
 		return "", fmt.Errorf("只支持 DWG/DXF 格式转换为 EXB: %s", att.Name)
 	}
 
-	if err := s.ensureCaxaRunning(ctx); err != nil {
-		return "", err
-	}
-
 	tempDir := os.TempDir()
 	nowNano := time.Now().UnixNano()
 	tempIn := filepath.Join(tempDir, fmt.Sprintf("caxa_in_%d%s", nowNano, ext))
@@ -384,18 +372,12 @@ func (s *Service) ConvertToExb(ctx context.Context, att attachment.Attachment) (
 
 // ConvertPathToExb 将本地 DWG/DXF 文件转换为本地 EXB 文件，供上传前识别图纸内容使用。
 func (s *Service) ConvertPathToExb(ctx context.Context, inputPath, outputPath string) error {
-	if err := s.ensureCaxaRunning(ctx); err != nil {
-		return err
-	}
 	return s.runCaxaJob(ctx, inputPath, outputPath)
 }
 
 // ConvertPathToDwg 将本地 DXF/DWG/EXB 文件转换为本地 DWG 文件。
 // 在线编辑器在浏览器内只能产出 DXF，保存时由后端通过 CAXA 调度转换为 DWG 归档。
 func (s *Service) ConvertPathToDwg(ctx context.Context, inputPath, outputPath string) error {
-	if err := s.ensureCaxaRunning(ctx); err != nil {
-		return err
-	}
 	return s.runCaxaJob(ctx, inputPath, outputPath)
 }
 
@@ -408,6 +390,13 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 		return err
 	}
 
+	if err := s.ensureCaxaRunning(ctx); err != nil {
+		return err
+	}
+	return dispatchCaxaJob(ctx, inputPath, outputPath)
+}
+
+func dispatchCaxaJob(ctx context.Context, inputPath, outputPath string) error {
 	jobFile := filepath.Join(os.TempDir(), "caxa_exb_jobs.txt")
 	if err := waitForCaxaJobFile(jobFile, 10*time.Second); err != nil {
 		return err
@@ -612,16 +601,13 @@ func (s *Service) ensureCaxaRunning(ctx context.Context) error {
 	}
 
 	log.Printf("[CAD Converter] CAXA 未运行，正在自动启动: %s", binPath)
-	// CAXA 插件只在打开图纸后才消费转换任务文件，启动时必须同时打开一张哨兵图纸，
-	// 否则任务会一直无人处理，直到 60 秒转换超时。
-	sentinel := s.ensureSentinelDrawing(ctx)
-	var startErr error
-	if sentinel != "" {
-		log.Printf("[CAD Converter] 随 CAXA 打开哨兵图纸以激活转换插件: %s", sentinel)
-		startErr = exec.Command(binPath, sentinel).Start()
-	} else {
-		startErr = exec.Command(binPath).Start()
+	// 哨兵只负责启动时激活插件，不作为每个业务任务的强制转换前置条件。
+	sentinel := filepath.Join(os.TempDir(), "caxa_converter_sentinel_v2.dxf")
+	if err := os.WriteFile(sentinel, []byte(caxaSentinelDXF), 0600); err != nil {
+		return fmt.Errorf("准备 CAXA 启动哨兵失败: %w", err)
 	}
+	log.Printf("[CAD Converter] 随 CAXA 打开哨兵图纸以激活转换插件: %s", sentinel)
+	startErr := exec.Command(binPath, sentinel).Start()
 	if startErr != nil {
 		return fmt.Errorf("启动 CAXA 失败: %w", startErr)
 	}
@@ -632,7 +618,7 @@ func (s *Service) ensureCaxaRunning(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		if isCaxaRunning() {
-			log.Println("[CAD Converter] CAXA 已启动，开始提交转换任务")
+			log.Println("[CAD Converter] CAXA 进程已启动，转换任务由插件分阶段处理")
 			return nil
 		}
 		select {
@@ -643,66 +629,6 @@ func (s *Service) ensureCaxaRunning(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
-}
-
-// ensureSentinelDrawing 从对象存储挑一个最小的 DWG（无 DWG 则 EXB）复制为哨兵图纸，
-// 供自动启动 CAXA 时打开以激活转换插件。文件缓存在临时目录，可重复使用。
-func (s *Service) ensureSentinelDrawing(ctx context.Context) string {
-	for _, ext := range []string{".dwg", ".exb"} {
-		sentinel := filepath.Join(os.TempDir(), "caxa_converter_sentinel"+ext)
-		if info, err := os.Stat(sentinel); err == nil && info.Size() > 0 {
-			return sentinel
-		}
-	}
-
-	list, err := s.repo.ListAllCad(ctx)
-	if err != nil || len(list) == 0 {
-		return ""
-	}
-	var best attachment.Attachment
-	found := false
-	for _, ext := range []string{".dwg", ".exb"} {
-		for _, att := range list {
-			attExt := filepathExt(att.CurrentName)
-			if attExt == "" {
-				attExt = filepathExt(att.Name)
-			}
-			if !strings.EqualFold(attExt, ext) {
-				continue
-			}
-			if !found || att.Size < best.Size {
-				best = att
-				found = true
-			}
-		}
-		if found {
-			break
-		}
-	}
-	if !found {
-		return ""
-	}
-	ext := strings.ToLower(filepathExt(best.CurrentName))
-	if ext == "" {
-		ext = strings.ToLower(filepathExt(best.Name))
-	}
-	sentinel := filepath.Join(os.TempDir(), "caxa_converter_sentinel"+ext)
-	reader, _, err := s.storage.Open(ctx, best.StorageKey)
-	if err != nil {
-		return ""
-	}
-	defer reader.Close()
-	file, err := os.Create(sentinel)
-	if err != nil {
-		return ""
-	}
-	if _, err := ioCopy(file, reader); err != nil {
-		file.Close()
-		_ = os.Remove(sentinel)
-		return ""
-	}
-	file.Close()
-	return sentinel
 }
 
 func resolveToolPath(configured, name string) (string, error) {

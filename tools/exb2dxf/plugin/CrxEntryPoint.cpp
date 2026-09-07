@@ -11,6 +11,17 @@ namespace {
 
 void report(const wchar_t* message, CDraft::ErrorStatus status = CDraft::eOk) {
     crxutPrintf(L"\n[exb2dwg] %s (%d)\n", message, static_cast<int>(status));
+    wchar_t temp[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, temp);
+    FILE* fp = _wfopen((std::wstring(temp) + L"caxa_worker_log.txt").c_str(), L"a, ccs=UTF-8");
+    if (fp) {
+        SYSTEMTIME now = {};
+        GetLocalTime(&now);
+        fwprintf(fp, L"[%04u-%02u-%02u %02u:%02u:%02u] pid=%lu build=20260907-lock-v3 %ls status=%d\n",
+            now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
+            GetCurrentProcessId(), message, static_cast<int>(status));
+        fclose(fp);
+    }
 }
 
 std::wstring getTempDirectory() {
@@ -111,11 +122,13 @@ unsigned g_stableSamples = 0;
 ULONGLONG g_lastSampleAt = 0;
 ULONGLONG g_closeSince = 0;
 bool g_saveOk = false;
+bool g_saveStarted = false;
 bool g_closeRequested = false;
 bool g_failureReported = false;
 std::vector<std::pair<std::wstring, std::wstring>> g_tasks;
 
 static void writeCompletion(const std::wstring& path, bool ok) {
+    report(ok ? L"Conversion complete: output stable and document closed" : L"Conversion failed");
     const std::wstring pending = path + L".done.pending";
     HANDLE file = CreateFileW(pending.c_str(), GENERIC_WRITE, 0,
                              NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -147,6 +160,45 @@ static void pollPendingSave() {
         return;
     }
     const ULONGLONG now = GetTickCount64();
+    if (!g_saveStarted) {
+        // 部分 CAXA 宿主未实现文档锁；该情况沿用应用上下文保存，不能当作锁冲突重试。
+        const auto lockStatus = crxDocManager->lockDocument(g_pendingDocument, CRxAp::kWrite, NULL, NULL, false);
+        const bool documentLocked = lockStatus == CDraft::eOk;
+        const bool lockUnsupported = lockStatus == CDraft::eNotImplementedYet;
+        if (!documentLocked && !lockUnsupported) {
+            if (now - g_pendingSince < 30000) return;
+            report(L"Timed out acquiring conversion document write lock", lockStatus);
+            g_saveStarted = true;
+        } else {
+            if (lockUnsupported) report(L"Document locking unsupported; saving in application context", lockStatus);
+            g_saveStarted = true;
+            g_pendingSince = now;
+            CDraft::ErrorStatus status = CDraft::eInvalidInput;
+            if (g_pendingDocument->database()) {
+                const size_t dot = g_pendingOutput.find_last_of(L'.');
+                const bool exb = dot != std::wstring::npos &&
+                    _wcsicmp(g_pendingOutput.c_str() + dot, L".exb") == 0;
+                if (exb) {
+                    status = g_pendingDocument->database()->saveAs(g_pendingOutput.c_str(), false, CRxDb::kEXB_CURRENT);
+                } else {
+                    status = g_pendingDocument->database()->saveAs(g_pendingOutput.c_str(), false, CRxDb::kDHL_1800);
+                }
+            }
+            if (documentLocked) {
+                const auto unlockStatus = crxDocManager->unlockDocument(g_pendingDocument);
+                if (unlockStatus != CDraft::eOk) report(L"Cannot release conversion document write lock", unlockStatus);
+            }
+            g_saveOk = status == CDraft::eOk;
+            FILE* fp = _wfopen((getTempDirectory() + L"caxa_worker_log.txt").c_str(), L"a, ccs=UTF-8");
+            if (fp) {
+                fwprintf(fp, L"[Save] pid=%lu output=%ls status=%d disk=%d\n",
+                    GetCurrentProcessId(), g_pendingOutput.c_str(), static_cast<int>(status),
+                    GetFileAttributesW(g_pendingOutput.c_str()) != INVALID_FILE_ATTRIBUTES);
+                fclose(fp);
+            }
+            return;
+        }
+    }
     if (g_closeSince != 0) {
         if (now - g_closeSince >= 10000 && !g_failureReported) {
             report(L"Document close timed out; close the conversion document to resume queue");
@@ -164,6 +216,7 @@ static void pollPendingSave() {
     g_lastSize = size;
     bool stable = g_stableSamples >= 2;
     if (g_saveOk && !stable && now - g_pendingSince < 30000) return;
+    if (g_saveOk && !stable) report(L"Save returned success but output never became nonempty and stable");
     g_saveOk = g_saveOk && stable;
     if (g_closeSince == 0) g_closeSince = now;
     auto closeStatus = crxDocManager->closeDocument(g_pendingDocument);
@@ -203,66 +256,6 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
         report(L"Open did not activate a new document; conversion aborted");
         return false;
     }
-    bool saveOk = false;
-    if (newDoc && newDoc->database()) {
-        std::wstring ext = L"";
-        const size_t dotPos = outputPath.find_last_of(L'.');
-        if (dotPos != std::wstring::npos) {
-            ext = outputPath.substr(dotPos);
-        }
-        for (size_t i = 0; i < ext.length(); ++i) {
-            ext[i] = towlower(ext[i]);
-        }
-
-        CDraft::ErrorStatus saveRes = CDraft::eInvalidInput;
-        if (ext == L".exb") {
-            saveRes = newDoc->database()->saveAs(outputPath.c_str(), false, CRxDb::kEXB_CURRENT);
-        } else {
-            saveRes = newDoc->database()->saveAs(outputPath.c_str(), false, CRxDb::kDHL_1800);
-        }
-        saveOk = (saveRes == CDraft::eOk);
-
-        // 验尸日志 1：saveAs 后立刻核对磁盘文件是否真实存在（saveAs 返回 eOk 不代表落盘）
-        DWORD attrs1 = GetFileAttributesW(outputPath.c_str());
-        bool disk1 = (attrs1 != INVALID_FILE_ATTRIBUTES);
-        DWORD err1 = disk1 ? 0 : GetLastError();
-
-        // 验尸日志 2：数据库"认为"自己保存到了哪（排除写到别处的可能）
-        const CxCHAR* dbFile = L"(null)";
-        newDoc->database()->getFilename(dbFile);
-
-        fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
-        if (fp) {
-            fwprintf(fp, L"saveAs (%ls) status: %d | disk=%d err=%lu | dbfile=%ls | open_ms=%llu save_ms=%llu\n",
-                     ext.c_str(), (int)saveRes, disk1 ? 1 : 0, err1, dbFile,
-                     openElapsed, GetTickCount64() - startedAt - openElapsed);
-            fclose(fp);
-        }
-
-        // saveAs 异步落盘：必须等文件非空且稳定后再关闭文档，否则 closeDocument
-        // 会取消未完成的写入，留下 0 字节占位文件甚至没有文件。
-        {
-            g_pendingDocument = newDoc;
-            g_pendingOutput = outputPath;
-            g_pendingSince = GetTickCount64();
-            g_lastSize = 0;
-            g_stableSamples = 0;
-            g_lastSampleAt = 0;
-            g_closeSince = 0;
-            g_saveOk = saveOk;
-            g_closeRequested = false;
-            g_failureReported = false;
-            crxutPrintf(L"\n[exb2dwg] open+save elapsed=%llu ms\n", GetTickCount64() - startedAt);
-            return true;
-        }
-    } else {
-        fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
-        if (fp) {
-            fwprintf(fp, L"curDocument is NULL!\n");
-            fclose(fp);
-        }
-    }
-
     g_pendingDocument = newDoc;
     g_pendingOutput = outputPath;
     g_pendingSince = GetTickCount64();
@@ -271,6 +264,7 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
     g_lastSampleAt = 0;
     g_closeSince = 0;
     g_saveOk = false;
+    g_saveStarted = false;
     g_closeRequested = false;
     g_failureReported = false;
     return true;
@@ -415,6 +409,7 @@ public:
 
     AcRx::AppRetCode On_kInitAppMsg(void* packet) override {
         const auto result = AcRxArxApp::On_kInitAppMsg(packet);
+        report(L"Plugin initialized");
         crxedRegCmds->addCommand(L"Exb2Dwg", L"GExb2Dwg", L"EXB2DWG", CRX_CMD_MODAL, &runExb2Dwg);
         
         if (g_timerId == 0) {
