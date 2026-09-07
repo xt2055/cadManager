@@ -20,6 +20,7 @@ const items = [
   { name: RouteName.AdminDrawings, label: '图纸管理', icon: 'layers' },
   { name: RouteName.AdminLogs, label: '操作日志', icon: 'scroll-text' },
   { name: RouteName.AdminAttributes, label: '图纸属性', icon: 'sliders-horizontal' },
+  { name: RouteName.AdminConversions, label: '转换队列', icon: 'refresh-cw' },
   { name: RouteName.AdminSystemLogs, label: '系统日志', icon: 'file-terminal' },
   { name: RouteName.AdminUpdates, label: '更新管理', icon: 'rocket' },
 ] as const

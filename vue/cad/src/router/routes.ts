@@ -204,6 +204,11 @@ export const routes: RouteRecordRaw[] = [
         name: RouteName.AdminAttributes,
         component: () => import('@/features/admin/pages/AttributeManagementPage.vue'),
       },
+      {
+        path: 'conversions',
+        name: RouteName.AdminConversions,
+        component: () => import('@/features/admin/pages/ConversionQueuePage.vue'),
+      },
     ],
   },
 ]

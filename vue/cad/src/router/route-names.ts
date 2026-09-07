@@ -36,6 +36,7 @@ export const RouteName = {
   AdminSystemLogs: 'admin-system-logs',
   AdminUpdates: 'admin-updates',
   AdminAttributes: 'admin-attributes',
+  AdminConversions: 'admin-conversions',
 } as const
 
 export type RouteNameKey = (typeof RouteName)[keyof typeof RouteName]

@@ -316,6 +316,15 @@ VOID CALLBACK DialogKillerTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWOR
 }
 
 static void processJobs(void*) {
+    static bool loggedEntry = false;
+    if (!loggedEntry) {
+        FILE* fp = _wfopen((getTempDirectory() + L"caxa_worker_log.txt").c_str(), L"a, ccs=UTF-8");
+        if (fp) {
+            fwprintf(fp, L"[Dispatch] pid=%lu application callback entered\n", GetCurrentProcessId());
+            fclose(fp);
+        }
+        loggedEntry = true;
+    }
     struct JobBusyGuard {
         ~JobBusyGuard() { InterlockedExchange(&g_jobBusy, 0); }
     } jobBusyGuard;
@@ -377,7 +386,22 @@ static void processJobs(void*) {
 VOID CALLBACK MainThreadTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     // Keep the guard held until the application-context callback actually runs.
     if (InterlockedCompareExchange(&g_jobBusy, 1, 0) != 0) return;
-    crxDocManager->executeInApplicationContext(processJobs, nullptr);
+    const bool applicationContext = crxDocManager->isApplicationContext();
+    static bool loggedDispatch = false;
+    if (!loggedDispatch) {
+        FILE* fp = _wfopen((getTempDirectory() + L"caxa_worker_log.txt").c_str(), L"a, ccs=UTF-8");
+        if (fp) {
+            fwprintf(fp, L"[Dispatch] pid=%lu timer entered applicationContext=%d\n",
+                     GetCurrentProcessId(), applicationContext ? 1 : 0);
+            fclose(fp);
+        }
+        loggedDispatch = true;
+    }
+    if (applicationContext) {
+        processJobs(nullptr);
+    } else {
+        crxDocManager->executeInApplicationContext(processJobs, nullptr);
+    }
 }
 
 void runExb2Dwg() {
