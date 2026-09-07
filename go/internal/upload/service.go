@@ -611,7 +611,7 @@ func (service *Service) CompleteChunks(ctx context.Context, userID, sessionID, i
 		closeReaders(readers)
 		return Item{}, ErrIncomplete
 	}
-	mergedKey := filepath.ToSlash(filepath.Join(".staging", sessionID, itemID, "chunks-merged"))
+	mergedKey := filepath.ToSlash(filepath.Join(".staging", sessionID, itemID, fmt.Sprintf("chunks-merged-%d", time.Now().UnixNano())))
 	merged, putErr := service.storage.Put(ctx, mergedKey, io.MultiReader(readersToReaders(readers)...), "application/octet-stream")
 	closeReaders(readers)
 	if putErr != nil {
@@ -685,8 +685,12 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 	if mimeType == "" {
 		mimeType = item.MimeType
 	}
-	if _, err := service.pool.Exec(ctx, `UPDATE upload_session_items SET status = 'uploading', failure_stage = NULL, attempts = attempts + 1, error_message = NULL, updated_at = now() WHERE id = $1::uuid AND status IN ('pending', 'failed')`, itemID); err != nil {
+	claimed, err := service.pool.Exec(ctx, `UPDATE upload_session_items SET status = 'uploading', failure_stage = NULL, attempts = attempts + 1, error_message = NULL, updated_at = now() WHERE id = $1::uuid AND status IN ('pending', 'failed')`, itemID)
+	if err != nil {
 		return Item{}, fmt.Errorf("更新上传状态失败: %w", err)
+	}
+	if claimed.RowsAffected() != 1 {
+		return Item{}, ErrConflict
 	}
 	stagingKey := filepath.ToSlash(filepath.Join(".staging", sessionID, itemID, fmt.Sprintf("%d-%s", time.Now().UnixNano(), safeName(name))))
 	if _, err := service.pool.Exec(ctx, `UPDATE upload_session_items SET staging_object_key = $2, updated_at = now() WHERE id = $1::uuid`, itemID, stagingKey); err != nil {
@@ -713,6 +717,12 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 	processedSize := int64(0)
 	processedSHA256 := ""
 	processedMimeType := ""
+	if isCAD(name) {
+		if err := service.enqueueCADConversion(ctx, itemID, blobID, blobKey, name, object); err != nil {
+			service.markItemFailed(ctx, itemID, "commit", err)
+			return Item{}, fmt.Errorf("登记 CAD 异步转换任务失败: %w", err)
+		}
+	}
 	// 原文件落入 Blob 即为上传成功。CAD 转换交给持久化队列，绝不占用上传请求。
 	if _, err := service.pool.Exec(ctx, `
 		UPDATE upload_session_items
@@ -725,12 +735,6 @@ func (service *Service) UploadItem(ctx context.Context, userID, sessionID, itemI
 		service.markItemFailed(ctx, itemID, "commit", err)
 		service.scheduleCleanup(ctx, stagingKey, "upload-staging")
 		return Item{}, fmt.Errorf("登记暂存文件失败: %w", err)
-	}
-	if isCAD(name) {
-		if err := service.enqueueCADConversion(ctx, itemID, blobID, blobKey, name, object); err != nil {
-			service.markItemFailed(ctx, itemID, "commit", err)
-			return Item{}, fmt.Errorf("登记 CAD 异步转换任务失败: %w", err)
-		}
 	}
 	if deleteErr := service.storage.Delete(ctx, stagingKey); deleteErr != nil {
 		service.scheduleCleanup(ctx, stagingKey, "upload-staging")

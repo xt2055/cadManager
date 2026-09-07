@@ -60,7 +60,12 @@ func (service *Service) enqueueCADConversion(ctx context.Context, itemID, blobID
 	_, err := service.pool.Exec(ctx, `
 		INSERT INTO cad_conversion_jobs (upload_item_id, source_blob_id, source_storage_key, source_name, source_mime_type, source_size_bytes, source_sha256)
 		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7)
-		ON CONFLICT (upload_item_id) DO NOTHING`, itemID, blobID, blobKey, name, object.MimeType, object.Size, object.SHA256)
+		ON CONFLICT (upload_item_id) DO UPDATE SET
+		 source_blob_id = EXCLUDED.source_blob_id, source_storage_key = EXCLUDED.source_storage_key,
+		 source_name = EXCLUDED.source_name, source_mime_type = EXCLUDED.source_mime_type,
+		 source_size_bytes = EXCLUDED.source_size_bytes, source_sha256 = EXCLUDED.source_sha256,
+		 updated_at = now()
+		WHERE cad_conversion_jobs.attachment_id IS NULL`, itemID, blobID, blobKey, name, object.MimeType, object.Size, object.SHA256)
 	if err != nil {
 		return fmt.Errorf("写入转换队列失败: %w", err)
 	}

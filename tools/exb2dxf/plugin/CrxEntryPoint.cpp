@@ -108,36 +108,71 @@ std::wstring g_pendingOutput;
 ULONGLONG g_pendingSince = 0;
 ULONGLONG g_lastSize = 0;
 unsigned g_stableSamples = 0;
+ULONGLONG g_lastSampleAt = 0;
+ULONGLONG g_closeSince = 0;
+bool g_saveOk = false;
+bool g_closeRequested = false;
+bool g_failureReported = false;
 std::vector<std::pair<std::wstring, std::wstring>> g_tasks;
 
 static void writeCompletion(const std::wstring& path, bool ok) {
-    HANDLE file = CreateFileW((path + L".done").c_str(), GENERIC_WRITE, 0,
+    const std::wstring pending = path + L".done.pending";
+    HANDLE file = CreateFileW(pending.c_str(), GENERIC_WRITE, 0,
                              NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return;
     const char* result = ok ? "OK" : "ERROR";
     DWORD written = 0;
-    WriteFile(file, result, static_cast<DWORD>(strlen(result)), &written, NULL);
+    const DWORD length = static_cast<DWORD>(strlen(result));
+    const bool complete = WriteFile(file, result, length, &written, NULL) && written == length;
     CloseHandle(file);
+    if (!complete || !MoveFileExW(pending.c_str(), (path + L".done").c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        report(L"Cannot publish conversion completion");
+        DeleteFileW(pending.c_str());
+    }
 }
 
 // Called once per timer tick; never sleep on the host application's UI thread.
 static void pollPendingSave() {
+    // closeDocument is asynchronous; never dereference a document already closed by the host/user.
+    bool documentExists = false;
+    CRxApDocumentIterator* docs = crxDocManager->newAcApDocumentIterator();
+    for (; !docs->done(); docs->step()) {
+        if (docs->document() == g_pendingDocument) documentExists = true;
+    }
+    delete docs;
+    if (!documentExists) {
+        if (!g_failureReported) writeCompletion(g_pendingOutput, g_saveOk && g_closeRequested);
+        g_pendingDocument = nullptr;
+        g_pendingOutput.clear();
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (g_closeSince != 0) {
+        if (now - g_closeSince >= 10000 && !g_failureReported) {
+            report(L"Document close timed out; close the conversion document to resume queue");
+            writeCompletion(g_pendingOutput, false);
+            g_failureReported = true;
+        }
+        if (g_closeRequested) return;
+    }
+    if (now - g_lastSampleAt < 500) return;
+    g_lastSampleAt = now;
     WIN32_FILE_ATTRIBUTE_DATA info = {};
     bool exists = GetFileAttributesExW(g_pendingOutput.c_str(), GetFileExInfoStandard, &info) != FALSE;
     ULONGLONG size = exists ? (static_cast<ULONGLONG>(info.nFileSizeHigh) << 32) | info.nFileSizeLow : 0;
     g_stableSamples = size > 0 && size == g_lastSize ? g_stableSamples + 1 : 0;
     g_lastSize = size;
     bool stable = g_stableSamples >= 2;
-    if (!stable && GetTickCount64() - g_pendingSince < 30000) return;
+    if (g_saveOk && !stable && now - g_pendingSince < 30000) return;
+    g_saveOk = g_saveOk && stable;
+    if (g_closeSince == 0) g_closeSince = now;
     auto closeStatus = crxDocManager->closeDocument(g_pendingDocument);
     // An unclosed conversion document must not be followed by another open.
     if (closeStatus != CDraft::eOk) {
-        report(L"Cannot close conversion document; queue paused", closeStatus);
+        if (!g_failureReported) report(L"Cannot close conversion document; retrying", closeStatus);
         return;
     }
-    writeCompletion(g_pendingOutput, stable);
-    g_pendingDocument = nullptr;
-    g_pendingOutput.clear();
+    g_closeRequested = true;
 }
 
 bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputPath) {
@@ -149,6 +184,7 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
         fclose(fp);
     }
 
+    const ULONGLONG startedAt = GetTickCount64();
     CRxApDocument* previousDoc = crxDocManager->curDocument();
     auto status = crxDocManager->appContextOpenDocument(inputPath.c_str());
     if (status != CDraft::eOk) {
@@ -161,6 +197,8 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
     }
 
     CRxApDocument* newDoc = crxDocManager->curDocument();
+    const ULONGLONG openElapsed = GetTickCount64() - startedAt;
+    crxutPrintf(L"\n[exb2dwg] open elapsed=%llu ms\n", openElapsed);
     if (!newDoc || newDoc == previousDoc) {
         report(L"Open did not activate a new document; conversion aborted");
         return false;
@@ -195,19 +233,26 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
 
         fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
         if (fp) {
-            fwprintf(fp, L"saveAs (%ls) status: %d | disk=%d err=%lu | dbfile=%ls\n",
-                     ext.c_str(), (int)saveRes, disk1 ? 1 : 0, err1, dbFile);
+            fwprintf(fp, L"saveAs (%ls) status: %d | disk=%d err=%lu | dbfile=%ls | open_ms=%llu save_ms=%llu\n",
+                     ext.c_str(), (int)saveRes, disk1 ? 1 : 0, err1, dbFile,
+                     openElapsed, GetTickCount64() - startedAt - openElapsed);
             fclose(fp);
         }
 
         // saveAs 异步落盘：必须等文件非空且稳定后再关闭文档，否则 closeDocument
         // 会取消未完成的写入，留下 0 字节占位文件甚至没有文件。
-        if (saveOk) {
+        {
             g_pendingDocument = newDoc;
             g_pendingOutput = outputPath;
             g_pendingSince = GetTickCount64();
             g_lastSize = 0;
             g_stableSamples = 0;
+            g_lastSampleAt = 0;
+            g_closeSince = 0;
+            g_saveOk = saveOk;
+            g_closeRequested = false;
+            g_failureReported = false;
+            crxutPrintf(L"\n[exb2dwg] open+save elapsed=%llu ms\n", GetTickCount64() - startedAt);
             return true;
         }
     } else {
@@ -218,11 +263,17 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
         }
     }
 
-    if (newDoc) {
-        crxDocManager->closeDocument(newDoc);
-    }
-
-    return saveOk;
+    g_pendingDocument = newDoc;
+    g_pendingOutput = outputPath;
+    g_pendingSince = GetTickCount64();
+    g_lastSize = 0;
+    g_stableSamples = 0;
+    g_lastSampleAt = 0;
+    g_closeSince = 0;
+    g_saveOk = false;
+    g_closeRequested = false;
+    g_failureReported = false;
+    return true;
 }
 
 
@@ -264,11 +315,7 @@ VOID CALLBACK DialogKillerTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWOR
     if (g_jobBusy || g_pendingDocument) autoDismissModalDialogs();
 }
 
-VOID CALLBACK MainThreadTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
-    // 防重入：转换阻塞期间（模态循环会继续分发 WM_TIMER）不再取新任务
-    if (InterlockedCompareExchange(&g_jobBusy, 1, 0) != 0) {
-        return;
-    }
+static void processJobs(void*) {
     struct JobBusyGuard {
         ~JobBusyGuard() { InterlockedExchange(&g_jobBusy, 0); }
     } jobBusyGuard;
@@ -327,6 +374,12 @@ VOID CALLBACK MainThreadTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD 
     g_tasks = std::move(tasks);
 }
 
+VOID CALLBACK MainThreadTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    // Keep the guard held until the application-context callback actually runs.
+    if (InterlockedCompareExchange(&g_jobBusy, 1, 0) != 0) return;
+    crxDocManager->executeInApplicationContext(processJobs, nullptr);
+}
+
 void runExb2Dwg() {
 }
 
@@ -341,7 +394,7 @@ public:
         crxedRegCmds->addCommand(L"Exb2Dwg", L"GExb2Dwg", L"EXB2DWG", CRX_CMD_MODAL, &runExb2Dwg);
         
         if (g_timerId == 0) {
-            g_timerId = SetTimer(NULL, 0, 500, MainThreadTimerProc);
+            g_timerId = SetTimer(NULL, 0, 100, MainThreadTimerProc);
         }
         if (g_dialogKillerTimerId == 0) {
             // 每 200ms 自动巡检并压制/关闭形文件或字体丢失弹窗

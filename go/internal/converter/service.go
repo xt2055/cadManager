@@ -404,6 +404,9 @@ func (s *Service) ConvertPathToDwg(ctx context.Context, inputPath, outputPath st
 func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) error {
 	s.caxaJobMu.Lock()
 	defer s.caxaJobMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	jobFile := filepath.Join(os.TempDir(), "caxa_exb_jobs.txt")
 	if err := waitForCaxaJobFile(jobFile, 10*time.Second); err != nil {
@@ -418,22 +421,37 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 		return err
 	}
 
-	for i := 0; i < 180; i++ {
+	return waitForCaxaCompletion(ctx, outputPath, 90*time.Second)
+}
+
+func waitForCaxaCompletion(ctx context.Context, outputPath string, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
+		case <-deadline.C:
+			return errors.New("CAXA 转换任务超时，请检查打开、保存或关闭图纸阶段的阻塞弹窗")
+		case <-ticker.C:
 		}
-		time.Sleep(500 * time.Millisecond)
-		if _, err := os.Stat(doneFile); err == nil {
-			statusBytes, _ := os.ReadFile(doneFile)
-			if strings.TrimSpace(string(statusBytes)) == "OK" {
-				return nil
+		statusBytes, err := os.ReadFile(outputPath + ".done")
+		if err != nil || len(statusBytes) == 0 {
+			continue
+		}
+		switch strings.TrimSpace(string(statusBytes)) {
+		case "OK":
+			info, err := os.Stat(outputPath)
+			if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+				return errors.New("CAXA 返回成功但转换输出不存在或为空")
 			}
+			return nil
+		case "ERROR":
 			return errors.New("CAXA 转换任务失败")
 		}
 	}
-	return errors.New("CAXA 转换任务超时")
 }
 
 // EnsureDwg 确保 EXB/DXF/DWG 在 v1.0 版本目录中有对应的 DWG，并返回该版本存储键。

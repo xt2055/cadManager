@@ -191,6 +191,40 @@ func TestWaitForCaxaJobFileQuarantinesStaleTask(t *testing.T) {
 	t.Fatal("未保留隔离后的遗留任务以供排查")
 }
 
+func TestCaxaCompletionValidatesOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name, marker, output string
+		wantError            bool
+	}{
+		{"success", "OK", "drawing", false},
+		{"empty output", "OK", "", true},
+		{"failed", "ERROR", "drawing", true},
+		{"incomplete marker", "", "drawing", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "output.dwg")
+			if err := os.WriteFile(path, []byte(tc.output), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path+".done", []byte(tc.marker), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := waitForCaxaCompletion(context.Background(), path, 300*time.Millisecond)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("completion error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCaxaCompletionCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitForCaxaCompletion(ctx, filepath.Join(t.TempDir(), "absent.dwg"), time.Second); err != context.Canceled {
+		t.Fatalf("completion error = %v", err)
+	}
+}
+
 func TestPublishCaxaJobWritesCompleteTask(t *testing.T) {
 	jobFile := filepath.Join(t.TempDir(), "caxa_exb_jobs.txt")
 	if err := publishCaxaJob(jobFile, `C:\input file.exb`, `C:\output file.dwg`); err != nil {
