@@ -119,6 +119,62 @@ fn native_open_file_dialog(title: &str, filter: &str) -> Option<String> {
   Some(String::from_utf16_lossy(&file_buffer[..end]))
 }
 
+/// 弹出原生“另存为文件”对话框，返回所选文件完整路径；用户取消时返回 None。
+#[cfg(windows)]
+fn native_save_file_dialog(title: &str, default_name: &str, filter: &str) -> Option<String> {
+  use std::os::windows::ffi::OsStrExt;
+  use windows_sys::Win32::UI::Controls::Dialogs::{GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+
+  fn to_wide(value: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+  }
+  let title_wide = to_wide(title);
+  let filter_wide = to_wide(filter);
+  let mut file_buffer = [0u16; 1024];
+  let default_wide = to_wide(default_name);
+  let copy_len = default_wide.len().min(file_buffer.len() - 1);
+  file_buffer[..copy_len].copy_from_slice(&default_wide[..copy_len]);
+
+  let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+  dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+  dialog.lpstrFilter = filter_wide.as_ptr();
+  dialog.lpstrFile = file_buffer.as_mut_ptr();
+  dialog.nMaxFile = file_buffer.len() as u32;
+  dialog.lpstrTitle = title_wide.as_ptr();
+  dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+  if unsafe { GetSaveFileNameW(&mut dialog) } == 0 {
+    return None;
+  }
+  let end = file_buffer.iter().position(|&character| character == 0).unwrap_or(0);
+  if end == 0 {
+    return None;
+  }
+  Some(String::from_utf16_lossy(&file_buffer[..end]))
+}
+
+#[tauri::command]
+fn save_download_file(default_name: String, bytes: Vec<u8>) -> Result<Option<String>, String> {
+  #[cfg(windows)]
+  {
+    let filter = "压缩文件 (*.zip)\0*.zip\0所有文件 (*.*)\0*.*\0";
+    match native_save_file_dialog("选择保存路径", &default_name, filter) {
+      Some(chosen_path) => {
+        let mut final_path = PathBuf::from(&chosen_path);
+        if final_path.extension().is_none() {
+          final_path.set_extension("zip");
+        }
+        fs::write(&final_path, &bytes).map_err(|e| format!("保存文件失败: {}", e))?;
+        Ok(Some(final_path.to_string_lossy().to_string()))
+      }
+      None => Ok(None),
+    }
+  }
+  #[cfg(not(windows))]
+  {
+    Err("原生文件选择仅支持 Windows 客户端".to_string())
+  }
+}
+
 #[tauri::command]
 fn open_default_apps_settings() -> Result<(), String> {
   silent_command("cmd")
@@ -751,7 +807,8 @@ pub fn run() {
       open_default_apps_settings,
       ensure_api_config,
       read_debug_mode,
-      write_debug_mode
+      write_debug_mode,
+      save_download_file
     ])
     .setup(|app| {
       use tauri::{

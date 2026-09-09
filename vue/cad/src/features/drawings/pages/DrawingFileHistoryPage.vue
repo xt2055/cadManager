@@ -191,6 +191,14 @@ function openEditor(node: HistoryTreeNode) {
   })
 }
 
+function openCompare(node: HistoryTreeNode) {
+  if (!targetFile.value) return
+  const query: Record<string, string> = { fileId: targetFile.value.id }
+  if (node.versionId) query.versionId = node.versionId
+  else if (!node.isCurrent && node.storageKey) query.versionKey = node.storageKey
+  void router.push({ name: 'drawing-compare', params: { drawingId: drawingId.value }, query })
+}
+
 async function downloadFile(node: HistoryTreeNode) {
   if (!node.storageKey) {
     uiStore.toast('该历史文件暂无物理存储路径', 'warn')
@@ -320,6 +328,7 @@ watch([drawingId, fileId], () => {
             </div>
 
             <div class="detail-header-actions">
+              <button class="btn" type="button" :disabled="!selectedNode.previewable" @click="openCompare(selectedNode)">版本对比</button>
               <button
                 class="btn primary"
                 type="button"
@@ -329,6 +338,7 @@ watch([drawingId, fileId], () => {
                 <DemoIcon name="eye" :size="15" />在线浏览
               </button>
               <button
+                v-show="false"
                 class="btn"
                 type="button"
                 :title="selectedNode.previewable ? '进入完整版 CAD 在线编辑器' : '该格式暂不支持在线编辑'"

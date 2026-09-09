@@ -23,11 +23,35 @@ type Service struct {
 	versions    Repository
 	attachments attachment.Repository
 	storage     storage.ObjectStorage
+	// drawingStatus 用于阻止对已存档图纸直接发布/回滚正式版本（须走变更工单）。
+	drawingStatus DrawingStatus
 	// captureLocks 按附件串行化版本捕获：本人结束编辑与管理员强制关闭可能并发触发
 	// 同一附件的 CapturePath，无互斥时会生成相同版本号，失败方清理版本对象时
 	// 会误删成功方刚写入的版本文件。单实例部署下进程内互斥即可消除该竞态。
 	captureMu   sync.Mutex
 	captureLock map[string]*sync.Mutex
+}
+
+// DrawingStatus 查询附件所属图纸是否处于存档保护状态。
+type DrawingStatus interface {
+	ArchivedByAttachment(ctx context.Context, attachmentID string) (bool, error)
+}
+
+// SetDrawingStatus 装配存档门禁依赖。
+func (service *Service) SetDrawingStatus(status DrawingStatus) { service.drawingStatus = status }
+
+func (service *Service) ensureNotArchived(ctx context.Context, attachmentID string) error {
+	if service.drawingStatus == nil {
+		return nil
+	}
+	archived, err := service.drawingStatus.ArchivedByAttachment(ctx, attachmentID)
+	if err != nil {
+		return err
+	}
+	if archived {
+		return errors.New("图纸已存档，版本发布/回滚需通过变更工单，不能直接操作正式版本")
+	}
+	return nil
 }
 
 func NewService(repository Repository, attachments attachment.Repository, objectStorage storage.ObjectStorage) *Service {
@@ -159,6 +183,9 @@ func (service *Service) Restore(ctx context.Context, user auth.AuthUser, version
 	if err != nil {
 		return Version{}, err
 	}
+	if err := service.ensureNotArchived(ctx, version.AttachmentID); err != nil {
+		return Version{}, err
+	}
 
 	latest, _ := service.versions.LatestByAttachment(ctx, attachmentItem.ID)
 	newVersionNo, err := nextWorkingVersion(latest, attachmentItem.Version)
@@ -209,7 +236,22 @@ func isAdminUser(user auth.AuthUser) bool {
 	return false
 }
 
+// CapturePath 捕获工作文件为新版本并切换正式当前指针（草稿/生产的常规编辑）。
 func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, userID string) (Version, bool, error) {
+	return service.captureVersion(ctx, sourceKey, sourcePath, userID, true, "")
+}
+
+// CaptureWorking 捕获工作文件为新工作版本，但不切换正式当前指针。
+// 用于存档图纸的变更工单编辑：未验收的成果只登记为工作版本，正式版本保持不变，
+// 只有工单验收通过（或免验收提交完成）时才发布为正式版。
+// baselineSHA 为该工单当前工作版本（无工作版本时为工单基线版本）的哈希，
+// 用于判断本次是否相对"上一次工单成果"发生变化——从而正确捕捉恢复到正式基线的场景
+// （A→B→A 必须生成反映 A 的新成果版本，而不是误判为"与正式版相同、无改动"）。
+func (service *Service) CaptureWorking(ctx context.Context, sourceKey, sourcePath, userID, baselineSHA string) (Version, bool, error) {
+	return service.captureVersion(ctx, sourceKey, sourcePath, userID, false, baselineSHA)
+}
+
+func (service *Service) captureVersion(ctx context.Context, sourceKey, sourcePath, userID string, promote bool, baselineSHA string) (Version, bool, error) {
 	// 同一附件的捕获全程互斥：版本号计算、对象写入、事务登记必须串行，
 	// 否则并发方会生成相同版本号并在失败清理时误删对方的版本对象。
 	unlock := service.lockAttachment(sourceKey)
@@ -232,14 +274,20 @@ func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, 
 		return Version{}, false, fmt.Errorf("关闭 SMB 工作文件失败: %w", closeErr)
 	}
 
-	// 比较当前活跃哈希，未改动则跳过
-	currentHash := attachmentItem.CurrentSHA256
-	if currentHash == "" {
-		currentHash = attachmentItem.SHA256
+	// 比较基准哈希，未改动则跳过。
+	// 常规编辑（promote）比较附件当前版本；工单工作版本比较传入的 baselineSHA
+	// （该工单上一次成功保存的工作版本，或首次编辑时的工单基线版本），
+	// 这样把成果恢复到正式基线（A→B→A）也会被视为相对工作版 B 的有效改动并生成新成果版本。
+	compareSHA := attachmentItem.CurrentSHA256
+	if compareSHA == "" {
+		compareSHA = attachmentItem.SHA256
 	}
-	if currentHash == sourceHash {
+	if !promote && baselineSHA != "" {
+		compareSHA = baselineSHA
+	}
+	if compareSHA == sourceHash {
 		latest, latestErr := service.versions.LatestByAttachment(ctx, attachmentItem.ID)
-		if latestErr == nil {
+		if latestErr == nil && (promote || latest.SHA256 == sourceHash) {
 			return latest, false, nil
 		}
 	}
@@ -257,7 +305,7 @@ func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, 
 	if activeName == "" {
 		activeName = attachmentItem.Name
 	}
-	if strings.EqualFold(filepath.Ext(activeName), ".exb") {
+	if strings.EqualFold(filepath.Ext(activeName), ".exb") || strings.EqualFold(filepath.Ext(activeName), ".dxf") {
 		activeName = strings.TrimSuffix(activeName, filepath.Ext(activeName)) + ".dwg"
 	}
 	historyKey := buildVersionStorageKey(folder, activeName, version)
@@ -279,7 +327,7 @@ func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, 
 	// 事务内登记版本并切换当前指针；不覆盖任何已有文件。
 	// 失败时删除刚写入的版本对象，旧当前版本保持不变，编辑会话保留等待重试。
 	expiresAt := time.Now().UTC().Add(90 * 24 * time.Hour)
-	created, err := service.versions.CreateWithPromotion(ctx, CreateInput{
+	input := CreateInput{
 		AttachmentID:     attachmentItem.ID,
 		SourceStorageKey: sourceKey,
 		Version:          version,
@@ -290,7 +338,14 @@ func (service *Service) CapturePath(ctx context.Context, sourceKey, sourcePath, 
 		CreatedBy:        userID,
 		ExpiresAt:        &expiresAt,
 		CurrentName:      activeName,
-	}, historyKey)
+	}
+	var created Version
+	if promote {
+		created, err = service.versions.CreateWithPromotion(ctx, input, historyKey)
+	} else {
+		// 工单工作版本：仅登记，不触碰 attachments.current_version_id。
+		created, err = service.versions.Create(ctx, input, historyKey)
+	}
 	if err != nil {
 		_ = service.storage.Delete(ctx, historyKey)
 		return Version{}, false, err
@@ -343,6 +398,13 @@ func (service *Service) Retain(ctx context.Context, user auth.AuthUser, versionI
 func (service *Service) Release(ctx context.Context, user auth.AuthUser, versionID string) (Version, error) {
 	if !canManageVersion(user) {
 		return Version{}, errors.New("当前账号没有发布文件版本的权限")
+	}
+	version, err := service.versions.GetByID(ctx, versionID)
+	if err != nil {
+		return Version{}, err
+	}
+	if err := service.ensureNotArchived(ctx, version.AttachmentID); err != nil {
+		return Version{}, err
 	}
 	return service.versions.Release(ctx, versionID, user.ID)
 }

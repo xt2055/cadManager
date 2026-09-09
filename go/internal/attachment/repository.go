@@ -144,6 +144,7 @@ func scanAttachment(row interface{ Scan(...any) error }) (Attachment, error) {
 		return Attachment{}, err
 	}
 	item.PartNo = partNo
+	item.Revision = revision
 	item.MimeType = item.CurrentMimeType
 	item.CreatedAt = createdAt.Format("2006-01-02 15:04:05")
 	return item, nil

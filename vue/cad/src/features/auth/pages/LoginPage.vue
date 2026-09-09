@@ -822,17 +822,18 @@ onBeforeUnmount(() => {
 .login-standalone-window {
   position: relative;
   box-sizing: border-box;
-   width: min(440px, 100vw);
-   height: min(600px, 100vh);
-   max-width: 100vw;
-   max-height: 100vh;
+  width: min(440px, 100vw);
+  height: min(600px, 100vh);
+  max-width: 100vw;
+  max-height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--panel);
-   border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
-   border-radius: 14px;
-   box-shadow: 0 18px 48px rgb(0 0 0 / 34%);
-  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 34%);
+  overflow-x: hidden;
+  overflow-y: hidden;
   user-select: none;
   transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -975,8 +976,9 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-   padding: 28px 30px 20px;
-  overflow: hidden;
+  padding: 28px 30px 20px;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .login-grid-texture {

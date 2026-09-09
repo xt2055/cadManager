@@ -94,3 +94,12 @@ export async function getLocalCaxaPath(): Promise<string> {
 export async function openDefaultAppsSettings(): Promise<void> {
   await invoke('open_default_apps_settings')
 }
+
+/** 弹出原生“另存为”对话框并直接保存二进制数据，返回保存路径；用户取消则返回 null。 */
+export async function saveDownloadFile(defaultName: string, bytes: Uint8Array): Promise<string | null> {
+  if (!isTauri()) return null
+  return invoke<string | null>('save_download_file', {
+    defaultName,
+    bytes: Array.from(bytes),
+  })
+}

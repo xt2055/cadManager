@@ -1,6 +1,7 @@
 package editing
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -29,7 +30,14 @@ var (
 	ErrSessionNotFound  = errors.New("编辑会话不存在或已过期")
 	ErrFileBusy         = errors.New("该文件正在被其他用户编辑")
 	ErrInvalidTicket    = errors.New("打开票据无效或已使用")
+	ErrTicketClosed     = errors.New("变更工单已不在执行中，无法开始编辑")
+	// ErrWorkVersionConflict 在线保存的工作版本基线已过期：他人已推进该工单成果，需重新加载。
+	ErrWorkVersionConflict = errors.New("工作版本已被更新，请重新加载后重试")
+	// ErrNotOnlineTicket 该图纸未处于存档变更工单执行中，在线保存不应走工作版本通道。
+	ErrNotOnlineTicket = errors.New("该图纸未处于变更工单执行中，请使用常规替换上传")
 )
+
+const onlineSaveMaxBytes = 200 << 20
 
 const editTicketTTL = 5 * time.Minute
 
@@ -43,6 +51,22 @@ type ReviewAssigneeLookup interface {
 	ActiveCaseAssigneeByDrawingNo(ctx context.Context, drawingNo string) (string, error)
 }
 
+// ChangeGate 提供存档图纸的变更工单授权与工作版本隔离能力。
+type ChangeGate interface {
+	// CanEditArchived 报告用户是否因持有执行中的工单而可编辑该存档图纸，返回工单 ID。
+	CanEditArchived(ctx context.Context, drawingID, userID string) (bool, string, error)
+	// WorkVersion 返回工单当前工作成果版本（附件 ID / 存储键 / 版本 ID）；无工作版本时 found=false。
+	WorkVersion(ctx context.Context, requestID string) (attachmentID, storageKey, versionID string, found bool, err error)
+	// EditBaseline 返回该工单当前工作版本（无工作版本时为工单文件基线）的内容哈希，
+	// 供结束编辑时以"上一次工单成果"为比较基准；基线缺失时 found=false。
+	EditBaseline(ctx context.Context, requestID string) (sha string, found bool, err error)
+	// RecordWorkVersion 把工单最新工作版本登记到工单；工单已不可写时返回工单包定义的 ErrNotExecuting。
+	RecordWorkVersion(ctx context.Context, requestID, versionID string) error
+	CompareAndRecordWorkVersion(ctx context.Context, requestID, versionID, expectedVersionID, userID string) (bool, error)
+	// StillExecuting 报告工单是否仍处于可编辑（executing）状态。
+	StillExecuting(ctx context.Context, requestID string) (bool, error)
+}
+
 type Service struct {
 	attachments attachment.Repository
 	storage     storage.ObjectStorage
@@ -50,12 +74,14 @@ type Service struct {
 	caxaBin     string
 	versions    interface {
 		CapturePath(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error)
+		CaptureWorking(ctx context.Context, sourceKey, sourcePath, userID, baselineSHA string) (versioning.Version, bool, error)
 		EnsureInitialVersion(ctx context.Context, sourceKey, userID string) error
 	}
 	repository Repository
 	cfg        config.SMBConfig
 	drawings   DrawingLookup
 	reviews    ReviewAssigneeLookup
+	changes    ChangeGate
 	// syncLocks 按存储键串行化工作文件同步：Remove+Rename 的替换序列在 Windows 上
 	// 不允许并发执行（目标被其他 rename 占用时失败），多用户同时打开同一文件时必须互斥。
 	syncMu   sync.Mutex
@@ -83,8 +109,15 @@ func (service *Service) SetPolicy(drawings DrawingLookup, reviews ReviewAssignee
 	service.reviews = reviews
 }
 
+// SetChangeGate 装配存档图纸变更工单门禁。
+func (service *Service) SetChangeGate(gate ChangeGate) {
+	service.changes = gate
+}
+
+// SetVersioning 装配版本捕获服务。
 func (service *Service) SetVersioning(versions interface {
 	CapturePath(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error)
+	CaptureWorking(ctx context.Context, sourceKey, sourcePath, userID, baselineSHA string) (versioning.Version, bool, error)
 	EnsureInitialVersion(ctx context.Context, sourceKey, userID string) error
 }) {
 	service.versions = versions
@@ -93,7 +126,26 @@ func (service *Service) SetVersioning(versions interface {
 // resolveWorkKey 解析实际用于本地编辑的工作文件（当前版本 DWG）：
 // EXB 先经转换队列生成 v1.0 版本文件，其余附件优先使用当前指针。
 // 返回工作文件键，并保证 v1.0 初始版本已登记、当前指针已切换。
-func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, item attachment.Attachment) (string, error) {
+func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, item attachment.Attachment, changeRequestID string) (string, error) {
+	// 存档变更工单：若该工单已登记工作成果版本，则基于它继续编辑，
+	// 不回到正式版本，保证未验收成果与正式版隔离。
+	if changeRequestID != "" && service.changes != nil {
+		attID, storageKey, _, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID)
+		if gateErr != nil {
+			return "", fmt.Errorf("读取工单工作版本失败: %w", gateErr)
+		}
+		if found && attID == item.ID && storageKey != "" {
+			if reader, _, openErr := service.storage.Open(ctx, storageKey); openErr == nil {
+				_ = reader.Close()
+				return storageKey, nil
+			} else {
+				return "", fmt.Errorf("读取工单工作文件失败，禁止回退正式版: %w", openErr)
+			}
+		}
+		if found {
+			return "", errors.New("工单工作版本与目标附件不匹配或存储键缺失")
+		}
+	}
 	ext := filepath.Ext(item.StorageKey)
 	if ext == "" {
 		ext = filepath.Ext(item.Name)
@@ -191,11 +243,12 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	// 图纸生命周期 × 身份统一授权：角色门禁并入状态矩阵——
 	// 审核中当前节点责任人可编辑（即使无 designer 角色）；存档仅管理员经解除存档后编辑；
 	// 草稿/生产仅创建者或管理员可编辑。其他用户一律走「本地查看（只读）」。
-	if err := service.authorizeEdit(ctx, user, item.DrawingNo); err != nil {
+	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo)
+	if err != nil {
 		return OpenResult{}, err
 	}
 
-	sourceStorageKey, err := service.resolveWorkKey(ctx, user, item)
+	sourceStorageKey, err := service.resolveWorkKey(ctx, user, item, changeRequestID)
 	if err != nil {
 		return OpenResult{}, err
 	}
@@ -209,6 +262,11 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 		return OpenResult{}, findErr
 	}
 	if findErr == nil {
+		// 会话归属校验：活动会话只能被"同一工单"复用，禁止把旧工单（或无工单）的会话
+		// 直接接管到新工单，避免旧工单未提交的文件与操作来源混入本次变更。
+		if existing.ChangeRequestID != changeRequestID {
+			return OpenResult{}, errors.New("该文件存在其它变更工单或历史编辑会话，请先结束它后再开始本次编辑")
+		}
 		// 同一文件已有活动会话：本人则认领恢复（重新同步工作文件并签发打开票据），
 		// 其他人则提示占用。退出软件后重新打开即可继续编辑，无需重新占用。
 		if existing.UserID != user.ID {
@@ -269,16 +327,31 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	}
 	expiresAt := now.Add(editTicketTTL)
 	session := Session{
-		ID:             sessionID,
-		AttachmentID:   item.ID,
-		StorageKey:     item.StorageKey,
-		WorkStorageKey: workStorageKey,
-		UserID:         user.ID,
-		UserName:       user.DisplayName,
-		UNCPath:        service.uncPath(workStorageKey),
-		Status:         "active",
-		StartedAt:      now,
-		LastSeenAt:     now,
+		ID:              sessionID,
+		AttachmentID:    item.ID,
+		StorageKey:      item.StorageKey,
+		WorkStorageKey:  workStorageKey,
+		ChangeRequestID: changeRequestID,
+		UserID:          user.ID,
+		UserName:        user.DisplayName,
+		UNCPath:         service.uncPath(workStorageKey),
+		Status:          "active",
+		StartedAt:       now,
+		LastSeenAt:      now,
+	}
+	if changeRequestID != "" {
+		// 存档工单：在同一事务内锁定工单行、复查其仍为 executing 后再写入会话与票据，
+		// 与提交/终止互斥，杜绝"提交或终止后又开出新的可写会话"的时间窗口。
+		if err := service.repository.CreateSessionWithTicket(ctx, session, openTicket, expiresAt, changeRequestID); err != nil {
+			return OpenResult{}, err
+		}
+		return OpenResult{
+			SessionID: sessionID,
+			OpenURL:   "cadguanliq://open?ticket=" + openTicket,
+			UNCPath:   session.UNCPath,
+			SMBRoot:   service.smbRoot(),
+			ExpiresAt: expiresAt,
+		}, nil
 	}
 	if err := service.repository.CreateSession(ctx, session); err != nil {
 		return OpenResult{}, err
@@ -296,10 +369,10 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	}, nil
 }
 
-// authorizeEdit 图纸生命周期 × 身份的编辑授权矩阵（后端强校验，角色门禁并入矩阵）：
-// 草稿/生产 → 创建者或管理员；审核中 → 当前节点责任人或管理员（审核人员即使只有 reviewer 角色也可签改）；
-// 存档 → 一律拒绝（管理员须先解除存档）。
-func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, drawingNo string) error {
+// authorizeEdit 图纸生命周期 × 身份的编辑授权矩阵（后端强校验）。
+// 返回的 changeRequestID 非空表示这次编辑受某张执行中的存档变更工单授权，
+// 编辑成果须登记为工作版本、验收后才发布，不得直接切换正式指针。
+func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, drawingNo string) (string, error) {
 	admin := isAdmin(user.Roles)
 	designer := false
 	for _, role := range user.Roles {
@@ -313,48 +386,59 @@ func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, d
 	// 未装配策略（非图纸附件等）：退回旧的角色门禁。
 	if service.drawings == nil || drawingNo == "" {
 		if admin || designer {
-			return nil
+			return "", nil
 		}
-		return errors.New("当前账号没有 CAD 编辑权限")
+		return "", errors.New("当前账号没有 CAD 编辑权限")
 	}
 
 	item, err := service.drawings.FindByNo(ctx, drawingNo)
 	if errors.Is(err, drawing.ErrNotFound) {
-		return errors.New("未找到图纸信息，无法发起编辑")
+		return "", errors.New("未找到图纸信息，无法发起编辑")
 	}
 	if err != nil {
-		return fmt.Errorf("读取图纸状态失败: %w", err)
+		return "", fmt.Errorf("读取图纸状态失败: %w", err)
 	}
 
 	switch item.Status {
 	case drawing.StatusReviewing:
 		if admin {
-			return nil
+			return "", nil
 		}
 		assignee, assigneeErr := service.reviews.ActiveCaseAssigneeByDrawingNo(ctx, drawingNo)
 		if assigneeErr != nil {
-			return fmt.Errorf("读取审核节点责任人失败: %w", assigneeErr)
+			return "", fmt.Errorf("读取审核节点责任人失败: %w", assigneeErr)
 		}
 		if assignee != "" && assignee == user.ID {
-			return nil
+			return "", nil
 		}
 		if designer {
-			return errors.New("审核中的图纸仅当前节点责任人可编辑，其他用户请使用「本地查看（只读）」")
+			return "", errors.New("审核中的图纸仅当前节点责任人可编辑，其他用户请使用「本地查看（只读）」")
 		}
-		return errors.New("审核中的图纸仅当前节点责任人可编辑，当前账号不是该节点责任人")
+		return "", errors.New("审核中的图纸仅当前节点责任人可编辑，当前账号不是该节点责任人")
 	case drawing.StatusArchived:
-		return errors.New("图纸已存档，处于只读保护中；如需修改请联系管理员解除存档")
+		// 存档图纸默认只读；仅当存在执行中的变更工单且当前用户是指定执行人时放行编辑，
+		// 并把工单 ID 透传给会话，用于把工作成果隔离在未验收版本上。
+		if service.changes != nil {
+			allowed, requestID, gateErr := service.changes.CanEditArchived(ctx, item.ID, user.ID)
+			if gateErr != nil {
+				return "", fmt.Errorf("查询变更工单授权失败: %w", gateErr)
+			}
+			if allowed {
+				return requestID, nil
+			}
+		}
+		return "", errors.New("图纸已存档，需通过变更工单审批并由指定执行人修改")
 	default:
 		if admin {
-			return nil
+			return "", nil
 		}
 		if designer && item.CreatedByID == user.ID {
-			return nil
+			return "", nil
 		}
 		if designer {
-			return errors.New("仅创建者或管理员可以编辑图纸，其他用户请使用「本地查看（只读）」")
+			return "", errors.New("仅创建者或管理员可以编辑图纸，其他用户请使用「本地查看（只读）」")
 		}
-		return errors.New("当前账号没有 CAD 编辑权限")
+		return "", errors.New("当前账号没有 CAD 编辑权限")
 	}
 }
 
@@ -373,7 +457,7 @@ func (service *Service) ReadOnlyOpen(ctx context.Context, user auth.AuthUser, st
 		return ReadOnlyOpenResult{}, errors.New("当前附件不是可打开的 CAD 文件")
 	}
 
-	actualStorageKey, err := service.resolveWorkKey(ctx, user, item)
+	actualStorageKey, err := service.resolveWorkKey(ctx, user, item, "")
 	if err != nil {
 		return ReadOnlyOpenResult{}, err
 	}
@@ -450,6 +534,136 @@ func (service *Service) Exchange(ctx context.Context, user auth.AuthUser, openTi
 	}, nil
 }
 
+// OnlineOpen 为浏览器在线编辑解析可编辑内容与工单归属。
+// 存档图纸必须绑定执行中的变更工单：编辑成果只能登记为工单工作版本，验收后才发布，
+// 正式版本在此之前不受影响。非存档图纸 RequiresTicket=false，前端沿用常规替换保存。
+// LoadURL 指向当前应加载的内容：已有工作版本时加载工作版本，否则加载正式版当前文件。
+func (service *Service) OnlineOpen(ctx context.Context, user auth.AuthUser, storageKey string) (OnlineOpenResult, error) {
+	if service.attachments == nil {
+		return OnlineOpenResult{}, errors.New("附件服务未配置")
+	}
+	storageKey = strings.TrimSpace(storageKey)
+	if storageKey == "" {
+		return OnlineOpenResult{}, errors.New("缺少 CAD 文件存储键")
+	}
+	item, err := service.attachments.Find(ctx, storageKey)
+	if err != nil {
+		return OnlineOpenResult{}, err
+	}
+	if !isCADFile(item.Name) {
+		return OnlineOpenResult{}, errors.New("当前附件不是可编辑的 CAD 文件")
+	}
+	releasePath := "/cad/source?storageKey=" + url.QueryEscape(item.StorageKey)
+	fileName := filepath.Base(firstNonEmpty(item.CurrentName, item.Name))
+	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo)
+	if err != nil {
+		return OnlineOpenResult{}, err
+	}
+	if changeRequestID == "" {
+		log.Printf("[Online Edit] opened attachment=%s revision=%d user=%s", item.ID, item.Revision, user.ID)
+		return OnlineOpenResult{Revision: item.Revision, LoadURL: releasePath, FileName: fileName}, nil
+	}
+	attID, workKey, workVersionID, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID)
+	if gateErr != nil {
+		return OnlineOpenResult{}, fmt.Errorf("读取工单工作版本失败: %w", gateErr)
+	}
+	if found && attID != item.ID {
+		return OnlineOpenResult{}, errors.New("工单工作版本与目标附件不匹配")
+	}
+	if found {
+		fileName = filepath.Base(workKey)
+		return OnlineOpenResult{RequiresTicket: true, ChangeRequestID: changeRequestID, WorkVersionID: workVersionID, LoadURL: "/file-versions/" + workVersionID + "/source", FileName: fileName}, nil
+	}
+	return OnlineOpenResult{RequiresTicket: true, ChangeRequestID: changeRequestID, LoadURL: releasePath, FileName: fileName}, nil
+}
+
+// OnlineSaveDraft 把浏览器在线编辑产出的 DWG 登记为变更工单的工作版本：
+// 以工单上一次成果（或基线）为比较基准捕获新版本，仅更新工单 submitted_attachment_version_id，
+// 绝不切换附件正式当前指针。baseWorkVersionID 为编辑器加载时的工单工作版本（无工作版本时为空），
+// 与工单当前工作版本不一致说明他人已推进成果，返回 ErrWorkVersionConflict 而不覆盖。
+// 捕获或登记失败时不删除已生成内容、不动正式版本，用户可安全重试。
+func (service *Service) OnlineSaveDraft(ctx context.Context, user auth.AuthUser, storageKey, requestID, baseWorkVersionID, fileName string, content []byte) (OnlineSaveResult, error) {
+	if service.attachments == nil || service.versions == nil {
+		return OnlineSaveResult{}, errors.New("在线编辑保存服务未配置")
+	}
+	storageKey = strings.TrimSpace(storageKey)
+	if storageKey == "" {
+		return OnlineSaveResult{}, errors.New("缺少 CAD 文件存储键")
+	}
+	if len(content) == 0 {
+		return OnlineSaveResult{}, errors.New("在线编辑内容为空，未保存")
+	}
+	if len(content) < 6 || !bytes.HasPrefix(content, []byte("AC10")) || content[4] < '0' || content[4] > '9' || content[5] < '0' || content[5] > '9' {
+		return OnlineSaveResult{}, errors.New("转换结果不是有效的 DWG 文件，未保存")
+	}
+	item, err := service.attachments.Find(ctx, storageKey)
+	if err != nil {
+		return OnlineSaveResult{}, err
+	}
+	if !isCADFile(item.Name) {
+		return OnlineSaveResult{}, errors.New("当前附件不是可编辑的 CAD 文件")
+	}
+	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo)
+	if err != nil {
+		return OnlineSaveResult{}, err
+	}
+	if changeRequestID == "" || service.changes == nil {
+		return OnlineSaveResult{}, ErrNotOnlineTicket
+	}
+	if strings.TrimSpace(requestID) != changeRequestID {
+		return OnlineSaveResult{}, ErrTicketClosed
+	}
+	executing, gateErr := service.changes.StillExecuting(ctx, changeRequestID)
+	if gateErr != nil {
+		return OnlineSaveResult{}, gateErr
+	}
+	if !executing {
+		return OnlineSaveResult{}, ErrTicketClosed
+	}
+	attID, _, currentWorkID, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID)
+	if gateErr != nil {
+		return OnlineSaveResult{}, fmt.Errorf("读取工单工作版本失败: %w", gateErr)
+	}
+	if found && attID != item.ID {
+		return OnlineSaveResult{}, errors.New("工单工作版本与目标附件不匹配")
+	}
+	expected := strings.TrimSpace(baseWorkVersionID)
+	if found {
+		if expected != currentWorkID {
+			return OnlineSaveResult{}, ErrWorkVersionConflict
+		}
+	} else if expected != "" {
+		return OnlineSaveResult{}, ErrWorkVersionConflict
+	}
+	baselineSHA := ""
+	if sha, ok, baseErr := service.changes.EditBaseline(ctx, changeRequestID); baseErr != nil {
+		return OnlineSaveResult{}, baseErr
+	} else if ok {
+		baselineSHA = sha
+	}
+	tempDir, err := os.MkdirTemp("", "online-save-")
+	if err != nil {
+		return OnlineSaveResult{}, fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	tempPath := filepath.Join(tempDir, "edit.dwg")
+	if err := os.WriteFile(tempPath, content, 0o600); err != nil {
+		return OnlineSaveResult{}, fmt.Errorf("写入临时编辑文件失败: %w", err)
+	}
+	version, _, capErr := service.versions.CaptureWorking(ctx, item.StorageKey, tempPath, user.ID, baselineSHA)
+	if capErr != nil {
+		return OnlineSaveResult{}, fmt.Errorf("保存编辑版本失败，请重试: %w", capErr)
+	}
+	recorded, regErr := service.changes.CompareAndRecordWorkVersion(ctx, changeRequestID, version.ID, expected, user.ID)
+	if regErr != nil {
+		return OnlineSaveResult{}, regErr
+	}
+	if !recorded {
+		return OnlineSaveResult{}, ErrWorkVersionConflict
+	}
+	return OnlineSaveResult{ChangeRequestID: changeRequestID, WorkVersionID: version.ID, Version: version.Version, FileName: filepath.Base(firstNonEmpty(fileName, item.CurrentName, item.Name))}, nil
+}
+
 func (service *Service) ListActive(ctx context.Context, user auth.AuthUser, drawingNo string) ([]ActiveSessionInfo, error) {
 	if service.repository == nil {
 		return nil, errors.New("编辑会话数据库未配置")
@@ -521,41 +735,82 @@ func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID
 			workKey = strings.TrimSuffix(workKey, filepath.Ext(workKey)) + ".dwg"
 		}
 	}
-	if path, pathErr := service.localPath(workKey); pathErr == nil {
-		// CAD 编辑器保存是异步落盘的：若用户保存后立即结束会话，
-		// 工作文件可能仍在写入，必须等待文件稳定后再捕获，否则会归档旧内容或损坏内容。
-		if waitErr := waitForFileStable(path, 15*time.Second); waitErr != nil {
-			log.Printf("[编辑关闭] 等待工作文件稳定失败 key=%s err=%v", workKey, waitErr)
+	// 工单不可写时返回冲突，保留工作文件，不把放弃修改当作保存成功。
+	working := session.ChangeRequestID != ""
+	var workingVersionID string
+	if working && service.changes == nil {
+		return CloseResult{}, errors.New("工单编辑门禁未配置")
+	}
+	executing := true
+	var baselineSHA string
+	if working && service.changes != nil {
+		ok, gateErr := service.changes.StillExecuting(ctx, session.ChangeRequestID)
+		if gateErr != nil {
+			return CloseResult{}, gateErr
 		}
-		if version, changed, capErr := service.captureWithRetry(ctx, session.StorageKey, path, user.ID); capErr != nil {
-			if forceByAdmin {
-				// 管理员强制关闭他人会话：尽力归档但不阻塞锁释放，避免死锁文件。
-				log.Printf("[编辑关闭] 管理员强制关闭，捕获版本失败仍将关闭会话 key=%s err=%v", session.StorageKey, capErr)
-			} else if _, stillActiveErr := service.repository.FindActiveByID(ctx, sessionID); errors.Is(stillActiveErr, ErrSessionNotFound) {
-				// 会话已被并发关闭（如管理员强关导致工作文件被清理），
-				// 此时不再误报“保存失败”，与 repository.Close 的语义对齐。
-				return CloseResult{}, ErrSessionNotFound
-			} else {
-				// 捕获失败：保留编辑会话，旧版本不受影响，用户可重试。
-				return CloseResult{}, fmt.Errorf("保存编辑版本失败，请重试: %w", capErr)
-			}
+		executing = ok
+		if sha, found, baseErr := service.changes.EditBaseline(ctx, session.ChangeRequestID); baseErr != nil {
+			return CloseResult{}, baseErr
+		} else if found {
+			baselineSHA = sha
+		}
+	}
+	if path, pathErr := service.localPath(workKey); pathErr == nil {
+		if working && !executing {
+			return CloseResult{}, ErrTicketClosed
 		} else {
-			result.Changed = changed
-			if changed {
-				result.Version = version.Version
-				result.CurrentStorageKey = version.StorageKey
-				result.CurrentName = filepath.Base(version.StorageKey)
-				log.Printf("[编辑关闭] 已生成新版本 %s key=%s", version.Version, version.StorageKey)
+			// CAD 编辑器保存是异步落盘的：若用户保存后立即结束会话，
+			// 工作文件可能仍在写入，必须等待文件稳定后再捕获，否则会归档旧内容或损坏内容。
+			if waitErr := waitForFileStable(path, 15*time.Second); waitErr != nil {
+				if working {
+					return CloseResult{}, waitErr
+				}
+				log.Printf("[编辑关闭] 等待工作文件稳定失败 key=%s err=%v", workKey, waitErr)
+			}
+			if version, changed, capErr := service.captureWithRetry(ctx, session.StorageKey, path, user.ID, working, baselineSHA); capErr != nil {
+				if forceByAdmin && !working {
+					// 管理员强制关闭他人会话：尽力归档但不阻塞锁释放，避免死锁文件。
+					log.Printf("[编辑关闭] 管理员强制关闭，捕获版本失败仍将关闭会话 key=%s err=%v", session.StorageKey, capErr)
+				} else if _, stillActiveErr := service.repository.FindActiveByID(ctx, sessionID); errors.Is(stillActiveErr, ErrSessionNotFound) {
+					// 会话已被并发关闭（如管理员强关导致工作文件被清理），
+					// 此时不再误报“保存失败”，与 repository.Close 的语义对齐。
+					return CloseResult{}, ErrSessionNotFound
+				} else {
+					// 捕获失败：保留编辑会话，旧版本不受影响，用户可重试。
+					return CloseResult{}, fmt.Errorf("保存编辑版本失败，请重试: %w", capErr)
+				}
 			} else {
-				log.Printf("[编辑关闭] 工作文件无改动，未生成新版本 key=%s", session.StorageKey)
+				result.Changed = changed
+				if changed {
+					result.Version = version.Version
+					if working {
+						// 捕获文件后，在下方事务内登记成果并关闭会话。
+						workingVersionID = version.ID
+					} else {
+						result.CurrentStorageKey = version.StorageKey
+						result.CurrentName = filepath.Base(version.StorageKey)
+						log.Printf("[编辑关闭] 已生成新版本 %s key=%s", version.Version, version.StorageKey)
+					}
+				} else {
+					log.Printf("[编辑关闭] 工作文件无改动，未生成新版本 key=%s", session.StorageKey)
+				}
 			}
 		}
 	} else {
+		if working {
+			return CloseResult{}, pathErr
+		}
 		log.Printf("[编辑关闭] 解析工作文件路径失败 key=%s err=%v", workKey, pathErr)
 	}
 
-	if err := service.repository.Close(ctx, user.ID, sessionID, isAdminUser, time.Now().UTC()); err != nil {
-		return CloseResult{}, err
+	var closeErr error
+	if working {
+		closeErr = service.repository.CompleteWorkingSession(ctx, session, workingVersionID)
+	} else {
+		closeErr = service.repository.Close(ctx, user.ID, sessionID, isAdminUser, time.Now().UTC())
+	}
+	if closeErr != nil {
+		return CloseResult{}, closeErr
 	}
 
 	// 版本已成功归档，清理 SMB 工作文件（清理失败不影响关闭结果）。
@@ -569,7 +824,9 @@ func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID
 
 // captureWithRetry 捕获工作文件版本；文件可能被 CAD 进程短暂占用，失败后小间隔重试。
 // 工作文件已不存在（被并发关闭清理等）属于永久性错误，直接失败不重试。
-func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error) {
+// working=true 时走不切换正式指针的工作版本捕获（存档变更工单），
+// baselineSHA 为该工单上一次成果（或基线）的哈希，用于正确判断相对工单成果的变化。
+func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourcePath, userID string, working bool, baselineSHA string) (versioning.Version, bool, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -579,7 +836,14 @@ func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourceP
 			case <-time.After(time.Duration(attempt) * time.Second):
 			}
 		}
-		version, created, err := service.versions.CapturePath(ctx, sourceKey, sourcePath, userID)
+		var version versioning.Version
+		var created bool
+		var err error
+		if working {
+			version, created, err = service.versions.CaptureWorking(ctx, sourceKey, sourcePath, userID, baselineSHA)
+		} else {
+			version, created, err = service.versions.CapturePath(ctx, sourceKey, sourcePath, userID)
+		}
 		if err == nil {
 			return version, created, nil
 		}
@@ -755,6 +1019,16 @@ func isCADFile(name string) bool {
 	default:
 		return false
 	}
+}
+
+// firstNonEmpty 返回第一个非空白字符串。
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func randomID() (string, error) {

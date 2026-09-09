@@ -18,6 +18,7 @@ var (
 	ErrRevisionRequired    = errors.New("drawing resource revision required")
 	ErrInvalidTransition   = errors.New("drawing status transition not allowed")
 	ErrIdempotencyConflict = errors.New("idempotency key conflict")
+	ErrArchivedLocked      = errors.New("archived drawing requires an approved change request to modify")
 )
 
 type PGRepository struct {
@@ -187,6 +188,17 @@ func (repository *PGRepository) Update(ctx context.Context, id string, input Upd
 		return Drawing{}, fmt.Errorf("开始修改图纸事务失败: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// 存档图纸受变更工单保护：其技术属性/版本/状态等正式成果只能经变更工单验收后由服务端应用，
+	// 禁止通过普通 PATCH 直接修改，避免绕过工单。
+	var currentStatus Status
+	if err := tx.QueryRow(ctx, `SELECT status FROM drawings WHERE id = $1::uuid FOR UPDATE`, id).Scan(&currentStatus); errors.Is(err, pgx.ErrNoRows) {
+		return Drawing{}, ErrNotFound
+	} else if err != nil {
+		return Drawing{}, fmt.Errorf("读取图纸状态失败: %w", err)
+	}
+	if currentStatus == StatusArchived {
+		return Drawing{}, ErrArchivedLocked
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE drawings
 		SET name = COALESCE($2, name), kind = COALESCE($3, kind), project = COALESCE($4, project), material = COALESCE($5, material),

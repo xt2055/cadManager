@@ -148,6 +148,21 @@ func AdminDrawingResource(pool *pgxpool.Pool, objectStorage storage.ObjectStorag
 		case request.Method == http.MethodPost && (action == "disable" || action == "enable"):
 			var no string
 			var status string
+			// 存档图纸处于变更管控中，禁止通过「停用→启用为草稿」绕过工单修改正式成果。
+			var curStatus string
+			findErr := pool.QueryRow(request.Context(), `SELECT status FROM drawings WHERE id = $1::uuid`, id).Scan(&curStatus)
+			if errors.Is(findErr, pgx.ErrNoRows) {
+				writeAdminDrawingError(writer, ErrAdminDrawingNotFound)
+				return
+			}
+			if findErr != nil {
+				response.WriteError(writer, http.StatusInternalServerError, "图纸状态读取失败")
+				return
+			}
+			if curStatus == "archived" {
+				response.WriteError(writer, http.StatusConflict, "图纸已存档，如需修改请通过变更工单，不能直接停用/启用")
+				return
+			}
 			if action == "disable" {
 				err = pool.QueryRow(request.Context(), `UPDATE drawings SET status = 'disabled', updated_by = $2::uuid, updated_at = now(), revision = revision + 1 WHERE id = $1::uuid RETURNING drawing_no, status`, id, user.ID).Scan(&no, &status)
 			} else {

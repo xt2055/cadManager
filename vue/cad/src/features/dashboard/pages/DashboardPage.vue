@@ -26,6 +26,7 @@ onMounted(() => {
     auditStore.loadDrawing({ page: 1, pageSize: 20 }),
   ]).catch(() => undefined)
 })
+
 const currentHour = new Date().getHours()
 const greeting = currentHour < 6 ? '晚上好' : currentHour < 12 ? '早上好' : currentHour < 18 ? '下午好' : '晚上好'
 const todayText = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
@@ -49,9 +50,9 @@ const stats = computed(() => {
   const reviewCount = reviewStore.myPendingReviews().length
 
   return [
-    { label: '图纸总数', value: String(total), icon: 'layers', delta: total ? '当前库内总计' : '暂无图纸数据' },
-    { label: '总图 / 零件图', value: `${assemblies} / ${parts}`, icon: 'box', delta: `总图 ${assemblies} · 零件 ${parts}` },
-    { label: '待我审核', value: String(reviewCount), icon: 'clipboard-check', delta: reviewCount ? '请及时处理待办' : '暂无待审核记录' },
+    { label: '图纸总数', value: String(total), icon: 'layers', delta: total ? '库内总计' : '暂无图纸' },
+    { label: '总图 / 零件', value: `${assemblies} / ${parts}`, icon: 'box', delta: `总图 ${assemblies} · 零件 ${parts}` },
+    { label: '待我审核', value: String(reviewCount), icon: 'clipboard-check', delta: reviewCount ? '待处理' : '暂无待办' },
   ]
 })
 
@@ -70,222 +71,415 @@ function openReview(no: string) {
 
 <template>
   <div class="page dashboard-page">
-    <div class="dash-hero">
-      <div>
-        <h1>{{ greeting }}</h1>
-        <p>{{ todayText }} · 有 {{ reviewStore.myPendingReviews().length }} 份审核任务等待处理</p>
+    <!-- 顶部问候与快捷操作行 -->
+    <header class="dash-hero">
+      <div class="hero-text-wrap">
+        <div class="hero-title-row">
+          <div class="hero-status-dot"></div>
+          <h1>{{ greeting }}，工程师</h1>
+        </div>
+        <p class="hero-subtitle">{{ todayText }} · 当前有 <b>{{ reviewStore.myPendingReviews().length }}</b> 份审核任务等待处理</p>
       </div>
       <div class="acts">
-        <button class="btn primary" type="button" @click="openCreateDrawing">
-          <DemoIcon name="plus" :size="14" />创建图纸
+        <button class="btn secondary sm" type="button" @click="openLibrary">
+          <DemoIcon name="folder-kanban" :size="14" />浏览图库
+        </button>
+        <button class="btn primary sm" type="button" @click="openCreateDrawing">
+          <DemoIcon name="plus" :size="14" />新建工程图纸
         </button>
       </div>
-    </div>
+    </header>
 
-    <div class="stat-grid">
-      <div v-for="stat in stats" :key="stat.label" class="card stat-card">
-        <div class="lbl"><DemoIcon :name="stat.icon" :size="14" />{{ stat.label }}</div>
-        <div class="val">{{ stat.value }}</div>
-        <div class="delta">
-          {{ stat.delta }}
-        </div>
-      </div>
-    </div>
-
-    <div class="dash-grid">
-       <div class="card recent-activity-card">
-        <div class="card-title">
-          <DemoIcon name="activity" :size="16" />最近动态
-          <span class="hint">谁查看 · 谁修改 · 谁分叉 · 谁上传</span>
-        </div>
-         <div class="feed recent-activity-feed">
-          <div v-for="item in auditStore.drawingLogs.list" :key="`${item.user}-${item.time}-${item.txt}`" class="feed-item">
-            <div class="feed-ic" :class="item.act"><DemoIcon :name="feedIcons[item.act] ?? 'activity'" :size="14" /></div>
-            <div class="feed-txt"><b>{{ item.user }}</b> <span v-html="item.txt"></span></div>
-            <div class="feed-time">{{ item.time }}</div>
-          </div>
-          <div v-if="!auditStore.drawingLogs.list.length" class="empty">
-            <DemoIcon name="activity" :size="34" />
-            <div class="t">暂无动态记录</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">
-          <DemoIcon name="stamp" :size="16" />待我审核
-          <span class="hint">{{ reviewStore.myPendingReviews().length }} 项</span>
-        </div>
-        <div v-if="reviewStore.myPendingReviews().length" class="todo-list">
-          <div v-for="item in reviewStore.myPendingReviews()" :key="`${item.reviewCaseId}-${item.node}`" class="todo-item">
-            <div class="todo-info">
-              <b>{{ item.name }} · {{ item.node }}</b>
-              <span>{{ item.no }} · 责任人 {{ item.by }} · 发起于 {{ item.time }}</span>
+    <!-- 方案 A：工业仪表盘标准双列布局（满屏高度严丝合缝对齐） -->
+    <div class="dash-main-container">
+      <!-- 左列：协同业务与实时信息流（待我审核 + 最近动态） -->
+      <section class="dash-col-left">
+        <!-- 待我审核卡片 -->
+        <div class="card panel-card todo-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <DemoIcon name="stamp" :size="15" />
+              <span>待我审核</span>
+              <span class="count-tag" :class="{ highlight: reviewStore.myPendingReviews().length > 0 }">
+                {{ reviewStore.myPendingReviews().length }} 项
+              </span>
             </div>
-            <div class="todo-acts">
-              <button class="btn sm primary" type="button" @click="openReview(item.no)">
-                <DemoIcon name="eye" :size="14" />查看并审核
-              </button>
+            <span class="panel-hint">流程审批与签批流转</span>
+          </div>
+
+          <div class="panel-scroll-content">
+            <div v-if="reviewStore.myPendingReviews().length" class="todo-list">
+              <div
+                v-for="item in reviewStore.myPendingReviews()"
+                :key="`${item.reviewCaseId}-${item.node}`"
+                class="todo-item"
+              >
+                <div class="todo-info">
+                  <div class="todo-name-row">
+                    <b>{{ item.name }}</b>
+                    <span class="todo-node-tag">{{ item.node }}</span>
+                  </div>
+                  <span class="todo-meta">图号 {{ item.no }} · 发起人 {{ item.by }} · {{ item.time }}</span>
+                </div>
+                <button class="btn sm primary" type="button" @click="openReview(item.no)">
+                  <DemoIcon name="eye" :size="13" />审核
+                </button>
+              </div>
+            </div>
+            <div v-else class="compact-empty">
+              <DemoIcon name="check-circle-2" :size="30" />
+              <div class="empty-title">当前暂无待审核任务</div>
+              <div class="empty-desc">所有发起的图纸流程均已处理完毕</div>
             </div>
           </div>
         </div>
-        <div v-else class="empty">
-          <DemoIcon name="check-circle-2" :size="34" />
-          <div class="t">太棒了，暂无待办审核</div>
+
+        <!-- 最近动态卡片 -->
+        <div class="card panel-card activity-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <DemoIcon name="activity" :size="15" />
+              <span>最近动态</span>
+              <span class="count-tag">{{ auditStore.drawingLogs.list.length }} 条记录</span>
+            </div>
+            <span class="panel-hint">修改 · 审图 · 借用 · 检出</span>
+          </div>
+
+          <div class="panel-scroll-content">
+            <div v-if="auditStore.drawingLogs.list.length" class="feed">
+              <div
+                v-for="item in auditStore.drawingLogs.list"
+                :key="`${item.user}-${item.time}-${item.txt}`"
+                class="feed-item"
+              >
+                <div class="feed-ic" :class="item.act">
+                  <DemoIcon :name="feedIcons[item.act] ?? 'activity'" :size="13" />
+                </div>
+                <div class="feed-txt">
+                  <b>{{ item.user }}</b> <span v-html="item.txt"></span>
+                </div>
+                <div class="feed-time">{{ item.time }}</div>
+              </div>
+            </div>
+            <div v-else class="compact-empty">
+              <DemoIcon name="activity" :size="30" />
+              <div class="empty-title">暂无图纸动态</div>
+              <div class="empty-desc">图纸的检出、借用与修改历史将实时呈现于此</div>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      </section>
 
-    <div class="dash-foot">
-      <!-- 转换服务模块：暂不确定是否保留，先作隐藏留痕处理 -->
-      <!--
-      <div class="card card-pad">
-        <div class="card-title compact-title"><DemoIcon name="server" :size="16" />转换服务</div>
-        <div class="mini-row"><span>EXB → PDF 队列</span><b>暂无数据</b></div>
-        <div class="mini-row"><span>DWG → PDF 队列</span><b>暂无数据</b></div>
-        <div class="mini-row"><span>今日转换</span><b>暂无数据</b></div>
-      </div>
-      -->
-
-      <div class="card card-pad">
-        <div class="card-title compact-title"><DemoIcon name="hard-drive" :size="16" />文件存储</div>
-        <div class="mini-row"><span>图纸文件</span><b>{{ systemStore.storageSummary.fileCount }} 个 ({{ systemStore.storageSummary.formattedUsed }})</b></div>
-        <div class="hbar"><i :style="{ width: systemStore.storageSummary.fileCount ? '18%' : '0%' }"></i></div>
-        <div class="mini-row storage-row"><span>冗余备份</span><b>{{ systemStore.storageSummary.backupStatus }}</b></div>
-      </div>
-
-      <div class="card card-pad">
-        <div class="card-title compact-title"><DemoIcon name="folder-tree" :size="16" />进行中项目</div>
-        <div class="empty compact-empty">
-          <DemoIcon name="folder-tree" :size="28" />
-          <div class="t">暂无进行中项目</div>
+      <!-- 右列：宏观指标与系统状态（指标卡 + 文件存储 + 进行中项目） -->
+      <section class="dash-col-right">
+        <!-- 顶部指标卡组（三等分） -->
+        <div class="stat-row-grid">
+          <div v-for="stat in stats" :key="stat.label" class="card stat-card">
+            <div class="stat-top">
+              <span class="stat-label">{{ stat.label }}</span>
+              <div class="stat-icon-wrap">
+                <DemoIcon :name="stat.icon" :size="14" />
+              </div>
+            </div>
+            <div class="stat-val">{{ stat.value }}</div>
+            <div class="stat-sub">{{ stat.delta }}</div>
+          </div>
         </div>
-      </div>
+
+        <!-- 中部：文件存储看板 -->
+        <div class="card panel-card storage-card">
+          <div class="panel-header">
+            <div class="panel-title">
+              <DemoIcon name="hard-drive" :size="15" />
+              <span>文件存储与备份</span>
+            </div>
+            <span class="status-pill ok">
+              <span class="dot"></span>正常运行
+            </span>
+          </div>
+
+          <div class="storage-content">
+            <div class="storage-meta-row">
+              <span class="storage-lbl">CAD 图纸物理资产</span>
+              <b class="storage-num">{{ systemStore.storageSummary.fileCount }} 份 ({{ systemStore.storageSummary.formattedUsed }})</b>
+            </div>
+            <div class="hbar">
+              <i :style="{ width: systemStore.storageSummary.fileCount ? '24%' : '0%' }"></i>
+            </div>
+            <div class="storage-meta-row storage-sub-row">
+              <span class="storage-lbl">冗余冷备与落盘状态</span>
+              <span class="storage-status-text">{{ systemStore.storageSummary.backupStatus }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 下部：进行中项目（占满剩余高度，与左侧对齐） -->
+        <div class="card panel-card projects-card">
+          <div class="panel-header">
+            <div class="panel-title">
+              <DemoIcon name="folder-tree" :size="15" />
+              <span>进行中工程项目</span>
+            </div>
+            <button class="btn sm secondary text-btn" type="button" @click="openCreateDrawing">
+              <DemoIcon name="plus" :size="12" />新项目
+            </button>
+          </div>
+
+          <div class="projects-content-box">
+            <div class="compact-empty">
+              <div class="empty-icon-circle">
+                <DemoIcon name="folder-tree" :size="26" />
+              </div>
+              <div class="empty-title">暂无活跃的研发项目</div>
+              <div class="empty-desc">在图纸库中关联新产品线或工程任务后将自动展示进度</div>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* 满屏标准仪表盘：高度定死，内部自适应无页面纵向滚动 */
 .dashboard-page {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  padding: 14px 18px 16px;
+  gap: 12px;
 }
 
+/* 顶部问候栏 */
 .dash-hero {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: 16px;
-  margin-bottom: 20px;
+  flex: none;
+}
+
+.hero-text-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hero-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--glow);
 }
 
 .dash-hero h1 {
+  margin: 0;
   font-family: var(--font-display);
-  font-size: 23px;
-  font-weight: 900;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  color: var(--text-1);
 }
 
-.dash-hero p {
-  margin-top: 5px;
+.hero-subtitle {
+  margin: 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 11.5px;
+}
+
+.hero-subtitle b {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .acts {
   display: flex;
-  gap: 9px;
-  margin-left: auto;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 
-.stat-grid {
+/* 左右两列主体容器：占满屏幕剩余高度 */
+.dash-main-container {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-  margin-bottom: 16px;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
 }
 
-.stat-card {
-  padding: 17px 19px;
+/* 左列：待我审核 + 最近动态（上下各占 50% 撑满高度） */
+.dash-col-left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
 }
 
-html[data-skin='tech'] .stat-card::before {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  width: 11px;
-  height: 11px;
-  border-top: 1.5px solid var(--accent);
-  border-right: 1.5px solid var(--accent);
-  border-radius: 2px;
-  content: '';
-  opacity: 0.5;
+.todo-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-.lbl {
+.activity-panel {
+  flex: 1.15;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 右列：统计指标 + 存储 + 项目（三块垂直排布，项目撑满到底） */
+.dash-col-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
+}
+
+/* 通用面板卡片规范 */
+.panel-card {
+  padding: 12px 14px;
+  border-radius: 11px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.panel-title {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin-bottom: 10px;
-  color: var(--text-2);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-1);
 }
 
-.lbl svg {
+.panel-title svg {
   color: var(--accent);
 }
 
-.val {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 29px;
-  font-weight: 700;
-  letter-spacing: -0.5px;
-  line-height: 1;
-}
-
-html[data-skin='tech'] .val {
-  text-shadow: 0 0 18px var(--glow);
-}
-
-.delta {
-  margin-top: 9px;
+.count-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--panel-2);
   color: var(--text-3);
-  font-family: 'JetBrains Mono', monospace;
+}
+
+.count-tag.highlight {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.panel-hint {
   font-size: 11px;
+  color: var(--text-3);
 }
 
-.delta b {
-  color: var(--ok);
+.panel-scroll-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: 4px;
+}
+
+/* 待我审核列表 */
+.todo-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.todo-item:last-child {
+  border-bottom: none;
+}
+
+.todo-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.todo-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.todo-name-row b {
+  font-size: 12px;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-node-tag {
+  font-size: 10px;
   font-weight: 500;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--accent);
 }
 
-.dash-grid {
-  display: grid;
-  grid-template-columns: 1.55fr 1fr;
-  gap: 14px;
-  margin-bottom: 14px;
+.todo-meta {
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* 最近动态列表 */
 .feed {
   display: flex;
   flex-direction: column;
 }
 
-.recent-activity-card {
-  min-height: 0;
-}
-
-.recent-activity-feed {
-  min-height: 0;
-  max-height: 360px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-
 .feed-item {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px 20px;
+  gap: 9px;
+  padding: 7px 4px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -295,12 +489,12 @@ html[data-skin='tech'] .val {
 
 .feed-ic {
   display: grid;
-  width: 29px;
-  height: 29px;
+  width: 22px;
+  height: 22px;
   flex: none;
   place-items: center;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: 6px;
   background: var(--panel-2);
 }
 
@@ -313,76 +507,121 @@ html[data-skin='tech'] .val {
 
 .feed-txt {
   flex: 1;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-2);
 }
 
 .feed-txt b {
   color: var(--accent);
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .feed-time {
   flex: none;
-  margin-top: 2px;
-  color: var(--text-3);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10.5px;
+  font-size: 10px;
+  color: var(--text-3);
+  margin-top: 1px;
 }
 
-.todo-item {
+/* 右列：指标卡网格（3 列） */
+.stat-row-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  flex: none;
+}
+
+.stat-card {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-top {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 13px 20px;
-  border-bottom: 1px solid var(--line);
+  justify-content: space-between;
 }
 
-.todo-item:last-child {
-  border-bottom: none;
-}
-
-.todo-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.todo-info b,
-.todo-info span {
-  display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.todo-info b {
-  font-size: 12.5px;
-}
-
-.todo-info span {
-  color: var(--text-3);
+.stat-label {
   font-size: 11px;
+  color: var(--text-3);
+  font-weight: 500;
 }
 
-.todo-acts {
-  display: flex;
-  flex: none;
-  gap: 6px;
-}
-
-.dash-foot {
+.stat-icon-wrap {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
+  place-items: center;
 }
 
-.compact-title {
-  padding: 0 0 12px;
+.stat-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 21px;
+  font-weight: 800;
+  color: var(--text-1);
+  letter-spacing: -0.5px;
+  line-height: 1.1;
+}
+
+.stat-sub {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 存储卡片 */
+.storage-card {
+  flex: none;
+}
+
+.storage-content {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.storage-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+}
+
+.storage-lbl {
+  color: var(--text-2);
+}
+
+.storage-num {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.storage-status-text {
+  font-size: 11px;
+  color: var(--ok);
+  font-weight: 500;
 }
 
 .hbar {
-  height: 7px;
-  margin-top: 9px;
+  height: 5px;
   overflow: hidden;
   border-radius: 99px;
   background: var(--panel-2);
@@ -393,64 +632,101 @@ html[data-skin='tech'] .val {
   height: 100%;
   border-radius: 99px;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
-  animation: grow-bar 1.1s cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 
-@keyframes grow-bar {
-  from { width: 0 !important; }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 99px;
 }
 
-.mini-row {
+.status-pill.ok {
+  background: var(--ok-soft, rgba(34, 197, 94, 0.12));
+  color: var(--ok);
+}
+
+.status-pill .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 进行中项目卡片（flex: 1 撑到底） */
+.projects-card {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 5px 0;
-  color: var(--text-2);
+  flex-direction: column;
+}
+
+.projects-content-box {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.text-btn {
+  padding: 2px 7px;
+  font-size: 11px;
+}
+
+/* 精致空状态 */
+.compact-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 20px 12px;
+  text-align: center;
+  height: 100%;
+  color: var(--text-3);
+}
+
+.compact-empty svg {
+  color: var(--text-3);
+  opacity: 0.6;
+}
+
+.empty-icon-circle {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  display: grid;
+  place-items: center;
+  margin-bottom: 2px;
+}
+
+.empty-title {
   font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
 }
 
-.mini-row b {
-  color: var(--text-1);
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 500;
-  text-align: right;
+.empty-desc {
+  font-size: 11px;
+  color: var(--text-3);
+  max-width: 240px;
+  line-height: 1.4;
 }
 
-.storage-row {
-  margin-top: 10px;
-}
-
-.ok-text {
-  color: var(--ok) !important;
-}
-
-@media (max-width: 1180px) {
-  .dash-grid,
-  .dash-foot {
+/* 响应式断点（窗口过窄时自然降级） */
+@media (max-width: 1080px) {
+  .dashboard-page {
+    height: auto;
+    max-height: none;
+    overflow-y: auto;
+  }
+  .dash-main-container {
     grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 760px) {
-  .recent-activity-feed {
-    max-height: 320px;
-  }
-  .dash-hero {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .acts {
-    margin-left: 0;
-  }
-
-  .acts .btn {
-    padding: 7px 9px;
-  }
-
-  .todo-item {
-    align-items: flex-start;
-    flex-direction: column;
   }
 }
 </style>

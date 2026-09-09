@@ -13,6 +13,7 @@ const (
 )
 
 type Attachment struct {
+	Revision int64 `json:"revision"`
 	ID                string  `json:"id"`
 	StorageKey        string  `json:"storageKey"`
 	CurrentStorageKey string  `json:"currentStorageKey,omitempty"`

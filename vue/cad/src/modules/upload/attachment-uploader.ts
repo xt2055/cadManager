@@ -17,8 +17,11 @@ export class AttachmentUploader {
 
   async replace(drawingNo: string, target: AttachmentTarget, content: Blob): Promise<Record<string, unknown>> {
     const name = getBlobName(content) || target.name
+    const revision = target.revision
+    if (!Number.isSafeInteger(revision) || (revision ?? 0) < 1) {
+      throw new Error('缺少有效的附件修订号，未提交替换；请重新加载文件信息')
+    }
     const hash = await this.safeHash(content)
-    const revision = target.revision ?? 1
     const session = await this.gateway.createSession({
       kind: 'attachment',
       idempotencyKey: `attachment-replace:${target.id}:${revision}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
@@ -39,7 +42,7 @@ export class AttachmentUploader {
         ...(!isCAD(name) && hash.exists && hash.blobId ? { blobId: hash.blobId } : {}),
       })
       if (item.status !== 'ready') await this.gateway.uploadFile(session.id, item.id, content, { name, sha256: hash.sha256 })
-      return this.gateway.commitSession(session.id)
+      return await this.gateway.commitSession(session.id)
     } catch (error) {
       await this.gateway.cancelSession(session.id).catch(() => undefined)
       throw error

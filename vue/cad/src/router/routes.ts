@@ -48,6 +48,11 @@ export const routes: RouteRecordRaw[] = [
           import('@/features/drawings/pages/DrawingCreatePage.vue'),
       },
       {
+        path: 'drawings/:drawingId/compare',
+        name: RouteName.DrawingCompare,
+        component: () => import('@/features/drawings/pages/DrawingComparePage.vue'),
+      },
+      {
         path: 'drawings/:drawingId/view',
         name: RouteName.DrawingViewer,
         component: () =>

@@ -1,0 +1,29 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>版本选择交互验证</title>
+<style>:root{--panel:#1a2230;--panel-2:#222e40;--line:#394960;--text-1:#edf2fa;--text-3:#a0aec0;--accent:#60a5fa}body{margin:0;font:14px sans-serif;background:var(--panel);color:var(--text-1)}#app{height:900px}.btn{padding:7px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel-2);color:var(--text-1);cursor:pointer}.btn:disabled{opacity:.4}.primary{background:#2563eb}#requests{padding:10px}</style>
+<div id="requests">测试数据：尚未读取图纸</div><div id="app"></div>
+<script type="module">
+import { createApp, h } from 'vue'
+import { createPinia } from 'pinia'
+import { createRouter, createMemoryHistory } from 'vue-router'
+import Page from '../src/features/drawings/pages/DrawingComparePage.vue'
+import { useDrawingStore } from '../src/stores/drawing.store'
+import { versioningService } from '../src/app/container'
+const file = id => ({id,name:`${id}总图.dxf`,drawingNo:id,version:'1.1',storageKey:`${id}/1.1`,files:[],history:[]})
+const pinia=createPinia(), store=useDrawingStore(pinia)
+store.$patch({model:{drawings:['A','B'].map(id=>({id,no:id,name:id,files:[file(id)],otherFiles:[]})),parts:[],structureByDrawing:{},bom:[]},loaded:true})
+versioningService.list=async key=>['1.1','1.0'].map(version=>({id:`${key[0]}-${version}`,version,storageKey:`${key[0]}/${version}`,createdAt:version==='1.1'?'2026-09-08':'2026-09-01'}))
+const originalFetch=window.fetch.bind(window), requests=[]
+window.fetch=async (url,options)=>{
+  if(String(url).includes('/file-versions/') || String(url).includes('/cad/source?')){
+    requests.push(new URL(String(url),location.href).pathname)
+    document.querySelector('#requests').textContent='已读取：'+requests.join(' → ')
+    const end=String(url).includes('1.1')?90:60
+    const dxf=`0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1027\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n1\n0\nLAYER\n2\n0\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n5\nA\n100\nAcDbEntity\n8\n0\n100\nAcDbLine\n10\n0\n20\n0\n30\n0\n11\n${end}\n21\n60\n31\n0\n0\nENDSEC\n0\nEOF\n`
+    return new Response(dxf,{headers:{'content-type':'application/octet-stream'}})
+  }
+  return originalFetch(url,options)
+}
+const router=createRouter({history:createMemoryHistory(),routes:[{path:'/drawings/:drawingId/compare',component:Page}]})
+await router.push('/drawings/A/compare?fileId=A')
+createApp({render:()=>h(Page)}).use(pinia).use(router).mount('#app')
+</script></html>

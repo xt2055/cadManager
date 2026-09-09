@@ -428,6 +428,8 @@ func writeDrawingError(writer http.ResponseWriter, err error, fallback string) {
 		response.WriteError(writer, http.StatusConflict, "资源已被其他用户修改，请刷新后重新编辑")
 	case errors.Is(err, drawing.ErrRevisionRequired):
 		response.WriteError(writer, http.StatusPreconditionRequired, "修改请求缺少当前 revision")
+	case errors.Is(err, drawing.ErrArchivedLocked):
+		response.WriteError(writer, http.StatusConflict, "图纸已存档，请先发起变更工单并经管理员审批，修改内容将在验收通过后发布")
 	default:
 		response.WriteError(writer, http.StatusInternalServerError, fallback)
 	}
@@ -485,14 +487,8 @@ func transitionDrawingStatus(ctx context.Context, repository drawing.Repository,
 		}
 		return item, err
 	}
-	if !hasAdminRole(user.Roles) {
-		return drawing.Drawing{}, fmt.Errorf("解除存档需要管理员操作，请联系管理员")
-	}
-	item, err := repository.SetStatusByNo(ctx, target.No, drawing.StatusArchived, drawing.StatusPublished, user.ID)
-	if errors.Is(err, drawing.ErrInvalidTransition) {
-		return drawing.Drawing{}, fmt.Errorf("该图纸当前不在存档状态")
-	}
-	return item, err
+	// 解除存档已由变更工单取代：存档图纸只能经变更工单审批后修改，不再直接回退到生产中。
+	return drawing.Drawing{}, fmt.Errorf("解除存档已停用，请通过变更工单申请修改已存档图纸")
 }
 
 func writeTransitionError(writer http.ResponseWriter, err error) {

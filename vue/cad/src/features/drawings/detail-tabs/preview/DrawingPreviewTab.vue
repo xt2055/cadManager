@@ -15,6 +15,10 @@ import type { DrawingFile } from '@/types/domain.types'
 import type { DrawingSummaryView, FileView, PartView, StructureNodeView } from '@/modules/drawing'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 import { formatReadableDateTime } from '@/utils/date-time'
+import { isTauri } from '@tauri-apps/api/core'
+import { saveDownloadFile } from '@/services/tauri/cad-edit.service'
+import { convertCadToPdfBlob } from '@/services/cad-pdf-export.service'
+import { changeRequestService } from '@/services/change-request.service'
 
 defineOptions({
   name: 'DrawingPreviewTab',
@@ -586,14 +590,34 @@ async function relaunchEditorForFile(file: DrawingFile) {
   }
 }
 
+// 存档图纸经变更工单授权后可编辑：缓存当前用户是否持有该图纸执行中的工单。
+const openExecutingChange = ref(false)
+async function refreshChangeEditAccess() {
+  const item = currentItem.value
+  const current = authStore.currentUser
+  openExecutingChange.value = false
+  if (!item || item.status !== 'archived' || !current) return
+  const drawingId = (item as { id?: string }).id
+  if (!drawingId) return
+  try {
+    const list = await changeRequestService.listByDrawing(drawingId)
+    const admin = current.roles?.includes('admin') ?? false
+    openExecutingChange.value = list.some((entry) => entry.status === 'executing' && (admin || entry.executorId === current.id))
+  } catch {
+    openExecutingChange.value = false
+  }
+}
+watch(() => currentItem.value, () => { void refreshChangeEditAccess() }, { immediate: true })
+
 // 编辑权限矩阵（前端显隐；后端 editing.Open 同步强校验）：
-// 草稿/生产 → 创建者或管理员；审核中 → 当前节点责任人或管理员；存档 → 一律禁止（管理员需先解除存档）。
+// 草稿/生产 → 创建者或管理员；审核中 → 当前节点责任人或管理员；
+// 存档 → 仅当当前用户持有执行中的变更工单时可编辑。
 const canEditFiles = computed(() => {
   const item = currentItem.value
   const current = authStore.currentUser
   if (!item || !current) return false
   const admin = current.roles?.includes('admin') ?? false
-  if (item.status === 'archived') return false
+  if (item.status === 'archived') return openExecutingChange.value
   if (item.status === 'reviewing') {
     if (admin) return true
     return reviewStore.myPendingReviews().some((reviewCase) => reviewCase.no === item.no)
@@ -842,13 +866,15 @@ async function doDeleteFile(file: DrawingFile) {
   }
 }
 
-// ===== 批量下载：选择文件与格式（EXB 原始 / DWG），zip 打包下载 =====
-type DownloadFormat = 'exb' | 'dwg'
+// ===== 批量下载：选择文件与格式（EXB 原始 / DWG / PDF），zip 打包下载 =====
+type DownloadFormat = 'exb' | 'dwg' | 'pdf'
 
 interface DownloadCandidate {
   file: DrawingFile
   exbKey: string
   dwgKey: string
+  pdfKey: string
+  canConvertToPdf: boolean
 }
 
 const isDownloadOpen = ref(false)
@@ -858,11 +884,21 @@ const isDownloading = ref(false)
 const downloadProgress = ref('')
 
 const downloadCandidates = computed<DownloadCandidate[]>(() =>
-  allFiles.value.map((file) => ({
-    file,
-    exbKey: file.rawStorageKey || (/\.exb$/i.test(file.storageKey || '') ? file.storageKey! : ''),
-    dwgKey: file.currentStorageKey || (/\.dwg$/i.test(file.storageKey || '') ? file.storageKey! : ''),
-  })),
+  allFiles.value.map((file) => {
+    const isDirectPdf = /\.pdf$/i.test(file.name || '') || /\.pdf$/i.test(file.storageKey || '')
+    const exbKey = file.rawStorageKey || (/\.exb$/i.test(file.storageKey || '') ? file.storageKey! : '')
+    const dwgKey = file.currentStorageKey || (/\.dwg$/i.test(file.storageKey || '') ? file.storageKey! : '')
+    const pdfKey = isDirectPdf ? (file.storageKey || file.currentStorageKey || '') : ''
+    const canConvertToPdf = Boolean(dwgKey || (/\.dxf$/i.test(file.storageKey || '') ? file.storageKey : ''))
+
+    return {
+      file,
+      exbKey,
+      dwgKey,
+      pdfKey,
+      canConvertToPdf,
+    }
+  }),
 )
 
 const allDownloadSelected = computed(() =>
@@ -871,13 +907,24 @@ const allDownloadSelected = computed(() =>
 )
 
 function candidateHasFormat(item: DownloadCandidate, format: DownloadFormat): boolean {
-  return Boolean(format === 'exb' ? item.exbKey : item.dwgKey)
+  if (format === 'exb') return Boolean(item.exbKey)
+  if (format === 'dwg') return Boolean(item.dwgKey)
+  if (format === 'pdf') return Boolean(item.pdfKey || item.canConvertToPdf)
+  return false
 }
 
 function openDownloadModal() {
   downloadFormat.value = 'dwg'
   downloadFileIds.value = new Set(downloadCandidates.value.filter((item) => candidateHasFormat(item, 'dwg')).map((item) => item.file.id))
   isDownloadOpen.value = true
+}
+
+function onFormatChange(format: DownloadFormat) {
+  downloadFormat.value = format
+  // 切换格式时自动保留已选且当前格式可用的项，或者默认全选当前可用项
+  const available = downloadCandidates.value.filter((item) => candidateHasFormat(item, format)).map((item) => item.file.id)
+  const currentSelectedAvailable = available.filter((id) => downloadFileIds.value.has(id))
+  downloadFileIds.value = new Set(currentSelectedAvailable.length ? currentSelectedAvailable : available)
 }
 
 function toggleDownloadFile(id: string) {
@@ -908,29 +955,92 @@ async function executeDownload() {
     const usedNames = new Set<string>()
     let failed = 0
     for (const [index, item] of selected.entries()) {
-      downloadProgress.value = `正在获取 ${index + 1}/${selected.length} · ${item.file.name}`
-      const key = downloadFormat.value === 'exb' ? item.exbKey : item.dwgKey
       const baseName = item.file.name.replace(/\.[^/.]+$/, '')
-      const folder = item.file.role === 'other' ? '其他文件' : (item.file.partNo || item.file.drawingNo || '总图')
       let fileName = `${baseName}.${downloadFormat.value}`
       let suffix = 1
-      while (usedNames.has(`${folder}/${fileName}`)) {
+      while (usedNames.has(fileName.toLowerCase())) {
         fileName = `${baseName}(${suffix++}).${downloadFormat.value}`
       }
-      usedNames.add(`${folder}/${fileName}`)
+      usedNames.add(fileName.toLowerCase())
+
       try {
-        const content = await drawingFileService.read(key)
-        zip.file(`${folder}/${fileName}`, content)
-      } catch {
+        if (downloadFormat.value === 'pdf') {
+          downloadProgress.value = `正在生成 PDF ${index + 1}/${selected.length} · ${item.file.name}`
+          if (item.pdfKey) {
+            // 原本就是 PDF 格式的附件
+            const content = await drawingFileService.read(item.pdfKey)
+            zip.file(fileName, content)
+          } else {
+            // CAD 图纸（DWG / DXF）：读取二进制数据并在前端解析渲染为矢量 PDF
+            const cadSourceKey = item.dwgKey || item.file.storageKey || ''
+            if (!cadSourceKey) throw new Error('缺少 CAD 图纸源文件')
+            const cadBlob = await drawingFileService.read(cadSourceKey)
+            const cadBuffer = await cadBlob.arrayBuffer()
+            const pdfBlob = await convertCadToPdfBlob(cadBuffer, item.file.name)
+            zip.file(fileName, pdfBlob)
+          }
+        } else {
+          downloadProgress.value = `正在获取 ${index + 1}/${selected.length} · ${item.file.name}`
+          const key = downloadFormat.value === 'exb' ? item.exbKey : item.dwgKey
+          const content = await drawingFileService.read(key)
+          // 直接存放在 zip 根目录下，不套外层文件夹
+          zip.file(fileName, content)
+        }
+      } catch (itemError) {
+        console.error(`获取/转换文件失败：${item.file.name}`, itemError)
         failed += 1
       }
     }
     downloadProgress.value = '正在打包 zip...'
-    const blob = await zip.generateAsync({ type: 'blob' })
+    const uint8Array = await zip.generateAsync({ type: 'uint8array' })
+    const formatNameLabel = downloadFormat.value === 'exb' ? 'EXB原始格式' : downloadFormat.value === 'dwg' ? 'DWG格式' : 'PDF格式'
+    const defaultZipName = `${currentItem.value?.no || '图纸文件'}-${formatNameLabel}.zip`
+
+    // 1. 桌面客户端模式：调起系统原生“另存为”文件选择框
+    if (isTauri()) {
+      const savedPath = await saveDownloadFile(defaultZipName, uint8Array)
+      if (!savedPath) {
+        // 用户在文件选择框中点击了取消
+        return
+      }
+      isDownloadOpen.value = false
+      const okCount = selected.length - failed
+      uiStore.toast(`已成功保存至：${savedPath}（共 ${okCount} 个文件）`, 'ok')
+      return
+    }
+
+    // 2. 浏览器端模式：优先调起浏览器原生另存为文件选择器
+    const blob = new Blob([uint8Array.buffer as ArrayBuffer], { type: 'application/zip' })
+    const showSaveFilePicker = (window as unknown as { showSaveFilePicker?: (options: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker
+    if (typeof showSaveFilePicker === 'function') {
+      try {
+        const handle = await showSaveFilePicker({
+          suggestedName: defaultZipName,
+          types: [{
+            description: 'ZIP 压缩包 (*.zip)',
+            accept: { 'application/zip': ['.zip'] },
+          }],
+        })
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+        isDownloadOpen.value = false
+        const okCount = selected.length - failed
+        uiStore.toast(`已成功保存所选图纸（共 ${okCount} 个文件）`, 'ok')
+        return
+      } catch (err: unknown) {
+        if (err && typeof err === 'object' && 'name' in err && err.name === 'AbortError') {
+          // 用户取消保存
+          return
+        }
+      }
+    }
+
+    // 3. 浏览器降级：触发 a 标签下载
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `${currentItem.value?.no || '图纸文件'}-${downloadFormat.value === 'exb' ? 'EXB原始格式' : 'DWG格式'}.zip`
+    anchor.download = defaultZipName
     anchor.click()
     URL.revokeObjectURL(url)
     isDownloadOpen.value = false
@@ -1235,7 +1345,8 @@ function closeReidentifyModal() {
       </div>
 
       <div class="header-buttons">
-        <button class="btn" type="button" title="选择文件与格式（EXB / DWG），打包为 zip 下载" @click="openDownloadModal">
+        <button class="btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId: route.params.drawingId } })">图纸对比</button>
+        <button class="btn" type="button" title="选择文件与格式（EXB / DWG / PDF），打包为 zip 下载" @click="openDownloadModal">
           <DemoIcon name="download" :size="14" />下载
         </button>
         <button class="btn" type="button" title="从其他工程项目借用零件图及关联文件" @click="openBorrowModal">
@@ -1374,7 +1485,7 @@ function closeReidentifyModal() {
                   <DemoIcon v-else name="eye" :size="13" />本地查看
                 </button>
                 <button
-                  v-if="canEditFiles"
+                  v-if="false && canEditFiles"
                   class="btn sm"
                   type="button"
                   title="使用网页 CAD 编辑器打开并编辑文件"
@@ -1611,7 +1722,7 @@ function closeReidentifyModal() {
         </div>
       </div>
     </div>
-    <!-- 批量下载弹窗：选择文件与格式（EXB 原始 / DWG），zip 打包 -->
+    <!-- 批量下载弹窗：选择文件与格式（EXB 原始 / DWG / PDF），zip 打包 -->
     <div v-if="isDownloadOpen" class="modal-backdrop">
       <div class="modal card download-modal">
         <div class="modal-head">
@@ -1626,12 +1737,16 @@ function closeReidentifyModal() {
           <div class="download-format-row">
             <span class="lbl bold">下载格式：</span>
             <label class="mode-option" :class="{ active: downloadFormat === 'exb' }">
-              <input v-model="downloadFormat" type="radio" value="exb" />
+              <input type="radio" :checked="downloadFormat === 'exb'" @change="onFormatChange('exb')" />
               <span>EXB 原始格式</span>
             </label>
             <label class="mode-option" :class="{ active: downloadFormat === 'dwg' }">
-              <input v-model="downloadFormat" type="radio" value="dwg" />
+              <input type="radio" :checked="downloadFormat === 'dwg'" @change="onFormatChange('dwg')" />
               <span>DWG 格式</span>
+            </label>
+            <label class="mode-option" :class="{ active: downloadFormat === 'pdf' }">
+              <input type="radio" :checked="downloadFormat === 'pdf'" @change="onFormatChange('pdf')" />
+              <span>PDF 格式 (矢量)</span>
             </label>
           </div>
 
@@ -1640,7 +1755,7 @@ function closeReidentifyModal() {
               <input type="checkbox" :checked="allDownloadSelected" @change="toggleAllDownloadFiles" />
               <b>全选</b>
             </label>
-            <span class="hint">已选 {{ downloadFileIds.size }} / {{ downloadCandidates.length }} 个文件 · 按零件图号分目录存放</span>
+            <span class="hint">已选 {{ downloadFileIds.size }} / {{ downloadCandidates.length }} 个文件 · {{ downloadFormat === 'pdf' ? '支持 CAD 转矢量 PDF 及 PDF 附件' : '按所选格式下载' }}</span>
           </div>
 
           <div class="download-file-list">
@@ -1659,12 +1774,12 @@ function closeReidentifyModal() {
               <span class="file-name mono" :title="item.file.name">{{ item.file.name }}</span>
               <span class="dl-size">{{ item.file.size }}</span>
               <span class="tag" :class="candidateHasFormat(item, downloadFormat) ? 'ok' : 'mute'">
-                {{ candidateHasFormat(item, downloadFormat) ? (downloadFormat === 'exb' ? 'EXB' : 'DWG') : '无此格式' }}
+                {{ candidateHasFormat(item, downloadFormat) ? (downloadFormat === 'exb' ? 'EXB' : downloadFormat === 'dwg' ? 'DWG' : 'PDF') : '无此格式' }}
               </span>
             </label>
             <div v-if="!downloadCandidates.length" class="empty compact-empty">
               <DemoIcon name="file" :size="28" />
-              <div class="t">当前图纸暂无可下载的 CAD 文件</div>
+              <div class="t">当前图纸暂无可下载的文件</div>
             </div>
           </div>
 

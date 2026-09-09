@@ -9,6 +9,7 @@ import (
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/audit"
 	"cadguanliq/internal/auth"
+	"cadguanliq/internal/change"
 	"cadguanliq/internal/config"
 	"cadguanliq/internal/converter"
 	"cadguanliq/internal/drawing"
@@ -41,6 +42,9 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/review-flows/", protectedUsers(handlers.ReviewFlowResource(reviewRepository)))
 	mux.Handle("/api/review-cases", protectedUsers(handlers.ReviewCases(reviewRepository)))
 	mux.Handle("/api/review-cases/", protectedUsers(handlers.ReviewCaseResource(reviewRepository)))
+	changeService := change.NewService(pool)
+	mux.Handle("/api/change-requests", protectedUsers(handlers.ChangeRequests(changeService)))
+	mux.Handle("/api/change-requests/", protectedUsers(handlers.ChangeRequestResource(changeService)))
 	attachmentRepository := attachment.NewPGRepository(pool)
 	drawingRepository := drawing.NewPGRepository(pool)
 	drawingHandler := middleware.RequireAuth(authService)
@@ -60,6 +64,7 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	convService.Start(context.Background())
 	versionRepository := versioning.NewPGRepository(pool)
 	versionService := versioning.NewService(versionRepository, attachmentRepository, attachmentStorage)
+	versionService.SetDrawingStatus(attachmentArchivedChecker{pool: pool})
 	uploadService := upload.NewService(pool, attachmentStorage, convService, cfg.UploadSessionTTL)
 	uploadService.StartConversionQueue(context.Background())
 	// 上传清理器将在 Phase 3 迁移到最终附件模型后启用；当前旧服务仍依赖旧附件字段。
@@ -68,16 +73,19 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	editingService := editing.NewService(editing.NewPGRepository(pool), attachmentRepository, attachmentStorage, convService, cfg.SMB)
 	editingService.SetVersioning(versionService)
 	editingService.SetPolicy(drawingRepository, reviewRepository)
+	editingService.SetChangeGate(changeService)
 	editingService.StartCleanup(context.Background())
 	mux.Handle("/api/edit-sessions", drawingHandler(handlers.EditSession(editingService)))
 	mux.Handle("/api/edit-sessions/open", drawingHandler(handlers.EditSession(editingService)))
 	mux.Handle("/api/edit-tickets/exchange", drawingHandler(handlers.EditTicketExchange(editingService)))
 	mux.Handle("/api/edit-sessions/", drawingHandler(handlers.EditSessionResource(editingService)))
 	mux.Handle("/api/editing/read-only", drawingHandler(handlers.EditReadOnly(editingService)))
+	mux.Handle("/api/editing/online-open", drawingHandler(handlers.OnlineEditOpen(editingService)))
+	mux.Handle("/api/editing/online-save", drawingHandler(handlers.OnlineEditSave(editingService, cfg.MaxUploadBytes)))
 	mux.Handle("/api/file-versions", drawingHandler(versioning.List(versionService)))
 	mux.Handle("/api/file-versions/", drawingHandler(versioning.Resource(versionService, convService)))
 
-	mux.Handle("/api/attachments/", drawingHandler(handlers.AttachmentResource(attachmentRepository, attachmentStorage)))
+	mux.Handle("/api/attachments/", drawingHandler(handlers.AttachmentResource(pool, attachmentRepository, attachmentStorage)))
 	mux.Handle("/api/attachments", drawingHandler(handlers.Attachments(attachmentRepository)))
 	mux.Handle("/api/upload-sessions", drawingHandler(handlers.UploadSessions(uploadService)))
 	mux.Handle("/api/upload-sessions/hash-check", drawingHandler(handlers.UploadSessionHashCheck(uploadService)))
@@ -132,4 +140,19 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	handler = middleware.Logging(handler)
 	handler = middleware.CORS(cfg.AllowedOrigins)(handler)
 	return handler
+}
+
+// attachmentArchivedChecker 判断附件所属图纸是否处于存档保护状态，
+// 供版本发布/回滚入口拦截对存档正式成果的直接改写。
+type attachmentArchivedChecker struct{ pool *pgxpool.Pool }
+
+func (c attachmentArchivedChecker) ArchivedByAttachment(ctx context.Context, attachmentID string) (bool, error) {
+	var archived bool
+	err := c.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM attachments a
+			JOIN drawings d ON d.id = a.drawing_id
+			WHERE a.id = $1::uuid AND d.status = 'archived'
+		)`, attachmentID).Scan(&archived)
+	return archived, err
 }

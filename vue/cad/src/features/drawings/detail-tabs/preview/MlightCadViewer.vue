@@ -4,6 +4,7 @@ import { assertCadWorkerAssets, getCadWorkerUrls } from './cad-worker-assets'
 import { findWipeoutMasks } from './cad-entity-filters'
 import { installCadFontDiagnostics, normalizeCadToleranceEntities, preloadCadSymbolFonts, resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
 import { registerCadConverters } from '@/services/cad-converters.service'
+import { compareEntities, snapshotDrawing, type DrawingDifference, type CompareBounds } from './cad-compare'
 
 interface Props {
   dxfUrl?: string | null
@@ -14,6 +15,8 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   (event: 'layers-loaded', layers: Array<{ name: string; color: string; visible: boolean }>): void
   (event: 'zoom-change', zoom: number): void
+  (event: 'ready'): void
+  (event: 'load-error', message: string): void
 }>()
 const containerRef = ref<HTMLDivElement | null>(null)
 const loading = ref(false)
@@ -24,6 +27,93 @@ let managerGeneration = 0
 let openGeneration = 0
 let disposed = false
 let destroyPromise: Promise<void> | null = null
+const compareMarks = ref<Array<{ id: number; kind: string; x: number; y: number; width: number; height: number }>>([])
+let differences: DrawingDifference[] = []
+let comparisonBounds: CompareBounds | undefined
+let markFrame = 0
+let compareGeneration = 0
+const selectedDifference = ref<number | null>(null)
+
+function clearComparison() {
+  compareGeneration++
+  cancelAnimationFrame(markFrame)
+  differences = []
+  comparisonBounds = undefined
+  compareMarks.value = []
+  selectedDifference.value = null
+  manager?.clearOverlays()
+  manager?.setCompareDisplay({ enabled: false })
+}
+
+function updateCompareMarks() {
+  const view = manager?.curView
+  if (!view) return
+  compareMarks.value = differences.flatMap(diff => {
+    const boxes = [diff.before?.bounds, diff.after?.bounds].filter(box => !!box)
+    if (!boxes.length) return []
+    const a = view.worldToScreen({ x: Math.min(...boxes.map(b => b.minX)), y: Math.min(...boxes.map(b => b.minY)) })
+    const b = view.worldToScreen({ x: Math.max(...boxes.map(b => b.maxX)), y: Math.max(...boxes.map(b => b.maxY)) })
+    return [{ id: diff.id, kind: diff.kind, x: Math.min(a.x, b.x) - 6, y: Math.min(a.y, b.y) - 6, width: Math.max(12, Math.abs(b.x - a.x) + 12), height: Math.max(12, Math.abs(b.y - a.y) + 12) }]
+  })
+  markFrame = requestAnimationFrame(updateCompareMarks)
+}
+
+async function compareDrawing(fileName: string, content: ArrayBuffer): Promise<DrawingDifference[]> {
+  if (!manager || loading.value) throw new Error('请等待基准图纸加载完成')
+  clearComparison()
+  const generation = compareGeneration
+  const currentManager = manager
+  const { AcDbDatabase, AcDbFileType, AcDbDxfFiler } = await import('@mlightcad/data-model')
+  const database = new AcDbDatabase()
+  await database.read(content, { readOnly: true }, /\.dxf$/i.test(fileName) ? AcDbFileType.DXF : AcDbFileType.DWG)
+  if (database.lastOpenError) throw new Error('待对比图纸解析失败')
+  if (disposed || manager !== currentManager || generation !== compareGeneration) throw new Error('对比已取消')
+  normalizeCadToleranceEntities(database)
+  findWipeoutMasks(database)
+  const before = currentManager.curDocument.database
+  const leftEntities = snapshotDrawing(before, () => new AcDbDxfFiler({ database: before, precision: 10 }))
+  const rightEntities = snapshotDrawing(database, () => new AcDbDxfFiler({ database, precision: 10 }))
+  const result = compareEntities(leftEntities, rightEntities)
+  currentManager.curView.activeLayoutBtrId = before.tables.blockTable.modelSpace.objectId
+  const overlayId = await currentManager.registerOverlayDatabase(database)
+  if (disposed || manager !== currentManager || generation !== compareGeneration) {
+    currentManager.removeOverlay(overlayId)
+    throw new Error('对比已取消')
+  }
+  currentManager.setCompareDisplay({ enabled: true, overrides: result.flatMap(d => d.before ? [{ objectId: d.before.id, role: d.kind }] : []) })
+  currentManager.setOverlayCompareDisplay(overlayId, { enabled: true, overrides: result.flatMap(d => d.after ? [{ objectId: d.after.id, role: d.kind }] : []) })
+  differences = result
+  comparisonBounds = unionBounds([...leftEntities, ...rightEntities].map(entity => entity.bounds))
+  await resetView()
+  if (disposed || manager !== currentManager || generation !== compareGeneration) throw new Error('对比已取消')
+  updateCompareMarks()
+  return result
+}
+
+async function focusDifference(id: number) {
+  const difference = differences.find(item => item.id === id)
+  const bounds = unionBounds([difference?.before?.bounds, difference?.after?.bounds])
+  if (!bounds || !manager) return
+  const { AcGeBox2d } = await import('@mlightcad/data-model')
+  const padding = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, 1) * 0.3
+  manager?.curView.zoomTo(new AcGeBox2d({ x: bounds.minX - padding, y: bounds.minY - padding }, { x: bounds.maxX + padding, y: bounds.maxY + padding }))
+  selectedDifference.value = id
+}
+
+function unionBounds(values: Array<CompareBounds | undefined>): CompareBounds | undefined {
+  let result: CompareBounds | undefined
+  for (const box of values) {
+    if (!box) continue
+    if (!result) result = { ...box }
+    else {
+      result.minX = Math.min(result.minX, box.minX)
+      result.minY = Math.min(result.minY, box.minY)
+      result.maxX = Math.max(result.maxX, box.maxX)
+      result.maxY = Math.max(result.maxY, box.maxY)
+    }
+  }
+  return result
+}
 
 function useMainThreadCadDraw() {
   if (!import.meta.env.DEV || typeof window === 'undefined') return false
@@ -46,6 +136,9 @@ async function finishInitialRender(currentManager: any) {
   if (typeof view.waitUntilIdle === 'function') {
     await view.waitUntilIdle(60_000)
   }
+  // The SDK applies this fit in a 300ms condition waiter. Let it finish
+  // before a comparison frames both drawings, including new outer geometry.
+  await new Promise(resolve => setTimeout(resolve, 350))
   view.isDirty = true
   view.isHtmlDirty = true
 }
@@ -55,6 +148,7 @@ function getAccessToken() {
 }
 
 async function destroyViewer() {
+  clearComparison()
   if (destroyPromise) return destroyPromise
   const currentManager = manager
   manager = null
@@ -164,10 +258,15 @@ async function loadViewer(url: string) {
     }
     emit('zoom-change', 1)
     await nextTick()
+    if (generation === openGeneration && !disposed) {
+      loading.value = false
+      emit('ready')
+    }
   } catch (error: any) {
     if (managerGeneration === generation) await destroyViewer()
     if (generation === openGeneration) {
       errorMessage.value = `MLightCAD 加载失败: ${error?.message || error}`
+      emit('load-error', errorMessage.value)
     }
   } finally {
     if (generation === openGeneration) loading.value = false
@@ -186,12 +285,17 @@ function zoomOut() {
   manager?.sendStringToExecute('zoom\n0.5x\n')
 }
 
-function resetView() {
-  manager?.curView.zoomToFitDrawing(60_000)
+async function resetView() {
+  if (comparisonBounds) {
+    const bounds = comparisonBounds
+    const { AcGeBox2d } = await import('@mlightcad/data-model')
+    const padding = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, 1) * 0.05
+    manager?.curView.zoomTo(new AcGeBox2d({ x: bounds.minX - padding, y: bounds.minY - padding }, { x: bounds.maxX + padding, y: bounds.maxY + padding }))
+  } else manager?.curView.zoomToFitDrawing(60_000)
   emit('zoom-change', 1)
 }
 
-defineExpose({ setLayerVisibility, zoomIn, zoomOut, resetView })
+defineExpose({ setLayerVisibility, zoomIn, zoomOut, resetView, compareDrawing, focusDifference, clearComparison })
 
 watch(() => props.dxfUrl, (url) => {
   if (url) void loadViewer(url)
@@ -218,10 +322,22 @@ onUnmounted(() => {
   <div ref="containerRef" class="mlightcad-viewer">
     <div v-if="loading" class="mlightcad-status">正在加载 MLightCAD 渲染引擎...</div>
     <div v-if="errorMessage" class="mlightcad-error">{{ errorMessage }}</div>
+    <svg v-if="compareMarks.length" class="compare-marks" aria-label="图纸差异标注">
+      <g v-for="mark in compareMarks" :key="mark.id" :class="[mark.kind, { selected: mark.id === selectedDifference }]">
+        <rect :x="mark.x" :y="mark.y" :width="mark.width" :height="mark.height" rx="4" />
+        <text :x="mark.x + 4" :y="mark.y - 4">{{ mark.id }}</text>
+      </g>
+    </svg>
   </div>
 </template>
 
 <style scoped>
+.compare-marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
+.compare-marks g { fill: none; stroke: #f59e0b; stroke-width: 1.5; stroke-dasharray: 6 3; }
+.compare-marks .added { stroke: #22c55e; }
+.compare-marks .deleted { stroke: #e11d48; }
+.compare-marks .selected { stroke-width: 3; stroke-dasharray: none; }
+.compare-marks text { fill: white; stroke: #111; stroke-width: 3; paint-order: stroke; font: bold 13px sans-serif; }
 .mlightcad-viewer {
   position: relative;
   width: 100%;

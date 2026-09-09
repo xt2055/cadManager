@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { AcApDocManager, AcEdOpenMode } from '@mlightcad/cad-simple-viewer'
 import { MlCadViewer } from '@mlightcad/cad-viewer'
 
@@ -13,6 +13,7 @@ import { windowService } from '@/services/tauri/window.service'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import { installCadFontDiagnostics, normalizeCadToleranceEntities, preloadCadSymbolFonts, resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
 import { registerCadConverters } from '@/services/cad-converters.service'
+import { exportEditorDxf } from '@/services/cad-editor-export'
 import type { FileView } from '@/modules/drawing'
 import { assertCadWorkerAssets, getCadWorkerUrls } from '../detail-tabs/preview/cad-worker-assets'
 import { findWipeoutMasks } from '../detail-tabs/preview/cad-entity-filters'
@@ -44,6 +45,11 @@ const useMainThreadCadDraw = import.meta.env.DEV
     || window.localStorage.getItem('cad_use_main_thread_draw') !== '0')
 const isSaving = ref(false)
 const savedVersion = ref('')
+// 存档变更工单在线编辑上下文：requiresTicket 为真时，保存走工单工作版本通道而非正式替换。
+const requiresTicket = ref(false)
+const changeRequestId = ref('')
+const workVersionId = ref('')
+const editRevision = ref<number>()
 let editorDocumentActivatedListener: ((payload: { doc: any }) => void) | null = null
 let editorWipeoutCleanupTimer: number | null = null
 
@@ -72,9 +78,55 @@ function clearOriginalFile() {
   cadSourceFileName.value = null
 }
 
+async function onlineOpen(storageKey: string): Promise<{ requiresTicket: boolean; changeRequestId: string; workVersionId: string; loadUrl: string; fileName: string; revision?: number }> {
+  const token = getAccessToken()
+  const baseUrl = getApiBaseUrl()
+  const response = await fetch(`${baseUrl}/editing/online-open`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    credentials: 'include',
+    body: JSON.stringify({ storageKey }),
+  })
+  if (!response.ok) {
+    let message = `无法打开在线编辑：HTTP ${response.status}`
+    try {
+      const body: unknown = await response.json()
+      if (body && typeof body === 'object' && 'message' in body) {
+        const text = (body as { message?: unknown }).message
+        if (typeof text === 'string' && text.trim()) message = text
+      }
+    } catch {
+      // 非 JSON 错误响应保留默认提示
+    }
+    throw new Error(message)
+  }
+  const body = (await response.json()) as { data?: Record<string, unknown> }
+  const data = (body?.data ?? body) as Record<string, unknown>
+  if (typeof data.requiresTicket !== 'boolean' || typeof data.loadUrl !== 'string' || !data.loadUrl
+    || (data.requiresTicket && !data.changeRequestId)) {
+    throw new Error('在线编辑接口返回不完整，未回退到正式版本，请重新打开')
+  }
+  return {
+    requiresTicket: Boolean(data.requiresTicket),
+    changeRequestId: typeof data.changeRequestId === 'string' ? data.changeRequestId : '',
+    workVersionId: typeof data.workVersionId === 'string' ? data.workVersionId : '',
+    loadUrl: typeof data.loadUrl === 'string' ? data.loadUrl : '',
+    fileName: typeof data.fileName === 'string' ? data.fileName : '',
+    revision: typeof data.revision === 'number' ? data.revision : undefined,
+  }
+}
+
 async function loadTargetFile() {
   isReady.value = false
+  savedVersion.value = ''
   cadOriginalError.value = ''
+  requiresTicket.value = false
+  changeRequestId.value = ''
+  workVersionId.value = ''
+  editRevision.value = undefined
   clearOriginalFile()
 
   await drawingStore.load()
@@ -99,15 +151,25 @@ async function loadTargetFile() {
       try {
         const token = getAccessToken()
         const baseUrl = getApiBaseUrl()
+        // 先向服务端确认工单归属与应加载内容：存档图纸只能在工作版本上编辑。
+        const open = await onlineOpen(file.storageKey)
+        if (!open.requiresTicket && (!Number.isSafeInteger(open.revision) || (open.revision ?? 0) < 1)) {
+          throw new Error('缺少服务端文件修订号，请确认后端已更新后重新打开编辑器')
+        }
+        editRevision.value = open.revision
+        requiresTicket.value = open?.requiresTicket ?? false
+        changeRequestId.value = open?.changeRequestId ?? ''
+        workVersionId.value = open?.workVersionId ?? ''
+        const sourcePath = open.loadUrl
         const cacheBuster = Date.now()
-        const response = await fetch(`${baseUrl}/cad/source?storageKey=${encodeURIComponent(file.storageKey)}&_t=${cacheBuster}`, {
+        const separator = sourcePath.includes('?') ? '&' : '?'
+        const response = await fetch(`${baseUrl}${sourcePath}${separator}_t=${cacheBuster}`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           credentials: 'include',
         })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const sourceName = file.name.toLowerCase().endsWith('.exb')
-          ? `${file.name.replace(/\.exb$/i, '')}.dwg`
-          : file.name
+        const loadedName = open.fileName || file.name
+        const sourceName = loadedName.replace(/\.exb$/i, '.dwg')
         const contentType = response.headers.get('content-type') || ''
         if (contentType.includes('text/html') || contentType.includes('application/json')) {
           throw new Error(`渲染源接口返回了错误内容类型: ${contentType}`)
@@ -215,69 +277,6 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-const isExportingExb = ref(false)
-
-async function exportAsExb() {
-  if (!targetFile.value || isExportingExb.value) return
-
-  const document = AcApDocManager.instance.curDocument
-  if (!document?.database) {
-    uiStore.toast('编辑器尚未完成初始化，暂时无法导出', 'warn')
-    return
-  }
-
-  isExportingExb.value = true
-  try {
-    // 1. 先保存当前编辑内容或确保当前版本有存储
-    if (!targetFile.value.storageKey) {
-      await saveAsNewVersion()
-    }
-    if (!targetFile.value.storageKey) {
-      throw new Error('未找到当前文件的存储位置，请先保存')
-    }
-
-    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
-    const baseUrl = getApiBaseUrl()
-    const downloadUrl = `${baseUrl}/exb/convert?storageKey=${encodeURIComponent(targetFile.value.storageKey)}&download=true`
-
-    const response = await fetch(downloadUrl, {
-      method: 'GET',
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    })
-
-    if (!response.ok) {
-      let msg = `转换为 EXB 失败：HTTP ${response.status}`
-      try {
-        const errJson = await response.json()
-        if (errJson?.message) msg = errJson.message
-      } catch {
-        // ignore
-      }
-      throw new Error(msg)
-    }
-
-    const blob = await response.blob()
-    const url = URL.createObjectURL(blob)
-    const a = window.document.createElement('a')
-    a.href = url
-    const baseName = targetFile.value.name.replace(/\.[^.]+$/, '')
-    a.download = `${baseName}.exb`
-    window.document.body.appendChild(a)
-    a.click()
-    window.document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-
-    uiStore.toast('已成功转换为 EXB 并开始下载', 'ok')
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error)
-    uiStore.toast(msg, 'warn')
-  } finally {
-    isExportingExb.value = false
-  }
-}
-
 async function convertDxfToDwgOnServer(dxfBlob: Blob, baseName: string): Promise<Blob> {
   const formData = new FormData()
   formData.append('file', dxfBlob, `${baseName}.dxf`)
@@ -305,7 +304,49 @@ async function convertDxfToDwgOnServer(dxfBlob: Blob, baseName: string): Promise
     }
     throw new Error(message)
   }
-  return response.blob()
+  const blob = await response.blob()
+  if (!/^AC10\d{2}$/.test(await blob.slice(0, 6).text())) {
+    throw new Error('转换服务未返回有效 DWG，未上传保存，请检查转换插件')
+  }
+  return blob
+}
+
+async function onlineSaveDraft(storageKey: string, requestId: string, baseWorkVersionId: string, file: File): Promise<{ workVersionId: string; version: string }> {
+  const token = getAccessToken()
+  const baseUrl = getApiBaseUrl()
+  const formData = new FormData()
+  formData.append('storageKey', storageKey)
+  formData.append('changeRequestId', requestId)
+  formData.append('baseWorkVersionId', baseWorkVersionId)
+  formData.append('file', file, file.name)
+  const response = await fetch(`${baseUrl}/editing/online-save`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: 'include',
+    body: formData,
+  })
+  if (!response.ok) {
+    let message = `保存工单工作版本失败：HTTP ${response.status}`
+    try {
+      const body: unknown = await response.json()
+      if (body && typeof body === 'object' && 'message' in body) {
+        const text = (body as { message?: unknown }).message
+        if (typeof text === 'string' && text.trim()) message = text
+      }
+    } catch {
+      // 非 JSON 错误响应保留默认提示
+    }
+    throw new Error(message)
+  }
+  const body = (await response.json()) as { data?: Record<string, unknown> }
+  const data = (body?.data ?? body) as Record<string, unknown>
+  if (typeof data.workVersionId !== 'string' || !data.workVersionId || typeof data.version !== 'string' || !data.version) {
+    throw new Error('保存响应不完整，无法确认保存结果，请保留当前页面并核对工单工作版本')
+  }
+  return {
+    workVersionId: typeof data.workVersionId === 'string' ? data.workVersionId : '',
+    version: typeof data.version === 'string' ? data.version : '',
+  }
 }
 
 async function saveAsNewVersion() {
@@ -318,35 +359,59 @@ async function saveAsNewVersion() {
   }
 
   isSaving.value = true
+  cadOriginalError.value = ''
+  const savingTarget = targetFile.value
+  const savingDrawingNo = savingTarget.partNo || savingTarget.drawingNo || currentDrawing.value.no
+  const ticketMode = requiresTicket.value
+  const savingRequestId = changeRequestId.value
+  const savingWorkVersionId = workVersionId.value
+  const savingRevision = editRevision.value
   try {
     await AcApDocManager.instance.curView?.waitUntilIdle?.(60_000)
-    const dxfContent = document.database.dxfOut(undefined, 6)
+    const dxfContent = exportEditorDxf(document.database)
     const dxfBlob = new Blob(
       [typeof dxfContent === 'string' ? dxfContent : new Uint8Array(dxfContent)],
       { type: 'application/dxf' },
     )
-    const baseName = targetFile.value.name.replace(/\.[^.]+$/, '') || 'drawing'
+    const baseName = savingTarget.name.replace(/\.[^.]+$/, '') || 'drawing'
     // 浏览器编辑器只能导出 DXF；由后端经 CAXA 统一转换为 DWG 后再保存版本，
     // 保证图纸的当前文件与历史版本始终是可本地编辑/预览的 DWG。
     const dwgBlob = await convertDxfToDwgOnServer(dxfBlob, baseName)
     const savedFile = new File([dwgBlob], `${baseName}.dwg`, { type: 'application/acad' })
+
+    if (ticketMode) {
+      // 存档图纸：成果登记为变更工单的工作版本，不触碰正式当前指针，验收后才发布。
+      if (!savingTarget.storageKey) throw new Error('缺少工作文件存储键，无法保存工单成果')
+      const saved = await onlineSaveDraft(savingTarget.storageKey, savingRequestId, savingWorkVersionId, savedFile)
+      workVersionId.value = saved.workVersionId
+      savedVersion.value = saved.version
+      uiStore.toast('已保存为变更工单工作版本，验收通过后才会发布正式版', 'ok')
+      return
+    }
+
     const updatedFile = await drawingOperationsStore.replaceDrawingFile(
-      targetFile.value.partNo || targetFile.value.drawingNo || currentDrawing.value.no,
-      targetFile.value.id,
+      savingDrawingNo,
+      savingTarget.id,
       {
         name: savedFile.name,
         size: formatFileSize(savedFile.size),
         replaceReason: '在线编辑保存新版本',
+        expectedRevision: savingRevision,
       },
       savedFile,
     )
-    await drawingStore.refresh()
+    cadSourceFileName.value = updatedFile.name
+    editRevision.value = updatedFile.revision
+    savedVersion.value = updatedFile.version
+    try {
+      await drawingStore.refresh()
+    } catch {
+      uiStore.toast('文件已保存，但列表刷新失败，请稍后刷新；无需重复保存', 'warn')
+    }
     targetFile.value = [
       ...drawingStore.drawings.flatMap((item) => [...item.files, ...item.otherFiles]),
       ...drawingStore.parts.flatMap((part) => [...part.files, ...part.otherFiles]),
-    ].find((file) => file.id === targetFile.value?.id) ?? targetFile.value
-    cadSourceFileName.value = updatedFile.name
-    savedVersion.value = updatedFile.version
+    ].find((file) => file.id === updatedFile.id) ?? savingTarget
   } catch (error) {
     cadOriginalError.value = error instanceof Error ? error.message : String(error)
     uiStore.toast(`保存新版本失败：${cadOriginalError.value}`, 'warn')
@@ -358,6 +423,21 @@ async function saveAsNewVersion() {
 function continueEditing() {
   savedVersion.value = ''
 }
+
+function canLeaveEditor() {
+  if (!isSaving.value) return true
+  uiStore.toast('正在保存，请等待完成后再离开', 'warn')
+  return false
+}
+
+function warnWhileSaving(event: BeforeUnloadEvent) {
+  if (!isSaving.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+onBeforeRouteLeave(canLeaveEditor)
+onBeforeRouteUpdate(canLeaveEditor)
 
 async function startDragging() {
   try {
@@ -371,10 +451,12 @@ async function startDragging() {
 }
 
 onMounted(() => {
+  window.addEventListener('beforeunload', warnWhileSaving)
   void loadTargetFile()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('beforeunload', warnWhileSaving)
   if (editorWipeoutCleanupTimer) {
     window.clearTimeout(editorWipeoutCleanupTimer)
     editorWipeoutCleanupTimer = null
@@ -408,19 +490,18 @@ watch([drawingId, fileId], () => {
           <span class="tag tag-no-dot" :class="isAssembly ? 'plain' : 'info'">
             {{ isAssembly ? '总图' : '零件图' }}
           </span>
+          <span v-if="requiresTicket" class="tag tag-ticket" title="该图纸已存档，正在变更工单的工作版本上编辑，验收后才发布正式版">
+            变更工单 · 工作版本
+          </span>
           <span class="file-name-highlight">{{ targetFile?.name || currentDrawing?.name }}</span>
           <span class="drawing-no">{{ targetFile?.partNo || targetFile?.drawingNo || currentDrawing?.no }}</span>
         </div>
       </div>
 
       <div class="header-right">
-        <button class="btn sm" type="button" :disabled="isExportingExb || !isReady" title="将当前图纸转换为 EXB 格式并下载" @mousedown.stop @click="exportAsExb">
-          <DemoIcon name="download" :size="14" />
-          <span>{{ isExportingExb ? '转换中...' : '导出 EXB' }}</span>
-        </button>
-        <button class="btn sm primary" type="button" :disabled="isSaving || !isReady" title="保存在线编辑结果并生成新版本" @mousedown.stop @click="saveAsNewVersion">
+        <button class="btn sm primary" type="button" :disabled="isSaving || !isReady" :title="requiresTicket ? '保存为变更工单工作版本（不影响正式版）' : '保存在线编辑结果并生成新版本'" @mousedown.stop @click="saveAsNewVersion">
           <DemoIcon name="save" :size="14" />
-          <span>{{ isSaving ? '保存中...' : '保存新版本' }}</span>
+          <span>{{ isSaving ? '保存中...' : (requiresTicket ? '保存工作版本' : '保存新版本') }}</span>
         </button>
         <button class="btn sm" type="button" title="切换到只读浏览模式" @mousedown.stop @click="openReadonlyView">
           <DemoIcon name="eye" :size="14" />
@@ -430,7 +511,7 @@ watch([drawingId, fileId], () => {
     </header>
 
     <div class="editor-body">
-      <main class="editor-workspace">
+      <main class="editor-workspace" :inert="isSaving">
         <MlCadViewer
           v-if="isReady && cadOriginalFile"
           locale="zh"
@@ -454,10 +535,10 @@ watch([drawingId, fileId], () => {
           <DemoIcon name="check-circle-2" :size="30" />
         </div>
         <h2 id="save-success-title">保存成功</h2>
-        <p>当前编辑内容已保存为新版本 <strong>{{ savedVersion }}</strong></p>
+        <p>当前编辑内容已保存为{{ requiresTicket ? '工单工作版本' : '新版本' }} <strong>{{ savedVersion }}</strong></p>
         <div class="save-success-note">
           <DemoIcon name="shield-check" :size="16" />
-          <span>原版本已完整保留，可在历史版本中查看和回溯。</span>
+          <span>{{ requiresTicket ? '正式版本暂未改动，验收通过后才会发布。' : '原版本已完整保留，可在历史版本中查看和回溯。' }}</span>
         </div>
         <div class="save-success-actions">
           <button class="btn" type="button" @click="continueEditing">继续编辑</button>
@@ -536,6 +617,16 @@ watch([drawingId, fileId], () => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.tag-ticket {
+  font-size: 11px;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .file-name-highlight {

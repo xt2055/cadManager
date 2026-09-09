@@ -17,6 +17,7 @@ import (
 
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/auth"
+	"cadguanliq/internal/change"
 	"cadguanliq/internal/config"
 	"cadguanliq/internal/storage"
 	"cadguanliq/internal/versioning"
@@ -85,6 +86,10 @@ func newFakeSessionRepo() *fakeSessionRepo {
 	return &fakeSessionRepo{sessions: make(map[string]*Session), tickets: make(map[string]*fakeTicket)}
 }
 
+func (repo *fakeSessionRepo) CompleteWorkingSession(ctx context.Context, session Session, versionID string) error {
+	return repo.Close(ctx, session.UserID, session.ID, false, time.Now())
+}
+
 func (repo *fakeSessionRepo) CreateSession(ctx context.Context, session Session) error {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
@@ -96,6 +101,13 @@ func (repo *fakeSessionRepo) CreateSession(ctx context.Context, session Session)
 	stored := session
 	repo.sessions[session.ID] = &stored
 	return nil
+}
+
+func (repo *fakeSessionRepo) CreateSessionWithTicket(ctx context.Context, session Session, token string, expiresAt time.Time, requestID string) error {
+	if err := repo.CreateSession(ctx, session); err != nil {
+		return err
+	}
+	return repo.CreateTicket(ctx, token, session.ID, session.UserID, expiresAt)
 }
 
 func (repo *fakeSessionRepo) FindActiveByStorageKey(ctx context.Context, storageKey string, now time.Time) (Session, error) {
@@ -224,6 +236,7 @@ type fakeVersioning struct {
 	latestVer    string
 	latestKey    string
 	captureDelay time.Duration
+	lastBaseline string
 }
 
 func (fake *fakeVersioning) CapturePath(ctx context.Context, sourceKey, sourcePath, userID string) (versioning.Version, bool, error) {
@@ -257,6 +270,13 @@ func (fake *fakeVersioning) CapturePath(ctx context.Context, sourceKey, sourcePa
 	fake.latestVer = version.Version
 	fake.latestKey = version.StorageKey
 	return version, true, nil
+}
+
+func (fake *fakeVersioning) CaptureWorking(ctx context.Context, sourceKey, sourcePath, userID, baselineSHA string) (versioning.Version, bool, error) {
+	fake.mu.Lock()
+	fake.lastBaseline = baselineSHA
+	fake.mu.Unlock()
+	return fake.CapturePath(ctx, sourceKey, sourcePath, userID)
 }
 
 func (fake *fakeVersioning) EnsureInitialVersion(ctx context.Context, sourceKey, userID string) error {
@@ -574,7 +594,7 @@ func TestResolveWorkKeyUsesExistingCurrentDwgBlob(t *testing.T) {
 		t.Fatalf("Put() error = %v", err)
 	}
 
-	got, err := env.service.resolveWorkKey(context.Background(), designerUser, item)
+	got, err := env.service.resolveWorkKey(context.Background(), designerUser, item, "")
 	if err != nil {
 		t.Fatalf("resolveWorkKey() error = %v", err)
 	}
@@ -894,4 +914,172 @@ func urlPathUnescapeAll(path string) (string, error) {
 		segments[index] = decoded
 	}
 	return strings.Join(segments, "/"), nil
+}
+
+// ---------------------------------------------------------------------------
+// 存档变更工单：结束编辑的登记失败安全与基线传递
+// ---------------------------------------------------------------------------
+
+// fakeChangeGate 工单门禁替身，可注入执行中状态、编辑基线、登记结果。
+type fakeChangeGate struct {
+	workKey     string
+	executing   bool
+	baseline    string
+	baselineSet bool
+	recordErr   error
+	recordedID  string
+	baselineGet string
+}
+
+func (g *fakeChangeGate) CanEditArchived(ctx context.Context, drawingID, userID string) (bool, string, error) {
+	return false, "", nil
+}
+
+func (g *fakeChangeGate) WorkVersion(ctx context.Context, requestID string) (string, string, string, bool, error) {
+	if g.workKey != "" {
+		return "att-001", g.workKey, "ver-work", true, nil
+	}
+	return "", "", "", false, nil
+}
+
+func (g *fakeChangeGate) EditBaseline(ctx context.Context, requestID string) (string, bool, error) {
+	g.baselineGet = requestID
+	return g.baseline, g.baselineSet, nil
+}
+
+func (g *fakeChangeGate) CompareAndRecordWorkVersion(ctx context.Context, requestID, versionID, expectedVersionID, userID string) (bool, error) {
+	return true, g.RecordWorkVersion(ctx, requestID, versionID)
+}
+
+func (g *fakeChangeGate) RecordWorkVersion(ctx context.Context, requestID, versionID string) error {
+	g.recordedID = versionID
+	return g.recordErr
+}
+
+func (g *fakeChangeGate) StillExecuting(ctx context.Context, requestID string) (bool, error) {
+	return g.executing, nil
+}
+
+// setupWorkingSession 注入一个绑定工单的活跃会话，并在 SMB 工作根目录落盘一份"有改动"的工作文件。
+func setupWorkingSession(t *testing.T, env *testEnv, workKey, content string) Session {
+	t.Helper()
+	session := Session{
+		ID:              "sess-req-1",
+		AttachmentID:    "att-001",
+		StorageKey:      "drawings/JG-00/泵缸.exb",
+		WorkStorageKey:  workKey,
+		ChangeRequestID: "req-1",
+		UserID:          designerUser.ID,
+		Status:          "active",
+		StartedAt:       time.Now().UTC(),
+		LastSeenAt:      time.Now().UTC(),
+	}
+	if err := env.sessions.CreateSession(context.Background(), session); err != nil {
+		t.Fatalf("CreateSession 失败: %v", err)
+	}
+	path, err := env.service.localPath(workKey)
+	if err != nil {
+		t.Fatalf("localPath 失败: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll 失败: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("写工作文件失败: %v", err)
+	}
+	// 令工作文件内容不同于当前基线哈希，使捕获判定为"有改动"并生成新版本。
+	env.versions.seedCurrent("different-baseline-content")
+	return session
+}
+
+func workFilePath(t *testing.T, env *testEnv, workKey string) string {
+	t.Helper()
+	path, err := env.service.localPath(workKey)
+	if err != nil {
+		t.Fatalf("localPath 失败: %v", err)
+	}
+	return path
+}
+
+func sessionStatus(t *testing.T, env *testEnv, id string) string {
+	t.Helper()
+	env.sessions.mu.Lock()
+	defer env.sessions.mu.Unlock()
+	if s, ok := env.sessions.sessions[id]; ok {
+		return s.Status
+	}
+	return "absent"
+}
+
+// T1：工作版本登记返回数据库错误时，结束编辑必须失败，且保留会话与工作文件（不得丢成果）。
+func TestCloseKeepsSessionWhenRecordFails(t *testing.T) {
+	env := newTestEnv(t)
+	gate := &fakeChangeGate{executing: true, baseline: "cafebabe", baselineSet: true, recordErr: errors.New("db down")}
+	env.service.SetChangeGate(gate)
+	env.service.repository = &failingCompletionRepo{Repository: env.sessions, err: gate.recordErr}
+	workKey := "drawings/JG-00/泵缸-工作.dwg"
+	setupWorkingSession(t, env, workKey, "edited-content-B")
+
+	_, err := env.service.Close(context.Background(), designerUser, "sess-req-1")
+	if err == nil {
+		t.Fatal("登记失败时 Close 应返回错误，实际返回 nil")
+	}
+	if got := sessionStatus(t, env, "sess-req-1"); got != "active" {
+		t.Errorf("会话应保留为 active，实际=%s", got)
+	}
+	if _, statErr := os.Stat(workFilePath(t, env, workKey)); statErr != nil {
+		t.Errorf("工作文件应保留，实际缺失: %v", statErr)
+	}
+	// 基线应透传给工作版本捕获，供以工单成果为比较基准。
+	if env.versions.lastBaseline != "cafebabe" {
+		t.Errorf("CaptureWorking 收到的 baseline=%q，期望 %q", env.versions.lastBaseline, "cafebabe")
+	}
+}
+
+// T1b：登记返回 ErrNotExecuting（工单已不可写）时，按丢弃处理并关闭会话、清理工作文件。
+func TestClosePreservesWhenTicketNotExecuting(t *testing.T) {
+	env := newTestEnv(t)
+	gate := &fakeChangeGate{executing: true, baseline: "cafebabe", baselineSet: true, recordErr: change.ErrNotExecuting}
+	env.service.SetChangeGate(gate)
+	env.service.repository = &failingCompletionRepo{Repository: env.sessions, err: ErrTicketClosed}
+	workKey := "drawings/JG-00/泵缸-工作.dwg"
+	setupWorkingSession(t, env, workKey, "edited-content-B")
+
+	if _, err := env.service.Close(context.Background(), designerUser, "sess-req-1"); err == nil {
+		t.Fatal("工单不可写时不能返回保存成功")
+	}
+	if got := sessionStatus(t, env, "sess-req-1"); got != "active" {
+		t.Errorf("会话应被关闭，实际=%s", got)
+	}
+	if _, statErr := os.Stat(workFilePath(t, env, workKey)); statErr != nil {
+		t.Errorf("丢弃路径工作文件应被清理，实际仍存在: %v", statErr)
+	}
+}
+
+// 工单会话在结束前已不在执行中：直接丢弃，不捕获、不登记。
+func TestClosePreservesWhenTicketLeftExecutingEarly(t *testing.T) {
+	env := newTestEnv(t)
+	gate := &fakeChangeGate{executing: false}
+	env.service.SetChangeGate(gate)
+	workKey := "drawings/JG-00/泵缸-工作.dwg"
+	setupWorkingSession(t, env, workKey, "edited-content-B")
+
+	if _, err := env.service.Close(context.Background(), designerUser, "sess-req-1"); err == nil {
+		t.Fatal("已终止工单不能返回保存成功")
+	}
+	if got := sessionStatus(t, env, "sess-req-1"); got != "active" {
+		t.Errorf("会话应被关闭，实际=%s", got)
+	}
+	if gate.recordedID != "" {
+		t.Errorf("非执行中不应登记工作版本，实际登记了 %q", gate.recordedID)
+	}
+}
+
+type failingCompletionRepo struct {
+	Repository
+	err error
+}
+
+func (r *failingCompletionRepo) CompleteWorkingSession(context.Context, Session, string) error {
+	return r.err
 }

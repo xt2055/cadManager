@@ -1253,6 +1253,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
       name: string
       size: string
       replaceReason?: string
+      expectedRevision?: number
     },
     content?: Blob,
   ): Promise<DrawingFile> {
@@ -1321,7 +1322,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 	    if (!content) throw new Error(`文件「${newFileInfo.name}」缺少真实内容，无法替换`)
 
 	    try {
-	      const commitResult = await uploadReplacementSession(drawingNo, { ...currentFile, role: currentFile.role }, content)
+	      const expectedRevision = newFileInfo.expectedRevision ?? currentFile.revision
+	      const commitResult = await uploadReplacementSession(drawingNo, { ...currentFile, revision: expectedRevision, role: currentFile.role }, content)
+	      updatedFile.revision = typeof commitResult.revision === 'number' ? commitResult.revision : (expectedRevision ?? 1) + 1
 	      if (typeof commitResult.attachmentId === 'string') updatedFile.id = commitResult.attachmentId
 	      updatedFile.storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey

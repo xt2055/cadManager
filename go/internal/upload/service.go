@@ -1,6 +1,7 @@
 package upload
 
 import (
+	"log"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -981,6 +982,17 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		currentSize = processedSize
 	}
 	var attachmentID, version, versionID, createdPartID string
+	// 存档图纸的正式成果受变更工单保护，禁止通过上传直接新增/替换文件版本；
+	// 需要修改时由工单执行人通过受管控的 CAXA 编辑产生工作版本，验收后发布。
+	if item.DrawingNo != "" {
+		var archived bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM drawings WHERE drawing_no = $1 AND status = 'archived')`, item.DrawingNo).Scan(&archived); err != nil {
+			return nil, fmt.Errorf("查询图纸状态失败: %w", err)
+		}
+		if archived {
+			return nil, errors.New("图纸已存档，请通过变更工单修改，不能直接上传替换文件")
+		}
+	}
 	if item.AttachmentID == "" {
 		var ownerID string
 		if item.PartNo == "" {
@@ -1035,7 +1047,8 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 			return nil, err
 		}
 		if currentRevision != *item.ExpectedRevision {
-			return nil, fmt.Errorf("文件版本已被其他用户修改，请刷新后重试: %w", ErrConflict)
+			log.Printf("[Upload Revision Conflict] session=%s attachment=%s expected=%d current=%d", sessionID, item.AttachmentID, *item.ExpectedRevision, currentRevision)
+			return nil, fmt.Errorf("文件修订号不一致（编辑基线 %d，服务端 %d），未覆盖文件；请保留编辑内容并核对版本: %w", *item.ExpectedRevision, currentRevision, ErrConflict)
 		}
 		version = fmt.Sprintf("v1.0-w%03d", currentRevision)
 		if err := tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, 'working', $8::uuid) RETURNING id::text`, item.AttachmentID, version, currentBlobID, currentName, currentMime, currentSize, isPreviewable(currentName, currentMime), userID).Scan(&versionID); err != nil {
@@ -1051,6 +1064,9 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		attachmentID = item.AttachmentID
 	}
 	result := map[string]any{"sessionId": sessionID, "attachmentId": attachmentID, "storageKey": currentKey, "currentStorageKey": currentKey, "version": version, "status": "committed"}
+	if item.ExpectedRevision != nil {
+		result["revision"] = *item.ExpectedRevision + 1
+	}
 	if createdPartID != "" {
 		result["partId"] = createdPartID
 	}

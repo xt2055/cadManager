@@ -21,11 +21,50 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 	return &PGRepository{pool: pool}
 }
 
+// CompleteWorkingSession serializes completion with submission and cancellation.
+func (repository *PGRepository) CompleteWorkingSession(ctx context.Context, session Session, versionID string) error {
+	tx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM change_requests WHERE id=$1::uuid FOR UPDATE`, session.ChangeRequestID).Scan(&status); err != nil {
+		return err
+	}
+	if status != "executing" {
+		return ErrTicketClosed
+	}
+	var active bool
+	if err := tx.QueryRow(ctx, `SELECT status='active' AND user_id=$2::uuid AND attachment_id=$3::uuid AND change_request_id=$4::uuid FROM edit_sessions WHERE id=$1::uuid FOR UPDATE`, session.ID, session.UserID, session.AttachmentID, session.ChangeRequestID).Scan(&active); err != nil {
+		return err
+	}
+	if !active {
+		return ErrSessionNotFound
+	}
+	if versionID != "" {
+		tag, err := tx.Exec(ctx, `UPDATE change_requests cr SET submitted_attachment_version_id=$2::uuid WHERE cr.id=$1::uuid AND EXISTS (SELECT 1 FROM attachment_versions v JOIN attachments a ON a.id=v.attachment_id WHERE v.id=$2::uuid AND a.id=$3::uuid AND a.drawing_id=cr.drawing_id AND v.deleted_at IS NULL)`, session.ChangeRequestID, versionID, session.AttachmentID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("工作版本与编辑会话不匹配")
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE edit_sessions SET status='closed',closed_at=now(),last_seen_at=now() WHERE id=$1::uuid`, session.ID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM edit_session_tickets WHERE session_id=$1::uuid`, session.ID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (repository *PGRepository) CreateSession(ctx context.Context, session Session) error {
 	_, err := repository.pool.Exec(ctx, `
-		INSERT INTO edit_sessions (id, attachment_id, user_id, storage_key, work_storage_key, status, started_at, last_seen_at)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8)`,
-		session.ID, session.AttachmentID, session.UserID, session.StorageKey, session.WorkStorageKey, session.Status, session.StartedAt, session.LastSeenAt)
+		INSERT INTO edit_sessions (id, attachment_id, user_id, storage_key, work_storage_key, status, started_at, last_seen_at, change_request_id)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid)`,
+		session.ID, session.AttachmentID, session.UserID, session.StorageKey, session.WorkStorageKey, session.Status, session.StartedAt, session.LastSeenAt, session.ChangeRequestID)
 	if err != nil {
 		if strings.Contains(err.Error(), "uq_edit_sessions_one_active_attachment") {
 			return ErrFileBusy
@@ -35,20 +74,62 @@ func (repository *PGRepository) CreateSession(ctx context.Context, session Sessi
 	return nil
 }
 
+func (repository *PGRepository) CreateSessionWithTicket(ctx context.Context, session Session, token string, expiresAt time.Time, requestID string) error {
+	tx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("开始编辑会话事务失败: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 锁定工单行，与提交/终止互斥；工单已不在执行中则拒绝开会话。
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM change_requests WHERE id = $1::uuid FOR UPDATE`, requestID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrTicketClosed
+	}
+	if err != nil {
+		return fmt.Errorf("锁定变更工单失败: %w", err)
+	}
+	if status != "executing" {
+		return ErrTicketClosed
+	}
+
+	// 同一文件只允许一个活动会话：命中唯一索引视为占用，而非其它工单的会话。
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO edit_sessions (id, attachment_id, user_id, storage_key, work_storage_key, status, started_at, last_seen_at, change_request_id)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid)`,
+		session.ID, session.AttachmentID, session.UserID, session.StorageKey, session.WorkStorageKey, session.Status, session.StartedAt, session.LastSeenAt, session.ChangeRequestID); err != nil {
+		if strings.Contains(err.Error(), "uq_edit_sessions_one_active_attachment") {
+			return ErrFileBusy
+		}
+		return fmt.Errorf("保存编辑会话失败: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO edit_session_tickets (token_hash, session_id, user_id, expires_at)
+		VALUES ($1, $2::uuid, $3::uuid, $4)`, hashToken(token), session.ID, session.UserID, expiresAt); err != nil {
+		return fmt.Errorf("保存编辑票据失败: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("提交编辑会话事务失败: %w", err)
+	}
+	return nil
+}
+
 func (repository *PGRepository) FindActiveByStorageKey(ctx context.Context, storageKey string, now time.Time) (Session, error) {
 	var session Session
 	var userName string
 	var closedAt *time.Time
 	var workStorageKey *string
+	var changeRequestID *string
 	// 占用与会话在线状态解耦：只要会话未关闭就一直占用，
 	// 用户关闭页面/退出软件后仍可重新认领自己的会话继续编辑。
 	err := repository.pool.QueryRow(ctx, `
-		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.work_storage_key, s.user_id::text,
+		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.work_storage_key, s.change_request_id, s.user_id::text,
 		       COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at, s.closed_at
 		FROM edit_sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.storage_key = $1 AND s.status = 'active'
 		ORDER BY s.started_at DESC LIMIT 1`, storageKey).Scan(
-		&session.ID, &session.AttachmentID, &session.StorageKey, &workStorageKey, &session.UserID, &userName,
+		&session.ID, &session.AttachmentID, &session.StorageKey, &workStorageKey, &changeRequestID, &session.UserID, &userName,
 		&session.Status, &session.StartedAt, &session.LastSeenAt, &closedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrSessionNotFound
@@ -58,6 +139,9 @@ func (repository *PGRepository) FindActiveByStorageKey(ctx context.Context, stor
 	}
 	if workStorageKey != nil {
 		session.WorkStorageKey = *workStorageKey
+	}
+	if changeRequestID != nil {
+		session.ChangeRequestID = *changeRequestID
 	}
 	session.UserName = userName
 	session.ClosedAt = closedAt
@@ -70,12 +154,13 @@ func (repository *PGRepository) FindActiveByID(ctx context.Context, sessionID st
 	var userName string
 	var closedAt *time.Time
 	var workStorageKey *string
+	var changeRequestID *string
 	err := repository.pool.QueryRow(ctx, `
-		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.work_storage_key, s.user_id::text,
+		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.work_storage_key, s.change_request_id, s.user_id::text,
 		       COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at, s.closed_at
 		FROM edit_sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.id = $1::uuid AND s.status = 'active'`, sessionID).Scan(
-		&session.ID, &session.AttachmentID, &session.StorageKey, &workStorageKey, &session.UserID, &userName,
+		&session.ID, &session.AttachmentID, &session.StorageKey, &workStorageKey, &changeRequestID, &session.UserID, &userName,
 		&session.Status, &session.StartedAt, &session.LastSeenAt, &closedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrSessionNotFound
@@ -85,6 +170,9 @@ func (repository *PGRepository) FindActiveByID(ctx context.Context, sessionID st
 	}
 	if workStorageKey != nil {
 		session.WorkStorageKey = *workStorageKey
+	}
+	if changeRequestID != nil {
+		session.ChangeRequestID = *changeRequestID
 	}
 	session.UserName = userName
 	session.ClosedAt = closedAt

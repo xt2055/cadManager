@@ -6,6 +6,7 @@
 #include <vector>
 #include <windows.h>
 #include "crxdocman.h"
+#include "crxedcds.h"
 
 namespace {
 
@@ -17,7 +18,7 @@ void report(const wchar_t* message, CDraft::ErrorStatus status = CDraft::eOk) {
     if (fp) {
         SYSTEMTIME now = {};
         GetLocalTime(&now);
-        fwprintf(fp, L"[%04u-%02u-%02u %02u:%02u:%02u] pid=%lu build=20260907-lock-v3 %ls status=%d\n",
+        fwprintf(fp, L"[%04u-%02u-%02u %02u:%02u:%02u] pid=%lu build=20260908-font-startup-v3 %ls status=%d\n",
             now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
             GetCurrentProcessId(), message, static_cast<int>(status));
         fclose(fp);
@@ -52,6 +53,18 @@ struct BlockerScanContext {
     bool found;
 };
 
+// CAXA 的形文件选择框使用自定义按钮 ID，不能假定 IDCANCEL 有效。
+static BOOL CALLBACK FindCancelAllButton(HWND hwnd, LPARAM lParam) {
+    wchar_t text[128] = {};
+    GetWindowTextW(hwnd, text, 127);
+    if (IsWindowVisible(hwnd) && IsWindowEnabled(hwnd) &&
+        (wcsstr(text, L"\x5168\x90e8\x53d6\x6d88") || wcsstr(text, L"Cancel All"))) {
+        *reinterpret_cast<HWND*>(lParam) = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
 // 扫描对话框子控件文本（部分弹窗标题是通用标题，关键字只出现在正文里）
 static BOOL CALLBACK CheckChildTextProc(HWND hwnd, LPARAM lParam) {
     wchar_t text[512] = {};
@@ -82,6 +95,10 @@ static BOOL CALLBACK DismissBlockerDialogsProc(HWND hwnd, LPARAM lParam) {
         GetWindowTextW(hwnd, title, 511);
         std::wstring titleStr(title);
 
+        // 启动阶段也处理缺失形文件，但其他弹窗仍仅在转换期间处理。
+        const bool shapeDialog = titleStr == L"\x6307\x5b9a\x5f62\x6587\x4ef6";
+        if (!shapeDialog && !lParam) return TRUE;
+
         // 标题或正文命中关键字都视为阻塞弹窗
         BlockerScanContext ctx = {false};
         if (containsBlockerKeyword(titleStr)) {
@@ -90,6 +107,17 @@ static BOOL CALLBACK DismissBlockerDialogsProc(HWND hwnd, LPARAM lParam) {
             EnumChildWindows(hwnd, CheckChildTextProc, reinterpret_cast<LPARAM>(&ctx));
         }
         if (!ctx.found) return TRUE;
+
+        HWND cancelAll = nullptr;
+        EnumChildWindows(hwnd, FindCancelAllButton, reinterpret_cast<LPARAM>(&cancelAll));
+        if (cancelAll) {
+            // 直接发送按钮通知，不依赖对话框激活状态；不发送 WM_CLOSE/IDOK。
+            const BOOL posted = PostMessageW(GetParent(cancelAll), WM_COMMAND,
+                MAKEWPARAM(GetDlgCtrlID(cancelAll), BN_CLICKED), reinterpret_cast<LPARAM>(cancelAll));
+            report(posted ? L"Font dialog: Cancel All posted" : L"Font dialog: Cancel All post failed");
+            return TRUE;
+        }
+        if (shapeDialog) return TRUE;
 
         const std::wstring logPath = getTempDirectory() + L"caxa_worker_log.txt";
         FILE* fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
@@ -101,21 +129,26 @@ static BOOL CALLBACK DismissBlockerDialogsProc(HWND hwnd, LPARAM lParam) {
         // 优先点“取消”或“忽略”，跳过恢复文档/缺失形文件继续执行
         HWND btnCancel = GetDlgItem(hwnd, IDCANCEL);
         if (btnCancel && IsWindowEnabled(btnCancel)) {
-            SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), (LPARAM)btnCancel);
+            PostMessageW(btnCancel, BM_CLICK, 0, 0);
         } else {
-            SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+            PostMessage(hwnd, WM_CLOSE, 0, 0);
         }
-        PostMessage(hwnd, WM_CLOSE, 0, 0);
     }
     return TRUE;
 }
 
-static void autoDismissModalDialogs() {
-    EnumThreadWindows(GetCurrentThreadId(), DismissBlockerDialogsProc, 0);
+static void autoDismissModalDialogs(bool allowGeneric) {
+    // 同进程的弹窗可能属于另一 UI 线程；回调内仍严格校验进程 ID。
+    EnumWindows(DismissBlockerDialogsProc, allowGeneric ? 1 : 0);
 }
 
 CRxApDocument* g_pendingDocument = nullptr;
 std::wstring g_pendingOutput;
+/* PDF 功能已废弃，保留原实现供查阅。
+bool g_taskIsPdf = false;
+// PDF 任务经 sendStringToExecute 触发的打印命令；以 CAXA 命令行实测为准调整。
+static const wchar_t* kPdfPrintCommand = L"CX_print\n";
+*/
 ULONGLONG g_pendingSince = 0;
 ULONGLONG g_lastSize = 0;
 unsigned g_stableSamples = 0;
@@ -126,6 +159,54 @@ bool g_saveStarted = false;
 bool g_closeRequested = false;
 bool g_failureReported = false;
 std::vector<std::pair<std::wstring, std::wstring>> g_tasks;
+
+/* PDF 功能已废弃：禁用对话框探针。
+// 阶段0探针：PDF 任务期间把本进程可见对话框及子控件结构 dump 到日志，
+// 供实测确认打印/绘图输出对话框的类名、控件 ID 与文本，不做任何自动点击。
+static BOOL CALLBACK DialogProbeChildProc(HWND hwnd, LPARAM lParam) {
+    auto* out = reinterpret_cast<FILE*>(lParam);
+    wchar_t className[256] = {};
+    GetClassNameW(hwnd, className, 255);
+    wchar_t text[512] = {};
+    GetWindowTextW(hwnd, text, 511);
+    fwprintf(out, L"    child id=%d class='%ls' text='%ls'\n",
+             GetDlgCtrlID(hwnd), className, text);
+    return TRUE;
+}
+
+static BOOL CALLBACK DialogProbeProc(HWND hwnd, LPARAM lParam) {
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != GetCurrentProcessId()) return TRUE;
+    wchar_t className[256] = {};
+    GetClassNameW(hwnd, className, 255);
+
+    FILE* out = reinterpret_cast<FILE*>(lParam);
+    // 只记录真正的对话框；BCGP 主框架/工具栏全量 dump 会淹没关键信息。
+    if (wcscmp(className, L"#32770") == 0) {
+        wchar_t title[512] = {};
+        GetWindowTextW(hwnd, title, 511);
+        fwprintf(out, L"[DialogProbe] hwnd=%p class='%ls' title='%ls'\n",
+                 (void*)hwnd, className, title);
+        EnumChildWindows(hwnd, DialogProbeChildProc, reinterpret_cast<LPARAM>(out));
+    }
+    return TRUE;
+}
+
+static void dumpDialogProbe() {
+    FILE* fp = _wfopen((getTempDirectory() + L"caxa_worker_log.txt").c_str(), L"a, ccs=UTF-8");
+    if (!fp) return;
+    if (g_pendingDocument) {
+        fwprintf(fp, L"[DialogProbe] inputPending=%d quiescent=%d\n",
+                 crxDocManager->inputPending(g_pendingDocument),
+                 g_pendingDocument->isQuiescent() ? 1 : 0);
+    }
+    EnumThreadWindows(GetCurrentThreadId(), DialogProbeProc, reinterpret_cast<LPARAM>(fp));
+    fclose(fp);
+}
+
+*/
 
 static void writeCompletion(const std::wstring& path, bool ok) {
     report(ok ? L"Conversion complete: output stable and document closed" : L"Conversion failed");
@@ -157,6 +238,7 @@ static void pollPendingSave() {
         if (!g_failureReported) writeCompletion(g_pendingOutput, g_saveOk && g_closeRequested);
         g_pendingDocument = nullptr;
         g_pendingOutput.clear();
+        // g_taskIsPdf = false; // PDF 功能已废弃。
         return;
     }
     const ULONGLONG now = GetTickCount64();
@@ -173,6 +255,19 @@ static void pollPendingSave() {
             if (lockUnsupported) report(L"Document locking unsupported; saving in application context", lockStatus);
             g_saveStarted = true;
             g_pendingSince = now;
+            /* PDF 功能已废弃：禁用打印命令投递。
+            if (g_taskIsPdf) {
+                // 阶段0：触发打印命令。对话框结构由探针记录，输出路径由实测确认后自动化填写。
+                const auto cmdStatus = crxDocManager->sendStringToExecute(
+                    g_pendingDocument, kPdfPrintCommand, true, true, true);
+                report(L"PDF print command dispatched", cmdStatus);
+                if (documentLocked) {
+                    const auto unlockStatus = crxDocManager->unlockDocument(g_pendingDocument);
+                    if (unlockStatus != CDraft::eOk) report(L"Cannot release conversion document write lock", unlockStatus);
+                }
+                return;
+            }
+            */
             CDraft::ErrorStatus status = CDraft::eInvalidInput;
             if (g_pendingDocument->database()) {
                 const size_t dot = g_pendingOutput.find_last_of(L'.');
@@ -215,9 +310,23 @@ static void pollPendingSave() {
     g_stableSamples = size > 0 && size == g_lastSize ? g_stableSamples + 1 : 0;
     g_lastSize = size;
     bool stable = g_stableSamples >= 2;
-    if (g_saveOk && !stable && now - g_pendingSince < 30000) return;
-    if (g_saveOk && !stable) report(L"Save returned success but output never became nonempty and stable");
-    g_saveOk = g_saveOk && stable;
+    /* PDF 功能已废弃：禁用打印输出等待。
+    if (g_taskIsPdf) {
+        // PDF 完成只能以打印输出文件出现且连续稳定判定；打印提交成功不代表已生成。
+        if (stable) {
+            g_saveOk = true;
+        } else if (now - g_pendingSince < 150000) {
+            return;
+        } else {
+            report(L"PDF print output never appeared or stayed unstable within timeout");
+        }
+    } else
+    */
+    {
+        if (g_saveOk && !stable && now - g_pendingSince < 30000) return;
+        if (g_saveOk && !stable) report(L"Save returned success but output never became nonempty and stable");
+        g_saveOk = g_saveOk && stable;
+    }
     if (g_closeSince == 0) g_closeSince = now;
     auto closeStatus = crxDocManager->closeDocument(g_pendingDocument);
     // An unclosed conversion document must not be followed by another open.
@@ -229,6 +338,12 @@ static void pollPendingSave() {
 }
 
 bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputPath) {
+    // 拒绝残留 PDF 任务，不能让它落入默认 DWG 保存分支。
+    const size_t dot = outputPath.find_last_of(L'.');
+    if (dot != std::wstring::npos && _wcsicmp(outputPath.c_str() + dot, L".pdf") == 0) {
+        report(L"PDF conversion is disabled", CDraft::eInvalidInput);
+        return false;
+    }
     const std::wstring logPath = getTempDirectory() + L"caxa_worker_log.txt";
 
     FILE* fp = _wfopen(logPath.c_str(), L"a, ccs=UTF-8");
@@ -258,6 +373,11 @@ bool convertViaAppDoc(const std::wstring& inputPath, const std::wstring& outputP
     }
     g_pendingDocument = newDoc;
     g_pendingOutput = outputPath;
+    /* PDF 功能已废弃：禁用任务识别。
+    const size_t outputDot = outputPath.find_last_of(L'.');
+    g_taskIsPdf = outputDot != std::wstring::npos &&
+        _wcsicmp(outputPath.c_str() + outputDot, L".pdf") == 0;
+    */
     g_pendingSince = GetTickCount64();
     g_lastSize = 0;
     g_stableSamples = 0;
@@ -306,7 +426,27 @@ static bool claimJobFile(const std::wstring& jobFilePath, std::string& content) 
 }
 
 VOID CALLBACK DialogKillerTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
-    if (g_jobBusy || g_pendingDocument) autoDismissModalDialogs();
+    /* PDF 功能已废弃：恢复原有阻塞弹窗处理。
+    if (g_pendingDocument && g_taskIsPdf) {
+        // 阶段0：PDF 任务只探测对话框结构，不自动点/关，避免误伤打印对话框。
+        static ULONGLONG lastProbe = 0;
+        const ULONGLONG now = GetTickCount64();
+        if (now - lastProbe >= 2000) {
+            lastProbe = now;
+            dumpDialogProbe();
+        }
+        return;
+    }
+    */
+    autoDismissModalDialogs(g_jobBusy || g_pendingDocument);
+}
+
+static bool readyForNextDocument() {
+    const HWND mainWindow = crxMainWnd();
+    const auto document = crxDocManager->curDocument();
+    // 模态字体窗口和启动文档尚未结束时，不重入 appContextOpenDocument。
+    // CAXA 在 WM_TIMER 回调中可能始终报告非静止，不能以 isQuiescent 阻断调度。
+    return mainWindow && IsWindowEnabled(mainWindow) && document;
 }
 
 static void processJobs(void*) {
@@ -327,6 +467,8 @@ static void processJobs(void*) {
         pollPendingSave();
         return;
     }
+
+    if (!readyForNextDocument()) return;
 
     if (!g_tasks.empty()) {
         const auto task = g_tasks.front();
@@ -378,6 +520,7 @@ static void processJobs(void*) {
 }
 
 VOID CALLBACK MainThreadTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    if (!g_pendingDocument && !readyForNextDocument()) return;
     // Keep the guard held until the application-context callback actually runs.
     if (InterlockedCompareExchange(&g_jobBusy, 1, 0) != 0) return;
     const bool applicationContext = crxDocManager->isApplicationContext();

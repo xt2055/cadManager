@@ -162,6 +162,11 @@ function viewVersion(version: FileVersionInfo) {
     query: { fileId: selectedFile.value.id, versionId: version.id },
   })
 }
+
+function compareVersion(version: FileVersionInfo) {
+  if (!currentNo.value || !selectedFile.value) return
+  void router.push({ name: 'drawing-compare', params: { drawingId: currentNo.value }, query: { fileId: selectedFile.value.id, versionId: version.id } })
+}
 </script>
 
 <template>
@@ -205,6 +210,7 @@ function viewVersion(version: FileVersionInfo) {
             提交：{{ version.createdByName || '未知' }} · {{ formatTime(version.createdAt) }}
           </div>
           <div class="tl-actions">
+            <button class="btn sm" type="button" @click="compareVersion(version)">版本对比</button>
             <button class="btn sm" type="button" :disabled="busyVersionId === version.id" @click="viewVersion(version)">
               <DemoIcon name="eye" :size="13" />在线浏览
             </button>

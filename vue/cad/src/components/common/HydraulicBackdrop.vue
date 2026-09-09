@@ -146,7 +146,5 @@ onBeforeUnmount(() => {
     <div ref="host" class="juli-machine"></div>
     <div class="juli-world-grid"></div>
     <div class="juli-orbit"></div>
-    <div class="juli-telemetry">JULI HYDRAULICS <span>／</span> DIGITAL ENGINEERING<br>液压传动 · 精密制造 · 数字协同</div>
-    <div class="juli-world-caption">{{ unavailable ? 'HYDRAULIC ENGINEERING / BLUEPRINT' : 'HYDRAULIC CYLINDER / MOTION STUDY' }}<br><span>三维运动示意 · 非实时设备数据</span></div>
   </div>
 </template>

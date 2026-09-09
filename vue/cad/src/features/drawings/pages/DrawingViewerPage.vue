@@ -268,6 +268,7 @@ watch([drawingId, fileId, versionId, versionKey], () => {
       </div>
 
       <div class="header-right">
+        <button class="toggle-btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId }, query: { fileId, versionId: versionId || undefined, versionKey: versionKey || undefined } })">图纸对比</button>
         <!-- 已废弃：Canvas/MLightCAD 切换入口保留，不再显示，当前固定使用 MLightCAD。 -->
         <!--
         <div class="engine-switcher" role="group" aria-label="CAD 渲染引擎">

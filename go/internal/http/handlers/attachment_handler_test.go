@@ -34,7 +34,7 @@ func TestAttachmentResourceDownloadsWithoutRecord(t *testing.T) {
 		t.Fatalf("Put() error = %v", putErr)
 	}
 
-	handler := AttachmentResource(&findNotFoundRepo{}, objectStorage)
+	handler := AttachmentResource(nil, &findNotFoundRepo{}, objectStorage)
 	request := authenticatedGet("/api/attachments/" + encodeAttachmentKeyPathForTest(dwgKey))
 	recorder := httptest.NewRecorder()
 	handler(recorder, request)
@@ -64,7 +64,7 @@ func TestAttachmentResourceDownloadsWithRecord(t *testing.T) {
 		Name:       "铜套.dwg",
 		MimeType:   "application/acad",
 	}}
-	handler := AttachmentResource(repo, objectStorage)
+	handler := AttachmentResource(nil, repo, objectStorage)
 	request := authenticatedGet("/api/attachments/" + encodeAttachmentKeyPathForTest(dwgKey))
 	recorder := httptest.NewRecorder()
 	handler(recorder, request)
@@ -97,7 +97,7 @@ func TestAttachmentResourceUsesCurrentNameForCurrentBlob(t *testing.T) {
 		MimeType:          "application/octet-stream",
 		CurrentMimeType:   "application/acad",
 	}}
-	handler := AttachmentResource(repo, objectStorage)
+	handler := AttachmentResource(nil, repo, objectStorage)
 	request := authenticatedGet("/api/attachments/" + encodeAttachmentKeyPathForTest(currentKey))
 	recorder := httptest.NewRecorder()
 	handler(recorder, request)

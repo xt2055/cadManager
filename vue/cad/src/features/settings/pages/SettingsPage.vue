@@ -27,6 +27,10 @@ defineOptions({
   name: 'SettingsPage',
 })
 
+type SettingsTab = 'appearance' | 'workbench' | 'collab' | 'update'
+
+const activeTab = ref<SettingsTab>('appearance')
+
 const themeStore = useThemeStore()
 const uiStore = useUiStore()
 const preferenceStore = useUserPreferenceStore()
@@ -43,6 +47,10 @@ const activeSessions = ref<ActiveEditSessionInfo[]>([])
 const loadingSessions = ref(false)
 const closingSessionId = ref<string | null>(null)
 let sessionPollTimer: number | null = null
+
+// 本地偏好开关状态（保留双向交互）
+const autoFocusLibrary = ref(true)
+const forkBranchProtect = ref(true)
 
 const smbStatus = computed(() => systemStore.status?.smb)
 const caxaStatus = computed(() => systemStore.status?.caxa)
@@ -101,43 +109,76 @@ onBeforeUnmount(() => {
   }
 })
 
-const skins: Array<{ key: ThemeSkin; title: string; desc: string; icon: string }> = [
-  { key: 'juli', title: '巨力液压 · 数字工场', desc: '三维液压缸、CAD 蓝图登录、工程线条描绘与机械光效转场', icon: 'layers' },
+interface SkinMeta {
+  key: ThemeSkin
+  title: string
+  subtitle: string
+  desc: string
+  tag: string
+  colors: {
+    bg: string
+    panel: string
+    accent: string
+    accent2: string
+  }
+}
+
+const skins: SkinMeta[] = [
   {
     key: 'classic',
-    title: '经典主题 (默认)',
+    title: '经典工程',
+    subtitle: 'Classic Engineering',
     desc: '清晰明快、稳健高效的标准工程 CAD 界面风格',
-    icon: 'square',
+    tag: '默认推荐',
+    colors: { bg: '#0b1320', panel: '#111c2e', accent: '#3b82f6', accent2: '#60a5fa' },
+  },
+  {
+    key: 'juli',
+    title: '巨力数字工场',
+    subtitle: 'Juli Digital Plant',
+    desc: '三维液压机电美学、CAD 蓝图线条描绘与机械微光转场',
+    tag: '液压定制',
+    colors: { bg: '#030c16', panel: '#0a1d2b', accent: '#44e1f2', accent2: '#ffac57' },
   },
   {
     key: 'tech',
-    title: '科技主题',
-    desc: '带有网格动效与微光氛围的未来感工业设计风格',
-    icon: 'zap',
+    title: '未来科技',
+    subtitle: 'Cyber Tech Grid',
+    desc: '带有工业网格光影与微光流光的未来感极客设计风格',
+    tag: '高对比微光',
+    colors: { bg: '#04070e', panel: '#0a1322', accent: '#22d3ee', accent2: '#818cf8' },
   },
   {
     key: 'elegant',
-    title: '护眼主题',
-    desc: '温暖柔和、降低视觉疲劳的舒适防眩光配色',
-    icon: 'sparkles',
+    title: '舒适护眼',
+    subtitle: 'Warm Eye Care',
+    desc: '温暖柔和、降低视觉刺激的舒适防眩光配色体系',
+    tag: '温润防眩',
+    colors: { bg: '#181512', panel: '#221e1a', accent: '#d97706', accent2: '#f59e0b' },
   },
   {
     key: 'sage',
-    title: '超级护眼主题',
-    desc: '豆沙绿纸张质感，极低蓝光与对比度，全天候极致温润护眼',
-    icon: 'leaf',
+    title: '豆沙超级护眼',
+    subtitle: 'Paper Sage Green',
+    desc: '豆沙绿纸张质感，极低蓝光与对比度，全天候长时审图护眼',
+    tag: '极低蓝光',
+    colors: { bg: '#151b16', panel: '#1a221c', accent: '#8ab892', accent2: '#a5cfab' },
   },
   {
     key: 'starry',
-    title: '星空主题',
+    title: '深邃星空',
+    subtitle: 'Deep Galaxy Cosmos',
     desc: '深邃深蓝与紫青星芒交织的现代高对比度视觉体系',
-    icon: 'moon',
+    tag: '深空星芒',
+    colors: { bg: '#0b0f19', panel: '#111827', accent: '#818cf8', accent2: '#c084fc' },
   },
   {
     key: 'bamboo',
-    title: '墨竹主题',
+    title: '东方墨竹',
+    subtitle: 'Oriental Bamboo',
     desc: '清雅苍翠、融合东方美学与自然沉静的墨绿质感风格',
-    icon: 'layers',
+    tag: '苍翠沉静',
+    colors: { bg: '#0c1410', panel: '#131d17', accent: '#2dd4bf', accent2: '#34d399' },
   },
 ]
 
@@ -145,13 +186,13 @@ const modes: Array<{ key: ThemeMode; title: string; desc: string; icon: string }
   {
     key: 'dark',
     title: '深色模式',
-    desc: '降低屏幕刺眼度，适合长时间 CAD 审图与绘图作业',
+    desc: '降低屏幕刺眼度，适合长时间 CAD 审图与精密绘图作业',
     icon: 'moon',
   },
   {
     key: 'light',
     title: '浅色模式',
-    desc: '明亮通透，适合强光环境或文档审阅对比',
+    desc: '明亮通透清晰，适合强光环境、纸质打印对比或文档审阅',
     icon: 'sun',
   },
 ]
@@ -159,14 +200,14 @@ const modes: Array<{ key: ThemeMode; title: string; desc: string; icon: string }
 const loginAnimations: Array<{ key: LoginAnimation; title: string; desc: string; icon: string }> = [
   {
     key: 'laser',
-    title: '左下角激光勾勒',
-    desc: '粒子从登录按钮喷射，汇聚后从左下角描绘工作台轮廓并点亮边框。',
+    title: '激光粒子勾勒',
+    desc: '粒子从登录按钮喷射汇聚，从左下角线框勾勒工作台轮廓并点亮边框。',
     icon: 'scan-line',
   },
   {
     key: 'burst',
     title: '粒子光环扩散',
-    desc: '认证成功后显示青蓝光环与核心提示，快速进入工作台。',
+    desc: '认证成功后瞬间呈现扩散青蓝光环与核心状态，快速进入工作台。',
     icon: 'sparkles',
   },
 ]
@@ -191,7 +232,9 @@ function resetToDefault() {
   themeStore.setSkin('classic')
   themeStore.setMode('dark')
   preferenceStore.setLoginAnimation('laser')
-  uiStore.toast('已恢复默认设置（经典主题 + 深色模式 + 激光登录动画）', 'ok')
+  autoFocusLibrary.value = true
+  forkBranchProtect.value = true
+  uiStore.toast('已恢复默认设置（经典主题 + 深色模式 + 激光勾勒动画）', 'ok')
 }
 
 async function handleCheckForUpdates() {
@@ -274,346 +317,533 @@ function handleDownloadUpdate() {
 
 <template>
   <div class="page settings-page">
-    <div class="settings-header">
-      <div>
-        <h1 class="settings-title">系统设置</h1>
-        <p class="settings-subtitle">个性化工作空间偏好、外观风格及系统运行参数</p>
+    <!-- 顶部标题与快速重置 -->
+    <header class="settings-head-bar">
+      <div class="settings-head-meta">
+        <div class="settings-title-row">
+          <div class="settings-badge-icon">
+            <DemoIcon name="sliders" :size="18" />
+          </div>
+          <h1 class="settings-title">系统设置</h1>
+          <span class="settings-version-tag">CAD PDM · v{{ appConfig.version }}</span>
+        </div>
+        <p class="settings-subtitle">个性化工作空间偏好、外观微调、桌面协同引擎及系统更新维护</p>
       </div>
-      <div class="settings-actions">
-        <button class="btn" type="button" @click="resetToDefault">
-          <DemoIcon name="rotate-ccw" :size="14" />恢复默认设置
+
+      <div class="settings-head-actions">
+        <button class="btn secondary reset-btn" type="button" @click="resetToDefault" title="重置全部外观与通用参数为默认值">
+          <DemoIcon name="rotate-ccw" :size="13" />
+          <span>恢复默认</span>
         </button>
       </div>
-    </div>
+    </header>
 
-    <div class="settings-body">
-      <!-- 外观皮肤设置 -->
-      <section class="card settings-section">
-        <div class="section-title">
-          <DemoIcon name="palette" :size="17" />
-          <h2>界面主题皮肤</h2>
-          <span class="sub-hint">默认经典主题，可按偏好自由切换</span>
-        </div>
+    <!-- 分类 Segmented Tabs 导航栏 -->
+    <nav class="settings-nav-tabs" role="tablist">
+      <button
+        class="nav-tab-btn"
+        :class="{ active: activeTab === 'appearance' }"
+        role="tab"
+        type="button"
+        @click="activeTab = 'appearance'"
+      >
+        <DemoIcon name="palette" :size="15" />
+        <span>外观个性化</span>
+        <span class="tab-indicator-count">{{ skins.length }} 款</span>
+      </button>
 
-        <div class="skin-card-grid">
-          <div
-            v-for="item in skins"
-            :key="item.key"
-            class="theme-card"
-            :class="{ active: themeStore.skin === item.key }"
-            @click="selectSkin(item.key)"
-          >
-            <div class="theme-card-top">
-              <div class="theme-icon">
-                <DemoIcon :name="item.icon" :size="20" />
-              </div>
-              <div class="theme-radio">
-                <span class="radio-indicator"></span>
-              </div>
-            </div>
-            <div class="theme-card-body">
-              <div class="theme-name">{{ item.title }}</div>
-              <div class="theme-desc">{{ item.desc }}</div>
-            </div>
-            <div class="theme-preview-pill" :data-preview-skin="item.key">
-              <span class="dot dot-accent"></span>
-              <span class="dot dot-panel"></span>
-              <span class="dot dot-line"></span>
-            </div>
-          </div>
-        </div>
-      </section>
+      <button
+        class="nav-tab-btn"
+        :class="{ active: activeTab === 'workbench' }"
+        role="tab"
+        type="button"
+        @click="activeTab = 'workbench'"
+      >
+        <DemoIcon name="layout" :size="15" />
+        <span>工作台偏好</span>
+      </button>
 
-      <!-- 明暗模式设置 -->
-      <section class="card settings-section">
-        <div class="section-title">
-          <DemoIcon name="sun-moon" :size="17" />
-          <h2>色彩模式（明 / 暗）</h2>
-        </div>
+      <button
+        class="nav-tab-btn"
+        :class="{ active: activeTab === 'collab' }"
+        role="tab"
+        type="button"
+        @click="activeTab = 'collab'"
+      >
+        <DemoIcon name="share-2" :size="15" />
+        <span>桌面协同引擎</span>
+        <span v-if="activeSessions.length > 0" class="tab-warn-badge">{{ activeSessions.length }} 图锁定</span>
+      </button>
 
-        <div class="mode-card-grid">
-          <div
-            v-for="item in modes"
-            :key="item.key"
-            class="mode-card"
-            :class="{ active: themeStore.mode === item.key }"
-            @click="selectMode(item.key)"
-          >
-            <div class="mode-icon">
-              <DemoIcon :name="item.icon" :size="22" />
-            </div>
-            <div class="mode-info">
-              <div class="mode-title">{{ item.title }}</div>
-              <div class="mode-desc">{{ item.desc }}</div>
-            </div>
-            <div class="theme-radio">
-              <span class="radio-indicator"></span>
-            </div>
-          </div>
-        </div>
-      </section>
+      <button
+        class="nav-tab-btn"
+        :class="{ active: activeTab === 'update' }"
+        role="tab"
+        type="button"
+        @click="activeTab = 'update'"
+      >
+        <DemoIcon name="download" :size="15" />
+        <span>客户端更新</span>
+        <span v-if="updateResult?.updateAvailable" class="tab-new-badge">新版</span>
+      </button>
+    </nav>
 
-      <!-- 登录动画设置 -->
-      <section class="card settings-section">
-        <div class="section-title">
-          <DemoIcon name="log-in" :size="17" />
-          <h2>登录切换动画</h2>
-          <span class="sub-hint">选择后下次登录生效</span>
-        </div>
-
-        <div class="login-animation-grid">
-          <button
-            v-for="item in loginAnimations"
-            :key="item.key"
-            class="login-animation-card"
-            :class="{ active: preferenceStore.loginAnimation === item.key }"
-            type="button"
-            @click="selectLoginAnimation(item.key)"
-          >
-            <span class="login-animation-icon">
-              <DemoIcon :name="item.icon" :size="22" />
-            </span>
-            <span class="login-animation-copy">
-              <strong>{{ item.title }}</strong>
-              <small>{{ item.desc }}</small>
-            </span>
-            <span class="theme-radio"><span class="radio-indicator"></span></span>
-          </button>
-        </div>
-      </section>
-
-      <!-- 客户端更新 -->
-      <section class="card settings-section update-section">
-        <div class="section-title">
-          <DemoIcon name="download" :size="17" />
-          <h2>客户端更新</h2>
-          <span class="sub-hint">内网服务器 IP 变化后，可输入新地址寻找更新（仅影响更新检查，不影响业务连接）</span>
-        </div>
-        <div class="update-server-row">
-          <input
-            v-model="serverInput"
-            class="update-server-input"
-            type="text"
-            placeholder="服务器地址（示例：192.168.1.50:8080）"
-            @keyup.enter="handleProbeServer"
-          />
-          <button class="btn sm" type="button" :disabled="probing" @click="handleProbeServer">
-            <DemoIcon :name="probing ? 'loader' : 'search'" :size="13" />
-            {{ probing ? '探测中…' : '测试连接' }}
-          </button>
-          <button class="btn sm" type="button" @click="handleSaveServer">
-            <DemoIcon name="save" :size="13" />记住地址
-          </button>
-          <button v-if="serverSaved" class="btn sm" type="button" @click="handleClearServer">恢复默认</button>
-        </div>
-        <div v-if="probeResult" class="update-probe-result" :class="{ 'update-probe-result--fail': !probeResult.reachable }">
-          <DemoIcon :name="probeResult.reachable ? 'check-circle-2' : 'alert-circle'" :size="14" />
-          <span v-if="probeResult.reachable">
-            服务器可达<template v-if="probeResult.version"> · 服务版本 v{{ probeResult.version }}</template>
-          </span>
-          <span v-else>连接失败：{{ probeResult.message || '地址不可达' }}</span>
-        </div>
-        <div class="update-panel">
-          <div class="update-version">
-            <span class="update-version__label">当前版本</span>
-            <strong>v{{ appConfig.version }}</strong>
-          </div>
-          <div class="update-result" :class="{ 'update-result--error': updateError }">
-            <template v-if="updateError">
-              <DemoIcon name="alert-circle" :size="16" />
-              <span>{{ updateError }}</span>
-            </template>
-            <template v-else-if="updateResult?.updateAvailable">
+    <!-- 主体内容卡片区 -->
+    <main class="settings-tab-content">
+      <!-- 1. 外观个性化 Tab -->
+      <div v-show="activeTab === 'appearance'" class="tab-panel appearance-panel">
+        <!-- 界面主题皮肤 -->
+        <section class="card settings-card">
+          <div class="card-head">
+            <div class="card-head-title">
               <DemoIcon name="sparkles" :size="16" />
-              <span>发现新版本 v{{ updateResult.latestVersion }}<small>{{ updateResult.notes }}</small></span>
-            </template>
-            <template v-else-if="updateResult">
-              <DemoIcon name="check-circle-2" :size="16" />
-              <span>当前已是最新版本<small>最近检查版本 v{{ updateResult.latestVersion }}</small></span>
-            </template>
-            <template v-else>
-              <DemoIcon name="info" :size="16" />
-              <span>尚未检查更新<small>点击右侧按钮获取服务器上的最新版本信息</small></span>
-            </template>
+              <h3>界面主题风格</h3>
+              <span class="card-head-hint">实时切换全系统设计语言与色彩光效</span>
+            </div>
+            <span class="current-theme-pill">当前生效：{{ skins.find(s => s.key === themeStore.skin)?.title }}</span>
           </div>
-          <button class="btn primary update-button" type="button" :disabled="checkingUpdate" @click="handleCheckForUpdates">
-            <DemoIcon :name="checkingUpdate ? 'loader' : 'refresh-cw'" :size="14" />
-            {{ checkingUpdate ? '检查中…' : '检查更新' }}
-          </button>
-          <button
-            v-if="updateResult?.updateAvailable"
-            class="btn primary update-button"
-            type="button"
-            @click="handleDownloadUpdate"
-          >
-            <DemoIcon name="download" :size="14" />
-            下载 v{{ updateResult.latestVersion }}
-          </button>
-        </div>
-      </section>
 
-      <!-- 桌面协同与 CAD 引擎管理 -->
-      <section class="card settings-section collab-section">
-        <div class="section-title">
-          <DemoIcon name="share-2" :size="17" />
-          <h2>桌面协同与 CAD 引擎</h2>
-          <span class="sub-hint">连接 CAXA / AutoCAD 本地协同，提供实时文件独占锁与版本落盘保护</span>
-          <button class="btn sm" type="button" :disabled="systemStore.loading || loadingSessions" @click="refreshSystemStatus">
-            <DemoIcon name="refresh-cw" :size="13" />刷新状态
-          </button>
-        </div>
+          <div class="skin-gallery-grid">
+            <div
+              v-for="item in skins"
+              :key="item.key"
+              class="skin-gallery-card"
+              :class="{ active: themeStore.skin === item.key }"
+              @click="selectSkin(item.key)"
+            >
+              <!-- 顶部微缩设计预览画布 -->
+              <div class="skin-mockup" :style="{ background: item.colors.bg }">
+                <div class="mock-topbar" :style="{ background: item.colors.panel }">
+                  <span class="mock-dot" :style="{ background: item.colors.accent }"></span>
+                  <span class="mock-line" :style="{ background: item.colors.accent, opacity: 0.3 }"></span>
+                </div>
+                <div class="mock-body">
+                  <div class="mock-sidebar" :style="{ background: item.colors.panel }"></div>
+                  <div class="mock-canvas">
+                    <div class="mock-card" :style="{ borderColor: item.colors.accent, background: item.colors.panel }">
+                      <span class="mock-block" :style="{ background: item.colors.accent }"></span>
+                      <span class="mock-sub-block" :style="{ background: item.colors.accent2 }"></span>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="themeStore.skin === item.key" class="skin-active-check">
+                  <DemoIcon name="check" :size="12" />
+                </div>
+              </div>
 
-        <div v-if="!smbStatus" class="collab-empty-alert">
-          <DemoIcon name="server-off" :size="18" />
-          <span>暂时无法读取协同引擎状态，请确认服务端进程正在运行。</span>
-        </div>
-        <template v-else>
-          <!-- 四宫格引擎健康看板 -->
-          <div class="engine-cards-grid">
-            <div class="engine-card">
-              <div class="engine-card-icon" :class="smbStatus.serverRunning ? 'status-ok-bg' : 'status-err-bg'">
-                <DemoIcon :name="smbStatus.serverRunning ? 'check-circle' : 'alert-circle'" :size="18" />
-              </div>
-              <div class="engine-card-content">
-                <span class="engine-card-label">协同共享引擎</span>
-                <strong :class="smbStatus.serverRunning ? 'text-ok' : 'text-danger'">
-                  {{ smbStatus.serverRunning ? '正常运行' : '未启动' }}
-                </strong>
-                <small>{{ smbStatus.configuredShareExists ? `已挂载共享 \\\\${smbStatus.shareName}` : '共享未就绪' }}</small>
-              </div>
-            </div>
-
-            <div class="engine-card">
-              <div class="engine-card-icon" :class="caxaStatus?.available ? 'status-ok-bg' : 'status-warn-bg'">
-                <DemoIcon name="monitor" :size="18" />
-              </div>
-              <div class="engine-card-content">
-                <span class="engine-card-label">CAXA 软件宿主</span>
-                <strong :class="caxaStatus?.available ? 'text-ok' : 'text-warn'">
-                  {{ caxaStatus?.available ? '已检测就绪' : '未自动关联' }}
-                </strong>
-                <small :title="caxaStatus?.path || '未找到安装路径'">
-                  {{ caxaStatus?.path ? '可直接调起绘图' : '支持手动从共享打开' }}
-                </small>
-              </div>
-            </div>
-
-            <div class="engine-card">
-              <div class="engine-card-icon" :class="protocolRegistered ? 'status-ok-bg' : 'status-info-bg'">
-                <DemoIcon name="link-2" :size="18" />
-              </div>
-              <div class="engine-card-content">
-                <span class="engine-card-label">深度协同协议</span>
-                <strong :class="protocolRegistered ? 'text-ok' : 'text-muted'">
-                  {{ !isTauri() ? '浏览器网页模式' : protocolRegistered ? '已注册 (cadguanliq://)' : '就绪' }}
-                </strong>
-                <small>支持一键免密票据传递唤起</small>
-              </div>
-            </div>
-
-            <div class="engine-card">
-              <div class="engine-card-icon status-ok-bg">
-                <DemoIcon name="folder-check" :size="18" />
-              </div>
-              <div class="engine-card-content">
-                <span class="engine-card-label">工作区存储</span>
-                <strong class="text-ok">实时同步就绪</strong>
-                <small :title="smbStatus.localRoot">{{ smbStatus.uncRoot || '已启用物理映射' }}</small>
+              <!-- 卡片信息说明 -->
+              <div class="skin-meta">
+                <div class="skin-meta-header">
+                  <strong class="skin-title">{{ item.title }}</strong>
+                  <span class="skin-tag">{{ item.tag }}</span>
+                </div>
+                <p class="skin-desc">{{ item.desc }}</p>
+                <div class="skin-palette-bar">
+                  <span class="palette-swatch" :style="{ background: item.colors.bg }" title="背景基色"></span>
+                  <span class="palette-swatch" :style="{ background: item.colors.panel }" title="面板底色"></span>
+                  <span class="palette-swatch" :style="{ background: item.colors.accent }" title="核心强调色"></span>
+                  <span class="palette-swatch" :style="{ background: item.colors.accent2 }" title="辅助对比色"></span>
+                </div>
               </div>
             </div>
           </div>
+        </section>
 
-          <!-- 全局活动编辑会话监控表格 -->
-          <div class="active-sessions-box">
-            <div class="box-head">
-              <div class="box-title">
-                <DemoIcon name="users" :size="15" />
-                <span>全系统活动协同编辑图纸 ({{ activeSessions.length }})</span>
+        <!-- 双列排布：明暗模式 & 登录动效 -->
+        <div class="appearance-sub-grid">
+          <!-- 色彩明暗模式 -->
+          <section class="card settings-card">
+            <div class="card-head">
+              <div class="card-head-title">
+                <DemoIcon name="sun-moon" :size="16" />
+                <h3>色彩模式（明 / 暗）</h3>
               </div>
-              <span class="box-hint">显示当前被各工程师打开中的 CAD 图纸，可手动释放长时间锁定的文件</span>
             </div>
 
-            <div v-if="activeSessions.length === 0" class="sessions-empty">
-              <DemoIcon name="check-circle" :size="20" />
-              <span>当前无被占用的图纸，所有 CAD 图纸均处于可随时编辑状态。</span>
+            <div class="mode-selection-group">
+              <div
+                v-for="item in modes"
+                :key="item.key"
+                class="mode-pill-card"
+                :class="{ active: themeStore.mode === item.key }"
+                @click="selectMode(item.key)"
+              >
+                <div class="mode-pill-icon">
+                  <DemoIcon :name="item.icon" :size="20" />
+                </div>
+                <div class="mode-pill-text">
+                  <strong>{{ item.title }}</strong>
+                  <p>{{ item.desc }}</p>
+                </div>
+                <div class="custom-radio">
+                  <span class="radio-dot"></span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 登录转场动效 -->
+          <section class="card settings-card">
+            <div class="card-head">
+              <div class="card-head-title">
+                <DemoIcon name="log-in" :size="16" />
+                <h3>登录过渡动效</h3>
+                <span class="card-head-hint">认证成功进入系统的动画</span>
+              </div>
             </div>
 
-            <div v-else class="sessions-table-wrap">
-              <table class="tbl compact-tbl">
-                <thead>
-                  <tr>
-                    <th>文件名称</th>
-                    <th>所属图号</th>
-                    <th>编辑人</th>
-                    <th>锁定时间</th>
-                    <th>状态</th>
-                    <th style="width: 110px; text-align: right">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="session in activeSessions" :key="session.id">
-                    <td class="file-name-cell">
-                      <DemoIcon name="file" :size="14" />
-                      <b>{{ session.fileName || 'CAD 图纸' }}</b>
-                    </td>
-                    <td class="num mono">{{ session.drawingNo || session.partNo || '-' }}</td>
-                    <td>
-                      <span class="user-tag">
-                        <DemoIcon name="user" :size="12" />
-                        {{ session.userName || session.userAccount }}
-                        <small v-if="session.isCurrent">(我)</small>
-                      </span>
-                    </td>
-                    <td class="num mono text-muted">{{ new Date(session.startedAt).toLocaleTimeString() }}</td>
-                    <td>
-                      <span class="badge-collab active">
-                        <span class="pulse-dot"></span>编辑中
-                      </span>
-                    </td>
-                    <td style="text-align: right">
-                      <button
-                        v-if="session.canClose"
-                        class="btn sm danger"
-                        type="button"
-                        :disabled="closingSessionId === session.id"
-                        title="强制释放此文件的独占编辑锁"
-                        @click="handleCloseSession(session)"
-                      >
-                        {{ closingSessionId === session.id ? '解锁中...' : '解除锁定' }}
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="animation-selection-group">
+              <div
+                v-for="item in loginAnimations"
+                :key="item.key"
+                class="animation-pill-card"
+                :class="{ active: preferenceStore.loginAnimation === item.key }"
+                @click="selectLoginAnimation(item.key)"
+              >
+                <div class="animation-pill-icon">
+                  <DemoIcon :name="item.icon" :size="20" />
+                </div>
+                <div class="animation-pill-text">
+                  <strong>{{ item.title }}</strong>
+                  <p>{{ item.desc }}</p>
+                </div>
+                <div class="custom-radio">
+                  <span class="radio-dot"></span>
+                </div>
+              </div>
             </div>
-          </div>
-        </template>
-      </section>
-
-      <!-- 工作台偏好说明 -->
-      <section class="card settings-section">
-        <div class="section-title">
-          <DemoIcon name="sliders" :size="17" />
-          <h2>CAD 工作台偏好</h2>
+          </section>
         </div>
-        <div class="pref-list">
-          <div class="pref-item">
-            <div class="pref-text">
-              <b>启动时自动聚焦图纸库</b>
-              <span>打开应用后直接呈现最近项目与图纸列表</span>
+      </div>
+
+      <!-- 2. 工作台偏好 Tab -->
+      <div v-show="activeTab === 'workbench'" class="tab-panel workbench-panel">
+        <section class="card settings-card">
+          <div class="card-head">
+            <div class="card-head-title">
+              <DemoIcon name="sliders" :size="16" />
+              <h3>CAD 工作台运行参数与交互行为</h3>
             </div>
-            <input type="checkbox" checked />
           </div>
-          <div class="pref-item">
-            <div class="pref-text">
-              <b>零件图借用独立分支保护</b>
-              <span>修改借用件时默认创建项目独立副本，防止误修改原图</span>
+
+          <div class="switch-settings-list">
+            <div class="switch-row" @click="autoFocusLibrary = !autoFocusLibrary">
+              <div class="switch-icon-box">
+                <DemoIcon name="folder-kanban" :size="18" />
+              </div>
+              <div class="switch-text">
+                <div class="switch-title-wrap">
+                  <strong>启动时自动聚焦图纸库</strong>
+                  <span class="badge-tag">常用</span>
+                </div>
+                <p>启动应用并在认证通过后，首屏直接呈现图纸库与最近项目，减少一级跳转交互。</p>
+              </div>
+              <label class="modern-switch" @click.stop>
+                <input v-model="autoFocusLibrary" type="checkbox" />
+                <span class="switch-slider"></span>
+              </label>
             </div>
-            <input type="checkbox" checked />
+
+            <div class="switch-row" @click="forkBranchProtect = !forkBranchProtect">
+              <div class="switch-icon-box">
+                <DemoIcon name="git-branch" :size="18" />
+              </div>
+              <div class="switch-text">
+                <div class="switch-title-wrap">
+                  <strong>零件图借用独立分支保护</strong>
+                  <span class="badge-tag protect">防篡改保护</span>
+                </div>
+                <p>修改跨项目借用的零件图时，系统强制引导创建独立项目分支副本，防止影响原始基准图纸。</p>
+              </div>
+              <label class="modern-switch" @click.stop>
+                <input v-model="forkBranchProtect" type="checkbox" />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
           </div>
-        </div>
-      </section>
-    </div>
+        </section>
+      </div>
+
+      <!-- 3. 桌面协同引擎 Tab -->
+      <div v-show="activeTab === 'collab'" class="tab-panel collab-panel">
+        <section class="card settings-card">
+          <div class="card-head">
+            <div class="card-head-title">
+              <DemoIcon name="cpu" :size="16" />
+              <h3>协同服务与宿主运行状态</h3>
+              <span class="card-head-hint">CAXA / AutoCAD 双向无感协同与文件排他锁</span>
+            </div>
+            <button
+              class="btn secondary sm"
+              type="button"
+              :disabled="systemStore.loading || loadingSessions"
+              @click="refreshSystemStatus"
+            >
+              <DemoIcon :name="(systemStore.loading || loadingSessions) ? 'loader' : 'refresh-cw'" :size="13" />
+              <span>刷新运行看板</span>
+            </button>
+          </div>
+
+          <div v-if="!smbStatus" class="collab-alert-box">
+            <DemoIcon name="alert-triangle" :size="18" />
+            <span>未能检测到协同共享服务状态，请确保本地后端服务正常监听。</span>
+          </div>
+
+          <template v-else>
+            <!-- 仪表盘状态四宫格 -->
+            <div class="engine-metrics-grid">
+              <div class="metric-card">
+                <div class="metric-top">
+                  <span class="metric-label">协同共享服务 (SMB)</span>
+                  <span class="status-indicator-badge" :class="smbStatus.serverRunning ? 'status-ok' : 'status-err'">
+                    <span class="indicator-dot"></span>
+                    {{ smbStatus.serverRunning ? '服务运行中' : '未启动' }}
+                  </span>
+                </div>
+                <div class="metric-body">
+                  <div class="metric-icon" :class="smbStatus.serverRunning ? 'icon-ok' : 'icon-err'">
+                    <DemoIcon :name="smbStatus.serverRunning ? 'check-circle' : 'alert-circle'" :size="20" />
+                  </div>
+                  <div class="metric-detail">
+                    <strong>{{ smbStatus.serverRunning ? '实时排他锁已就绪' : '共享未连接' }}</strong>
+                    <small>{{ smbStatus.configuredShareExists ? `已挂载 \\\\${smbStatus.shareName}` : '未找到共享目录' }}</small>
+                  </div>
+                </div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-top">
+                  <span class="metric-label">CAXA CAD 宿主环境</span>
+                  <span class="status-indicator-badge" :class="caxaStatus?.available ? 'status-ok' : 'status-warn'">
+                    <span class="indicator-dot"></span>
+                    {{ caxaStatus?.available ? '已关联宿主' : '未检测到程序' }}
+                  </span>
+                </div>
+                <div class="metric-body">
+                  <div class="metric-icon" :class="caxaStatus?.available ? 'icon-ok' : 'icon-warn'">
+                    <DemoIcon name="monitor" :size="20" />
+                  </div>
+                  <div class="metric-detail">
+                    <strong :title="caxaStatus?.path || '未找到安装路径'">
+                      {{ caxaStatus?.available ? 'CAD 2022+ 原生插件' : '缺少本地安装' }}
+                    </strong>
+                    <small>{{ caxaStatus?.path ? '支持一键调起绘图' : '支持浏览器在线查看' }}</small>
+                  </div>
+                </div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-top">
+                  <span class="metric-label">桌面深度协议唤起</span>
+                  <span class="status-indicator-badge" :class="protocolRegistered ? 'status-ok' : 'status-info'">
+                    <span class="indicator-dot"></span>
+                    {{ !isTauri() ? 'Web 浏览器模式' : protocolRegistered ? '已注册协议' : '准备就绪' }}
+                  </span>
+                </div>
+                <div class="metric-body">
+                  <div class="metric-icon icon-info">
+                    <DemoIcon name="link-2" :size="20" />
+                  </div>
+                  <div class="metric-detail">
+                    <strong>cadguanliq:// 协议</strong>
+                    <small>支持浏览器与桌面端免密票据传递唤起</small>
+                  </div>
+                </div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-top">
+                  <span class="metric-label">本地缓存与落盘</span>
+                  <span class="status-indicator-badge status-ok">
+                    <span class="indicator-dot"></span>
+                    正常可用
+                  </span>
+                </div>
+                <div class="metric-body">
+                  <div class="metric-icon icon-ok">
+                    <DemoIcon name="folder-check" :size="20" />
+                  </div>
+                  <div class="metric-detail">
+                    <strong :title="smbStatus.localRoot">{{ smbStatus.uncRoot || '物理存储映射已挂载' }}</strong>
+                    <small>双重防冲突落盘保护已激活</small>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 全局活动协同会话表格 -->
+            <div class="sessions-monitor-card">
+              <div class="monitor-header">
+                <div class="monitor-title-wrap">
+                  <DemoIcon name="users" :size="16" />
+                  <h4>当前被锁定的 CAD 图纸会话</h4>
+                  <span class="monitor-count-pill">{{ activeSessions.length }} 个活跃文件</span>
+                </div>
+                <span class="monitor-tip">多端协同编辑时，同一张图纸仅允许单个工程师持有写锁</span>
+              </div>
+
+              <div v-if="activeSessions.length === 0" class="sessions-blank-state">
+                <div class="blank-icon-circle">
+                  <DemoIcon name="check-circle-2" :size="28" />
+                </div>
+                <div class="blank-text">
+                  <strong>当前全库图纸均处于空闲状态</strong>
+                  <p>没有正在独占编辑中的图纸，工程师可自由签出或打开修改。</p>
+                </div>
+              </div>
+
+              <div v-else class="sessions-table-scroller">
+                <table class="modern-table">
+                  <thead>
+                    <tr>
+                      <th>图纸文件</th>
+                      <th>关联图号 / 零件</th>
+                      <th>当前编辑人</th>
+                      <th>签出锁定时间</th>
+                      <th>协同状态</th>
+                      <th class="cell-action">管理操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="session in activeSessions" :key="session.id">
+                      <td class="cell-file">
+                        <DemoIcon name="file-text" :size="14" />
+                        <span class="file-name" :title="session.fileName">{{ session.fileName || 'CAD 图纸' }}</span>
+                      </td>
+                      <td class="cell-no font-mono">{{ session.drawingNo || session.partNo || '-' }}</td>
+                      <td>
+                        <span class="user-chip">
+                          <DemoIcon name="user" :size="12" />
+                          <span>{{ session.userName || session.userAccount }}</span>
+                          <small v-if="session.isCurrent" class="me-tag">(本机)</small>
+                        </span>
+                      </td>
+                      <td class="cell-time font-mono">{{ new Date(session.startedAt).toLocaleTimeString() }}</td>
+                      <td>
+                        <span class="active-lock-tag">
+                          <span class="pulse-beacon"></span>
+                          <span>排他编辑中</span>
+                        </span>
+                      </td>
+                      <td class="cell-action">
+                        <button
+                          v-if="session.canClose"
+                          class="btn sm danger unlock-btn"
+                          type="button"
+                          :disabled="closingSessionId === session.id"
+                          @click="handleCloseSession(session)"
+                        >
+                          <DemoIcon :name="closingSessionId === session.id ? 'loader' : 'unlock'" :size="12" />
+                          <span>{{ closingSessionId === session.id ? '释放中…' : '强制释放锁' }}</span>
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </template>
+        </section>
+      </div>
+
+      <!-- 4. 客户端更新 Tab -->
+      <div v-show="activeTab === 'update'" class="tab-panel update-panel-view">
+        <section class="card settings-card">
+          <div class="card-head">
+            <div class="card-head-title">
+              <DemoIcon name="download-cloud" :size="16" />
+              <h3>客户端版本检测与更新源管理</h3>
+              <span class="card-head-hint">配置局域网或云端更新地址，保持软件处于最新演进版本</span>
+            </div>
+          </div>
+
+          <!-- 版本看板 -->
+          <div class="version-banner">
+            <div class="version-badge-big">
+              <DemoIcon name="layers" :size="24" />
+            </div>
+            <div class="version-details">
+              <div class="version-title-wrap">
+                <h3>图枢 CAD·PDM 桌面客户端</h3>
+                <span class="current-tag">当前版本 v{{ appConfig.version }}</span>
+              </div>
+              <p class="version-state-desc">
+                <template v-if="updateError">
+                  <span class="text-danger">{{ updateError }}</span>
+                </template>
+                <template v-else-if="updateResult?.updateAvailable">
+                  <span class="text-ok">✨ 发现新版本 <strong>v{{ updateResult.latestVersion }}</strong>！请及时更新以获取最新特性与性能优化。</span>
+                </template>
+                <template v-else-if="updateResult">
+                  <span class="text-ok">✓ 当前已是最新版本（最新检查版本 v{{ updateResult.latestVersion }}）</span>
+                </template>
+                <template v-else>
+                  <span>点击右侧按钮发起版本检查。</span>
+                </template>
+              </p>
+            </div>
+            <div class="version-actions">
+              <button
+                class="btn primary check-update-btn"
+                type="button"
+                :disabled="checkingUpdate"
+                @click="handleCheckForUpdates"
+              >
+                <DemoIcon :name="checkingUpdate ? 'loader' : 'refresh-cw'" :size="14" />
+                <span>{{ checkingUpdate ? '检查中…' : '检查更新' }}</span>
+              </button>
+              <button
+                v-if="updateResult?.updateAvailable"
+                class="btn primary download-btn"
+                type="button"
+                @click="handleDownloadUpdate"
+              >
+                <DemoIcon name="download" :size="14" />
+                <span>下载更新包</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 更新服务器自定义配置 -->
+          <div class="server-config-card">
+            <div class="server-config-title">
+              <DemoIcon name="server" :size="15" />
+              <strong>更新服务器地址（可选）</strong>
+              <span class="server-hint">内网服务器 IP 或端口变动时自定义，不影响主服务数据通信</span>
+            </div>
+
+            <div class="server-input-group">
+              <input
+                v-model="serverInput"
+                class="server-input"
+                type="text"
+                placeholder="例如：192.168.1.50:8080 或 http://update.company.lan"
+                @keyup.enter="handleProbeServer"
+              />
+              <button class="btn secondary sm" type="button" :disabled="probing" @click="handleProbeServer">
+                <DemoIcon :name="probing ? 'loader' : 'zap'" :size="13" />
+                <span>{{ probing ? '探测中…' : '连接测试' }}</span>
+              </button>
+              <button class="btn secondary sm" type="button" @click="handleSaveServer">
+                <DemoIcon name="save" :size="13" />
+                <span>记住地址</span>
+              </button>
+              <button v-if="serverSaved" class="btn secondary sm" type="button" @click="handleClearServer">
+                <span>恢复默认</span>
+              </button>
+            </div>
+
+            <div v-if="probeResult" class="probe-feedback-box" :class="{ fail: !probeResult.reachable }">
+              <DemoIcon :name="probeResult.reachable ? 'check-circle-2' : 'alert-circle'" :size="15" />
+              <span v-if="probeResult.reachable">
+                服务器通信正常 · 响应服务版本 v{{ probeResult.version || '最新' }}
+              </span>
+              <span v-else>连接测试失败：{{ probeResult.message || '目标主机不可达或拒绝连接' }}</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
   </div>
 </template>
 
@@ -621,704 +851,1037 @@ function handleDownloadUpdate() {
 .settings-page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 4px 2px 26px;
+  gap: 16px;
+  padding: 16px 20px 24px;
 }
 
-.settings-header {
+/* 顶部标题栏 */
+.settings-head-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
+}
+
+.settings-head-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-badge-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .settings-title {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 800;
+  letter-spacing: 0.3px;
+}
+
+.settings-version-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  border-radius: 6px;
 }
 
 .settings-subtitle {
-  margin: 3px 0 0;
+  margin: 0;
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
-.settings-body {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  align-items: start;
+.reset-btn {
+  padding: 7px 14px;
+  font-size: 12px;
 }
 
-/* 宽区块横跨两列：客户端更新与协同引擎内容较多 */
-.settings-section.update-section,
-.settings-section.collab-section {
-  grid-column: 1 / -1;
+/* 分类 Segmented Tabs 胶囊切换 */
+.settings-nav-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  width: fit-content;
 }
 
-.settings-section {
-  padding: 16px 18px;
-}
-
-.section-title {
+.nav-tab-btn {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  transition: all 0.22s ease;
+}
+
+.nav-tab-btn:hover {
+  color: var(--text-1);
+  background: var(--hover);
+}
+
+.nav-tab-btn.active {
+  color: var(--accent);
+  background: var(--panel);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 15%), 0 0 0 1px var(--line);
+}
+
+.tab-indicator-count {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-3);
+  background: var(--panel-2);
+  padding: 1px 6px;
+  border-radius: 99px;
+}
+
+.tab-warn-badge {
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 1px 6px;
+  border-radius: 99px;
+}
+
+.tab-new-badge {
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 1px 6px;
+  border-radius: 99px;
+}
+
+/* 卡片统一规范 */
+.settings-card {
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
 }
 
-.section-title svg {
+.card-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-head-title svg {
   color: var(--accent);
 }
 
-.section-title h2 {
+.card-head-title h3 {
   margin: 0;
   font-size: 14px;
   font-weight: 700;
 }
 
-.sub-hint {
-  margin-left: auto;
+.card-head-hint {
   color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.current-theme-pill {
   font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--line-strong, var(--line));
+  padding: 2px 9px;
+  border-radius: 99px;
 }
 
-.skin-card-grid {
+/* 皮肤画廊微缩模型卡片 */
+.skin-gallery-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
 }
 
-.theme-card {
-  position: relative;
+.skin-gallery-card {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 12px;
   border: 1.5px solid var(--line);
   border-radius: 10px;
   background: var(--panel-2);
+  overflow: hidden;
   cursor: pointer;
   transition: all 0.25s ease;
 }
 
-.theme-card:hover {
+.skin-gallery-card:hover {
   border-color: var(--accent);
   transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 20%);
 }
 
-.theme-card.active {
+.skin-gallery-card.active {
   border-color: var(--accent);
-  background: var(--panel);
   box-shadow: 0 0 0 1px var(--accent), 0 8px 24px var(--glow);
+  background: var(--panel);
 }
 
-.theme-card-top {
+/* 微缩界面 Mockup */
+.skin-mockup {
+  position: relative;
+  height: 74px;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mock-topbar {
+  height: 12px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+}
+
+.mock-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.mock-line {
+  width: 24px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.mock-body {
+  flex: 1;
+  display: flex;
+  gap: 5px;
+}
+
+.mock-sidebar {
+  width: 28px;
+  border-radius: 4px;
+}
+
+.mock-canvas {
+  flex: 1;
+  border-radius: 4px;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mock-card {
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  border: 1px solid;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+}
+
+.mock-block {
+  width: 14px;
+  height: 6px;
+  border-radius: 2px;
+}
+
+.mock-sub-block {
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.skin-active-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 40%);
+}
+
+.skin-meta {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skin-meta-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
 }
 
-.theme-icon {
+.skin-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.skin-tag {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.skin-desc {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.skin-palette-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.palette-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgb(255 255 255 / 15%);
+}
+
+/* 明暗模式 & 登录动效双列 */
+.appearance-sub-grid {
   display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.mode-selection-group,
+.animation-selection-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mode-pill-card,
+.animation-pill-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  cursor: pointer;
+  transition: all 0.22s ease;
+}
+
+.mode-pill-card:hover,
+.animation-pill-card:hover {
+  border-color: var(--accent);
+  background: var(--panel);
+}
+
+.mode-pill-card.active,
+.animation-pill-card.active {
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 14px var(--glow);
+}
+
+.mode-pill-icon,
+.animation-pill-icon {
+  width: 34px;
+  height: 34px;
   border-radius: 8px;
   background: var(--accent-soft);
   color: var(--accent);
+  display: grid;
+  place-items: center;
+  flex: none;
 }
 
-.theme-icon svg {
-  width: 16px;
-  height: 16px;
+.mode-pill-text,
+.animation-pill-text {
+  flex: 1;
+  min-width: 0;
 }
 
-.radio-indicator {
-  display: inline-block;
+.mode-pill-text strong,
+.animation-pill-text strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.mode-pill-text p,
+.animation-pill-text p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+.custom-radio {
   width: 18px;
   height: 18px;
-  border: 1.5px solid var(--line);
   border-radius: 50%;
-  position: relative;
-  transition: all 0.2s ease;
+  border: 1.5px solid var(--line);
+  display: grid;
+  place-items: center;
+  flex: none;
+  transition: all 0.2s;
 }
 
-.theme-card.active .radio-indicator,
-.mode-card.active .radio-indicator {
+.mode-pill-card.active .custom-radio,
+.animation-pill-card.active .custom-radio {
   border-color: var(--accent);
   background: var(--accent);
 }
 
-.theme-card.active .radio-indicator::after,
-.mode-card.active .radio-indicator::after {
-  content: '';
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  width: 7px;
-  height: 7px;
+.radio-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--accent-ink);
+  opacity: 0;
+  transition: opacity 0.2s;
 }
 
-.theme-name {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-1);
+.mode-pill-card.active .radio-dot,
+.animation-pill-card.active .radio-dot {
+  opacity: 1;
 }
 
-.theme-desc {
-  margin-top: 4px;
-  color: var(--text-3);
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-
-.theme-preview-pill {
+/* 工作台偏好 Switch 开关行 */
+.switch-settings-list {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: auto;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+  flex-direction: column;
+  gap: 8px;
 }
 
-.dot {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 1px solid var(--line);
-}
-
-.dot-accent { background: var(--accent); }
-.dot-panel { background: var(--panel-2); }
-.dot-line { background: var(--hover); }
-
-.mode-card-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-
-.mode-card {
+.switch-row {
   display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 12px;
-  border: 1.5px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel-2);
-  cursor: pointer;
-  transition: all 0.25s ease;
-}
-
-.mode-card:hover {
-  border-color: var(--accent);
-}
-
-.mode-card.active {
-  border-color: var(--accent);
-  background: var(--panel);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-
-.login-animation-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-
-.login-animation-card {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  width: 100%;
-  padding: 11px 12px;
-  border: 1.5px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel-2);
-  color: var(--text-1);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.25s ease, background-color 0.25s ease, box-shadow 0.25s ease;
-}
-
-.login-animation-card:hover,
-.login-animation-card.active {
-  border-color: var(--accent);
-  background: var(--panel);
-}
-
-.login-animation-card.active {
-  box-shadow: 0 0 0 1px var(--accent), 0 8px 24px var(--glow);
-}
-
-.update-panel {
-  display: grid;
-  grid-template-columns: minmax(110px, 0.25fr) minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
-  padding: 12px 14px;
+  padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel-2);
+  cursor: pointer;
+  transition: all 0.22s ease;
 }
 
-.update-version {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.switch-row:hover {
+  background: var(--panel);
+  border-color: var(--line-strong, var(--line));
 }
 
-.update-version__label {
-  color: var(--text-3);
-  font-size: 11px;
-}
-
-.update-version strong {
-  color: var(--accent);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 16px;
-}
-
-.update-result {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  min-width: 0;
-  color: var(--text-2);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.update-result svg {
-  flex: none;
-  margin-top: 1px;
-  color: var(--accent);
-}
-
-.update-result span {
-  min-width: 0;
-}
-
-.update-result small {
-  display: block;
-  margin-top: 2px;
-  overflow-wrap: anywhere;
-  color: var(--text-3);
-  font-size: 11px;
-}
-
-.update-result--error,
-.update-result--error svg {
-  color: var(--danger);
-}
-
-.update-button {
-  min-width: 112px;
-  justify-content: center;
-}
-
-.update-button:disabled svg {
-  animation: update-spin 1s linear infinite;
-}
-
-.collab-section .section-title {
-  flex-wrap: wrap;
-}
-
-.collab-section .section-title .btn {
-  margin-left: auto;
-}
-
-.collab-empty-alert {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
+.switch-icon-box {
+  width: 36px;
+  height: 36px;
   border-radius: 9px;
-  background: var(--panel-2);
-  color: var(--text-3);
-  font-size: 12.5px;
-}
-
-.engine-cards-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.engine-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel-2);
-}
-
-.engine-card-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
   flex: none;
 }
 
-.engine-card-icon svg {
-  width: 15px;
-  height: 15px;
-}
-
-.status-ok-bg {
-  background: var(--ok-soft, rgba(34, 197, 94, 0.15));
-  color: var(--ok, #16a34a);
-}
-
-.status-warn-bg {
-  background: var(--warn-soft, rgba(245, 158, 11, 0.15));
-  color: var(--warn, #d97706);
-}
-
-.status-err-bg {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--danger, #ef4444);
-}
-
-.status-info-bg {
-  background: var(--accent-soft, rgba(59, 130, 246, 0.15));
-  color: var(--accent, #3b82f6);
-}
-
-.engine-card-content {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+.switch-text {
+  flex: 1;
   min-width: 0;
 }
 
-.engine-card-label {
-  color: var(--text-3);
-  font-size: 11px;
+.switch-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.engine-card-content strong {
-  font-size: 13px;
+.switch-title-wrap strong {
+  font-size: 13.5px;
   font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--text-1);
 }
 
-.engine-card-content small {
+.badge-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.badge-tag.protect {
+  color: var(--ok);
+  background: var(--ok-soft, rgba(34, 197, 94, 0.12));
+}
+
+.switch-text p {
+  margin: 3px 0 0;
+  font-size: 11.5px;
   color: var(--text-3);
-  font-size: 10.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.45;
 }
 
-.text-ok { color: var(--ok, #16a34a) !important; }
-.text-warn { color: var(--warn, #d97706) !important; }
-.text-danger { color: var(--danger, #ef4444) !important; }
-.text-muted { color: var(--text-2) !important; }
+/* 高质感现代 Switch */
+.modern-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex: none;
+}
 
-.active-sessions-box {
+.modern-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  background-color: var(--line);
+  border-radius: 24px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.switch-slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #fff;
+  border-radius: 50%;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 30%);
+}
+
+.modern-switch input:checked + .switch-slider {
+  background-color: var(--accent);
+}
+
+.modern-switch input:checked + .switch-slider:before {
+  transform: translateX(20px);
+  background-color: var(--accent-ink);
+}
+
+/* 协同引擎仪表盘网格 */
+.engine-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.metric-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
 }
 
-.box-head {
+.metric-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 6px;
 }
 
-.box-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-weight: 700;
-  font-size: 13px;
-  color: var(--text-1);
-}
-
-.box-title svg {
-  color: var(--accent);
-}
-
-.box-hint {
+.metric-label {
+  font-size: 11px;
   color: var(--text-3);
-  font-size: 11.5px;
+  font-weight: 500;
 }
 
-.sessions-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 24px 16px;
-  color: var(--ok);
-  font-size: 12.5px;
-}
-
-.sessions-empty svg {
-  color: var(--ok);
-}
-
-.sessions-table-wrap {
-  overflow-x: auto;
-}
-
-.user-tag {
+.status-indicator-badge {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  color: var(--text-1);
-}
-
-.user-tag svg {
-  color: var(--accent);
-}
-
-.badge-collab {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 7px;
+  gap: 4px;
+  padding: 1px 6px;
   border-radius: 99px;
   font-size: 10px;
   font-weight: 600;
-  line-height: 16px;
+}
+
+.indicator-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-ok { background: var(--ok-soft, rgba(34, 197, 94, 0.12)); color: var(--ok, #22c55e); }
+.status-warn { background: var(--warn-soft, rgba(245, 158, 11, 0.12)); color: var(--warn, #f59e0b); }
+.status-err { background: rgba(239, 68, 68, 0.12); color: var(--danger, #ef4444); }
+.status-info { background: var(--accent-soft); color: var(--accent); }
+
+.metric-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.metric-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.icon-ok { background: var(--ok-soft, rgba(34, 197, 94, 0.14)); color: var(--ok, #22c55e); }
+.icon-warn { background: var(--warn-soft, rgba(245, 158, 11, 0.14)); color: var(--warn, #f59e0b); }
+.icon-err { background: rgba(239, 68, 68, 0.14); color: var(--danger, #ef4444); }
+.icon-info { background: var(--accent-soft); color: var(--accent); }
+
+.metric-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.metric-detail strong {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.badge-collab.active {
-  background: var(--ok-soft, rgba(34, 197, 94, 0.15));
-  color: var(--ok, #16a34a);
-  border: 1px solid rgba(34, 197, 94, 0.3);
+.metric-detail small {
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.pulse-dot {
+/* 协同排他锁监控表格 */
+.sessions-monitor-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.monitor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.monitor-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.monitor-title-wrap svg {
+  color: var(--accent);
+}
+
+.monitor-title-wrap h4 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.monitor-count-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 7px;
+  border-radius: 99px;
+}
+
+.monitor-tip {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.sessions-blank-state {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px dashed var(--line);
+}
+
+.blank-icon-circle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--ok-soft, rgba(34, 197, 94, 0.12));
+  color: var(--ok, #22c55e);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.blank-text strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.blank-text p {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.sessions-table-scroller {
+  overflow-x: auto;
+}
+
+.modern-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.modern-table th {
+  padding: 8px 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.modern-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-1);
+}
+
+.cell-file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+}
+
+.cell-file svg {
+  color: var(--accent);
+}
+
+.file-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-no {
+  color: var(--text-2);
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+}
+
+.user-chip svg {
+  color: var(--accent);
+}
+
+.me-tag {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.active-lock-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--ok-soft, rgba(34, 197, 94, 0.12));
+  color: var(--ok, #22c55e);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+}
+
+.pulse-beacon {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--ok, #22c55e);
-  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
-  animation: pulse-ring 1.8s infinite cubic-bezier(0.66, 0, 0, 1);
-  flex: none;
+  box-shadow: 0 0 6px var(--ok, #22c55e);
 }
 
-@keyframes pulse-ring {
-  0% {
-    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
-  }
+.cell-action {
+  text-align: right;
 }
 
-@media (max-width: 1024px) {
-  .engine-cards-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
-  .engine-cards-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@keyframes update-spin {
-  to { transform: rotate(360deg); }
-}
-
-.login-animation-icon {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  flex: none;
-  border-radius: 9px;
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.login-animation-icon svg {
-  width: 17px;
-  height: 17px;
-}
-
-.login-animation-copy {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.login-animation-copy strong {
-  font-size: 13px;
-}
-
-.login-animation-copy small {
-  color: var(--text-3);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.mode-icon {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  flex: none;
-}
-
-.mode-icon svg {
-  width: 17px;
-  height: 17px;
-}
-
-.mode-info {
-  flex: 1;
-}
-
-.mode-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-1);
-}
-
-.mode-desc {
-  margin-top: 2px;
-  color: var(--text-3);
+.unlock-btn {
+  padding: 3px 8px;
   font-size: 11px;
 }
 
-.pref-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.pref-item {
+/* 客户端更新看板 */
+.version-banner {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
+  gap: 16px;
+  padding: 16px 18px;
   border-radius: 10px;
+  border: 1px solid var(--line);
   background: var(--panel-2);
 }
 
-.pref-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.version-badge-big {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  flex: none;
 }
 
-.pref-text b {
-  font-size: 13px;
+.version-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.version-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.version-title-wrap h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
   color: var(--text-1);
 }
 
-.pref-text span {
-  color: var(--text-3);
-  font-size: 11.5px;
+.current-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 8px;
+  border-radius: 6px;
 }
 
-@media (max-width: 1100px) {
-  .settings-body {
-    grid-template-columns: 1fr;
-  }
+.version-state-desc {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-2);
 }
 
-@media (max-width: 900px) {
-  .skin-card-grid {
-    grid-template-columns: 1fr;
-  }
-  .mode-card-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .login-animation-grid {
-    grid-template-columns: 1fr;
-  }
-
-.update-server-row {
+.version-actions {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  flex: none;
 }
 
-.update-server-input {
+.check-update-btn,
+.download-btn {
+  padding: 8px 16px;
+  font-size: 12.5px;
+}
+
+/* 更新服务器配置卡片 */
+.server-config-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.server-config-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-1);
+}
+
+.server-config-title svg {
+  color: var(--accent);
+}
+
+.server-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.server-input-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.server-input {
   flex: 1;
-  min-width: 220px;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
   color: var(--text-1);
   font-size: 12.5px;
   outline: none;
+  transition: border-color 0.2s;
 }
 
-.update-server-input:focus {
+.server-input:focus {
   border-color: var(--accent);
 }
 
-.update-probe-result {
+.probe-feedback-box {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 10px;
+  gap: 7px;
   padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(52, 199, 123, 0.1);
-  color: var(--ok, #34c77b);
-  font-size: 12px;
+  border-radius: 7px;
+  background: var(--ok-soft, rgba(34, 197, 94, 0.1));
+  color: var(--ok, #22c55e);
+  font-size: 11.5px;
 }
 
-.update-probe-result--fail {
-  background: rgba(239, 91, 107, 0.1);
-  color: var(--danger);
+.probe-feedback-box.fail {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger, #ef4444);
 }
 
-.update-panel {
-    grid-template-columns: 1fr auto;
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* 响应式断点适配 */
+@media (max-width: 1080px) {
+  .engine-metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
+}
 
-  .update-result {
-    grid-column: 1 / -1;
-    grid-row: 2;
+@media (max-width: 820px) {
+  .appearance-sub-grid {
+    grid-template-columns: 1fr;
+  }
+  .version-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .version-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .server-input-group {
+    flex-wrap: wrap;
+  }
+  .server-input {
+    min-width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .engine-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+  .settings-nav-tabs {
+    width: 100%;
+    overflow-x: auto;
   }
 }
 </style>

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import ChangeRequestDialog from './ChangeRequestDialog.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 import { STATUS } from '@/constants/drawing-status'
@@ -42,31 +43,29 @@ const isCreator = computed(() => {
   return ('createdBy' in item && item.createdBy) === current.displayName
 })
 const canArchive = computed(() => !isPart.value && drawing.value?.status === 'published' && (isCreator.value || isAdmin.value))
-const canUnarchive = computed(() => !isPart.value && drawing.value?.status === 'archived' && isAdmin.value)
+const changeVisible = ref(false)
 
 function toggleArchive() {
   const item = drawing.value
   if (!item) return
-  if (item.status === 'published') {
-    uiStore.confirm('存档图纸', `确定将「${item.no}」存档吗？\n存档后图纸进入只读保护，如需修改须由管理员解除存档。`, {
-      confirmText: '存档',
-      onConfirm: async () => {
-        try {
-          await drawingCommandService.archive(item.no)
-          drawingStore.invalidate()
-          await drawingStore.load()
-          uiStore.toast('图纸已存档', 'ok')
-        } catch (error) {
-          uiStore.toast(error instanceof Error ? error.message : '图纸状态更新失败', 'warn')
-        }
-      },
-    })
-    return
-  }
-  void drawingCommandService.unarchive(item.no)
-    .then(() => { drawingStore.invalidate(); return drawingStore.load() })
-    .then(() => uiStore.toast('已解除存档，图纸恢复生产状态', 'ok'))
-    .catch((error: unknown) => uiStore.toast(error instanceof Error ? error.message : '图纸状态更新失败', 'warn'))
+  uiStore.confirm('存档图纸', `确定将「${item.no}」存档吗？\n存档后图纸进入只读保护，如需修改请发起变更工单并经管理员审批。`, {
+    confirmText: '存档',
+    onConfirm: async () => {
+      try {
+        await drawingCommandService.archive(item.no)
+        drawingStore.invalidate()
+        await drawingStore.load()
+        uiStore.toast('图纸已存档', 'ok')
+      } catch (error) {
+        uiStore.toast(error instanceof Error ? error.message : '图纸状态更新失败', 'warn')
+      }
+    },
+  })
+}
+
+function onDrawingChanged() {
+  drawingStore.invalidate()
+  void drawingStore.load()
 }
 
 const designerName = computed(() => {
@@ -151,21 +150,25 @@ function openParentDrawing() {
             <DemoIcon name="shield-check" :size="14" />存档图纸
           </button>
           <button
-            v-else-if="canUnarchive"
+            v-else-if="!isPart && drawing?.status === 'archived'"
             class="btn"
             type="button"
-            @click="toggleArchive"
+            title="存档图纸需通过变更工单审批后方可修改"
+            @click="changeVisible = true"
           >
-            <DemoIcon name="folder-lock" :size="14" />解除存档
+            <DemoIcon name="folder-lock" :size="14" />变更工单
           </button>
-          <span
-            v-else-if="drawing?.status === 'archived'"
-            class="tag warn"
-            title="存档图纸受只读保护，如需修改请联系管理员解除存档"
-          >已存档 · 修改请联系管理员</span>
           <button class="btn" type="button" @click="openProperties"><DemoIcon name="info" :size="14" />属性详情</button>
-       </div>
+        </div>
     </div>
+
+    <ChangeRequestDialog
+      v-model:visible="changeVisible"
+      :drawing-id="drawing?.id ?? ''"
+      :drawing-no="drawing?.no ?? ''"
+      :drawing-name="drawing?.name ?? ''"
+      @changed="onDrawingChanged"
+    />
   </div>
 </template>
 

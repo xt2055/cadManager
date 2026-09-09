@@ -3,6 +3,8 @@ package versioning
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -790,4 +792,92 @@ func writeFile(t *testing.T, path string, content []byte) {
 
 func writeFileE(path string, content []byte) error {
 	return os.WriteFile(path, content, 0o644)
+}
+
+func hexSHA256(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+// T2：工单工作版本必须以"上一次工单成果"为比较基准，而非正式当前版本。
+// 复现并锁死 A→B→A：正式版 A、工单先存 B、再恢复到 A 时，必须生成反映 A 的新成果版本，
+// 否则验收会误判"与正式版相同、无改动"从而错误发布旧的 B。
+func TestCaptureWorkingComparesAgainstTicketBaseline(t *testing.T) {
+	service, objectStorage, attRepo, _, workPath := captureFixture(t)
+	const releaseV1Key = "drawings/JG-00/history/泵缸/v1.0/泵缸.dwg"
+
+	// 第一次：基线为正式版 A（v1.0-dwg），编辑为 B。
+	baselineA := hexSHA256([]byte("v1.0-dwg"))
+	writeFile(t, workPath, []byte("edited-content-B"))
+	ver1, changed1, err := service.CaptureWorking(context.Background(), testSourceKey, workPath, "user-1", baselineA)
+	if err != nil || !changed1 {
+		t.Fatalf("首次工单捕获 changed=%v err=%v", changed1, err)
+	}
+	if ver1.Version != "v1.0-w001" {
+		t.Fatalf("首轮版本号 = %q; want v1.0-w001", ver1.Version)
+	}
+	if got := mustRead(t, objectStorage, ver1.StorageKey); string(got) != "edited-content-B" {
+		t.Fatalf("首轮成果内容 = %q; want edited-content-B", got)
+	}
+	// 工作版本不得切换正式指针。
+	if item, _ := attRepo.Find(context.Background(), testSourceKey); item.CurrentStorageKey != releaseV1Key {
+		t.Fatalf("工单捕获后正式指针被改动: %q", item.CurrentStorageKey)
+	}
+
+	// 第二次：以工单上轮成果 B 为基线，把文件恢复到 A。
+	baselineB := hexSHA256([]byte("edited-content-B"))
+	writeFile(t, workPath, []byte("v1.0-dwg"))
+	ver2, changed2, err := service.CaptureWorking(context.Background(), testSourceKey, workPath, "user-1", baselineB)
+	if err != nil {
+		t.Fatalf("恢复基线时捕获出错: %v", err)
+	}
+	if !changed2 {
+		t.Fatal("A→B→A 必须相对工单基线 B 视为有效改动并生成反映 A 的新成果版本，实际判定为无改动")
+	}
+	if ver2.Version != "v1.0-w002" {
+		t.Fatalf("次轮版本号 = %q; want v1.0-w002", ver2.Version)
+	}
+	if got := mustRead(t, objectStorage, ver2.StorageKey); string(got) != "v1.0-dwg" {
+		t.Fatalf("次轮成果内容 = %q; 期望恢复到 A(v1.0-dwg)", got)
+	}
+	if item, _ := attRepo.Find(context.Background(), testSourceKey); item.CurrentStorageKey != releaseV1Key {
+		t.Fatalf("次轮工单捕获后正式指针被改动: %q", item.CurrentStorageKey)
+	}
+}
+
+// 工单成果与基线一致时，不重复生成工作版本。
+func TestCaptureWorkingNoChangeAgainstTicketBaseline(t *testing.T) {
+	service, _, _, versionRepo, workPath := captureFixture(t)
+	baselineA := hexSHA256([]byte("v1.0-dwg"))
+	writeFile(t, workPath, []byte("v1.0-dwg"))
+	_, changed, err := service.CaptureWorking(context.Background(), testSourceKey, workPath, "user-1", baselineA)
+	if err != nil {
+		t.Fatalf("CaptureWorking error = %v", err)
+	}
+	if changed {
+		t.Fatal("工作文件与工单基线一致，不应生成新版本")
+	}
+	list, _ := versionRepo.ListByAttachment(context.Background(), "att-001")
+	if len(list) != 1 {
+		t.Fatalf("版本记录数 = %d; want 1", len(list))
+	}
+}
+
+func TestCaptureWorkingDoesNotReuseUnrelatedLatestVersion(t *testing.T) {
+	service, objectStorage, _, _, workPath := captureFixture(t)
+	baseline := hexSHA256([]byte("v1.0-dwg"))
+	writeFile(t, workPath, []byte("unregistered-other-content"))
+	other, _, err := service.CaptureWorking(context.Background(), testSourceKey, workPath, "user-1", baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A failed registration may leave a newer version that is not the ticket baseline.
+	writeFile(t, workPath, []byte("v1.0-dwg"))
+	result, _, err := service.CaptureWorking(context.Background(), testSourceKey, workPath, "user-1", baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ID == other.ID || string(mustRead(t, objectStorage, result.StorageKey)) != "v1.0-dwg" {
+		t.Fatalf("reused unrelated content: %+v", result)
+	}
 }

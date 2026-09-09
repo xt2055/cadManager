@@ -1,0 +1,14 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>图纸对比渲染验证</title><style>body{margin:0;background:#151922;color:white;font:14px sans-serif}#status,button{margin:8px}#viewer{height:700px}</style><div id="app"></div><script type="module">
+import { createApp, h, ref } from 'vue'
+import Viewer from '../src/features/drawings/detail-tabs/preview/MlightCadViewer.vue'
+const makeDxf = (changed) => {
+  const entity = (id, x, end) => `0\nLINE\n5\n${id}\n100\nAcDbEntity\n8\n0\n100\nAcDbLine\n10\n${x}\n20\n0\n30\n0\n11\n${end}\n21\n60\n31\n0\n`
+  return `0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1027\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n1\n0\nLAYER\n2\n0\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n${entity('A',0,60)}${entity('B',100,changed?190:160)}${changed?entity('D',300,360):entity('C',200,260)}0\nENDSEC\n0\nEOF\n`
+}
+createApp({setup(){
+  const viewer=ref(null), status=ref('加载中'), diffs=ref([])
+  const url=URL.createObjectURL(new Blob([makeDxf(false)]))
+  async function ready(){try { diffs.value=await viewer.value.compareDrawing('new.dxf',new TextEncoder().encode(makeDxf(true)).buffer);status.value=JSON.stringify(diffs.value.map(d=>({id:d.id,kind:d.kind,bounds:(d.after||d.before).bounds}))) }catch(e){status.value='ERROR: '+e.message}}
+  return ()=>h('div',[h('div',{id:'status'},status.value),...diffs.value.map(d=>h('button',{onClick:()=>viewer.value.focusDifference(d.id)},`定位 ${d.id} ${d.kind}`)),h('div',{id:'viewer'},[h(Viewer,{ref:viewer,dxfUrl:url,fileName:'old.dxf',onReady:ready,onLoadError:e=>status.value=e})])])
+}}).mount('#app')
+</script></html>

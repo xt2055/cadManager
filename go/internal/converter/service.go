@@ -390,6 +390,8 @@ func (s *Service) runCaxaJob(ctx context.Context, inputPath, outputPath string) 
 		return err
 	}
 
+	stopDialogs := watchCaxaFontDialogs(ctx)
+	defer stopDialogs()
 	if err := s.ensureCaxaRunning(ctx); err != nil {
 		return err
 	}

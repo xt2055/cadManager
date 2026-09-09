@@ -48,7 +48,7 @@ html[data-skin='juli'] .btn:hover { box-shadow: 0 0 18px #42dff22a; border-color
 html[data-skin='juli'] .btn.primary { background: linear-gradient(110deg,#44e1f2,#64b8f1); color: #05212b; }
 html[data-skin='juli'] .bg-grid,html[data-skin='juli'] .orb { display: none; }
 html[data-skin='juli'] .login-standalone-window { box-sizing: border-box; width: min(1160px,96vw); max-width: none; height: min(780px,calc(100vh - 32px)); max-height: calc(100vh - 32px); background: transparent; border: 1px solid #57c9e34d; border-radius: 12px; box-shadow: 0 0 80px #1ec8e617; }
-html[data-skin='juli'] .login-inner-container { box-sizing: border-box; min-height: 0; overflow: auto; background: linear-gradient(90deg,#061321f5 0%,#071c2deb 42%,#071c2d05 72%); padding: clamp(18px,5vh,56px) 6%; }
+html[data-skin='juli'] .login-inner-container { box-sizing: border-box; min-height: 0; overflow-x: hidden; overflow-y: auto; background: linear-gradient(90deg,#061321f5 0%,#071c2deb 42%,#071c2d05 72%); padding: clamp(18px,5vh,56px) 6%; }
 html[data-skin='juli'] .login-body-content { width: 360px; max-width: 100%; justify-content: center; }
 html[data-skin='juli'] .login-brand-header { text-align: left; margin-bottom: 28px; }
 html[data-skin='juli'] .brand-logo-icon { display: none; }

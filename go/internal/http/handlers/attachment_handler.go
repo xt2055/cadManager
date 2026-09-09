@@ -18,6 +18,7 @@ import (
 	"cadguanliq/internal/response"
 	"cadguanliq/internal/storage"
 	"cadguanliq/internal/versioning"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func UploadAttachment(repository attachment.Repository, objectStorage storage.ObjectStorage, convService *converter.Service, versions *versioning.Service, maxBytes int64) http.HandlerFunc {
@@ -206,7 +207,7 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 	}
 }
 
-func AttachmentResource(repository attachment.Repository, objectStorage storage.ObjectStorage) http.HandlerFunc {
+func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, objectStorage storage.ObjectStorage) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := middleware.UserFromContext(request.Context()); !ok {
 			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
@@ -271,6 +272,18 @@ func AttachmentResource(repository attachment.Repository, objectStorage storage.
 			writer.Header().Set("Content-Length", fmt.Sprintf("%d", object.Size))
 			_, _ = io.Copy(writer, reader)
 		case http.MethodDelete:
+			// 存档图纸的正式成果受变更工单保护，禁止直接删除附件。
+			if !recordMissing && item.DrawingNo != "" {
+				archived, statusErr := drawingArchivedByNo(request.Context(), pool, item.DrawingNo)
+				if statusErr != nil {
+					response.WriteError(writer, http.StatusInternalServerError, "图纸状态读取失败")
+					return
+				}
+				if archived {
+					response.WriteError(writer, http.StatusConflict, "图纸已存档，附件删除需通过变更工单")
+					return
+				}
+			}
 			identity, hasIdentity := repository.(attachment.IdentityRepository)
 			attachmentID := strings.TrimSpace(request.URL.Query().Get("attachmentId"))
 			var deleted attachment.Attachment
