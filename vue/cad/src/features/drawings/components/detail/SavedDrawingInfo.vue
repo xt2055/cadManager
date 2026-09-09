@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { extractAndSaveTitleBlock, loadTitleBlock, savedTitleBlocks } from '@/services/drawing-title-block.service'
+import { RouteName } from '@/router/route-names'
 
 const props = defineProps<{
-  files: Array<{ id: string; name: string; version?: string }>
+  files: Array<{ id: string; name: string; version?: string; role?: 'assembly' | 'part' | 'other' }>
   embedded?: boolean
   systemNo?: string
   material?: string
+  partIndexEnabled?: boolean
 }>()
+const router = useRouter()
 const files = computed(() => props.files.filter(file => /\.(exb|dwg|dxf)$/i.test(file.name)))
 const fileId = ref('')
 const spaceId = ref('')
@@ -16,6 +20,8 @@ const busy = ref(false)
 const loading = ref(false)
 let generation = 0
 const record = computed(() => savedTitleBlocks[fileId.value])
+const selectedFile = computed(() => files.value.find(file => file.id === fileId.value))
+const canOpenPartIndex = computed(() => props.partIndexEnabled === true && selectedFile.value?.role === 'part')
 const spaces = computed(() => record.value?.payload?.spaces ?? [])
 const space = computed(() => spaces.value.find(item => item.id === spaceId.value))
 const populatedSpaces = computed(() => spaces.value.filter(item => item.fields.some(field => field.value || field.candidates.length)))
@@ -45,6 +51,9 @@ async function extract() {
   catch (cause) { if (fileId.value === id) error.value = cause instanceof Error ? cause.message : '提取保存失败' }
   finally { busy.value = false }
 }
+function openPartIndex() {
+  if (fileId.value) router.push({ name: RouteName.PartIndexDetail, params: { attachmentId: fileId.value } })
+}
 const currentFields = computed(() => loading.value || error.value || record.value?.payload?.error ? [] : space.value?.fields ?? [])
 const titleName = computed(() => currentFields.value.find(field => field.key === 'name')?.value || '')
 const titleNumber = computed(() => currentFields.value.find(field => field.key === 'number')?.value || props.systemNo || '')
@@ -64,7 +73,10 @@ const materialField = computed(() => currentFields.value.find(field => field.key
   <section class="saved-title" :class="{ embedded }">
     <div class="saved-title-head">
       <slot name="heading" :title-name="titleName" :title-number="titleNumber"><h3>图纸信息</h3></slot>
-      <button v-if="record?.canWrite" class="extract-action" type="button" :disabled="busy || loading" @click="extract">{{ busy ? '提取中…' : record.payload ? '重新提取' : '提取信息' }}</button>
+      <div class="saved-title-actions">
+        <button v-if="canOpenPartIndex && fileId" class="extract-action" type="button" :disabled="busy || loading" @click="openPartIndex">零件索引</button>
+        <button v-if="record?.canWrite" class="extract-action" type="button" :disabled="busy || loading" @click="extract">{{ busy ? '提取中…' : record.payload ? '重新提取' : '提取信息' }}</button>
+      </div>
     </div>
     <p v-if="!files.length">暂无 CAD 图纸文件。</p>
     <template v-else>
@@ -108,6 +120,7 @@ const materialField = computed(() => currentFields.value.find(field => field.key
 .extract-action:disabled { opacity: 0.5; cursor: default; }
 .review-hint { margin-left: 8px; white-space: nowrap; }
 .saved-title-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.saved-title-actions { display: inline-flex; align-items: center; gap: 4px; }
 .saved-title-head h3 { margin: 0; font-size: 15px; }
 .saved-title.embedded { margin: 0; padding: 0; border: 0; }
 .saved-title-head .extract-action { flex-shrink: 0; }

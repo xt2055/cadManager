@@ -16,6 +16,7 @@ import (
 	"cadguanliq/internal/editing"
 	"cadguanliq/internal/http/handlers"
 	"cadguanliq/internal/http/middleware"
+	"cadguanliq/internal/partindex"
 	"cadguanliq/internal/review"
 	"cadguanliq/internal/storage"
 	"cadguanliq/internal/titleblock"
@@ -48,6 +49,7 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/change-requests/", protectedUsers(handlers.ChangeRequestResource(changeService)))
 	attachmentRepository := attachment.NewPGRepository(pool)
 	drawingRepository := drawing.NewPGRepository(pool)
+	partIndexRepository := partindex.NewRepository(pool)
 	drawingHandler := middleware.RequireAuth(authService)
 	mux.Handle("/api/drawings", drawingHandler(handlers.Drawings(drawingRepository)))
 	mux.Handle("/api/drawings/", drawingHandler(handlers.DrawingResource(drawingRepository)))
@@ -101,6 +103,8 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/cad/source", drawingHandler(handlers.CADSource(attachmentRepository, attachmentStorage, convService)))
 	mux.Handle("/api/cad/conversions/", drawingHandler(handlers.ConversionStatus(pool)))
 	mux.Handle("/api/cad/title-blocks/", drawingHandler(handlers.TitleBlocks(titleblock.NewRepository(pool))))
+	mux.Handle("/api/part-indexes", drawingHandler(handlers.PartIndexes(partIndexRepository)))
+	mux.Handle("/api/part-indexes/", drawingHandler(handlers.PartIndexes(partIndexRepository)))
 	mux.Handle("/api/cad/convert-dwg", drawingHandler(handlers.ConvertDxfToDwg(convService, cfg.MaxUploadBytes)))
 	auditRepository := audit.NewPGRepository(pool)
 	mux.Handle("/api/drawing-operation-logs", drawingHandler(handlers.DrawingOperationLogs(auditRepository)))
@@ -119,6 +123,7 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/admin/cad-conversions", adminGuard(handlers.AdminConversionJobs(pool)))
 	mux.Handle("/api/admin/cad-conversions/", adminGuard(handlers.AdminRetryConversionJob(pool)))
 	mux.Handle("/api/admin/cad-conversion-logs", adminGuard(handlers.AdminConversionLogs()))
+	mux.Handle("/api/admin/part-indexes/backfill", adminGuard(handlers.PartIndexBackfill(partIndexRepository)))
 	mux.Handle("/api/system/logs", adminGuard(handlers.SystemLogs()))
 	mux.Handle("/api/system/logs/files", adminGuard(handlers.SystemLogFiles()))
 	mux.Handle("/api/system/logs/download", adminGuard(handlers.SystemLogDownload()))

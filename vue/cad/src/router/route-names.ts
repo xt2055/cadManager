@@ -11,6 +11,8 @@ export const RouteName = {
   DrawingEditor: 'drawing-editor',
   DrawingFileHistory: 'drawing-file-history',
   CadRenderTest: 'cad-render-test',
+  PartIndexLibrary: 'part-index-list',
+  PartIndexDetail: 'part-index-detail',
 
   DrawingPreview: 'drawing-preview',
   DrawingStructure: 'drawing-structure',

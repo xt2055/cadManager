@@ -149,7 +149,7 @@ function openReview(no: string) {
             <div v-if="auditStore.drawingLogs.list.length" class="feed">
               <div
                 v-for="item in auditStore.drawingLogs.list"
-                :key="`${item.user}-${item.time}-${item.txt}`"
+                :key="item.id"
                 class="feed-item"
               >
                 <div class="feed-ic" :class="item.act">

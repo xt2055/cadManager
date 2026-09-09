@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { extractTitleBlockRecord, extractTitleBlockBatch } from '../src/services/title-block-workflow.ts'
+import { extractTitleBlockRecord, extractTitleBlockBatch, normalizeTitlePayload } from '../src/services/title-block-workflow.ts'
 
 function fixture() {
   const record = { attachmentId: 'a', versionId: 'v1', canWrite: true, payload: null }
@@ -38,7 +38,7 @@ test('解析失败保存失败状态，下一次重试可以恢复', async () =>
   await extractTitleBlockRecord('a', false, io)
   assert.equal(record.payload.error, undefined)
 })
-test('权限拒绝与版本冲突不能作为保存成功', async () => {
+test('权限拒绝与保存冲突不能作为保存成功', async () => {
   const { io, record, writes } = fixture()
   record.canWrite = false
   await assert.rejects(extractTitleBlockRecord('a', false, io), /权限/)
@@ -47,6 +47,33 @@ test('权限拒绝与版本冲突不能作为保存成功', async () => {
   io.save = async () => { throw new Error('文件版本已变化') }
   await assert.rejects(extractTitleBlockRecord('a', false, io), /版本已变化/)
   assert.equal(record.payload, null)
+})
+test('CAD 源版本冲突不保存失败快照', async () => {
+  const { io, record, writes } = fixture()
+  const conflict = Object.assign(new Error('文件版本已变化，请重新加载'), { status: 409 })
+  io.parse = async () => { throw conflict }
+  await assert.rejects(extractTitleBlockRecord('a', false, io), /文件版本已变化/)
+  assert.equal(writes.length, 0)
+  assert.equal(record.payload, null)
+})
+test('保存后读回发现版本变化时必须报告冲突，不能当作成功', async () => {
+  const { io } = fixture()
+  let loads = 0
+  io.load = async () => ({
+    attachmentId: 'a',
+    versionId: ++loads === 1 ? 'v1' : 'v2',
+    canWrite: true,
+    payload: null,
+    snapshotRevision: 1,
+  })
+  await assert.rejects(extractTitleBlockRecord('a', true, io), (error) => error.status === 409)
+})
+test('历史标题栏 null 集合会标准化为可迭代数组', () => {
+  const payload = normalizeTitlePayload({
+    spaces: [{ id: 'model', name: '模型', fields: [{ key: 'name', candidates: null }], warnings: null }],
+  })
+  assert.deepEqual(payload.spaces[0].fields[0].candidates, [])
+  assert.deepEqual(payload.spaces[0].warnings, [])
 })
 test('批量创建去重和过滤非 CAD，单个失败不影响其他文件保存', async () => {
   const called = [], progress = []

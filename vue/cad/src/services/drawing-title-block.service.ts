@@ -1,9 +1,19 @@
 import { reactive } from 'vue'
 import { getApiBaseUrl } from './api-base.service'
 import { collectTitleSpaces, extractTitleFields } from '@/features/drawings/detail-tabs/preview/cad-title-block'
-import { extractTitleBlockRecord, extractTitleBlockBatch, type TitlePayload, type TitleSnapshot } from './title-block-workflow'
+import { extractTitleBlockRecord, extractTitleBlockBatch, normalizeTitlePayload, type TitlePayload, type TitleSnapshot } from './title-block-workflow'
 export const savedTitleBlocks = reactive<Record<string, TitleSnapshot>>({})
 const pending = new Map<string, Promise<TitleSnapshot>>()
+
+class TitleBlockRequestError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'TitleBlockRequestError'
+    this.status = status
+  }
+}
 function headers() {
   const token = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
@@ -11,24 +21,25 @@ function headers() {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${getApiBaseUrl()}${path}`, { ...init, headers: headers(), credentials: 'include', signal: AbortSignal.timeout(30000) })
   const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.message || `图纸信息请求失败：HTTP ${response.status}`)
+  if (!response.ok) throw new TitleBlockRequestError(body.message || `图纸信息请求失败：HTTP ${response.status}`, response.status)
   return body.data ?? body
 }
 export async function loadTitleBlock(id: string): Promise<TitleSnapshot> {
   const result = await request<TitleSnapshot>(`/cad/title-blocks/${encodeURIComponent(id)}`)
+  if (result.payload !== null) result.payload = normalizeTitlePayload(result.payload)
   savedTitleBlocks[id] = result
   return result
 }
-async function parseTitleBlock(id: string): Promise<TitlePayload> {
+async function parseTitleBlock(id: string, versionId: string): Promise<TitlePayload> {
   const [{ AcDbDatabase, AcDbFileType }, { registerCadConverters }, { getCadWorkerUrls }] = await Promise.all([
     import('@mlightcad/data-model'), import('./cad-converters.service'),
     import('@/features/drawings/detail-tabs/preview/cad-worker-assets'),
   ])
   await registerCadConverters(getCadWorkerUrls().dwgParser)
-  const response = await fetch(`${getApiBaseUrl()}/cad/source?attachmentId=${encodeURIComponent(id)}`, { headers: headers(), credentials: 'include', signal: AbortSignal.timeout(120000) })
+  const response = await fetch(`${getApiBaseUrl()}/cad/source?attachmentId=${encodeURIComponent(id)}&expectedVersionId=${encodeURIComponent(versionId)}`, { headers: headers(), credentials: 'include', signal: AbortSignal.timeout(120000) })
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
-    throw new Error(body.message || `读取 CAD 文件失败：HTTP ${response.status}`)
+    throw new TitleBlockRequestError(body.message || `读取 CAD 文件失败：HTTP ${response.status}`, response.status)
   }
   const content = await response.arrayBuffer()
   const db = new AcDbDatabase()

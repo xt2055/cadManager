@@ -42,6 +42,18 @@ export const routes: RouteRecordRaw[] = [
           import('@/features/drawings/pages/DrawingLibraryPage.vue'),
       },
       {
+        path: 'part-indexes',
+        name: RouteName.PartIndexLibrary,
+        component: () =>
+          import('@/features/part-index/pages/PartIndexLibraryPage.vue'),
+      },
+      {
+        path: 'part-indexes/:attachmentId',
+        name: RouteName.PartIndexDetail,
+        component: () =>
+          import('@/features/part-index/pages/PartIndexDetailPage.vue'),
+      },
+      {
         path: 'drawings/create',
         name: RouteName.DrawingCreate,
         component: () =>

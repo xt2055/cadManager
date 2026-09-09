@@ -205,7 +205,7 @@ const feedIcons: Record<string, string> = {
 
 <template>
   <div class="properties-page-view">
-    <SavedDrawingInfo v-if="currentItem" :files="[...currentItem.files, ...currentItem.otherFiles]" />
+    <SavedDrawingInfo v-if="currentItem" :files="[...currentItem.files, ...currentItem.otherFiles]" :part-index-enabled="isPart" />
     <!-- 总图专属：业务技术规格（动态属性）卡片 -->
     <div v-if="!isPart && currentDrawing && attributeStore.sortedAttributes.length" class="props-section card card-pad">
       <div class="card-title no-padding property-title">

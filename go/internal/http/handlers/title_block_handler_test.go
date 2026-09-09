@@ -13,19 +13,24 @@ import (
 )
 
 type titleStoreStub struct {
-	err   error
-	saved bool
+	err       error
+	saved     bool
+	id        string
+	versionID string
 }
 
 func (s *titleStoreStub) Get(context.Context, string, string, bool) (titleblock.Snapshot, error) {
 	return titleblock.Snapshot{AttachmentID: "a"}, s.err
 }
-func (s *titleStoreStub) Save(context.Context, string, string, string, bool, titleblock.Payload) error {
+func (s *titleStoreStub) Save(_ context.Context, id, versionID, _ string, _ bool, _ titleblock.Payload) error {
 	s.saved = true
+	s.id = id
+	s.versionID = versionID
 	return s.err
 }
 
 const titleTestID = "11111111-1111-4111-8111-111111111111"
+const titleUpperID = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
 
 func TestTitleBlockHandler(t *testing.T) {
 	for _, tc := range []struct {
@@ -57,6 +62,18 @@ func TestTitleBlockHandler(t *testing.T) {
 		})
 	}
 }
+
+func TestTitleBlockCanonicalizesUUIDs(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"versionId": titleUpperID, "payload": titleblock.Payload{Spaces: []titleblock.Space{}}})
+	req := httptest.NewRequest(http.MethodPut, "/api/cad/title-blocks/"+titleUpperID, bytes.NewReader(raw)).WithContext(authenticatedGet("/").Context())
+	store := &titleStoreStub{}
+	w := httptest.NewRecorder()
+	TitleBlocks(store)(w, req)
+	if w.Code != http.StatusOK || store.id != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" || store.versionID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Fatalf("UUID 未标准化：status=%d id=%q version=%q", w.Code, store.id, store.versionID)
+	}
+}
+
 func TestTitleBlockRejectInvalidInput(t *testing.T) {
 	for _, body := range []string{`{}`, `{"versionId":"bad"}`, `{"versionId":"` + titleTestID + `","payload":{"error":"` + strings.Repeat("x", 300000) + `"}}`} {
 		req := httptest.NewRequest(http.MethodPut, "/api/cad/title-blocks/"+titleTestID, strings.NewReader(body)).WithContext(authenticatedGet("/").Context())

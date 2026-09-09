@@ -135,6 +135,7 @@ function selectPart(partNo: string) {
             embedded
             :system-no="selected.no"
             :material="selected.material"
+            :part-index-enabled="true"
           >
             <template #heading="{ titleName, titleNumber }">
               <div class="card-title selected-title">

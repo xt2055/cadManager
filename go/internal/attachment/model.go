@@ -13,8 +13,9 @@ const (
 )
 
 type Attachment struct {
-	Revision int64 `json:"revision"`
+	Revision          int64   `json:"revision"`
 	ID                string  `json:"id"`
+	CurrentVersionID  string  `json:"currentVersionId,omitempty"`
 	StorageKey        string  `json:"storageKey"`
 	CurrentStorageKey string  `json:"currentStorageKey,omitempty"`
 	Name              string  `json:"name"`
@@ -32,9 +33,9 @@ type Attachment struct {
 	Previewable       bool    `json:"previewable"`
 	// UploadedBy 显示名（列表/详情展示用）；UploadedByID 是 users.id 原始 UUID，
 	// 供版本登记等需要真实用户 ID 的内部链路使用，两者互不混用。
-	UploadedBy        string  `json:"uploadedBy,omitempty"`
-	UploadedByID      string  `json:"-"`
-	CreatedAt         string  `json:"createdAt,omitempty"`
+	UploadedBy   string `json:"uploadedBy,omitempty"`
+	UploadedByID string `json:"-"`
+	CreatedAt    string `json:"createdAt,omitempty"`
 }
 
 type CreateInput struct {

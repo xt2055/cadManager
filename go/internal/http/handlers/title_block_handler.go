@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -25,6 +26,7 @@ func TitleBlocks(store titleblock.Store) http.HandlerFunc {
 			response.WriteError(w, http.StatusBadRequest, "附件 ID 无效")
 			return
 		}
+		id = strings.ToLower(id)
 		admin := false
 		for _, role := range user.Roles {
 			if strings.EqualFold(role, "admin") {
@@ -50,6 +52,7 @@ func TitleBlocks(store titleblock.Store) http.HandlerFunc {
 				response.WriteError(w, http.StatusBadRequest, "标题栏提取数据无效或超过限制")
 				return
 			}
+			input.VersionID = strings.ToLower(input.VersionID)
 			err = store.Save(r.Context(), id, input.VersionID, user.ID, admin, input.Payload)
 			if err == nil {
 				response.WriteData(w, http.StatusOK, map[string]bool{"saved": true})
@@ -74,6 +77,9 @@ func TitleBlocks(store titleblock.Store) http.HandlerFunc {
 		case errors.Is(err, titleblock.ErrInvalid):
 			status = http.StatusBadRequest
 			message = err.Error()
+		}
+		if status == http.StatusInternalServerError {
+			log.Printf("[标题栏] %s attachment=%s: %v", r.Method, id, err)
 		}
 		response.WriteError(w, status, message)
 	}

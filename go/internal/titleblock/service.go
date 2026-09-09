@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"cadguanliq/internal/partindex"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,24 +31,48 @@ type Space struct {
 	Name      string   `json:"name"`
 	TextCount int      `json:"textCount"`
 	Fields    []Field  `json:"fields"`
-	Warnings  []string `json:"warnings,omitempty"`
+	Warnings  []string `json:"warnings"`
 }
 type Payload struct {
 	Spaces []Space `json:"spaces"`
 	Error  string  `json:"error,omitempty"`
 }
 type Snapshot struct {
-	AttachmentID string   `json:"attachmentId"`
-	VersionID    string   `json:"versionId"`
-	FileName     string   `json:"fileName"`
-	CanWrite     bool     `json:"canWrite"`
-	HasPrevious  bool     `json:"hasPrevious"`
-	Payload      *Payload `json:"payload"`
-	ExtractedAt  string   `json:"extractedAt"`
+	AttachmentID     string   `json:"attachmentId"`
+	VersionID        string   `json:"versionId"`
+	FileName         string   `json:"fileName"`
+	CanWrite         bool     `json:"canWrite"`
+	HasPrevious      bool     `json:"hasPrevious"`
+	Payload          *Payload `json:"payload"`
+	ExtractedAt      string   `json:"extractedAt"`
+	SnapshotRevision int64    `json:"snapshotRevision"`
 }
 type Store interface {
 	Get(context.Context, string, string, bool) (Snapshot, error)
 	Save(context.Context, string, string, string, bool, Payload) error
+}
+
+// normalizePayload keeps the API contract stable for both newly saved and
+// historical snapshots: every collection is encoded as an array, never null.
+func normalizePayload(payload Payload) Payload {
+	if payload.Spaces == nil {
+		payload.Spaces = []Space{}
+	}
+	for spaceIndex := range payload.Spaces {
+		space := &payload.Spaces[spaceIndex]
+		if space.Fields == nil {
+			space.Fields = []Field{}
+		}
+		if space.Warnings == nil {
+			space.Warnings = []string{}
+		}
+		for fieldIndex := range space.Fields {
+			if space.Fields[fieldIndex].Candidates == nil {
+				space.Fields[fieldIndex].Candidates = []string{}
+			}
+		}
+	}
+	return payload
 }
 
 func Validate(payload Payload) error {
@@ -98,9 +123,10 @@ func (r *Repository) Get(ctx context.Context, id, userID string, admin bool) (Sn
 	var out Snapshot
 	var raw []byte
 	err := r.pool.QueryRow(ctx, `SELECT s.*, t.payload, COALESCE(to_char(t.extracted_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),''),
- EXISTS(SELECT 1 FROM attachment_title_blocks previous WHERE previous.attachment_id=s.id::uuid AND previous.version_id<>s.current_version_id::uuid)
- FROM (`+attachmentQuery+`) s
- LEFT JOIN attachment_title_blocks t ON t.attachment_id=s.id::uuid AND t.version_id=s.current_version_id::uuid`, id, userID, admin).Scan(&out.AttachmentID, &out.VersionID, &out.FileName, &out.CanWrite, &raw, &out.ExtractedAt, &out.HasPrevious)
+	 COALESCE(t.revision,0),
+	 EXISTS(SELECT 1 FROM attachment_title_blocks previous WHERE previous.attachment_id=s.id::uuid AND previous.version_id<>s.current_version_id::uuid)
+		 FROM (`+attachmentQuery+`) s
+		 LEFT JOIN attachment_title_blocks t ON t.attachment_id=s.id::uuid AND t.version_id=s.current_version_id::uuid`, id, userID, admin).Scan(&out.AttachmentID, &out.VersionID, &out.FileName, &out.CanWrite, &raw, &out.ExtractedAt, &out.SnapshotRevision, &out.HasPrevious)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
 	}
@@ -112,11 +138,15 @@ func (r *Repository) Get(ctx context.Context, id, userID string, admin bool) (Sn
 		if err = json.Unmarshal(raw, out.Payload); err != nil {
 			return out, err
 		}
+		*out.Payload = normalizePayload(*out.Payload)
 	}
 	return out, nil
 }
 
 func (r *Repository) Save(ctx context.Context, id, versionID, userID string, admin bool, payload Payload) error {
+	id = strings.ToLower(strings.TrimSpace(id))
+	versionID = strings.ToLower(strings.TrimSpace(versionID))
+	payload = normalizePayload(payload)
 	if err := Validate(payload); err != nil {
 		return err
 	}
@@ -137,7 +167,7 @@ func (r *Repository) Save(ctx context.Context, id, versionID, userID string, adm
 	if !allowed {
 		return ErrForbidden
 	}
-	if current != versionID {
+	if !strings.EqualFold(current, versionID) {
 		return ErrConflict
 	}
 	if !strings.HasSuffix(strings.ToLower(name), ".exb") && !strings.HasSuffix(strings.ToLower(name), ".dwg") && !strings.HasSuffix(strings.ToLower(name), ".dxf") {
@@ -148,10 +178,17 @@ func (r *Repository) Save(ctx context.Context, id, versionID, userID string, adm
 		return err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO attachment_title_blocks(attachment_id,version_id,payload,extracted_by)
- VALUES($1::uuid,$2::uuid,$3::jsonb,$4::uuid)
- ON CONFLICT(attachment_id,version_id) DO UPDATE SET payload=EXCLUDED.payload,extracted_by=EXCLUDED.extracted_by,extracted_at=now()
- WHERE attachment_title_blocks.payload IS DISTINCT FROM EXCLUDED.payload`, id, versionID, raw, userID)
+	VALUES($1::uuid,$2::uuid,$3::jsonb,$4::uuid)
+	ON CONFLICT(attachment_id,version_id) DO UPDATE SET
+		payload=EXCLUDED.payload,
+		extracted_by=EXCLUDED.extracted_by,
+		extracted_at=now(),
+		revision=attachment_title_blocks.revision+1
+	WHERE attachment_title_blocks.payload IS DISTINCT FROM EXCLUDED.payload`, id, versionID, raw, userID)
 	if err != nil {
+		return err
+	}
+	if _, err = partindex.SyncCurrentTx(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

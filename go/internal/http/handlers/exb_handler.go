@@ -495,6 +495,7 @@ func CADSource(repository attachment.Repository, objectStorage storage.ObjectSto
 
 		storageKey := strings.TrimSpace(request.URL.Query().Get("storageKey"))
 		attachmentID := strings.TrimSpace(request.URL.Query().Get("attachmentId"))
+		expectedVersionID := strings.TrimSpace(request.URL.Query().Get("expectedVersionId"))
 		if storageKey == "" && attachmentID == "" {
 			response.WriteError(writer, http.StatusBadRequest, "storageKey 必填")
 			return
@@ -515,6 +516,10 @@ func CADSource(repository attachment.Repository, objectStorage storage.ObjectSto
 		}
 		if err != nil {
 			writeAttachmentError(writer, err)
+			return
+		}
+		if expectedVersionID != "" && !strings.EqualFold(item.CurrentVersionID, expectedVersionID) {
+			response.WriteError(writer, http.StatusConflict, "文件版本已变化，请重新加载零件信息")
 			return
 		}
 

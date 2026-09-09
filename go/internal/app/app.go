@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"time"
 
 	"cadguanliq/internal/auth"
 	"cadguanliq/internal/config"
@@ -37,6 +38,13 @@ func Run(cfg config.Config) error {
 		return err
 	}
 	defer pool.Close()
+	upgradeCtx, cancelUpgrade := context.WithTimeout(context.Background(), 2*time.Minute)
+	err = data.EnsurePartIndexSchema(upgradeCtx, pool)
+	cancelUpgrade()
+	if err != nil {
+		return err
+	}
+	logging.Infof("[数据库] 标题栏和零件索引结构检查完成")
 	authService := auth.NewService(auth.NewPGRepository(pool))
 	logging.Infof("[启动] 服务监听 %s", cfg.Addr)
 	return http.ListenAndServe(cfg.Addr, NewHandler(cfg, pool, authService))
