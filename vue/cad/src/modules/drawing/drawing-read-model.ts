@@ -56,6 +56,7 @@ export interface MaterialFileView {
   uploadedBy: string
   uploadedAt: string
   storageKey?: string
+  currentVersionId?: string
   mimeType?: string
   author?: string
 }
@@ -230,7 +231,9 @@ export class DrawingReadModelMapper {
           uploadedBy: item.uploadedBy || '未知用户',
           uploadedAt,
           storageKey: item.currentStorageKey || item.storageKey,
+          currentVersionId: item.currentVersionId,
           mimeType: item.currentMimeType || item.mimeType,
+          ...(item.author ? { author: item.author } : {}),
         }
         owner.materialFiles = [...(owner.materialFiles ?? []).filter((candidate) => candidate.id !== file.id), file]
         continue
@@ -411,6 +414,7 @@ export class DrawingReadModelMapper {
       uploadedBy: file.uploadedBy,
       uploadedAt: file.uploadedAt,
       ...(file.storageKey ? { storageKey: file.storageKey } : {}),
+      ...(file.currentVersionId ? { currentVersionId: file.currentVersionId } : {}),
       ...(file.mimeType ? { mimeType: file.mimeType } : {}),
       ...(file.author ? { author: file.author } : {}),
     }

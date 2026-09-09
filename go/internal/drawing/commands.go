@@ -515,7 +515,7 @@ func (repository *PGRepository) GetBOM(ctx context.Context, drawingID string) (B
 	} else if err != nil {
 		return BOM{}, fmt.Errorf("查询 BOM 版本失败: %w", err)
 	}
-	rows, err := repository.pool.Query(ctx, `SELECT id::text, item_no, part_id::text, source_attachment_version_id::text, name, spec, quantity, weight, remark FROM bom_items WHERE bom_id = (SELECT id FROM drawing_boms WHERE drawing_id = $1::uuid) ORDER BY item_no`, drawingID)
+	rows, err := repository.pool.Query(ctx, `SELECT id::text, COALESCE(NULLIF(item_code, ''), id::text), item_no, part_id::text, source_attachment_version_id::text, name, spec, quantity, weight, remark FROM bom_items WHERE bom_id = (SELECT id FROM drawing_boms WHERE drawing_id = $1::uuid) ORDER BY item_no`, drawingID)
 	if err != nil {
 		return BOM{}, fmt.Errorf("查询 BOM 明细失败: %w", err)
 	}
@@ -523,7 +523,7 @@ func (repository *PGRepository) GetBOM(ctx context.Context, drawingID string) (B
 	result.Items = make([]BOMItem, 0)
 	for rows.Next() {
 		var item BOMItem
-		if err := rows.Scan(&item.ID, &item.ItemNo, &item.PartID, &item.SourceAttachmentVersion, &item.Name, &item.Spec, &item.Quantity, &item.Weight, &item.Remark); err != nil {
+		if err := rows.Scan(&item.RowID, &item.ID, &item.ItemNo, &item.PartID, &item.SourceAttachmentVersion, &item.Name, &item.Spec, &item.Quantity, &item.Weight, &item.Remark); err != nil {
 			return BOM{}, err
 		}
 		result.Items = append(result.Items, item)
@@ -579,7 +579,7 @@ func (repository *PGRepository) ReplaceBOM(ctx context.Context, drawingID string
 		if strings.TrimSpace(item.Name) == "" {
 			return BOM{}, errors.New("BOM 明细名称不能为空")
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO bom_items (bom_id, item_no, part_id, source_attachment_version_id, name, spec, quantity, weight, remark) VALUES ($1::uuid, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, COALESCE($6, '—'), $7, $8, COALESCE($9, ''))`, bomID, itemNo, nullableString(item.PartID), nullableString(item.SourceAttachmentVersion), item.Name, item.Spec, item.Quantity, item.Weight, item.Remark); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO bom_items (bom_id, item_no, item_code, part_id, source_attachment_version_id, name, spec, quantity, weight, remark) VALUES ($1::uuid, $2, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, COALESCE($7, '—'), $8, $9, COALESCE($10, ''))`, bomID, itemNo, strings.TrimSpace(item.ID), nullableString(item.PartID), nullableString(item.SourceAttachmentVersion), item.Name, item.Spec, item.Quantity, item.Weight, item.Remark); err != nil {
 			return BOM{}, fmt.Errorf("保存 BOM 明细失败: %w", err)
 		}
 	}

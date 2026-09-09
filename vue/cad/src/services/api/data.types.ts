@@ -137,6 +137,7 @@ export function normalizeMaterialFile(value: unknown, drawingNo: string): Materi
     uploadedBy: text(source.uploadedBy, '未知用户'),
     uploadedAt: text(source.uploadedAt, '历史记录'),
     ...(text(source.storageKey) ? { storageKey: text(source.storageKey) } : {}),
+    ...(text(source.currentVersionId) ? { currentVersionId: text(source.currentVersionId) } : {}),
     ...(text(source.mimeType) ? { mimeType: text(source.mimeType) } : {}),
     ...(text(source.author) ? { author: text(source.author) } : {}),
   }
@@ -264,7 +265,7 @@ export function normalizeBom(value: unknown): BomItem[] {
       no: number(source.no, index + 1),
       id: text(source.id, id('bom', `${index}|${text(source.name)}`)),
       drawingNo: text(source.drawingNo),
-      ...(text(source.sourceFileId, text(source.sourceAttachmentVersion)) ? { sourceFileId: text(source.sourceFileId, text(source.sourceAttachmentVersion)) } : {}),
+      ...(text(source.sourceFileId, text(source.sourceAttachmentVersionId)) ? { sourceFileId: text(source.sourceFileId, text(source.sourceAttachmentVersionId)) } : {}),
       name: text(source.name, '未命名物料'),
       spec: text(source.spec, '—'),
       qty: number(source.qty, number(source.quantity)),

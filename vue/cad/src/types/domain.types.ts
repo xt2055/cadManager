@@ -74,6 +74,7 @@ export interface MaterialFile {
   uploadedBy: string
   uploadedAt: string
   storageKey?: string
+  currentVersionId?: string
   mimeType?: string
 	author?: string
 	revision?: number

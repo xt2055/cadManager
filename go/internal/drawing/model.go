@@ -232,7 +232,8 @@ type UpdateRevisionInput struct {
 }
 
 type BOMItem struct {
-	ID                      string  `json:"id,omitempty"`
+	RowID                   string  `json:"rowId,omitempty"`
+	ID                      string  `json:"id"`
 	ItemNo                  int     `json:"no"`
 	PartID                  *string `json:"partId,omitempty"`
 	SourceAttachmentVersion *string `json:"sourceAttachmentVersionId,omitempty"`

@@ -12,6 +12,8 @@ import { useUiStore } from '@/stores/ui.store'
 import type { BomItem, MaterialFile } from '@/types/domain.types'
 import type { MaterialFileView } from '@/modules/drawing'
 import { formatReadableDateTime } from '@/utils/date-time'
+import { parseMaterialFileContent } from '@/utils/material-table-parser'
+import { hasGeneratedBomIds, originalMaterialWorkbook } from './material-print'
 
 defineOptions({ name: 'DrawingMaterialTab' })
 
@@ -251,19 +253,26 @@ async function exportExcel() {
 
 async function handlePrint() {
   try {
-    const result = await createPrintableFile()
-    const fileName = `${result.drawingNo}_备料明细表_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const source = originalMaterialWorkbook(materialFiles.value)
+    const sourceBlob = source?.storageKey ? await drawingFileService.read(source.storageKey) : null
+    const sourceName = source?.name
+    const result = sourceBlob && sourceName
+      ? { bytes: new Uint8Array(await sourceBlob.arrayBuffer()), fileName: sourceName }
+      : await createPrintableFile().then((generated) => ({
+          bytes: generated.bytes,
+          fileName: `${generated.drawingNo}_备料明细表_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        }))
     const bytes = Array.from(result.bytes)
     const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
     if (isTauri) {
-      await invoke('open_generated_excel', { fileName, bytes })
-      uiStore.toast('已用系统默认 Excel/WPS 打开，请在其中执行打印', 'ok')
+      await invoke('open_generated_excel', { fileName: result.fileName, bytes })
+      uiStore.toast('已打开原始备料表，请在 Excel/WPS 中打印', 'ok')
       return
     }
 
-    downloadExcel(result.bytes, fileName)
-    uiStore.toast('已下载 Excel 文件，请用 Excel/WPS 打开后打印', 'info')
+    downloadExcel(result.bytes, result.fileName)
+    uiStore.toast('已下载原始备料表，请用 Excel/WPS 打开后打印', 'info')
   } catch (error) {
     console.error('打开 Excel 打印文件失败', error)
     uiStore.toast('打印文件生成失败：请确认原始文件格式有效', 'warn')
@@ -352,7 +361,31 @@ async function handleParseFile(file: MaterialFileView) {
   }
 }
 
-onMounted(() => { void drawingStore.load() })
+onMounted(async () => {
+  await drawingStore.load()
+  const item = currentItem.value
+  const source = originalMaterialWorkbook(materialFiles.value)
+  if (item && source && hasGeneratedBomIds(drawingStore.getBom(item.no))) {
+    await drawingOperationsStore.parseMaterialFile(item.no, source.id)
+    await drawingStore.refresh()
+    return
+  }
+
+  let authorUpdated = false
+  for (const file of materialFiles.value) {
+    if (file.author || !file.storageKey) continue
+    try {
+      const content = await drawingFileService.read(file.storageKey)
+      const { author } = await parseMaterialFileContent(content, file.name, file.drawingNo, file.currentVersionId || '')
+      if (!author) continue
+      await drawingFileService.updateAuthor(file.storageKey, file.id, author)
+      authorUpdated = true
+    } catch (error) {
+      console.warn(`读取备料表编制人失败：${file.name}`, error)
+    }
+  }
+  if (authorUpdated) await drawingStore.refresh()
+})
 </script>
 
 <template>

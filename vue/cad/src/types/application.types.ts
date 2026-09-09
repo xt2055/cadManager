@@ -59,6 +59,7 @@ export interface StoredAttachment {
   size: number
   mimeType: string
   currentName?: string
+  currentVersionId?: string
   currentStorageKey?: string
   currentMimeType?: string
   currentSize?: number
@@ -69,6 +70,7 @@ export interface StoredAttachment {
   version: string
   previewable: boolean
   uploadedBy?: string
+  author?: string
   createdAt?: string
 }
 

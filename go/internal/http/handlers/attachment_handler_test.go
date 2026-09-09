@@ -77,6 +77,27 @@ func TestAttachmentResourceDownloadsWithRecord(t *testing.T) {
 	}
 }
 
+func TestAttachmentResourceUpdatesMaterialAuthor(t *testing.T) {
+	repo := &metadataRecordRepo{item: attachment.Attachment{
+		ID:                "11111111-1111-4111-8111-111111111111",
+		StorageKey:        "blobs/material-source",
+		CurrentStorageKey: "blobs/material-source",
+		Role:              attachment.RoleMaterial,
+	}}
+	request := httptest.NewRequest(http.MethodPatch, "/api/attachments/blobs/material-source?attachmentId="+repo.item.ID, strings.NewReader(`{"author":" 朱春蓉 "}`))
+	request = request.WithContext(context.WithValue(request.Context(), middleware.AuthUserContextKey, auth.AuthUser{ID: "test-user", Roles: []string{"user"}}))
+	recorder := httptest.NewRecorder()
+
+	AttachmentResource(nil, repo, nil).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PATCH status = %d, body=%s; want 200", recorder.Code, recorder.Body.String())
+	}
+	if repo.author != "朱春蓉" {
+		t.Fatalf("author = %q; want 朱春蓉", repo.author)
+	}
+}
+
 func TestAttachmentResourceUsesCurrentNameForCurrentBlob(t *testing.T) {
 	root := t.TempDir()
 	objectStorage, err := storage.NewLocalStorage(root)
@@ -119,6 +140,37 @@ type findNotFoundRepo struct {
 
 func (repo *findNotFoundRepo) Find(ctx context.Context, storageKey string) (attachment.Attachment, error) {
 	return attachment.Attachment{}, attachment.ErrNotFound
+}
+
+type metadataRecordRepo struct {
+	attachment.Repository
+	item   attachment.Attachment
+	author string
+}
+
+func (repo *metadataRecordRepo) Find(context.Context, string) (attachment.Attachment, error) {
+	return repo.item, nil
+}
+
+func (repo *metadataRecordRepo) FindByID(context.Context, string) (attachment.Attachment, error) {
+	return repo.item, nil
+}
+
+func (repo *metadataRecordRepo) DeleteByID(context.Context, string, string) (attachment.Attachment, error) {
+	return attachment.Attachment{}, nil
+}
+
+func (repo *metadataRecordRepo) UpdateAuthorByID(_ context.Context, _ string, author string) error {
+	repo.author = strings.TrimSpace(author)
+	return nil
+}
+
+func (repo *metadataRecordRepo) HasStorageKeyReference(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (repo *metadataRecordRepo) ReidentifyPartByID(context.Context, string, string, string) (attachment.ReidentifyResult, error) {
+	return attachment.ReidentifyResult{}, nil
 }
 
 type singleRecordRepo struct {

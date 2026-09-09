@@ -1,7 +1,6 @@
 package upload
 
 import (
-	"log"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -967,6 +967,7 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 	}
 	var attachmentMetadata struct {
 		CreatePart *drawing.CreatePartInput `json:"createPart"`
+		Author     string                   `json:"author"`
 	}
 	if len(metadata) > 0 {
 		if err := json.Unmarshal(metadata, &attachmentMetadata); err != nil {
@@ -1024,9 +1025,9 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 			return nil, fmt.Errorf("查询附件所属对象失败: %w", err)
 		}
 		if item.PartNo == "" {
-			err = tx.QueryRow(ctx, `INSERT INTO attachments (drawing_id, file_role, logical_name, uploaded_by) VALUES ($1::uuid, $2, $3, $4::uuid) RETURNING id::text`, ownerID, item.Role, item.OriginalName, userID).Scan(&attachmentID)
+			err = tx.QueryRow(ctx, `INSERT INTO attachments (drawing_id, file_role, logical_name, uploaded_by, author) VALUES ($1::uuid, $2, $3, $4::uuid, $5) RETURNING id::text`, ownerID, item.Role, item.OriginalName, userID, strings.TrimSpace(attachmentMetadata.Author)).Scan(&attachmentID)
 		} else {
-			err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, logical_name, uploaded_by) VALUES ($1::uuid, $2, $3, $4::uuid) RETURNING id::text`, ownerID, item.Role, item.OriginalName, userID).Scan(&attachmentID)
+			err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, logical_name, uploaded_by, author) VALUES ($1::uuid, $2, $3, $4::uuid, $5) RETURNING id::text`, ownerID, item.Role, item.OriginalName, userID, strings.TrimSpace(attachmentMetadata.Author)).Scan(&attachmentID)
 		}
 		if err == nil {
 			err = tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, 'v1.0', $2::uuid, $3, $4, $5, $6, 'release', $7::uuid) RETURNING id::text`, attachmentID, currentBlobID, currentName, currentMime, currentSize, isPreviewable(currentName, currentMime), userID).Scan(&versionID)
@@ -1054,7 +1055,7 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		if err := tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, 'working', $8::uuid) RETURNING id::text`, item.AttachmentID, version, currentBlobID, currentName, currentMime, currentSize, isPreviewable(currentName, currentMime), userID).Scan(&versionID); err != nil {
 			return nil, fmt.Errorf("登记替换文件版本失败: %w", err)
 		}
-		result, updateErr := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, revision = revision + 1 WHERE id = $1::uuid AND revision = $3 AND deleted_at IS NULL`, item.AttachmentID, versionID, *item.ExpectedRevision)
+		result, updateErr := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, revision = revision + 1, author = $4 WHERE id = $1::uuid AND revision = $3 AND deleted_at IS NULL`, item.AttachmentID, versionID, *item.ExpectedRevision, strings.TrimSpace(attachmentMetadata.Author))
 		if updateErr != nil {
 			return nil, fmt.Errorf("切换附件当前版本失败: %w", updateErr)
 		}
@@ -1063,7 +1064,7 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		}
 		attachmentID = item.AttachmentID
 	}
-	result := map[string]any{"sessionId": sessionID, "attachmentId": attachmentID, "storageKey": currentKey, "currentStorageKey": currentKey, "version": version, "status": "committed"}
+	result := map[string]any{"sessionId": sessionID, "attachmentId": attachmentID, "versionId": versionID, "storageKey": currentKey, "currentStorageKey": currentKey, "version": version, "status": "committed"}
 	if item.ExpectedRevision != nil {
 		result["revision"] = *item.ExpectedRevision + 1
 	}

@@ -77,7 +77,9 @@ export const drawingFileService = new DrawingFileService({
   identifyDrawingMaterial: (file, name) => apiDataProvider.identifyDrawingMaterial(file, name),
 	reidentifyDrawingFile: (storageKey, partNo, attachmentId) => apiDataProvider.reidentifyDrawingFile(storageKey, partNo, attachmentId),
   scanDrawingDesigner: (drawingNo) => apiDataProvider.scanDrawingDesigner(drawingNo),
-	deleteAttachment: (storageKey, attachmentId) => apiDataProvider.deleteAttachment(storageKey, attachmentId),
+		deleteAttachment: (storageKey, attachmentId) => apiDataProvider.deleteAttachment(storageKey, attachmentId),
+  updateAttachmentAuthor: (storageKey, attachmentId, author) => apiDataProvider.updateAttachmentAuthor(storageKey, attachmentId, author),
+
 })
 
 export const drawingQueryService = new DrawingQueryService({

@@ -12,6 +12,7 @@ export interface DrawingFileGateway {
 	reidentifyDrawingFile(storageKey: string, partNo: string, attachmentId?: string): Promise<ReidentifyDrawingFileResult>
   scanDrawingDesigner(drawingNo: string): Promise<string>
 	deleteAttachment(storageKey: string, attachmentId?: string): Promise<void>
+  updateAttachmentAuthor(storageKey: string, attachmentId: string, author: string): Promise<void>
 }
 
 /** 图纸文件应用服务：识别、读取和导出能力通过 Gateway 注入，页面不接触底层 HTTP 客户端。 */
@@ -29,6 +30,9 @@ export class DrawingFileService {
   }
   scanDesigner(drawingNo: string): Promise<string> { return this.gateway.scanDrawingDesigner(drawingNo) }
 	delete(storageKey: string, attachmentId?: string): Promise<void> { return this.gateway.deleteAttachment(storageKey, attachmentId) }
+  updateAuthor(storageKey: string, attachmentId: string, author: string): Promise<void> {
+    return this.gateway.updateAttachmentAuthor(storageKey, attachmentId, author)
+  }
 }
 
 export type { DrawingFileIdentity, DrawingFileIdentifyOptions, ReidentifyDrawingFileResult }

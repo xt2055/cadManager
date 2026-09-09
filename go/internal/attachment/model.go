@@ -35,6 +35,7 @@ type Attachment struct {
 	// 供版本登记等需要真实用户 ID 的内部链路使用，两者互不混用。
 	UploadedBy   string `json:"uploadedBy,omitempty"`
 	UploadedByID string `json:"-"`
+	Author       string `json:"author,omitempty"`
 	CreatedAt    string `json:"createdAt,omitempty"`
 }
 
@@ -72,6 +73,7 @@ type Repository interface {
 type IdentityRepository interface {
 	FindByID(ctx context.Context, attachmentID string) (Attachment, error)
 	DeleteByID(ctx context.Context, attachmentID string, userID string) (Attachment, error)
+	UpdateAuthorByID(ctx context.Context, attachmentID, author string) error
 	HasStorageKeyReference(ctx context.Context, storageKey string) (bool, error)
 	ReidentifyPartByID(ctx context.Context, attachmentID, partNo, userID string) (ReidentifyResult, error)
 }

@@ -10,6 +10,7 @@ export interface AttachmentTarget {
   role: AttachmentRole
 	partNo?: string
 	createPart?: Record<string, unknown>
+  author?: string
 }
 
 export class AttachmentUploader {
@@ -25,7 +26,7 @@ export class AttachmentUploader {
     const session = await this.gateway.createSession({
       kind: 'attachment',
       idempotencyKey: `attachment-replace:${target.id}:${revision}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-      metadata: { drawingNo, attachmentId: target.id, expectedRevision: revision },
+      metadata: { drawingNo, attachmentId: target.id, expectedRevision: revision, ...(target.author ? { author: target.author } : {}) },
     })
     try {
       const item = await this.gateway.createItem(session.id, {
@@ -59,7 +60,9 @@ export class AttachmentUploader {
 	        drawingNo,
 	        partNo: target.partNo || '',
 	        role: target.role,
-	        ...(target.createPart ? { createPart: target.createPart } : {}),
+		        ...(target.createPart ? { createPart: target.createPart } : {}),
+            ...(target.author ? { author: target.author } : {}),
+
 	      },
     })
     try {

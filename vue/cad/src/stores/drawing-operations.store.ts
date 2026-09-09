@@ -208,7 +208,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
           uploadedBy: item.uploadedBy || '未知用户',
           uploadedAt: formatReadableDateTime(item.createdAt, '历史记录'),
           storageKey: item.currentStorageKey || item.storageKey,
+          currentVersionId: item.currentVersionId,
 			mimeType: item.mimeType,
+          ...(item.author ? { author: item.author } : {}),
 			revision: item.revision,
         }
         owner.materialFiles = [...(owner.materialFiles ?? []).filter((file) => file.id !== material.id), material]
@@ -360,9 +362,10 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
       if (file.author || !file.storageKey) continue
       try {
         const content = await drawingFileService.read(file.storageKey)
-        const parseResult = await parseMaterialFileContent(content, file.name, file.drawingNo, file.id)
+        const parseResult = await parseMaterialFileContent(content, file.name, file.drawingNo, file.currentVersionId || '')
         if (parseResult.author) {
           file.author = parseResult.author
+          await drawingFileService.updateAuthor(file.storageKey, file.id, parseResult.author)
           changed = true
         }
       } catch (scanErr) {
@@ -521,7 +524,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
 		async function uploadReplacementSession(
 		drawingNo: string,
-		file: { id: string; name: string; revision?: number; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string },
+		file: { id: string; name: string; revision?: number; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string; author?: string },
 		content: Blob,
 	): Promise<Record<string, unknown>> {
 		return attachmentUploader.replace(drawingNo, file, content)
@@ -529,7 +532,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
 	async function uploadNewAttachmentSession(
 		drawingNo: string,
-		file: { id: string; name: string; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string; createPart?: Record<string, unknown> },
+		file: { id: string; name: string; role: 'assembly' | 'part' | 'material' | 'craft' | 'other'; partNo?: string; createPart?: Record<string, unknown>; author?: string },
 		content: Blob,
 	): Promise<Record<string, unknown>> {
 		return attachmentUploader.create(drawingNo, file, content)
@@ -1482,31 +1485,35 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     file.drawingNo = drawingNo
     const attachments = getTargetAttachmentFiles(target)
     const originalMaterialFiles = [...attachments.materialFiles]
-	    const originalBom = [...bomItems.value]
-	    let storageKey: string | undefined
-	    let attachmentId: string | undefined
+    const originalBom = [...bomItems.value]
+    const parseResult = content
+      ? await parseMaterialFileContent(content, file.name, drawingNo, '')
+      : { items: [] as BomItem[], author: undefined }
+    if (parseResult.author) file.author = parseResult.author
+    let storageKey: string | undefined
+    let attachmentId: string | undefined
     try {
-	      const commitResult = await uploadNewAttachmentSession(drawingNo, { ...file, role: 'material' }, content as Blob)
-	      attachmentId = typeof commitResult.attachmentId === 'string' ? commitResult.attachmentId : undefined
-	      storageKey = typeof commitResult.currentStorageKey === 'string'
-	        ? commitResult.currentStorageKey
-	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
-	      file.storageKey = storageKey
+      const commitResult = await uploadNewAttachmentSession(drawingNo, { ...file, role: 'material' }, content as Blob)
+		      attachmentId = typeof commitResult.attachmentId === 'string' ? commitResult.attachmentId : undefined
+          const versionId = typeof commitResult.versionId === 'string' ? commitResult.versionId : undefined
+		      storageKey = typeof commitResult.currentStorageKey === 'string'
+		        ? commitResult.currentStorageKey
+		        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+          if (attachmentId) file.id = attachmentId
+		      file.storageKey = storageKey
+          file.currentVersionId = versionId
+
       attachments.materialFiles.unshift(file)
 
-      let importedCount = 0
-      if (content) {
-        const parseResult = await parseMaterialFileContent(content, file.name, drawingNo, file.id)
-        if (parseResult.author) {
-          file.author = parseResult.author
-        }
-        if (parseResult.items.length) {
-          bomItems.value = [
-            ...bomItems.value.filter((item) => item.drawingNo !== drawingNo),
-            ...parseResult.items,
-          ]
-          importedCount = parseResult.items.length
-        }
+      const importedCount = parseResult.items.length
+      if (importedCount) {
+        bomItems.value = [
+          ...bomItems.value.filter((item) => item.drawingNo !== drawingNo),
+          ...parseResult.items.map((item) => ({
+            ...item,
+            ...(file.currentVersionId ? { sourceFileId: file.currentVersionId } : {}),
+          })),
+        ]
       }
 
       await saveBomForDrawing(drawingNo)
@@ -1537,6 +1544,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
     const originalFiles = [...attachments.materialFiles]
     const originalBom = [...bomItems.value]
+    const parseResult = await parseMaterialFileContent(content, content.name, drawingNo, '')
     const updatedFile: MaterialFile = {
       ...currentFile,
       name: content.name,
@@ -1545,25 +1553,27 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
       uploadedAt: nowLabel(),
       storageKey: undefined,
       mimeType: content.type || undefined,
+      author: parseResult.author,
     }
 
     try {
-	      const commitResult = await uploadReplacementSession(drawingNo, { ...currentFile, role: 'material' }, content)
-	      updatedFile.storageKey = typeof commitResult.currentStorageKey === 'string'
-	        ? commitResult.currentStorageKey
-	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
-	      if (typeof commitResult.version === 'string') updatedFile.version = commitResult.version
+      const commitResult = await uploadReplacementSession(drawingNo, { ...updatedFile, role: 'material' }, content)
+		      updatedFile.storageKey = typeof commitResult.currentStorageKey === 'string'
+		        ? commitResult.currentStorageKey
+		        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
+          updatedFile.currentVersionId = typeof commitResult.versionId === 'string' ? commitResult.versionId : undefined
+		      if (typeof commitResult.version === 'string') updatedFile.version = commitResult.version
+
       const index = attachments.materialFiles.findIndex((item) => item.id === fileId)
       if (index >= 0) attachments.materialFiles[index] = updatedFile
 
-      const parseResult = await parseMaterialFileContent(content, updatedFile.name, drawingNo, updatedFile.id)
-      if (parseResult.author) {
-        updatedFile.author = parseResult.author
-      }
       if (parseResult.items.length) {
         bomItems.value = [
           ...bomItems.value.filter((item) => item.drawingNo !== drawingNo),
-          ...parseResult.items,
+          ...parseResult.items.map((item) => ({
+            ...item,
+            ...(updatedFile.currentVersionId ? { sourceFileId: updatedFile.currentVersionId } : {}),
+          })),
         ]
       }
       await saveBomForDrawing(drawingNo)
@@ -1594,7 +1604,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     const originalMaterialFiles = [...attachments.materialFiles]
     const originalBom = [...bomItems.value]
     target.materialFiles = attachments.materialFiles.filter((item) => item.id !== fileId)
-    bomItems.value = bomItems.value.filter((item) => item.sourceFileId !== fileId)
+    bomItems.value = bomItems.value.filter((item) =>
+      !item.sourceFileId || (item.sourceFileId !== file.id && item.sourceFileId !== file.currentVersionId),
+    )
     try {
       await saveBomForDrawing(drawingNo)
 	      if (file.storageKey) await drawingFileService.delete(file.storageKey, file.id)
@@ -1623,9 +1635,10 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     if (!file.storageKey) throw new Error(`备料表「${file.name}」没有可读取的附件内容`)
 
     const content = await drawingFileService.read(file.storageKey)
-    const parseResult = await parseMaterialFileContent(content, file.name, drawingNo, file.id)
+    const parseResult = await parseMaterialFileContent(content, file.name, drawingNo, file.currentVersionId || '')
     if (parseResult.author) {
       file.author = parseResult.author
+      await drawingFileService.updateAuthor(file.storageKey, file.id, parseResult.author)
     }
     bomItems.value = [
       ...bomItems.value.filter((item) => item.drawingNo !== drawingNo),

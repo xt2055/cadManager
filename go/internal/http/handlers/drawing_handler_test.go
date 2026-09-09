@@ -23,6 +23,7 @@ type characterizationDrawingRepository struct {
 	updateCalled       bool
 	lastIdempotencyKey string
 	lastBorrowInput    drawing.BorrowInput
+	lastBOMInput       drawing.UpdateBOMInput
 }
 
 func (r *characterizationDrawingRepository) List(context.Context, drawing.ListFilter) (drawing.Page[drawing.Drawing], error) {
@@ -106,7 +107,8 @@ func (r *characterizationDrawingRepository) GetBOM(context.Context, string) (dra
 	return drawing.BOM{DrawingID: "drawing-1", Revision: 1}, nil
 }
 
-func (r *characterizationDrawingRepository) ReplaceBOM(context.Context, string, drawing.UpdateBOMInput, string) (drawing.BOM, error) {
+func (r *characterizationDrawingRepository) ReplaceBOM(_ context.Context, _ string, input drawing.UpdateBOMInput, _ string) (drawing.BOM, error) {
+	r.lastBOMInput = input
 	return drawing.BOM{DrawingID: "drawing-1", Revision: 2}, nil
 }
 
@@ -232,6 +234,28 @@ func TestAtomicBorrowCharacterizationUsesDrawingCommand(t *testing.T) {
 	}
 	if repository.lastBorrowInput.SourcePartID != "part-1" || repository.lastBorrowInput.Qty != 3 || repository.lastBorrowInput.BorrowReason != "测试借用" {
 		t.Fatalf("borrow input not received correctly: %+v", repository.lastBorrowInput)
+	}
+}
+
+func TestAtomicBOMCharacterizationAcceptsStrictPayload(t *testing.T) {
+	repository := &characterizationDrawingRepository{}
+	request := authenticatedRequest(http.MethodPut, "/api/drawings/drawing-1/bom", `{"expectedRevision":1,"items":[{"no":1,"id":"local-row-id","sourceAttachmentVersionId":"11111111-1111-4111-8111-111111111111","name":"缸筒","spec":"27SiMn","qty":2,"weight":15.5,"remark":""}]}`)
+	recorder := httptest.NewRecorder()
+
+	DrawingResource(repository).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, expected %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if repository.lastBOMInput.ExpectedRevision == nil || *repository.lastBOMInput.ExpectedRevision != 1 {
+		t.Fatalf("unexpected revision: %+v", repository.lastBOMInput.ExpectedRevision)
+	}
+	if len(repository.lastBOMInput.Items) != 1 {
+		t.Fatalf("unexpected BOM item count: %d", len(repository.lastBOMInput.Items))
+	}
+	item := repository.lastBOMInput.Items[0]
+	if item.Quantity != 2 || item.SourceAttachmentVersion == nil || *item.SourceAttachmentVersion != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("BOM input not received correctly: %+v", item)
 	}
 }
 

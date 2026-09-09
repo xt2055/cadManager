@@ -4,6 +4,7 @@ import type { BorrowPartInput, CreatePartInput, DrawingBomSnapshot, DrawingBorro
 import type { UserAccount } from '@/types/domain.types'
 import type { UserManagementInput } from '@/types/application.types'
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { drawingBomRequestBody } from '@/modules/drawing/bom-request'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -122,19 +123,7 @@ export class ApiDataProvider {
   async replaceDrawingBom(drawingId: string, input: ReplaceDrawingBomInput): Promise<DrawingBomSnapshot> {
     const result = await this.request<unknown>(`/drawings/${encodeURIComponent(drawingId)}/bom`, {
       method: 'PUT',
-      body: JSON.stringify({
-        expectedRevision: input.expectedRevision,
-        items: input.items.map((item, index) => ({
-          no: item.no || index + 1,
-          id: item.id,
-          name: item.name,
-          spec: item.spec,
-          quantity: item.qty,
-          weight: item.weight,
-          remark: item.remark,
-          ...(item.sourceFileId ? { sourceAttachmentVersion: item.sourceFileId } : {}),
-        })),
-      }),
+      body: JSON.stringify(drawingBomRequestBody(input)),
     })
     if (!isRecord(result) || typeof result.revision !== 'number' || !Array.isArray(result.items)) {
       throw new Error('图纸 BOM 修改接口返回格式无效')
@@ -173,7 +162,15 @@ export class ApiDataProvider {
 	async deleteAttachment(storageKey: string, attachmentId?: string): Promise<void> {
 		const query = attachmentId ? `?attachmentId=${encodeURIComponent(attachmentId)}` : ''
 		await this.request(`/attachments/${encodeURIComponent(storageKey)}${query}`, { method: 'DELETE' })
+	}
+
+  async updateAttachmentAuthor(storageKey: string, attachmentId: string, author: string): Promise<void> {
+    await this.request(`/attachments/${encodeURIComponent(storageKey)}?attachmentId=${encodeURIComponent(attachmentId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ author }),
+    })
   }
+
 
   async createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession> {
     return this.request<UploadSession>('/upload-sessions', {

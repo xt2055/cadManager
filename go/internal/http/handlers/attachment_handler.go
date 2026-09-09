@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -271,8 +272,48 @@ func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, ob
 			writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(fileName)))
 			writer.Header().Set("Content-Length", fmt.Sprintf("%d", object.Size))
 			_, _ = io.Copy(writer, reader)
+		case http.MethodPatch:
+			identity, ok := repository.(attachment.IdentityRepository)
+			if !ok {
+				response.WriteError(writer, http.StatusNotImplemented, "附件元数据更新尚未配置")
+				return
+			}
+			attachmentID := strings.TrimSpace(request.URL.Query().Get("attachmentId"))
+			if attachmentID == "" {
+				response.WriteError(writer, http.StatusBadRequest, "更新附件元数据必须提供 attachmentId")
+				return
+			}
+			var input struct {
+				Author string `json:"author"`
+			}
+			decoder := json.NewDecoder(request.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&input); err != nil || len([]rune(strings.TrimSpace(input.Author))) > 100 {
+				response.WriteError(writer, http.StatusBadRequest, "附件元数据格式无效")
+				return
+			}
+			current, err := identity.FindByID(request.Context(), attachmentID)
+			if err != nil {
+				writeAttachmentError(writer, err)
+				return
+			}
+			if current.StorageKey != key && current.CurrentStorageKey != key {
+				response.WriteError(writer, http.StatusNotFound, "附件不存在")
+				return
+			}
+			if current.Role != attachment.RoleMaterial {
+				response.WriteError(writer, http.StatusBadRequest, "只有备料表支持更新编制人")
+				return
+			}
+			if err := identity.UpdateAuthorByID(request.Context(), attachmentID, input.Author); err != nil {
+				writeAttachmentError(writer, err)
+				return
+			}
+			current.Author = strings.TrimSpace(input.Author)
+			response.WriteData(writer, http.StatusOK, current)
 		case http.MethodDelete:
 			// 存档图纸的正式成果受变更工单保护，禁止直接删除附件。
+
 			if !recordMissing && item.DrawingNo != "" {
 				archived, statusErr := drawingArchivedByNo(request.Context(), pool, item.DrawingNo)
 				if statusErr != nil {
