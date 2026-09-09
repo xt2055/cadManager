@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
+import SavedDrawingInfo from '../../components/detail/SavedDrawingInfo.vue'
 import { STATUS } from '@/constants/drawing-status'
 import { useUiStore } from '@/stores/ui.store'
 import { useDrawingStore } from '@/stores/drawing.store'
@@ -204,6 +205,7 @@ const feedIcons: Record<string, string> = {
 
 <template>
   <div class="properties-page-view">
+    <SavedDrawingInfo v-if="currentItem" :files="[...currentItem.files, ...currentItem.otherFiles]" />
     <!-- 总图专属：业务技术规格（动态属性）卡片 -->
     <div v-if="!isPart && currentDrawing && attributeStore.sortedAttributes.length" class="props-section card card-pad">
       <div class="card-title no-padding property-title">

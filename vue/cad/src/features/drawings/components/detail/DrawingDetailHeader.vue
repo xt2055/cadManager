@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { loadTitleBlock, savedDesigner } from '@/services/drawing-title-block.service'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -68,22 +69,11 @@ function onDrawingChanged() {
   void drawingStore.load()
 }
 
-const designerName = computed(() => {
-  if (!drawing.value) return ''
-  if ('parentNo' in drawing.value) {
-    let parentNo = drawing.value.parentNo
-    const visited = new Set<string>()
-    while (parentNo && !visited.has(parentNo)) {
-      visited.add(parentNo)
-      const parent = drawingStore.getDrawing(parentNo)
-      if (parent) return parent.designer || ''
-      const parentPart = drawingStore.getPart(parentNo)
-      if (!parentPart) break
-      parentNo = parentPart.parentNo
-    }
-  }
-  return drawing.value && 'designer' in drawing.value ? drawing.value.designer || '' : ''
-})
+const titleFiles = computed(() => [...(drawing.value?.files ?? []), ...(drawing.value?.otherFiles ?? [])].filter(file => /\.(exb|dwg|dxf)$/i.test(file.name)))
+watch(() => titleFiles.value.map(file => `${file.id}:${file.version}`).join('|'), () => {
+  for (const file of titleFiles.value) void loadTitleBlock(file.id).catch(() => undefined)
+}, { immediate: true })
+const designerName = computed(() => savedDesigner(titleFiles.value.map(file => file.id)))
 
 // 创建人：历史数据可能存有「当前用户」占位符（无法追溯真实创建人），显示为 —。
 const creatorLabel = computed(() => {

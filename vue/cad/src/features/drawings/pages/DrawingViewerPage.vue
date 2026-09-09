@@ -7,6 +7,8 @@ import { auditService } from '@/app/container'
 // 已废弃：前端不再使用 Canvas DXF 渲染器，保留原组件引用以便回溯。
 // import CadVectorViewer from '@/features/drawings/detail-tabs/preview/CadVectorViewer.vue'
 import MlightCadViewer from '@/features/drawings/detail-tabs/preview/MlightCadViewer.vue'
+import DrawingInfoPanel from '@/features/drawings/components/detail/DrawingInfoPanel.vue'
+import type { TitleSpace } from '@/features/drawings/detail-tabs/preview/cad-title-block'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import type { FileView } from '@/modules/drawing'
@@ -61,6 +63,19 @@ async function checkConversion(retry = false) {
 // 已废弃：Canvas 查看器引用保留，不再挂载。
 // const cadViewerRef = ref<InstanceType<typeof CadVectorViewer> | null>(null)
 const mlightCadViewerRef = ref<InstanceType<typeof MlightCadViewer> | null>(null)
+const viewerReady = ref(false)
+const titleResult = ref<{ spaces: TitleSpace[]; activeSpaceId: string } | null>(null)
+const titleError = ref('')
+
+function extractDrawingInfo() {
+  titleError.value = ''
+  try {
+    titleResult.value = mlightCadViewerRef.value?.extractTitleBlock() ?? null
+  } catch (error) {
+    titleResult.value = null
+    titleError.value = error instanceof Error ? error.message : '提取图纸信息失败'
+  }
+}
 
 // 视图与图层控制
 const layerPanelVisible = ref(true)
@@ -83,6 +98,9 @@ function revokeOriginalUrl() {
 }
 
 async function loadTargetFile() {
+  viewerReady.value = false
+  titleResult.value = null
+  titleError.value = ''
   if (conversionTimer) clearTimeout(conversionTimer)
   conversionState.value = ''
   await drawingStore.load()
@@ -268,6 +286,7 @@ watch([drawingId, fileId, versionId, versionKey], () => {
       </div>
 
       <div class="header-right">
+        <button class="toggle-btn" type="button" :disabled="!viewerReady" @click="extractDrawingInfo">提取图纸信息</button>
         <button class="toggle-btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId }, query: { fileId, versionId: versionId || undefined, versionKey: versionKey || undefined } })">图纸对比</button>
         <!-- 已废弃：Canvas/MLightCAD 切换入口保留，不再显示，当前固定使用 MLightCAD。 -->
         <!--
@@ -319,6 +338,8 @@ watch([drawingId, fileId, versionId, versionKey], () => {
       </div>
     </header>
 
+    <p v-if="titleError" role="alert" class="extraction-error">{{ titleError }}</p>
+
     <!-- 核心画布工作区 -->
     <div class="viewer-body">
       <!-- 中间 CAD 矢量图画板 -->
@@ -341,6 +362,8 @@ watch([drawingId, fileId, versionId, versionKey], () => {
           ref="mlightCadViewerRef"
           :dxf-url="cadOriginalUrl"
           :file-name="cadSourceFileName"
+          @ready="viewerReady = true"
+          @load-error="viewerReady = false; titleResult = null"
           @layers-loaded="handleLayersLoaded"
           @zoom-change="handleZoomChange"
         />
@@ -352,7 +375,8 @@ watch([drawingId, fileId, versionId, versionKey], () => {
       </main>
 
       <!-- 右侧图层管理器面板（可收起） -->
-      <aside v-if="layerPanelVisible" class="side-panel layer-panel">
+      <DrawingInfoPanel v-if="titleResult" :spaces="titleResult.spaces" :active-space-id="titleResult.activeSpaceId" :file-name="targetFile?.name || ''" @close="titleResult = null" />
+      <aside v-else-if="layerPanelVisible" class="side-panel layer-panel">
         <div class="panel-header">
           <DemoIcon name="layers" :size="14" />
           <span>图层控制 ({{ dynamicLayers.length }})</span>
@@ -382,6 +406,8 @@ watch([drawingId, fileId, versionId, versionKey], () => {
 </template>
 
 <style scoped>
+.extraction-error { margin: 0; padding: 10px 16px; color: var(--text-1); background: var(--panel); border-bottom: 1px solid var(--line); }
+.toggle-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .drawing-standalone-viewer {
   display: flex;
   flex-direction: column;

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import SavedDrawingInfo from '../../components/detail/SavedDrawingInfo.vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -65,6 +66,12 @@ const parts = computed(() => {
   return flatten(treeNodes.value)
 })
 const selected = computed(() => parts.value[workspaceStore.selectedStructureIndex])
+const selectedDisplayName = computed(() => {
+  const part = selected.value
+  if (!part) return ''
+  const suffix = part.name.startsWith(part.no) ? part.name.slice(part.no.length).trim() : part.name
+  return suffix.replace(/^[（(](.*)[）)]$/, '$1') || part.name
+})
 const otherFiles = computed(() => drawing.value?.otherFiles ?? [])
 
 function openPartDetail(partNo: string) {
@@ -122,21 +129,28 @@ function selectPart(partNo: string) {
     <div class="card">
       <div class="sel-panel">
         <template v-if="selected">
-          <div class="card-title selected-title">
-            <DemoIcon name="file" :size="16" />
-            {{ selected.name }}
-            <span class="tno mono">{{ selected.no }}</span>
-          </div>
-
-             <div class="kv-grid">
-               <div class="kv"><div class="k">零件图号</div><div class="v mono">{{ selected.no }}</div></div>
-             <div class="kv"><div class="k">零件材料</div><div class="v">{{ selected.material || '—' }}</div></div>
-              <div class="kv"><div class="k">制造类别</div><div class="v"><span class="tag info">{{ selected.partType }}</span></div></div>
-             <div class="kv"><div class="k">单机装配数量</div><div class="v mono">× {{ selected.qty }}</div></div>
-            <div class="kv"><div class="k">当前发布版本</div><div class="v mono">{{ selected.version }}</div></div>
-            <div class="kv"><div class="k">生命周期状态</div><div class="v"><span class="tag" :class="STATUS[selected.status].c">{{ STATUS[selected.status].t }}</span></div></div>
-             <div class="kv"><div class="k">借用来源</div><div class="v">{{ selected.sourceDrawing || '— 本项目原创' }}</div></div>
-           </div>
+          <SavedDrawingInfo
+            :key="selected.id"
+            :files="[...selected.files, ...selected.otherFiles]"
+            embedded
+            :system-no="selected.no"
+            :material="selected.material"
+          >
+            <template #heading="{ titleName, titleNumber }">
+              <div class="card-title selected-title">
+                <DemoIcon name="file" :size="16" />
+                {{ titleName || selectedDisplayName }}
+                <span class="tno mono">{{ titleNumber }}</span>
+              </div>
+            </template>
+            <template #fields>
+              <div><dt>制造类别</dt><dd><span class="tag info">{{ selected.partType }}</span></dd></div>
+              <div><dt>单机装配数量</dt><dd class="mono">× {{ selected.qty }}</dd></div>
+              <div><dt>当前发布版本</dt><dd class="mono">{{ selected.version }}</dd></div>
+              <div><dt>生命周期状态</dt><dd><span class="tag" :class="STATUS[selected.status].c">{{ STATUS[selected.status].t }}</span></dd></div>
+              <div v-if="selected.sourceDrawing"><dt>借用来源</dt><dd>{{ selected.sourceDrawing }}</dd></div>
+            </template>
+          </SavedDrawingInfo>
 
            <div class="detail-files-section">
              <div class="detail-files-title"><DemoIcon name="file-text" :size="15" />关联文件</div>

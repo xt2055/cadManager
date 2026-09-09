@@ -313,7 +313,7 @@ export class DrawingReadModelMapper {
 	    const sourcePart = part.borrowFrom ? partsByNo.get(part.borrowFrom)?.[0] : undefined
 	    const sourceDrawing = part.borrowFrom && drawingsByNo.has(part.borrowFrom)
 	      ? part.borrowFrom
-	      : part.borrowFrom ? this.findRootDrawingNo(sourcePart ?? part, partsByNo, drawingsByNo) : undefined
+	      : sourcePart ? this.findRootDrawingNo(sourcePart, partsByNo, drawingsByNo) ?? part.borrowFrom : part.borrowFrom || undefined
 	    return {
 	      id: part.id ?? part.no,
 	      ...(part.relationId ? { relationId: part.relationId } : {}),

@@ -5,6 +5,7 @@ import { findWipeoutMasks } from './cad-entity-filters'
 import { installCadFontDiagnostics, normalizeCadToleranceEntities, preloadCadSymbolFonts, resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
 import { registerCadConverters } from '@/services/cad-converters.service'
 import { compareEntities, snapshotDrawing, type DrawingDifference, type CompareBounds } from './cad-compare'
+import { collectTitleSpaces } from './cad-title-block'
 
 interface Props {
   dxfUrl?: string | null
@@ -295,7 +296,12 @@ async function resetView() {
   emit('zoom-change', 1)
 }
 
-defineExpose({ setLayerVisibility, zoomIn, zoomOut, resetView, compareDrawing, focusDifference, clearComparison })
+function extractTitleBlock() {
+  if (!manager?.curDocument?.database || loading.value || errorMessage.value) throw new Error('请等待图纸加载完成后再提取')
+  return { spaces: collectTitleSpaces(manager.curDocument.database), activeSpaceId: String(manager.curView.activeLayoutBtrId) }
+}
+
+defineExpose({ setLayerVisibility, zoomIn, zoomOut, resetView, compareDrawing, focusDifference, clearComparison, extractTitleBlock })
 
 watch(() => props.dxfUrl, (url) => {
   if (url) void loadViewer(url)

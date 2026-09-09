@@ -11,6 +11,7 @@ import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { appContainer, drawingFileService } from '@/app/container'
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { extractCreationTitleBlocks } from '@/services/drawing-title-block.service'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import type { DrawingFileIdentity } from '@/modules/drawing'
 import type { UploadSessionSnapshot } from '@/types/application.types'
@@ -122,6 +123,14 @@ async function readConversionStatus(item: ConversionProgressItem): Promise<Conve
 
 function wait(milliseconds: number): Promise<void> { return new Promise((resolve) => window.setTimeout(resolve, milliseconds)) }
 
+const titleExtractionFailures = ref<string[]>([])
+async function saveCreatedTitleBlocks(files: Array<{ id: string; name: string }>) {
+  titleExtractionFailures.value = await extractCreationTitleBlocks(files, (completed, total) => {
+    createStatus.value = `正在提取并保存图纸信息（${completed}/${total}）`
+  })
+  if (titleExtractionFailures.value.length) uiStore.toast(`${titleExtractionFailures.value.length} 个文件的信息尚未保存，可在属性详情中重试：${titleExtractionFailures.value.join('；')}`, 'warn')
+}
+
 async function waitForDrawingConversions(drawingNo: string): Promise<boolean> {
   conversionDrawingNo.value = drawingNo
   const drawing = drawingStore.getDrawing(drawingNo)
@@ -142,6 +151,7 @@ async function waitForDrawingConversions(drawingNo: string): Promise<boolean> {
     createStatus.value = `正在转换图纸（${conversionReadyCount.value}/${conversionItems.value.length}）`
     if (conversionReadyCount.value === conversionItems.value.length) {
       conversionModalVisible.value = false
+      await saveCreatedTitleBlocks(files)
       return true
     }
     if (conversionFailedCount.value > 0) return false
@@ -671,6 +681,8 @@ async function retryFailedUpload() {
   createStatus.value = '正在重试失败文件'
   try {
     const drawingNo = await drawingOperationsStore.retryFailedDrawingUpload()
+    await drawingStore.refresh()
+    if (!await waitForDrawingConversions(drawingNo)) return
     uiStore.toast(`上传已恢复，项目「${drawingNo}」创建成功`, 'ok')
     router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
   } catch (error) {

@@ -18,6 +18,7 @@ import (
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/review"
 	"cadguanliq/internal/storage"
+	"cadguanliq/internal/titleblock"
 	"cadguanliq/internal/update"
 	"cadguanliq/internal/upload"
 	"cadguanliq/internal/versioning"
@@ -99,6 +100,7 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/exb/convert", drawingHandler(handlers.ConvertToEXB(attachmentRepository, attachmentStorage, convService)))
 	mux.Handle("/api/cad/source", drawingHandler(handlers.CADSource(attachmentRepository, attachmentStorage, convService)))
 	mux.Handle("/api/cad/conversions/", drawingHandler(handlers.ConversionStatus(pool)))
+	mux.Handle("/api/cad/title-blocks/", drawingHandler(handlers.TitleBlocks(titleblock.NewRepository(pool))))
 	mux.Handle("/api/cad/convert-dwg", drawingHandler(handlers.ConvertDxfToDwg(convService, cfg.MaxUploadBytes)))
 	auditRepository := audit.NewPGRepository(pool)
 	mux.Handle("/api/drawing-operation-logs", drawingHandler(handlers.DrawingOperationLogs(auditRepository)))
