@@ -1,732 +1,199 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { useSystemStatusStore } from '@/stores/system-status.store'
+import { RouteName, type RouteNameKey } from '@/router/route-names'
+import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useReviewStore } from '@/stores/review.store'
-import { useAuditStore } from '@/stores/audit.store'
+import { useSystemStatusStore } from '@/stores/system-status.store'
+import { listAdminOperationLogs } from '@/services/drawing-operation-log.service'
+import { ACTIVITY_LABELS, type ActivityLog, type DrawingStatus } from '@/types/domain.types'
+import { STATUS } from '@/constants/drawing-status'
+import { availableWorkspaces, workspaceDataSources, workspaceDrawings, workspaceLabels, pendingWorkspaceReviews, completedWorkspaceReviews, type WorkspaceRole } from '../dashboard.helpers'
+import '../dashboard.css'
 
-defineOptions({
-  name: 'DashboardPage',
-})
-
-const systemStore = useSystemStatusStore()
+defineOptions({ name: 'DashboardPage' })
+const router = useRouter()
+const auth = useAuthStore()
 const drawingStore = useDrawingStore()
 const reviewStore = useReviewStore()
-const auditStore = useAuditStore()
-const router = useRouter()
+const systemStore = useSystemStatusStore()
+const selectedWorkspace = ref<WorkspaceRole | null>(null)
+const workspaces = computed(() => availableWorkspaces(auth.currentUser?.roles ?? []))
+const workspace = computed(() => selectedWorkspace.value && workspaces.value.includes(selectedWorkspace.value) ? selectedWorkspace.value : workspaces.value[0] ?? null)
+const keyword = ref('')
+const drawingFilter = ref<DrawingStatus | ''>('')
+const reviewFilter = ref<'pending' | 'completed'>('pending')
+const reviewResult = ref<'' | 'pass' | 'rejected'>('')
+const page = ref(1)
+const pageSize = 8
+const refreshing = ref(false)
+const dataError = ref('')
+const auditError = ref('')
+const activity = ref<ActivityLog[]>([])
+let requestGeneration = 0
+let disposed = false
 
-onMounted(() => {
-  systemStore.fetchStatus()
-  void Promise.all([
-    drawingStore.load(),
-    reviewStore.load(),
-    auditStore.loadDrawing({ page: 1, pageSize: 20 }),
-  ]).catch(() => undefined)
-})
-
-const currentHour = new Date().getHours()
-const greeting = currentHour < 6 ? '晚上好' : currentHour < 12 ? '早上好' : currentHour < 18 ? '下午好' : '晚上好'
-const todayText = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
-
-const feedIcons: Record<string, string> = {
-  view: 'eye',
-  create: 'plus',
-  edit: 'pencil',
-  branch: 'git-branch',
-  upload: 'upload',
-  download: 'download',
-  delete: 'trash-2',
-  check: 'check-circle-2',
-  parse: 'file-search',
-}
-
-const stats = computed(() => {
-  const assemblies = drawingStore.drawings.filter((item) => item.kind === '总图').length
-  const parts = drawingStore.parts.length
-  const total = assemblies + parts
-  const reviewCount = reviewStore.myPendingReviews().length
-
+const identity = computed(() => auth.currentUser?.displayName || auth.currentUser?.account || '')
+const descriptions = { designer: '管理我的设计图纸，跟进校审与发布。', reviewer: '查阅图纸，处理待办，追溯签署意见。', admin: '掌握图纸资产与系统运行，管理团队和业务流程。' }
+const today = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', weekday: 'long' }).format(new Date())
+const drawings = computed(() => workspaceDrawings(drawingStore.drawings, auth.currentUser, workspace.value))
+const pending = computed(() => pendingWorkspaceReviews(reviewStore.cases, auth.currentUser))
+const completed = computed(() => completedWorkspaceReviews(reviewStore.completed, auth.currentUser))
+const sourceLoading = computed(() => workspace.value === 'reviewer' ? reviewStore.loading : drawingStore.loading)
+const draftCount = computed(() => drawings.value.filter(item => item.status === 'draft').length)
+const reviewingCount = computed(() => drawings.value.filter(item => item.status === 'reviewing').length)
+const publishedCount = computed(() => drawings.value.filter(item => item.status === 'published').length)
+const primaryAction = computed(() => workspace.value === 'admin'
+  ? { label: '后台管理', icon: 'shield', route: RouteName.AdminAccounts }
+  : workspace.value === 'reviewer' ? { label: '进入审核中心', icon: 'clipboard-check', route: RouteName.ReviewPending }
+    : { label: '新建图纸', icon: 'plus', route: RouteName.DrawingCreate })
+const shortcuts = computed<Array<{ label: string; description: string; icon: string; route: RouteNameKey }>>(() => {
+  if (workspace.value === 'admin') return [
+    { label: '账号与权限', description: '成员与角色', icon: 'users', route: RouteName.AdminAccounts },
+    { label: '审核流程', description: '节点与签署规则', icon: 'workflow', route: RouteName.AdminReviewFlows },
+    { label: '图纸管控', description: '发布与生命周期', icon: 'folder-lock', route: RouteName.AdminDrawings },
+    { label: '格式转换', description: '转换任务与异常', icon: 'refresh-cw', route: RouteName.AdminConversions },
+    { label: '操作审计', description: '操作记录追溯', icon: 'history', route: RouteName.AdminLogs },
+    { label: '系统日志', description: '服务诊断', icon: 'file-terminal', route: RouteName.AdminSystemLogs },
+  ]
   return [
-    { label: '图纸总数', value: String(total), icon: 'layers', delta: total ? '库内总计' : '暂无图纸' },
-    { label: '总图 / 零件', value: `${assemblies} / ${parts}`, icon: 'box', delta: `总图 ${assemblies} · 零件 ${parts}` },
-    { label: '待我审核', value: String(reviewCount), icon: 'clipboard-check', delta: reviewCount ? '待处理' : '暂无待办' },
+    { label: '图纸库', description: '项目与工程图纸', icon: 'folder-open', route: RouteName.DrawingLibrary },
+    { label: '零件索引', description: '按图号与材料检索', icon: 'box', route: RouteName.PartIndexLibrary },
+    workspace.value === 'reviewer'
+      ? { label: '已办审核', description: '签署意见与结论', icon: 'stamp', route: RouteName.ReviewCompleted }
+      : { label: '操作记录', description: '图纸操作追溯', icon: 'history', route: RouteName.OperationLogs },
   ]
 })
+const metrics = computed(() => {
+  if (workspace.value === 'reviewer') return [
+    { label: '待我审核', value: pending.value.length, unit: '项', icon: 'clipboard-check', tone: 'attention', filter: 'pending' },
+    { label: '我的签署', value: completed.value.length, unit: '次', icon: 'stamp', tone: '', filter: 'completed' },
+    { label: '已通过', value: completed.value.filter(item => item.result === 'pass').length, unit: '次', icon: 'check-circle-2', tone: 'positive', filter: 'pass' },
+    { label: '已驳回', value: completed.value.filter(item => item.result === 'rejected').length, unit: '次', icon: 'corner-up-left', tone: '', filter: 'rejected' },
+  ]
+  if (workspace.value === 'admin') return [
+    { label: '图纸项目', value: drawings.value.length, unit: '项', icon: 'folder-tree', tone: '', filter: '' },
+    { label: '零件资料', value: new Set(drawingStore.parts.map(item => item.id || item.no)).size, unit: '项', icon: 'box', tone: '', filter: null },
+    { label: '审核中', value: reviewingCount.value, unit: '项', icon: 'workflow', tone: 'attention', filter: 'reviewing' },
+    { label: '生产中', value: publishedCount.value, unit: '项', icon: 'layers', tone: 'positive', filter: 'published' },
+  ]
+  return [
+    { label: '我的图纸', value: drawings.value.length, unit: '项', icon: 'folder-tree', tone: '', filter: '' },
+    { label: '待完善草稿', value: draftCount.value, unit: '项', icon: 'pencil', tone: 'attention', filter: 'draft' },
+    { label: '审核中', value: reviewingCount.value, unit: '项', icon: 'workflow', tone: '', filter: 'reviewing' },
+    { label: '生产中', value: publishedCount.value, unit: '项', icon: 'layers', tone: 'positive', filter: 'published' },
+  ]
+})
+const filteredDrawings = computed(() => {
+  const search = keyword.value.trim().toLowerCase()
+  return drawings.value.filter(item => (!drawingFilter.value || item.status === drawingFilter.value) && (!search || [item.no, item.name, item.project].some(value => value.toLowerCase().includes(search))))
+})
+const reviewRows = computed(() => {
+  const search = keyword.value.trim().toLowerCase()
+  const items = reviewFilter.value === 'pending'
+    ? pending.value.map(item => ({ ...item, result: '', opinion: '' }))
+    : completed.value.map(item => ({ ...item, initiator: item.by }))
+  return items.filter(item => (reviewFilter.value === 'pending' || !reviewResult.value || item.result === reviewResult.value) && (!search || [item.no, item.name, item.node, item.initiator].some(value => value?.toLowerCase().includes(search))))
+})
+const total = computed(() => workspace.value === 'reviewer' ? reviewRows.value.length : filteredDrawings.value.length)
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+const visibleDrawings = computed(() => filteredDrawings.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const visibleReviews = computed(() => reviewRows.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const stateBreakdown = computed(() => (['draft', 'reviewing', 'published', 'archived', 'disabled'] as const).map(status => ({ status, label: STATUS[status].t, count: drawings.value.filter(item => item.status === status).length })))
+const storage = computed(() => systemStore.status?.storage)
+const serviceReady = computed(() => systemStore.isOnline && systemStore.status?.service.status === 'ok')
 
-function openCreateDrawing() {
-  router.push({ name: 'drawing-create' })
+function go(route: RouteNameKey) { void router.push({ name: route }) }
+function openDrawing(no: string) { void router.push({ name: RouteName.DrawingPreview, params: { drawingId: no } }) }
+function showMetric(filter: string | null) {
+  if (filter === null) { go(RouteName.PartIndexLibrary); return }
+  if (workspace.value === 'reviewer') {
+    reviewFilter.value = filter === 'pending' ? 'pending' : 'completed'
+    reviewResult.value = filter === 'pass' || filter === 'rejected' ? filter : ''
+  }
+  else drawingFilter.value = filter as DrawingStatus | ''
+  keyword.value = ''
 }
-
-function openLibrary() {
-  router.push({ name: 'drawing-library' })
+function clearSearch() { keyword.value = ''; drawingFilter.value = ''; reviewFilter.value = 'pending'; reviewResult.value = '' }
+function dateText(value?: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date)
 }
-
-function openReview(no: string) {
-  router.push({ name: 'drawing-preview', params: { drawingId: no } })
+async function loadData(force = false) {
+  const sources = workspaceDataSources(workspace.value)
+  const current = ++requestGeneration
+  refreshing.value = true
+  dataError.value = ''; auditError.value = ''
+  const tasks: Promise<void>[] = []
+  if (sources.drawings) tasks.push((force ? drawingStore.refresh() : drawingStore.load()).catch(cause => {
+    if (!disposed && current === requestGeneration) dataError.value = cause instanceof Error ? cause.message : '图纸加载失败'
+  }))
+  if (sources.reviews) tasks.push(reviewStore.load().catch(cause => {
+    if (!disposed && current === requestGeneration) dataError.value = cause instanceof Error ? cause.message : '审核任务加载失败'
+  }))
+  if (sources.system) tasks.push(systemStore.fetchStatus())
+  if (sources.audit) tasks.push(listAdminOperationLogs({ page: 1, pageSize: 5 }).then(result => {
+    if (!disposed && current === requestGeneration && workspace.value === 'admin') activity.value = result.list
+  }).catch(() => { if (!disposed && current === requestGeneration) auditError.value = '操作记录暂时不可用' }))
+  await Promise.allSettled(tasks)
+  if (!disposed && current === requestGeneration) refreshing.value = false
 }
+watch([workspace, () => auth.currentUser?.id], () => {
+  keyword.value = ''; drawingFilter.value = ''; reviewFilter.value = 'pending'; reviewResult.value = ''; page.value = 1; activity.value = []
+  void loadData()
+}, { immediate: true })
+watch([keyword, drawingFilter, reviewFilter, reviewResult], () => { page.value = 1 })
+watch(pageCount, value => { if (page.value > value) page.value = value })
+onBeforeUnmount(() => { disposed = true; requestGeneration++ })
 </script>
 
 <template>
-  <div class="page dashboard-page">
-    <!-- 顶部问候与快捷操作行 -->
-    <header class="dash-hero">
-      <div class="hero-text-wrap">
-        <div class="hero-title-row">
-          <div class="hero-status-dot"></div>
-          <h1>{{ greeting }}，工程师</h1>
-        </div>
-        <p class="hero-subtitle">{{ todayText }} · 当前有 <b>{{ reviewStore.myPendingReviews().length }}</b> 份审核任务等待处理</p>
-      </div>
-      <div class="acts">
-        <button class="btn secondary sm" type="button" @click="openLibrary">
-          <DemoIcon name="folder-kanban" :size="14" />浏览图库
-        </button>
-        <button class="btn primary sm" type="button" @click="openCreateDrawing">
-          <DemoIcon name="plus" :size="14" />新建工程图纸
-        </button>
-      </div>
+  <div class="page cad-workbench">
+    <header class="wb-header">
+      <div class="wb-heading"><div class="wb-eyebrow"><DemoIcon name="ruler" :size="15" />CAD 图纸管理<span>/</span>{{ identity }}</div><h1>{{ workspace ? workspaceLabels[workspace] : '工作台' }}</h1><p>{{ workspace ? descriptions[workspace] : '当前账号尚未分配工作角色。' }}</p></div>
+      <div class="wb-header-actions"><span class="wb-date">{{ today }}</span><button class="btn wb-refresh" type="button" :disabled="refreshing" aria-label="刷新工作台" @click="loadData(true)"><DemoIcon name="refresh-cw" :size="16" :class="{ 'wb-spinning': refreshing }" /></button><button v-if="workspace" class="btn primary" type="button" @click="go(primaryAction.route)"><DemoIcon :name="primaryAction.icon" :size="16" />{{ primaryAction.label }}</button></div>
     </header>
-
-    <!-- 方案 A：工业仪表盘标准双列布局（满屏高度严丝合缝对齐） -->
-    <div class="dash-main-container">
-      <!-- 左列：协同业务与实时信息流（待我审核 + 最近动态） -->
-      <section class="dash-col-left">
-        <!-- 待我审核卡片 -->
-        <div class="card panel-card todo-panel">
-          <div class="panel-header">
-            <div class="panel-title">
-              <DemoIcon name="stamp" :size="15" />
-              <span>待我审核</span>
-              <span class="count-tag" :class="{ highlight: reviewStore.myPendingReviews().length > 0 }">
-                {{ reviewStore.myPendingReviews().length }} 项
-              </span>
-            </div>
-            <span class="panel-hint">流程审批与签批流转</span>
-          </div>
-
-          <div class="panel-scroll-content">
-            <div v-if="reviewStore.myPendingReviews().length" class="todo-list">
-              <div
-                v-for="item in reviewStore.myPendingReviews()"
-                :key="`${item.reviewCaseId}-${item.node}`"
-                class="todo-item"
-              >
-                <div class="todo-info">
-                  <div class="todo-name-row">
-                    <b>{{ item.name }}</b>
-                    <span class="todo-node-tag">{{ item.node }}</span>
-                  </div>
-                  <span class="todo-meta">图号 {{ item.no }} · 发起人 {{ item.by }} · {{ item.time }}</span>
-                </div>
-                <button class="btn sm primary" type="button" @click="openReview(item.no)">
-                  <DemoIcon name="eye" :size="13" />审核
-                </button>
-              </div>
-            </div>
-            <div v-else class="compact-empty">
-              <DemoIcon name="check-circle-2" :size="30" />
-              <div class="empty-title">当前暂无待审核任务</div>
-              <div class="empty-desc">所有发起的图纸流程均已处理完毕</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 最近动态卡片 -->
-        <div class="card panel-card activity-panel">
-          <div class="panel-header">
-            <div class="panel-title">
-              <DemoIcon name="activity" :size="15" />
-              <span>最近动态</span>
-              <span class="count-tag">{{ auditStore.drawingLogs.list.length }} 条记录</span>
-            </div>
-            <span class="panel-hint">修改 · 审图 · 借用 · 检出</span>
-          </div>
-
-          <div class="panel-scroll-content">
-            <div v-if="auditStore.drawingLogs.list.length" class="feed">
-              <div
-                v-for="item in auditStore.drawingLogs.list"
-                :key="item.id"
-                class="feed-item"
-              >
-                <div class="feed-ic" :class="item.act">
-                  <DemoIcon :name="feedIcons[item.act] ?? 'activity'" :size="13" />
-                </div>
-                <div class="feed-txt">
-                  <b>{{ item.user }}</b> <span v-html="item.txt"></span>
-                </div>
-                <div class="feed-time">{{ item.time }}</div>
-              </div>
-            </div>
-            <div v-else class="compact-empty">
-              <DemoIcon name="activity" :size="30" />
-              <div class="empty-title">暂无图纸动态</div>
-              <div class="empty-desc">图纸的检出、借用与修改历史将实时呈现于此</div>
-            </div>
-          </div>
-        </div>
+    <div v-if="workspaces.length > 1" class="wb-role-switch" role="group" aria-label="切换工作视图"><button v-for="role in workspaces" :key="role" type="button" :aria-pressed="workspace === role" :class="{ active: workspace === role }" @click="selectedWorkspace = role">{{ workspaceLabels[role] }}</button></div>
+    <template v-if="workspace">
+      <section class="wb-metrics" aria-label="工作概览">
+        <button v-for="metric in metrics" :key="metric.label" class="wb-metric" :class="metric.tone" type="button" @click="showMetric(metric.filter)"><span class="wb-metric-label">{{ metric.label }}<DemoIcon :name="metric.icon" :size="17" /></span><span class="wb-metric-number">{{ sourceLoading || dataError ? '—' : metric.value }}<small>{{ metric.unit }}</small></span><span class="wb-metric-bottom">{{ workspace === 'reviewer' ? '个人审核记录' : workspace === 'designer' ? '本人创建或负责设计' : '当前图纸库' }}<DemoIcon name="chevron-right" :size="14" /></span></button>
       </section>
-
-      <!-- 右列：宏观指标与系统状态（指标卡 + 文件存储 + 进行中项目） -->
-      <section class="dash-col-right">
-        <!-- 顶部指标卡组（三等分） -->
-        <div class="stat-row-grid">
-          <div v-for="stat in stats" :key="stat.label" class="card stat-card">
-            <div class="stat-top">
-              <span class="stat-label">{{ stat.label }}</span>
-              <div class="stat-icon-wrap">
-                <DemoIcon :name="stat.icon" :size="14" />
+      <div class="wb-layout">
+        <main class="wb-main">
+          <section class="wb-panel wb-documents" :aria-busy="sourceLoading">
+            <div class="wb-panel-heading"><h2><DemoIcon :name="workspace === 'reviewer' ? 'clipboard-check' : 'folder-tree'" :size="17" />{{ workspace === 'reviewer' ? '审核任务' : workspace === 'designer' ? '我的设计图纸' : '图纸资产' }}</h2><button class="wb-text-button" type="button" @click="go(workspace === 'reviewer' ? RouteName.ReviewPending : RouteName.DrawingLibrary)">{{ workspace === 'reviewer' ? '审核中心' : '打开图纸库' }}<DemoIcon name="arrow-up-right" :size="14" /></button></div>
+            <div class="wb-document-tools">
+              <div class="wb-tabs" role="group" aria-label="筛选工作内容">
+                <template v-if="workspace === 'reviewer'"><button type="button" :aria-pressed="reviewFilter === 'pending'" :class="{ active: reviewFilter === 'pending' }" @click="reviewFilter = 'pending'">待我审核 <span>{{ pending.length }}</span></button><button type="button" :aria-pressed="reviewFilter === 'completed'" :class="{ active: reviewFilter === 'completed' }" @click="reviewFilter = 'completed'; reviewResult = ''">我的已办 <span>{{ completed.length }}</span></button></template>
+                <template v-else><button type="button" :aria-pressed="drawingFilter === ''" :class="{ active: !drawingFilter }" @click="drawingFilter = ''">最近更新</button><button type="button" :aria-pressed="drawingFilter === 'draft'" :class="{ active: drawingFilter === 'draft' }" @click="drawingFilter = 'draft'">草稿 <span>{{ draftCount }}</span></button><button type="button" :aria-pressed="drawingFilter === 'reviewing'" :class="{ active: drawingFilter === 'reviewing' }" @click="drawingFilter = 'reviewing'">审核中 <span>{{ reviewingCount }}</span></button><button type="button" :aria-pressed="drawingFilter === 'published'" :class="{ active: drawingFilter === 'published' }" @click="drawingFilter = 'published'">生产中</button></template>
               </div>
+              <button v-if="workspace === 'reviewer' && reviewFilter === 'completed' && reviewResult" class="wb-text-button" type="button" @click="reviewResult = ''">{{ reviewResult === 'pass' ? '仅已通过' : '仅已驳回' }}<DemoIcon name="x" :size="13" /></button>
+              <label class="wb-search"><DemoIcon name="search" :size="15" /><input v-model="keyword" :placeholder="workspace === 'reviewer' ? '图号、名称、审核节点' : '图号、名称、项目编号'" aria-label="搜索工作台图纸" /><button v-if="keyword" type="button" aria-label="清空搜索" @click="keyword = ''"><DemoIcon name="x" :size="13" /></button></label>
             </div>
-            <div class="stat-val">{{ stat.value }}</div>
-            <div class="stat-sub">{{ stat.delta }}</div>
-          </div>
-        </div>
-
-        <!-- 中部：文件存储看板 -->
-        <div class="card panel-card storage-card">
-          <div class="panel-header">
-            <div class="panel-title">
-              <DemoIcon name="hard-drive" :size="15" />
-              <span>文件存储与备份</span>
+            <div v-if="dataError" class="wb-message error" role="alert"><DemoIcon name="alert-circle" :size="20" /><strong>工作数据加载失败</strong><p>{{ dataError }}</p><button class="btn" type="button" :disabled="refreshing" @click="loadData(true)">重新加载</button></div>
+            <div v-else-if="sourceLoading && !total" class="wb-message" role="status"><DemoIcon name="loader" :size="24" class="wb-spinning" /><p>正在加载工作数据…</p></div>
+            <div v-else-if="!total" class="wb-message"><div class="wb-empty-icon"><DemoIcon :name="keyword ? 'search-x' : workspace === 'reviewer' ? 'clipboard-check' : 'folder-open'" :size="28" /></div><strong>{{ keyword || drawingFilter ? '没有匹配的图纸' : workspace === 'reviewer' ? reviewFilter === 'pending' ? '当前没有分配给你的待审任务' : '还没有签署记录' : workspace === 'designer' ? '还没有我的设计图纸' : '图纸库暂无项目' }}</strong><p>{{ keyword || drawingFilter ? '调整关键词或切换筛选条件。' : workspace === 'reviewer' ? '分配到你的审核任务将在这里显示。' : workspace === 'designer' ? '从新建图纸开始，或在图纸库中查找项目。' : '团队创建的项目与图纸会汇总到这里。' }}</p><button v-if="keyword || drawingFilter" class="btn" type="button" @click="clearSearch">清空筛选</button><button v-else-if="workspace === 'designer'" class="btn primary" type="button" @click="go(RouteName.DrawingCreate)">新建图纸</button></div>
+            <div v-else class="wb-table-scroll">
+              <table v-if="workspace !== 'reviewer'" class="wb-table"><thead><tr><th>图纸 / 项目</th><th>版本</th><th>状态</th><th>文件</th><th>更新于</th><th><span class="wb-sr-only">操作</span></th></tr></thead><tbody><tr v-for="drawing in visibleDrawings" :key="drawing.id || drawing.no"><td><button class="wb-drawing-title" type="button" @click="openDrawing(drawing.no)"><span class="wb-file-icon"><DemoIcon name="file" :size="19" /></span><span><strong>{{ drawing.name || drawing.no }}</strong><small>{{ drawing.no }}<template v-if="drawing.project && drawing.project !== drawing.no"> · {{ drawing.project }}</template></small></span></button></td><td class="wb-mono">{{ drawing.version || '—' }}</td><td><span class="wb-status" :class="drawing.status"><i />{{ STATUS[drawing.status].t }}</span></td><td class="wb-mono">{{ drawing.fileCount }}</td><td class="wb-time">{{ dateText(drawing.updatedAt) }}</td><td><button class="wb-open" type="button" :aria-label="`打开图纸 ${drawing.no}`" @click="openDrawing(drawing.no)"><DemoIcon name="chevron-right" :size="17" /></button></td></tr></tbody></table>
+              <table v-else class="wb-table wb-review-table"><thead><tr><th>图纸 / 图号</th><th>审核节点</th><th>{{ reviewFilter === 'pending' ? '发起人' : '结论' }}</th><th>{{ reviewFilter === 'pending' ? '发起时间' : '签署时间' }}</th><th><span class="wb-sr-only">操作</span></th></tr></thead><tbody><tr v-for="review in visibleReviews" :key="review.id"><td><button class="wb-drawing-title" type="button" @click="openDrawing(review.no)"><span class="wb-file-icon"><DemoIcon name="file" :size="19" /></span><span><strong>{{ review.name }}</strong><small>{{ review.no }}</small></span></button></td><td><span class="wb-node">{{ review.node }}</span></td><td><span v-if="review.result" class="wb-status" :class="review.result === 'pass' ? 'published' : 'rejected'"><i />{{ review.result === 'pass' ? '通过' : '驳回' }}</span><span v-else>{{ review.initiator || '—' }}</span></td><td class="wb-time">{{ dateText(review.time) }}</td><td><button class="btn sm" :class="{ primary: reviewFilter === 'pending' }" type="button" @click="openDrawing(review.no)">{{ reviewFilter === 'pending' ? '查阅图纸' : '查看' }}</button></td></tr></tbody></table>
             </div>
-            <span class="status-pill ok">
-              <span class="dot"></span>正常运行
-            </span>
-          </div>
-
-          <div class="storage-content">
-            <div class="storage-meta-row">
-              <span class="storage-lbl">CAD 图纸物理资产</span>
-              <b class="storage-num">{{ systemStore.storageSummary.fileCount }} 份 ({{ systemStore.storageSummary.formattedUsed }})</b>
-            </div>
-            <div class="hbar">
-              <i :style="{ width: systemStore.storageSummary.fileCount ? '24%' : '0%' }"></i>
-            </div>
-            <div class="storage-meta-row storage-sub-row">
-              <span class="storage-lbl">冗余冷备与落盘状态</span>
-              <span class="storage-status-text">{{ systemStore.storageSummary.backupStatus }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- 下部：进行中项目（占满剩余高度，与左侧对齐） -->
-        <div class="card panel-card projects-card">
-          <div class="panel-header">
-            <div class="panel-title">
-              <DemoIcon name="folder-tree" :size="15" />
-              <span>进行中工程项目</span>
-            </div>
-            <button class="btn sm secondary text-btn" type="button" @click="openCreateDrawing">
-              <DemoIcon name="plus" :size="12" />新项目
-            </button>
-          </div>
-
-          <div class="projects-content-box">
-            <div class="compact-empty">
-              <div class="empty-icon-circle">
-                <DemoIcon name="folder-tree" :size="26" />
-              </div>
-              <div class="empty-title">暂无活跃的研发项目</div>
-              <div class="empty-desc">在图纸库中关联新产品线或工程任务后将自动展示进度</div>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
+            <footer v-if="total && !dataError" class="wb-pagination"><span>{{ workspace === 'reviewer' && reviewFilter === 'pending' ? '按发起时间排序，优先处理较早任务' : '按最近更新时间排序' }} · 共 {{ total }} 项</span><div><button type="button" :disabled="page <= 1" aria-label="上一页" @click="page--"><DemoIcon name="chevron-left" :size="16" /></button><span>{{ page }} / {{ pageCount }}</span><button type="button" :disabled="page >= pageCount" aria-label="下一页" @click="page++"><DemoIcon name="chevron-right" :size="16" /></button></div></footer>
+          </section>
+          <section v-if="workspace === 'admin'" class="wb-panel wb-audit"><div class="wb-panel-heading"><h2><DemoIcon name="history" :size="17" />最近操作</h2><button class="wb-text-button" type="button" @click="go(RouteName.AdminLogs)">全部记录<DemoIcon name="arrow-up-right" :size="14" /></button></div><p v-if="auditError" class="wb-inline-message" role="alert">{{ auditError }}</p><p v-else-if="!activity.length" class="wb-inline-message">{{ refreshing ? '正在加载操作记录…' : '暂无操作记录' }}</p><ul v-else class="wb-activity"><li v-for="item in activity" :key="item.id"><span class="wb-activity-dot" :class="{ failed: item.result === 'failed' }" /><span><b>{{ item.user }}</b> {{ ACTIVITY_LABELS[item.act] || '操作图纸' }} <button v-if="item.drawingNo" type="button" @click="openDrawing(item.drawingNo)">{{ item.drawingName || item.drawingNo }}</button><em v-if="item.result === 'failed'">未成功</em></span><time>{{ dateText(item.occurredAt || item.time) }}</time></li></ul></section>
+        </main>
+        <aside class="wb-aside">
+          <section class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon :name="workspace === 'admin' ? 'sliders-horizontal' : 'layers'" :size="17" />{{ workspace === 'admin' ? '管理工具' : '常用工具' }}</h2></div><div class="wb-shortcuts" :class="{ 'admin-tools': workspace === 'admin' }"><button v-for="item in shortcuts" :key="item.route" type="button" @click="go(item.route)"><span class="wb-tool-icon"><DemoIcon :name="item.icon" :size="19" /></span><span><strong>{{ item.label }}</strong><small>{{ item.description }}</small></span><DemoIcon name="chevron-right" :size="14" /></button></div></section>
+          <template v-if="workspace === 'admin'">
+            <section class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="server" :size="17" />运行状态</h2><span class="wb-status" :class="serviceReady ? 'published' : 'draft'"><i />{{ systemStore.loading ? '检测中' : serviceReady ? '服务在线' : '待检查' }}</span></div><dl class="wb-system"><div><dt>数据库</dt><dd>{{ !systemStore.status ? '未获取' : systemStore.status.database.status === 'ok' ? '连接正常' : '连接异常' }}</dd></div><div><dt>在线用户</dt><dd>{{ systemStore.status ? systemStore.onlineCount : '—' }}<small v-if="systemStore.status"> 人</small></dd></div><div><dt>最近检测</dt><dd>{{ dateText(systemStore.lastChecked?.toISOString()) }}</dd></div></dl></section>
+            <section class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="hard-drive" :size="17" />文件存储与备份</h2></div><div class="wb-storage"><span>已存储文件</span><strong>{{ storage ? storage.formattedUsed : '—' }}</strong><p>{{ storage ? `${storage.fileCount} 份文件` : '存储信息暂未获取' }}</p></div><dl class="wb-system wb-storage-facts"><div><dt>存储状态</dt><dd>{{ !storage ? '未获取' : storage.status === 'ok' ? '正常' : '需检查' }}</dd></div><div><dt>备份</dt><dd>{{ storage?.backupStatus || '未配置' }}</dd></div></dl></section>
+          </template>
+          <section v-else-if="workspace === 'designer'" class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="workflow" :size="17" />我的图纸状态</h2></div><div class="wb-distribution"><div class="wb-distribution-bar" aria-hidden="true"><span v-for="item in stateBreakdown.filter(item => item.count)" :key="item.status" :class="item.status" :style="{ flex: item.count }" /></div><button v-for="item in stateBreakdown" :key="item.status" type="button" @click="showMetric(item.status)"><span class="wb-status" :class="item.status"><i />{{ item.label }}</span><b>{{ dataError || sourceLoading ? '—' : item.count }}</b></button></div></section>
+          <section v-else class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="stamp" :size="17" />最近签署</h2></div><p v-if="dataError" class="wb-inline-message">审核记录暂时不可用</p><p v-else-if="!completed.length" class="wb-inline-message">{{ sourceLoading ? '正在加载…' : '暂无个人签署记录' }}</p><ul v-else class="wb-signatures"><li v-for="item in completed.slice(0, 3)" :key="item.id"><button type="button" @click="openDrawing(item.no)">{{ item.name || item.no }}</button><div><span class="wb-status" :class="item.result === 'pass' ? 'published' : 'rejected'">{{ item.result === 'pass' ? '通过' : '驳回' }} · {{ item.node }}</span><time>{{ dateText(item.time) }}</time></div><p v-if="item.opinion">{{ item.opinion }}</p></li></ul></section>
+        </aside>
+      </div>
+    </template>
   </div>
 </template>
-
-<style scoped>
-/* 满屏标准仪表盘：高度定死，内部自适应无页面纵向滚动 */
-.dashboard-page {
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-  max-height: 100%;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  padding: 14px 18px 16px;
-  gap: 12px;
-}
-
-/* 顶部问候栏 */
-.dash-hero {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex: none;
-}
-
-.hero-text-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.hero-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.hero-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--glow);
-}
-
-.dash-hero h1 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: 19px;
-  font-weight: 800;
-  letter-spacing: 0.3px;
-  color: var(--text-1);
-}
-
-.hero-subtitle {
-  margin: 0;
-  color: var(--text-3);
-  font-size: 11.5px;
-}
-
-.hero-subtitle b {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.acts {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-}
-
-/* 左右两列主体容器：占满屏幕剩余高度 */
-.dash-main-container {
-  display: grid;
-  grid-template-columns: 1.15fr 1fr;
-  gap: 12px;
-  flex: 1;
-  min-height: 0;
-}
-
-/* 左列：待我审核 + 最近动态（上下各占 50% 撑满高度） */
-.dash-col-left {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-  height: 100%;
-}
-
-.todo-panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.activity-panel {
-  flex: 1.15;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-/* 右列：统计指标 + 存储 + 项目（三块垂直排布，项目撑满到底） */
-.dash-col-right {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-  height: 100%;
-}
-
-/* 通用面板卡片规范 */
-.panel-card {
-  padding: 12px 14px;
-  border-radius: 11px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  display: flex;
-  flex-direction: column;
-}
-
-.panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--line);
-  flex: none;
-}
-
-.panel-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-1);
-}
-
-.panel-title svg {
-  color: var(--accent);
-}
-
-.count-tag {
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 99px;
-  background: var(--panel-2);
-  color: var(--text-3);
-}
-
-.count-tag.highlight {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.panel-hint {
-  font-size: 11px;
-  color: var(--text-3);
-}
-
-.panel-scroll-content {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  margin-top: 4px;
-}
-
-/* 待我审核列表 */
-.todo-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.todo-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 4px;
-  border-bottom: 1px solid var(--line);
-}
-
-.todo-item:last-child {
-  border-bottom: none;
-}
-
-.todo-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.todo-name-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.todo-name-row b {
-  font-size: 12px;
-  color: var(--text-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.todo-node-tag {
-  font-size: 10px;
-  font-weight: 500;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  color: var(--accent);
-}
-
-.todo-meta {
-  font-size: 10.5px;
-  color: var(--text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 最近动态列表 */
-.feed {
-  display: flex;
-  flex-direction: column;
-}
-
-.feed-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 7px 4px;
-  border-bottom: 1px solid var(--line);
-}
-
-.feed-item:last-child {
-  border-bottom: none;
-}
-
-.feed-ic {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  flex: none;
-  place-items: center;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel-2);
-}
-
-.feed-ic.view svg { color: var(--info); }
-.feed-ic.edit svg { color: var(--warn); }
-.feed-ic.branch svg { color: var(--accent); }
-.feed-ic.borrow svg { color: var(--accent-2); }
-.feed-ic.check svg { color: var(--ok); }
-.feed-ic.back svg { color: var(--danger); }
-
-.feed-txt {
-  flex: 1;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--text-2);
-}
-
-.feed-txt b {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.feed-time {
-  flex: none;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--text-3);
-  margin-top: 1px;
-}
-
-/* 右列：指标卡网格（3 列） */
-.stat-row-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  flex: none;
-}
-
-.stat-card {
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  position: relative;
-  overflow: hidden;
-}
-
-.stat-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.stat-label {
-  font-size: 11px;
-  color: var(--text-3);
-  font-weight: 500;
-}
-
-.stat-icon-wrap {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  display: grid;
-  place-items: center;
-}
-
-.stat-val {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 21px;
-  font-weight: 800;
-  color: var(--text-1);
-  letter-spacing: -0.5px;
-  line-height: 1.1;
-}
-
-.stat-sub {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 存储卡片 */
-.storage-card {
-  flex: none;
-}
-
-.storage-content {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-top: 8px;
-}
-
-.storage-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11.5px;
-}
-
-.storage-lbl {
-  color: var(--text-2);
-}
-
-.storage-num {
-  font-family: 'JetBrains Mono', monospace;
-  color: var(--text-1);
-  font-weight: 600;
-}
-
-.storage-status-text {
-  font-size: 11px;
-  color: var(--ok);
-  font-weight: 500;
-}
-
-.hbar {
-  height: 5px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: var(--panel-2);
-}
-
-.hbar i {
-  display: block;
-  height: 100%;
-  border-radius: 99px;
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 99px;
-}
-
-.status-pill.ok {
-  background: var(--ok-soft, rgba(34, 197, 94, 0.12));
-  color: var(--ok);
-}
-
-.status-pill .dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-/* 进行中项目卡片（flex: 1 撑到底） */
-.projects-card {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.projects-content-box {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.text-btn {
-  padding: 2px 7px;
-  font-size: 11px;
-}
-
-/* 精致空状态 */
-.compact-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 20px 12px;
-  text-align: center;
-  height: 100%;
-  color: var(--text-3);
-}
-
-.compact-empty svg {
-  color: var(--text-3);
-  opacity: 0.6;
-}
-
-.empty-icon-circle {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--panel-2);
-  display: grid;
-  place-items: center;
-  margin-bottom: 2px;
-}
-
-.empty-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-
-.empty-desc {
-  font-size: 11px;
-  color: var(--text-3);
-  max-width: 240px;
-  line-height: 1.4;
-}
-
-/* 响应式断点（窗口过窄时自然降级） */
-@media (max-width: 1080px) {
-  .dashboard-page {
-    height: auto;
-    max-height: none;
-    overflow-y: auto;
-  }
-  .dash-main-container {
-    grid-template-columns: 1fr;
-  }
-}
-</style>

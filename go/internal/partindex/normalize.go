@@ -81,15 +81,12 @@ func ParseDrawingDate(raw string) *string {
 	return &value
 }
 
-func statusOf(extraction string, hasManual, confirmed bool, confirmedSnapshot, sourceSnapshot int64) string {
+func statusOf(extraction string, fields Fields, hasManual, confirmed bool, confirmedSnapshot, sourceSnapshot int64) string {
 	if confirmed && confirmedSnapshot != sourceSnapshot {
 		return StatusRecheck
 	}
 	if confirmed {
 		return StatusConfirmed
-	}
-	if hasManual {
-		return StatusNeedsConfirmation
 	}
 	if extraction == ExtractionFailed {
 		return StatusFailed
@@ -97,5 +94,11 @@ func statusOf(extraction string, hasManual, confirmed bool, confirmedSnapshot, s
 	if extraction == ExtractionPending {
 		return StatusPending
 	}
-	return StatusNeedsConfirmation
+	if NormalizeString(fields.DrawingNo) == "" || NormalizeString(fields.PartName) == "" {
+		return StatusNeedsConfirmation
+	}
+	if hasManual {
+		return StatusEdited
+	}
+	return StatusRecognized
 }

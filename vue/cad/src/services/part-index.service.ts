@@ -4,7 +4,7 @@ import { partIndexQueryString } from '@/features/part-index/part-index.helpers'
 export { partIndexQueryString } from '@/features/part-index/part-index.helpers'
 import type { TitlePayload } from './title-block-workflow'
 
-export type PartIndexStatus = 'pending' | 'failed' | 'needs_confirmation' | 'confirmed' | 'recheck'
+export type PartIndexStatus = 'pending' | 'failed' | 'needs_confirmation' | 'recognized' | 'edited' | 'confirmed' | 'recheck'
 
 export interface PartIndexFields {
   drawingNo: string

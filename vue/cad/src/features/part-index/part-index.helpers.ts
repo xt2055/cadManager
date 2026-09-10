@@ -1,12 +1,22 @@
-import type { PartIndexBackfillError, PartIndexFields, PartIndexItem, PartIndexStatus } from '../../services/part-index.service'
+import type { PartIndexBackfillError, PartIndexFields, PartIndexItem, PartIndexPage, PartIndexStatus, PartIndexProject } from '../../services/part-index.service'
 import type { SavedTitleSpace } from '../../services/title-block-workflow'
 
 export const partIndexStatusLabels: Record<PartIndexStatus, string> = {
   pending: '待提取',
   failed: '提取失败',
-  needs_confirmation: '待确认',
-  confirmed: '已确认',
-  recheck: '需复核',
+  needs_confirmation: '需检查',
+  recognized: '已识别',
+  edited: '已人工修订',
+  confirmed: '已人工确认',
+  recheck: '换版待检查',
+}
+
+export function uniquePartIndexProjects(projects: PartIndexProject[] | null | undefined): PartIndexProject[] {
+  return [...new Map((projects ?? []).map(project => [project.drawingId, project])).values()]
+}
+
+export function partIndexProjectLabel(project: PartIndexProject): string {
+  return [...new Set([project.projectCode || project.drawingNo, project.projectName].map(value => value?.trim()).filter(Boolean))].join(' · ')
 }
 
 export function partIndexQueryString(filters: {
@@ -80,6 +90,34 @@ export function canBatchExtract(item: PartIndexItem): boolean {
   return item.canWrite && (item.extractionStatus === 'pending' || item.extractionStatus === 'failed')
 }
 
+export function togglePartIndexPageSelection(items: PartIndexItem[], selected: string[]): string[] {
+  const writable = items.filter((item) => item.canWrite).map((item) => item.attachmentId)
+  return writable.every((id) => selected.includes(id)) ? [] : writable
+}
+
+export async function collectPendingPartIndexes(
+  loadPage: (page: number) => Promise<PartIndexPage>,
+  shouldStop: () => boolean,
+  progress: (scanned: number, total: number) => void,
+): Promise<{ items: PartIndexItem[], stopped: boolean }> {
+  const items = new Map<string, PartIndexItem>()
+  let page = 1
+  let scanned = 0
+  while (!shouldStop()) {
+    const result = await loadPage(page)
+    if (shouldStop()) return { items: [], stopped: true }
+    for (const item of result.list) {
+      if (canBatchExtract(item)) items.set(item.attachmentId, item)
+    }
+    scanned += result.list.length
+    progress(scanned, result.total)
+    if (page * result.pageSize >= result.total) return { items: [...items.values()], stopped: false }
+    if (!result.list.length || result.pageSize < 1) throw new Error('图纸列表发生变化，请刷新后重新生成索引')
+    page++
+  }
+  return { items: [], stopped: true }
+}
+
 export function isValidPartIndexDrawingDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim())
   if (!match) return false
@@ -103,7 +141,7 @@ export async function extractAndRebuildPartIndex(
 ): Promise<void> {
   const snapshot = await extract()
   if (snapshot.snapshotRevision < 1) throw new Error('标题栏快照尚未保存，无法重建零件索引')
-	await rebuild(snapshot.versionId, snapshot.snapshotRevision)
+  await rebuild(snapshot.versionId, snapshot.snapshotRevision)
 }
 
 export function appendPartIndexBackfillErrors(
@@ -128,9 +166,12 @@ export function appendPartIndexBackfillErrors(
 }
 
 export interface BatchRunResult {
+  total: number
   completed: number
   succeeded: number
+  currentFile: string
   failures: string[]
+  failedItems: PartIndexItem[]
   stopped: boolean
 }
 
@@ -140,20 +181,27 @@ export async function runSerialPartIndexBatch(
   extract: (item: PartIndexItem) => Promise<unknown>,
   progress: (result: BatchRunResult) => void,
 ): Promise<BatchRunResult> {
-  const result: BatchRunResult = { completed: 0, succeeded: 0, failures: [], stopped: false }
-  for (const item of items) {
+  const queue = [...items]
+  const result: BatchRunResult = { total: queue.length, completed: 0, succeeded: 0, currentFile: '', failures: [], failedItems: [], stopped: false }
+  const report = () => progress({ ...result, failures: [...result.failures], failedItems: [...result.failedItems] })
+  for (const item of queue) {
     if (shouldStop()) {
       result.stopped = true
       break
     }
+    result.currentFile = item.fileName
+    report()
     try {
       await extract(item)
       result.succeeded++
     } catch (error) {
-      result.failures.push(`${item.fileName}：${error instanceof Error ? error.message : '提取失败'}`)
+      result.failures.push(`${item.fileName}：${error instanceof Error ? error.message : '读取失败'}`)
+      result.failedItems.push(item)
     }
     result.completed++
-    progress({ ...result, failures: [...result.failures] })
+    report()
   }
+  result.currentFile = ''
+  report()
   return result
 }

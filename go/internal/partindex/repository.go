@@ -66,10 +66,11 @@ const candidateCTE = `WITH candidate AS (
 			WHEN pi.confirmed_at IS NOT NULL
 				 AND pi.confirmed_snapshot_revision IS DISTINCT FROM COALESCE(t.revision,0) THEN 'recheck'
 			WHEN pi.confirmed_at IS NOT NULL THEN 'confirmed'
-			WHEN COALESCE(pi.manual_fields,'{}'::jsonb) <> '{}'::jsonb THEN 'needs_confirmation'
 			WHEN COALESCE(pi.extraction_status,'pending') = 'failed' THEN 'failed'
 			WHEN COALESCE(pi.extraction_status,'pending') = 'pending' THEN 'pending'
-			ELSE 'needs_confirmation'
+			WHEN COALESCE(pi.drawing_no,'') = '' OR COALESCE(pi.part_name,'') = '' THEN 'needs_confirmation'
+			WHEN COALESCE(pi.manual_fields,'{}'::jsonb) <> '{}'::jsonb THEN 'edited'
+			ELSE 'recognized'
 		END AS status
 	FROM attachments a
 	JOIN attachment_versions av
@@ -202,7 +203,7 @@ func validateFilter(filter ListFilter) (ListFilter, error) {
 
 func validStatus(value string) bool {
 	switch value {
-	case StatusPending, StatusFailed, StatusNeedsConfirmation, StatusConfirmed, StatusRecheck:
+	case StatusPending, StatusFailed, StatusNeedsConfirmation, StatusRecognized, StatusEdited, StatusConfirmed, StatusRecheck:
 		return true
 	default:
 		return false

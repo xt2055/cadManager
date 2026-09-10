@@ -17,6 +17,8 @@ const (
 	StatusPending           = "pending"
 	StatusFailed            = "failed"
 	StatusNeedsConfirmation = "needs_confirmation"
+	StatusRecognized        = "recognized"
+	StatusEdited            = "edited"
 	StatusConfirmed         = "confirmed"
 	StatusRecheck           = "recheck"
 

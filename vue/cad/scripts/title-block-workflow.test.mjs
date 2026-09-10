@@ -28,6 +28,23 @@ test('重复创建恢复不重复提取，手动重新提取可更新', async ()
   await extractTitleBlockRecord('a', true, io)
   assert.equal(writes.length, 2)
 })
+test('强制读取已有有效快照时仍调用 CAD 解析，普通补齐可复用快照', async () => {
+  const { io, record, writes } = fixture()
+  record.payload = { spaces: [{ id: 'model', fields: [{ key: 'name', value: '旧名称' }] }] }
+  let reads = 0
+  io.parse = async () => {
+    reads++
+    return { spaces: [{ id: 'model', fields: [{ key: 'name', value: '新名称' }] }] }
+  }
+  const cached = await extractTitleBlockRecord('a', false, io)
+  assert.equal(reads, 0)
+  assert.equal(cached.payload.spaces[0].fields[0].value, '旧名称')
+  const refreshed = await extractTitleBlockRecord('a', true, io)
+  assert.equal(reads, 1)
+  assert.equal(writes.length, 1)
+  assert.equal(refreshed.payload.spaces[0].fields[0].value, '新名称')
+})
+
 test('解析失败保存失败状态，下一次重试可以恢复', async () => {
   const { io, record } = fixture()
   const parse = io.parse

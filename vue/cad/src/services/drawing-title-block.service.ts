@@ -47,13 +47,17 @@ async function parseTitleBlock(id: string, versionId: string): Promise<TitlePayl
   if (db.lastOpenError) throw new Error('CAD 数据解析失败')
   return { spaces: collectTitleSpaces(db).map(space => ({ id: space.id, name: space.name, textCount: space.texts.length, fields: extractTitleFields(space.texts), warnings: space.warnings })) }
 }
-export function extractAndSaveTitleBlock(id: string, force = false): Promise<TitleSnapshot> {
+export function extractAndSaveTitleBlock(id: string, force = false, signal?: AbortSignal): Promise<TitleSnapshot> {
+  signal?.throwIfAborted()
   const existing = pending.get(id)
   if (existing) return existing
   const task = extractTitleBlockRecord(id, force, {
-    load: loadTitleBlock,
-    parse: parseTitleBlock,
-    save: (attachmentId, versionId, payload) => request(`/cad/title-blocks/${encodeURIComponent(attachmentId)}`, { method: 'PUT', body: JSON.stringify({ versionId, payload }) }),
+    load: (attachmentId) => { signal?.throwIfAborted(); return loadTitleBlock(attachmentId) },
+    parse: (attachmentId, versionId) => { signal?.throwIfAborted(); return parseTitleBlock(attachmentId, versionId) },
+    save: (attachmentId, versionId, payload) => {
+      signal?.throwIfAborted()
+      return request(`/cad/title-blocks/${encodeURIComponent(attachmentId)}`, { method: 'PUT', body: JSON.stringify({ versionId, payload }) })
+    },
   }).finally(() => pending.delete(id))
   pending.set(id, task)
   return task

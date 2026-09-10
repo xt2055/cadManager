@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted } from 'vue'
+import { defineAsyncComponent, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 const HydraulicBackdrop = defineAsyncComponent(() => import('./components/common/HydraulicBackdrop.vue'))
 import './styles/themes/juli.css'
 import { useThemeStore } from './stores/theme.store'
+import { useAuthStore } from './stores/auth.store'
+import { startAutomaticPartIndex } from './services/part-index-auto.service'
 
 defineOptions({
   name: 'App',
@@ -11,6 +13,13 @@ defineOptions({
 
 const themeStore = useThemeStore()
 const route = useRoute()
+const authStore = useAuthStore()
+let stopAutomaticIndex: (() => void) | undefined
+watch(() => authStore.isAuthenticated ? authStore.currentUser?.id : null, (userId) => {
+  stopAutomaticIndex?.()
+  stopAutomaticIndex = userId ? startAutomaticPartIndex() : undefined
+}, { immediate: true })
+onBeforeUnmount(() => stopAutomaticIndex?.())
 
 onMounted(() => {
   themeStore.applyTheme()

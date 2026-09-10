@@ -127,14 +127,32 @@ func TestComputeAutomaticRetainsMissingManualSpaceAndManualEmptyFields(t *testin
 }
 
 func TestStatusPriority(t *testing.T) {
-	if got := statusOf(ExtractionFailed, true, true, 1, 2); got != StatusRecheck {
-		t.Fatalf("确认后快照变化应优先复核，got=%q", got)
+	complete := Fields{DrawingNo: "J1233-03", PartName: "主动轴"}
+	if got := statusOf(ExtractionFailed, complete, true, true, 1, 2); got != StatusRecheck {
+		t.Fatalf("历史确认后快照变化应优先复核，got=%q", got)
 	}
-	if got := statusOf(ExtractionFailed, true, false, 0, 0); got != StatusNeedsConfirmation {
-		t.Fatalf("人工保存应优先于提取失败状态，got=%q", got)
+	if got := statusOf(ExtractionFailed, complete, true, false, 0, 0); got != StatusFailed {
+		t.Fatalf("提取失败不能被人工修订状态掩盖，got=%q", got)
 	}
-	if got := statusOf(ExtractionPending, false, false, 0, 0); got != StatusPending {
+	if got := statusOf(ExtractionPending, Fields{}, false, false, 0, 0); got != StatusPending {
 		t.Fatalf("待提取状态错误，got=%q", got)
+	}
+	if got := statusOf(ExtractionExtracted, Fields{DrawingNo: "J1233-03"}, false, false, 0, 0); got != StatusNeedsConfirmation {
+		t.Fatalf("缺少零件名称应提示检查，got=%q", got)
+	}
+	if got := statusOf(ExtractionExtracted, complete, false, false, 0, 0); got != StatusRecognized {
+		t.Fatalf("完整自动识别结果应直接可用，got=%q", got)
+	}
+	if got := statusOf(ExtractionExtracted, complete, true, false, 0, 0); got != StatusEdited {
+		t.Fatalf("完整人工修订结果应标记为已修订，got=%q", got)
+	}
+}
+
+func TestValidateFilterAcceptsAutomaticAndEditedStatuses(t *testing.T) {
+	for _, status := range []string{StatusRecognized, StatusEdited} {
+		if _, err := validateFilter(ListFilter{Page: 1, PageSize: 20, Status: status}); err != nil {
+			t.Fatalf("status=%q should be accepted: %v", status, err)
+		}
 	}
 }
 

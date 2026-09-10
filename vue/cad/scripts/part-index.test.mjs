@@ -4,6 +4,8 @@ import {
   appendPartIndexBackfillErrors,
   applyTitleCandidate,
   canBatchExtract,
+  collectPendingPartIndexes,
+  togglePartIndexPageSelection,
   emptyPartIndexFields,
   extractAndRebuildPartIndex,
   fieldsFromTitleSpace,
@@ -126,6 +128,89 @@ test('批量停止后不开始下一条', async () => {
   assert.equal(result.completed, 1)
 })
 
-test('状态标签覆盖所有后端状态', () => {
-  assert.deepEqual(Object.keys(partIndexStatusLabels).sort(), ['confirmed', 'failed', 'needs_confirmation', 'pending', 'recheck'])
+test('状态标签区分自动可用、人工修订和真正需要检查的结果', () => {
+  assert.deepEqual(Object.keys(partIndexStatusLabels).sort(), ['confirmed', 'edited', 'failed', 'needs_confirmation', 'pending', 'recheck', 'recognized'])
+  assert.equal(partIndexStatusLabels.recognized, '已识别')
+  assert.equal(partIndexStatusLabels.edited, '已人工修订')
+  assert.equal(partIndexStatusLabels.needs_confirmation, '需检查')
+  assert.equal(partIndexStatusLabels.recheck, '换版待检查')
+})
+
+function batchItem(id, overrides = {}) {
+  return { attachmentId: id, fileName: `${id}.dwg`, canWrite: true, extractionStatus: 'pending', ...overrides }
+}
+
+test('本页全选包含已识别文件，但排除无写权限文件', () => {
+  const items = [batchItem('a'), batchItem('b', { extractionStatus: 'extracted' }), batchItem('c', { canWrite: false })]
+  assert.deepEqual(togglePartIndexPageSelection(items, []), ['a', 'b'])
+  assert.deepEqual(togglePartIndexPageSelection(items, ['a']), ['a', 'b'])
+  assert.deepEqual(togglePartIndexPageSelection(items, ['a', 'b']), [])
+  assert.deepEqual(togglePartIndexPageSelection([], []), [])
+})
+
+test('跨页先收集队列再执行，按附件去重并排除无权限和已识别文件', async () => {
+  const calls = []
+  const pages = [
+    [batchItem('a'), batchItem('b', { extractionStatus: 'failed' }), batchItem('c', { canWrite: false })],
+    [batchItem('a'), batchItem('d'), batchItem('e', { extractionStatus: 'extracted' })],
+  ]
+  const queue = await collectPendingPartIndexes(async page => {
+    calls.push(`page-${page}`)
+    return { list: pages[page - 1], page, pageSize: 3, total: 6 }
+  }, () => false, () => undefined)
+  assert.equal(queue.stopped, false)
+  assert.deepEqual(queue.items.map(item => item.attachmentId), ['a', 'b', 'd'])
+  await runSerialPartIndexBatch(queue.items, () => false, async item => calls.push(item.attachmentId), () => undefined)
+  assert.deepEqual(calls, ['page-1', 'page-2', 'a', 'b', 'd'])
+})
+
+test('收集被停止时丢弃部分队列，不启动读取', async () => {
+  let stop = false
+  let pages = 0
+  const result = await collectPendingPartIndexes(async page => {
+    pages++
+    stop = true
+    return { list: [batchItem('a')], page, pageSize: 1, total: 2 }
+  }, () => stop, () => undefined)
+  assert.equal(pages, 1)
+  assert.deepEqual(result, { items: [], stopped: true })
+})
+
+test('收集任意一页失败或异常空页时不返回部分成功队列', async () => {
+  await assert.rejects(collectPendingPartIndexes(async page => {
+    if (page === 2) throw new Error('网络中断')
+    return { list: [batchItem('a')], page, pageSize: 1, total: 2 }
+  }, () => false, () => undefined), /网络中断/)
+  await assert.rejects(collectPendingPartIndexes(async page => ({ list: [], page, pageSize: 1, total: 2 }), () => false, () => undefined), /列表发生变化/)
+})
+
+test('进度总数固定，显示当前文件，失败项可以单独重试', async () => {
+  const queue = [batchItem('a'), batchItem('b')]
+  const progress = []
+  const result = await runSerialPartIndexBatch(queue, () => false, async item => {
+    queue.pop()
+    if (item.attachmentId === 'b') throw new Error('CAD 解析失败')
+  }, value => progress.push(value))
+  assert.equal(result.total, 2)
+  assert.equal(result.completed, 2)
+  assert.equal(result.succeeded, 1)
+  assert.equal(result.currentFile, '')
+  assert.ok(progress.every(value => value.total === 2))
+  assert.equal(progress[0].currentFile, 'a.dwg')
+  assert.deepEqual(result.failedItems.map(item => item.attachmentId), ['b'])
+  const retried = []
+  const retry = await runSerialPartIndexBatch(result.failedItems, () => false, async item => retried.push(item.attachmentId), () => undefined)
+  assert.deepEqual(retried, ['b'])
+  assert.equal(retry.succeeded, 1)
+  assert.deepEqual(retry.failedItems, [])
+})
+
+test('读取完成但索引重建失败时整条任务计为失败', async () => {
+  const result = await runSerialPartIndexBatch([batchItem('a')], () => false, () => extractAndRebuildPartIndex(
+    async () => ({ versionId: 'v1', snapshotRevision: 1 }),
+    async () => { throw new Error('索引版本冲突') },
+  ), () => undefined)
+  assert.equal(result.succeeded, 0)
+  assert.equal(result.failedItems[0].attachmentId, 'a')
+  assert.match(result.failures[0], /索引版本冲突/)
 })
