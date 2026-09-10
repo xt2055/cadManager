@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { drawingBomRequestBody } from '../src/modules/drawing/bom-request.ts'
-import { normalizeBom, normalizeMaterialFile } from '../src/services/api/data.types.ts'
+import { normalizeBom, normalizeDrawings, normalizeMaterialFile, normalizeStructure } from '../src/services/api/data.types.ts'
 import { hasGeneratedBomIds, originalMaterialWorkbook } from '../src/features/drawings/detail-tabs/material/material-print.ts'
 
 test('BOM 替换请求使用后端严格 JSON 合同', () => {
@@ -51,6 +51,11 @@ test('BOM 响应保留附件版本来源标识', () => {
 
   assert.equal(item.id, 'bom-row-id')
   assert.equal(item.sourceFileId, '11111111-1111-4111-8111-111111111111')
+})
+
+test('图纸和零件接口响应保留创建人', () => {
+  assert.equal(normalizeDrawings([{ no: 'D-01', name: '总图', createdBy: '张工' }])[0].createdBy, '张工')
+  assert.equal(normalizeStructure([{ no: 'P-01', name: '零件', parentNo: 'D-01', createdBy: '李工' }])[0].createdBy, '李工')
 })
 
 test('备料附件响应保留编制人和当前版本标识', () => {

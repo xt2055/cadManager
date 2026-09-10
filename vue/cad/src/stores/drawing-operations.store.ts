@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import type { StoredAttachment } from '@/types/application.types'
 import { readDocxAuthor } from '@/utils/docx-metadata'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
+import { saveDownload } from '@/utils/download-file'
 import { directParentDrawingNo, isSameDrawingFamily } from '@/utils/drawing-number-parser'
 import { useAuthStore } from '@/stores/auth.store'
 import { formatReadableDateTime } from '@/utils/date-time'
@@ -227,8 +228,10 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
           storageKey: item.currentStorageKey || item.storageKey,
           mimeType: item.mimeType,
           previewable: item.previewable,
-			scanned: false,
-			revision: item.revision,
+          ...(item.author ? { author: item.author } : {}),
+          scanned: Boolean(item.author),
+				revision: item.revision,
+
         }
         owner.craftFiles = [...(owner.craftFiles ?? []).filter((file) => file.id !== craft.id), craft]
         craftFiles.value.push(craft)
@@ -340,6 +343,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
         const content = await drawingFileService.read(file.storageKey)
         file.author = await readDocxAuthor(content)
         file.scanned = true
+        if (file.author) {
+          await drawingFileService.updateAuthor(file.storageKey, file.id, file.author)
+        }
 
         const target = findDrawingOrPart(file.drawingNo)
         const targetFile = target?.craftFiles?.find((item) => item.id === file.id)
@@ -1762,7 +1768,8 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
           console.warn(`替换工艺文件后读取编制人员失败：${content.name}`, scanError)
         }
       }
-	      const commitResult = await uploadReplacementSession(drawingNo, { ...currentFile, role: 'craft' }, content)
+		      const commitResult = await uploadReplacementSession(drawingNo, { ...updatedFile, role: 'craft' }, content)
+
 	      updatedFile.storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
@@ -1815,15 +1822,15 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     }
   }
 
-  async function downloadAttachment(file: DrawingFile | MaterialFile | CraftFile): Promise<void> {
+  async function readAttachmentContent(file: { name: string; storageKey?: string }): Promise<Blob> {
     if (!file.storageKey) throw new Error(`文件「${file.name}」没有可用的存储键`)
-    const content = await drawingFileService.read(file.storageKey)
-    const url = URL.createObjectURL(content)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = file.name
-    anchor.click()
-    URL.revokeObjectURL(url)
+    return drawingFileService.read(file.storageKey)
+  }
+
+  async function downloadAttachment(file: DrawingFile | MaterialFile | CraftFile): Promise<boolean> {
+    const content = await readAttachmentContent(file)
+    const saved = await saveDownload(file.name, content)
+    if (!saved) return false
     recordActivity({
       drawingNo: ('partNo' in file && file.partNo) ? file.partNo : file.drawingNo,
       targetType: 'file',
@@ -1831,6 +1838,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
       text: `下载文件 <b>${file.name}</b>`,
       detail: { fileId: file.id, fileName: file.name },
     })
+    return true
   }
 
   // 存档 / 解除存档：生产 ⇄ 存档。权威校验在后端（创建者或管理员存档，管理员解档）。
@@ -2021,6 +2029,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     uploadCraftFile,
     replaceCraftFile,
     deleteCraftFile,
+    readAttachmentContent,
     downloadAttachment,
     setDrawingArchived,
     updateStructurePart,

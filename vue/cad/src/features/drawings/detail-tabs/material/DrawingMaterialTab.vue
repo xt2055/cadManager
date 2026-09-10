@@ -14,6 +14,8 @@ import type { MaterialFileView } from '@/modules/drawing'
 import { formatReadableDateTime } from '@/utils/date-time'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { hasGeneratedBomIds, originalMaterialWorkbook } from './material-print'
+import { saveFilesAsZip } from '@/utils/download-file'
+import { selectAllFiles, selectedFiles, toggleFileSelection } from '../file-bulk-selection'
 
 defineOptions({ name: 'DrawingMaterialTab' })
 
@@ -33,10 +35,15 @@ const replacingFileId = ref<string | null>(null)
 const isEditing = ref(false)
 const isSaving = ref(false)
 const localBom = ref<BomItem[]>([])
+const selectedFileIds = ref<Set<string>>(new Set())
+const bulkLoading = ref(false)
 
 const materialFiles = computed<MaterialFileView[]>(() => {
   return currentItem.value?.materialFiles ?? []
 })
+
+const selectedMaterialFiles = computed(() => selectedFiles(materialFiles.value, selectedFileIds.value))
+const allMaterialFilesSelected = computed(() => materialFiles.value.length > 0 && materialFiles.value.every((file) => selectedFileIds.value.has(file.id)))
 
 const materialAuthor = computed(() => {
 	if (!materialFiles.value.length) return ''
@@ -320,24 +327,83 @@ async function onFileChange(event: Event) {
   }
 }
 
-async function handleDeleteFile(file: MaterialFileView) {
-  if (!currentItem.value) return
-  if (!window.confirm(`确定要移除备料表文件「${file.name}」吗？`)) return
+function toggleMaterialSelection(fileId: string) {
+  selectedFileIds.value = toggleFileSelection(selectedFileIds.value, fileId)
+}
 
+function toggleAllMaterialFiles() {
+  selectedFileIds.value = selectAllFiles(materialFiles.value.map((file) => file.id), selectedFileIds.value)
+}
+
+function handleDeleteFile(file: MaterialFileView) {
+  uiStore.confirm('删除备料表', `确定要移除备料表文件「${file.name}」吗？`, {
+    confirmText: '删除',
+    danger: true,
+    onConfirm: () => deleteMaterialFiles([file]),
+  })
+}
+
+function handleDeleteSelectedMaterialFiles() {
+  if (!selectedMaterialFiles.value.length) return
+  uiStore.confirm('删除所选备料表', `确定要删除已选的 ${selectedMaterialFiles.value.length} 个备料表文件吗？删除后无法恢复。`, {
+    confirmText: '删除所选',
+    danger: true,
+    onConfirm: () => deleteMaterialFiles(selectedMaterialFiles.value),
+  })
+}
+
+async function deleteMaterialFiles(files: MaterialFileView[]) {
+  if (!currentItem.value) return
+  bulkLoading.value = true
+  let failed = 0
   try {
-    await drawingOperationsStore.deleteMaterialFile(currentItem.value.no, file.id)
+    for (const file of files) {
+      try {
+        await drawingOperationsStore.deleteMaterialFile(currentItem.value.no, file.id)
+      } catch (error) {
+        failed += 1
+        console.error(`删除备料表失败：${file.name}`, error)
+      }
+    }
+    selectedFileIds.value = new Set()
     await drawingStore.refresh()
-    uiStore.toast(`已移除备料表文件 ${file.name}`)
-  } catch (error) {
-    console.error('删除备料表失败', error)
-    uiStore.toast('删除备料表失败', 'warn')
+    const succeeded = files.length - failed
+    uiStore.toast(failed ? `已删除 ${succeeded} 个备料表，${failed} 个删除失败` : `已删除 ${succeeded} 个备料表`, failed ? 'warn' : 'ok')
+  } finally {
+    bulkLoading.value = false
+  }
+}
+
+async function handleDownloadSelectedMaterialFiles() {
+  if (!currentItem.value || !selectedMaterialFiles.value.length) return
+  bulkLoading.value = true
+  let failed = 0
+  try {
+    const files: Array<{ name: string; content: Blob }> = []
+    for (const file of selectedMaterialFiles.value) {
+      try {
+        files.push({ name: file.name, content: await drawingOperationsStore.readAttachmentContent(file) })
+      } catch (error) {
+        failed += 1
+        console.error(`读取备料表失败：${file.name}`, error)
+      }
+    }
+    if (!files.length) {
+      uiStore.toast('所选备料表均无法下载', 'warn')
+      return
+    }
+    const saved = await saveFilesAsZip(`${currentItem.value.no}_备料表.zip`, files)
+    if (saved) uiStore.toast(failed ? `已保存 ${files.length} 个备料表，${failed} 个读取失败` : `已保存 ${files.length} 个备料表`, failed ? 'warn' : 'ok')
+  } finally {
+    bulkLoading.value = false
   }
 }
 
 async function handleDownloadFile(file: MaterialFileView) {
   try {
-    await drawingOperationsStore.downloadAttachment(file)
-    uiStore.toast(`已开始下载 ${file.name}`, 'ok')
+    if (await drawingOperationsStore.downloadAttachment(file)) {
+      uiStore.toast(`已保存 ${file.name}`, 'ok')
+    }
   } catch (error) {
     console.error('下载备料表失败', error)
     uiStore.toast('下载备料表失败：附件可能尚未保存', 'warn')
@@ -452,10 +518,24 @@ onMounted(async () => {
     <!-- 已上传的备料表文件档案卡片 -->
     <div v-if="materialFiles.length" class="card card-pad file-att-card">
       <div class="card-title small-title">
-        <DemoIcon name="paperclip" :size="15" />已绑定备料表源文件
+        <span><DemoIcon name="paperclip" :size="15" />已绑定备料表源文件</span>
+        <span class="file-bulk-actions">
+          <button class="btn sm" type="button" @click="toggleAllMaterialFiles">
+            <DemoIcon name="check-square" :size="13" />{{ allMaterialFilesSelected ? '取消全选' : '全选' }}
+          </button>
+          <button v-if="selectedMaterialFiles.length" class="btn sm" type="button" :disabled="bulkLoading" @click="handleDownloadSelectedMaterialFiles">
+            <DemoIcon name="download" :size="13" />下载所选（{{ selectedMaterialFiles.length }}）
+          </button>
+          <button v-if="selectedMaterialFiles.length" class="btn sm danger" type="button" :disabled="bulkLoading" @click="handleDeleteSelectedMaterialFiles">
+            <DemoIcon name="trash-2" :size="13" />删除所选（{{ selectedMaterialFiles.length }}）
+          </button>
+        </span>
       </div>
       <div class="att-list">
         <div v-for="f in materialFiles" :key="f.id" class="att-item">
+          <label class="file-select" :title="`选择 ${f.name}`">
+            <input type="checkbox" :checked="selectedFileIds.has(f.id)" @change="toggleMaterialSelection(f.id)" />
+          </label>
           <DemoIcon name="file-spreadsheet" :size="20" />
            <div class="att-meta">
             <b>{{ f.name }}</b>
@@ -590,9 +670,12 @@ onMounted(async () => {
   color: var(--text-3);
   font-size: 11.5px;
 }
-.mat-actions {
+.mat-actions,
+.file-bulk-actions {
   display: flex;
-  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .file-att-card {
   display: flex;
@@ -600,8 +683,16 @@ onMounted(async () => {
   gap: 10px;
 }
 .small-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 0;
   font-size: 13px;
+}
+.file-select {
+  display: grid;
+  place-items: center;
 }
 .att-list {
   display: flex;

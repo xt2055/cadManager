@@ -77,24 +77,28 @@ func TestAttachmentResourceDownloadsWithRecord(t *testing.T) {
 	}
 }
 
-func TestAttachmentResourceUpdatesMaterialAuthor(t *testing.T) {
-	repo := &metadataRecordRepo{item: attachment.Attachment{
-		ID:                "11111111-1111-4111-8111-111111111111",
-		StorageKey:        "blobs/material-source",
-		CurrentStorageKey: "blobs/material-source",
-		Role:              attachment.RoleMaterial,
-	}}
-	request := httptest.NewRequest(http.MethodPatch, "/api/attachments/blobs/material-source?attachmentId="+repo.item.ID, strings.NewReader(`{"author":" 朱春蓉 "}`))
-	request = request.WithContext(context.WithValue(request.Context(), middleware.AuthUserContextKey, auth.AuthUser{ID: "test-user", Roles: []string{"user"}}))
-	recorder := httptest.NewRecorder()
+func TestAttachmentResourceUpdatesDocumentAuthor(t *testing.T) {
+	for _, role := range []attachment.Role{attachment.RoleMaterial, attachment.RoleCraft} {
+		t.Run(string(role), func(t *testing.T) {
+			repo := &metadataRecordRepo{item: attachment.Attachment{
+				ID:                "11111111-1111-4111-8111-111111111111",
+				StorageKey:        "blobs/document-source",
+				CurrentStorageKey: "blobs/document-source",
+				Role:              role,
+			}}
+			request := httptest.NewRequest(http.MethodPatch, "/api/attachments/blobs/document-source?attachmentId="+repo.item.ID, strings.NewReader(`{"author":" 熊焱林 "}`))
+			request = request.WithContext(context.WithValue(request.Context(), middleware.AuthUserContextKey, auth.AuthUser{ID: "test-user", Roles: []string{"user"}}))
+			recorder := httptest.NewRecorder()
 
-	AttachmentResource(nil, repo, nil).ServeHTTP(recorder, request)
+			AttachmentResource(nil, repo, nil).ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("PATCH status = %d, body=%s; want 200", recorder.Code, recorder.Body.String())
-	}
-	if repo.author != "朱春蓉" {
-		t.Fatalf("author = %q; want 朱春蓉", repo.author)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("PATCH status = %d, body=%s; want 200", recorder.Code, recorder.Body.String())
+			}
+			if repo.author != "熊焱林" {
+				t.Fatalf("author = %q; want 熊焱林", repo.author)
+			}
+		})
 	}
 }
 

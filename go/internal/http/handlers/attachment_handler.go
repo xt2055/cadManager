@@ -301,8 +301,9 @@ func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, ob
 				response.WriteError(writer, http.StatusNotFound, "附件不存在")
 				return
 			}
-			if current.Role != attachment.RoleMaterial {
-				response.WriteError(writer, http.StatusBadRequest, "只有备料表支持更新编制人")
+			if current.Role != attachment.RoleMaterial && current.Role != attachment.RoleCraft {
+				response.WriteError(writer, http.StatusBadRequest, "只有备料表和工艺文件支持更新编制人")
+
 				return
 			}
 			if err := identity.UpdateAuthorByID(request.Context(), attachmentID, input.Author); err != nil {

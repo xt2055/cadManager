@@ -125,6 +125,7 @@ export interface PartView {
   status: StructurePart['status']
   version: string
   updatedAt: string
+  createdBy?: string
   fileNames: string[]
   files: FileView[]
   otherFiles: FileView[]
@@ -251,7 +252,8 @@ export class DrawingReadModelMapper {
           storageKey: item.currentStorageKey || item.storageKey,
           mimeType: item.currentMimeType || item.mimeType,
           previewable: item.previewable,
-          scanned: false,
+          ...(item.author ? { author: item.author } : {}),
+          scanned: Boolean(item.author),
         }
         owner.craftFiles = [...(owner.craftFiles ?? []).filter((candidate) => candidate.id !== file.id), file]
         continue
@@ -338,6 +340,7 @@ export class DrawingReadModelMapper {
       status: part.status,
       version: part.ver,
       updatedAt: part.updatedAt ?? part.createdAt ?? '',
+      ...(part.createdBy ? { createdBy: part.createdBy } : {}),
       fileNames: [...new Set([...(part.files ?? []), ...(part.otherFiles ?? [])].map((file) => file.name).filter(Boolean))],
 	      borrowed: part.relationType === 'borrowed' || Boolean(part.borrowFrom),
       ...(sourcePart ? { sourcePartId: sourcePart.id ?? sourcePart.no } : {}),

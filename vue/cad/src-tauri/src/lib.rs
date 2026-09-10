@@ -152,16 +152,32 @@ fn native_save_file_dialog(title: &str, default_name: &str, filter: &str) -> Opt
   Some(String::from_utf16_lossy(&file_buffer[..end]))
 }
 
+#[cfg(windows)]
+fn save_filter_and_extension(default_name: &str) -> (&'static str, Option<&'static str>) {
+  match Path::new(default_name).extension().and_then(|value| value.to_str()).map(|value| value.to_ascii_lowercase()).as_deref() {
+    Some("zip") => ("压缩文件 (*.zip)\0*.zip\0所有文件 (*.*)\0*.*\0", Some("zip")),
+    Some("xlsx") => ("Excel 工作簿 (*.xlsx)\0*.xlsx\0所有文件 (*.*)\0*.*\0", Some("xlsx")),
+    Some("docx") => ("Word 文档 (*.docx)\0*.docx\0所有文件 (*.*)\0*.*\0", Some("docx")),
+    Some("pdf") => ("PDF 文件 (*.pdf)\0*.pdf\0所有文件 (*.*)\0*.*\0", Some("pdf")),
+    Some("dwg") => ("DWG 图纸 (*.dwg)\0*.dwg\0所有文件 (*.*)\0*.*\0", Some("dwg")),
+    Some("dxf") => ("DXF 图纸 (*.dxf)\0*.dxf\0所有文件 (*.*)\0*.*\0", Some("dxf")),
+    Some("exb") => ("EXB 图纸 (*.exb)\0*.exb\0所有文件 (*.*)\0*.*\0", Some("exb")),
+    _ => ("所有文件 (*.*)\0*.*\0", None),
+  }
+}
+
 #[tauri::command]
 fn save_download_file(default_name: String, bytes: Vec<u8>) -> Result<Option<String>, String> {
   #[cfg(windows)]
   {
-    let filter = "压缩文件 (*.zip)\0*.zip\0所有文件 (*.*)\0*.*\0";
+    let (filter, default_extension) = save_filter_and_extension(&default_name);
     match native_save_file_dialog("选择保存路径", &default_name, filter) {
       Some(chosen_path) => {
         let mut final_path = PathBuf::from(&chosen_path);
         if final_path.extension().is_none() {
-          final_path.set_extension("zip");
+          if let Some(extension) = default_extension {
+            final_path.set_extension(extension);
+          }
         }
         fs::write(&final_path, &bytes).map_err(|e| format!("保存文件失败: {}", e))?;
         Ok(Some(final_path.to_string_lossy().to_string()))

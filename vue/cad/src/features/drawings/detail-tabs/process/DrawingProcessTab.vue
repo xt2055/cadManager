@@ -9,6 +9,8 @@ import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { CraftFile } from '@/types/domain.types'
 import type { CraftFileView } from '@/modules/drawing'
+import { saveFilesAsZip } from '@/utils/download-file'
+import { selectAllFiles, selectedFiles, toggleFileSelection } from '../file-bulk-selection'
 
 defineOptions({ name: 'DrawingProcessTab' })
 
@@ -28,6 +30,10 @@ const replacingFileId = ref<string | null>(null)
 
 const previewVisible = ref(false)
 const previewFile = ref<CraftFileView | null>(null)
+const selectedFileIds = ref<Set<string>>(new Set())
+const bulkLoading = ref(false)
+const selectedCrafts = computed(() => selectedFiles(crafts.value, selectedFileIds.value))
+const allCraftsSelected = computed(() => crafts.value.length > 0 && crafts.value.every((file) => selectedFileIds.value.has(file.id)))
 
 function openPreview(file: CraftFileView) {
   if (!file.storageKey) {
@@ -125,31 +131,94 @@ async function onFileChange(event: Event) {
   }
 }
 
-async function handleDeleteCraft(file: CraftFileView) {
-  if (!currentItem.value) return
-  if (!window.confirm(`确定要移除工艺文件「${file.name}」吗？`)) return
+function toggleCraftSelection(fileId: string) {
+  selectedFileIds.value = toggleFileSelection(selectedFileIds.value, fileId)
+}
 
+function toggleAllCrafts() {
+  selectedFileIds.value = selectAllFiles(crafts.value.map((file) => file.id), selectedFileIds.value)
+}
+
+function handleDeleteCraft(file: CraftFileView) {
+  uiStore.confirm('删除工艺文件', `确定要移除工艺文件「${file.name}」吗？`, {
+    confirmText: '删除',
+    danger: true,
+    onConfirm: () => deleteCraftFiles([file]),
+  })
+}
+
+function handleDeleteSelectedCrafts() {
+  if (!selectedCrafts.value.length) return
+  uiStore.confirm('删除所选工艺文件', `确定要删除已选的 ${selectedCrafts.value.length} 个工艺文件吗？删除后无法恢复。`, {
+    confirmText: '删除所选',
+    danger: true,
+    onConfirm: () => deleteCraftFiles(selectedCrafts.value),
+  })
+}
+
+async function deleteCraftFiles(files: CraftFileView[]) {
+  if (!currentItem.value) return
+  bulkLoading.value = true
+  let failed = 0
   try {
-    await drawingOperationsStore.deleteCraftFile(currentItem.value.no, file.id || file.name)
+    for (const file of files) {
+      try {
+        await drawingOperationsStore.deleteCraftFile(currentItem.value.no, file.id)
+      } catch (error) {
+        failed += 1
+        console.error(`删除工艺文件失败：${file.name}`, error)
+      }
+    }
+    selectedFileIds.value = new Set()
     await drawingStore.refresh()
-    uiStore.toast(`已移除工艺文件 ${file.name}`)
-  } catch (error) {
-    console.error('删除工艺文件失败', error)
-    uiStore.toast('删除工艺文件失败', 'warn')
+    const succeeded = files.length - failed
+    uiStore.toast(failed ? `已删除 ${succeeded} 个工艺文件，${failed} 个删除失败` : `已删除 ${succeeded} 个工艺文件`, failed ? 'warn' : 'ok')
+  } finally {
+    bulkLoading.value = false
+  }
+}
+
+async function handleDownloadSelectedCrafts() {
+  if (!currentItem.value || !selectedCrafts.value.length) return
+  bulkLoading.value = true
+  let failed = 0
+  try {
+    const files: Array<{ name: string; content: Blob }> = []
+    for (const file of selectedCrafts.value) {
+      if (!file.storageKey) { failed += 1; continue }
+      try {
+        files.push({ name: file.name, content: await drawingOperationsStore.readAttachmentContent(file) })
+      } catch (error) {
+        failed += 1
+        console.error(`读取工艺文件失败：${file.name}`, error)
+      }
+    }
+    if (!files.length) {
+      uiStore.toast('所选工艺文件均无法下载', 'warn')
+      return
+    }
+    const saved = await saveFilesAsZip(`${currentItem.value.no}_工艺文件.zip`, files)
+    if (saved) uiStore.toast(failed ? `已保存 ${files.length} 个工艺文件，${failed} 个读取失败` : `已保存 ${files.length} 个工艺文件`, failed ? 'warn' : 'ok')
+  } finally {
+    bulkLoading.value = false
   }
 }
 
 async function handleDownloadCraft(file: CraftFileView) {
   try {
-    await drawingOperationsStore.downloadAttachment(file)
-    uiStore.toast(`已开始下载 ${file.name}`, 'ok')
+    if (await drawingOperationsStore.downloadAttachment(file)) {
+      uiStore.toast(`已保存 ${file.name}`, 'ok')
+    }
   } catch (error) {
     console.error('下载工艺文件失败', error)
     uiStore.toast('下载工艺文件失败：附件可能尚未保存', 'warn')
   }
 }
 
-onMounted(() => { void drawingStore.load() })
+onMounted(async () => {
+  await Promise.all([drawingStore.load(), drawingOperationsStore.initialize()])
+  await drawingStore.refresh()
+})
 
 </script>
 
@@ -182,6 +251,15 @@ onMounted(() => { void drawingStore.load() })
         </div>
       </div>
       <div class="process-actions">
+        <button v-if="crafts.length" class="btn sm" type="button" @click="toggleAllCrafts">
+          <DemoIcon name="check-square" :size="14" />{{ allCraftsSelected ? '取消全选' : '全选' }}
+        </button>
+        <button v-if="selectedCrafts.length" class="btn sm" type="button" :disabled="bulkLoading" @click="handleDownloadSelectedCrafts">
+          <DemoIcon name="download" :size="14" />下载所选（{{ selectedCrafts.length }}）
+        </button>
+        <button v-if="selectedCrafts.length" class="btn sm danger" type="button" :disabled="bulkLoading" @click="handleDeleteSelectedCrafts">
+          <DemoIcon name="trash-2" :size="14" />删除所选（{{ selectedCrafts.length }}）
+        </button>
         <button class="btn primary" type="button" @click="triggerUpload">
           <DemoIcon name="upload" :size="14" />上传工艺文件
         </button>
@@ -192,6 +270,9 @@ onMounted(() => { void drawingStore.load() })
     <div class="craft-grid">
       <div v-for="file in crafts" :key="file.id" class="card card-pad craft-wide-card">
         <div class="craft-card-top">
+          <label class="file-select" :title="`选择 ${file.name}`">
+            <input type="checkbox" :checked="selectedFileIds.has(file.id)" @change="toggleCraftSelection(file.id)" />
+          </label>
           <div class="file-icon-wrap">
             <DemoIcon name="file-text" :size="24" />
           </div>
@@ -207,7 +288,7 @@ onMounted(() => { void drawingStore.load() })
         <div class="craft-detail-fields">
             <div class="field-item">
               <span class="lbl">编制人员</span>
-              <span class="val">{{ file.author || file.by }}</span>
+              <span class="val">{{ file.author || '未识别' }}</span>
             </div>
           <div class="field-item">
             <span class="lbl">上传时间</span>
@@ -299,10 +380,22 @@ onMounted(() => { void drawingStore.load() })
   border-radius: var(--radius);
   transition: transform 0.2s ease, border-color 0.2s ease;
 }
+.process-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .craft-card-top {
   display: flex;
   align-items: flex-start;
   gap: 14px;
+}
+.file-select {
+  display: grid;
+  place-items: center;
+  padding-top: 2px;
 }
 .file-icon-wrap {
   display: grid;

@@ -75,12 +75,10 @@ watch(() => titleFiles.value.map(file => `${file.id}:${file.version}`).join('|')
 }, { immediate: true })
 const designerName = computed(() => savedDesigner(titleFiles.value.map(file => file.id)))
 
-// 创建人：历史数据可能存有「当前用户」占位符（无法追溯真实创建人），显示为 —。
 const creatorLabel = computed(() => {
   const item = drawing.value as { createdBy?: string } | null
-  if (!item) return ''
-  const value = item.createdBy || ''
-  return value === '当前用户' ? '—' : value
+  const value = item?.createdBy?.trim() || ''
+  return value && value !== '当前用户' ? value : '未知'
 })
 
 function openProperties() {
@@ -121,7 +119,7 @@ function openParentDrawing() {
            <span>厂商 <b>{{ ('vendor' in (drawing || {})) ? (drawing as any).vendor : '内部加工' }}</b></span>
           <span>项目 <b>{{ ('project' in (drawing || {})) ? (drawing as any).project : '—' }}</b></span>
           <span v-if="isPart">关联图号 <b class="mono">{{ drawing?.no }}</b></span>
-          <span>创建人 <b>{{ creatorLabel || '待定' }}</b></span>
+          <span>创建人 <b>{{ creatorLabel }}</b></span>
           <span>更新时间 <b>{{ drawing?.updatedAt ? formatReadableDateTime(drawing.updatedAt, '刚刚') : '刚刚' }}</b></span>
           <span v-if="'forkedFrom' in (drawing || {}) && (drawing as any).forkedFrom" class="tag plain">分叉自·{{ (drawing as any).forkedFrom }}</span>
           <button v-if="isPart && parentDrawing" class="parent-link" type="button" @click="openParentDrawing">
