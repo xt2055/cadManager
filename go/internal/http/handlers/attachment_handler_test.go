@@ -102,6 +102,29 @@ func TestAttachmentResourceUpdatesDocumentAuthor(t *testing.T) {
 	}
 }
 
+func TestAttachmentDeletionDecisionRequiresUnarchivedCreatorOrAdmin(t *testing.T) {
+	tests := []struct {
+		name            string
+		ownerID, userID string
+		archived, admin bool
+		wantStatus      int
+	}{
+		{name: "未存档创建者", ownerID: "creator", userID: "creator", wantStatus: http.StatusOK},
+		{name: "未存档管理员", ownerID: "creator", userID: "admin", admin: true, wantStatus: http.StatusOK},
+		{name: "未存档非创建者", ownerID: "creator", userID: "other", wantStatus: http.StatusForbidden},
+		{name: "已存档创建者", ownerID: "creator", userID: "creator", archived: true, wantStatus: http.StatusConflict},
+		{name: "已存档管理员", ownerID: "creator", userID: "admin", archived: true, admin: true, wantStatus: http.StatusConflict},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, _ := attachmentDeletionDecision(tt.ownerID, tt.archived, tt.userID, tt.admin)
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestAttachmentResourceUsesCurrentNameForCurrentBlob(t *testing.T) {
 	root := t.TempDir()
 	objectStorage, err := storage.NewLocalStorage(root)

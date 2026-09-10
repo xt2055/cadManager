@@ -21,7 +21,6 @@ const query = ref('')
 const status = ref<DrawingStatus | ''>('')
 const mode = ref<'drawing' | 'part'>('drawing')
 const attributeFilters = ref<Record<string, string>>({})
-const menuFor = ref<string | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
 const isAdmin = computed(() => authStore.hasRole('admin'))
 
@@ -136,17 +135,7 @@ function removeFilter(attributeId: string) {
 }
 
 function openDetail(drawingNo: string) {
-  menuFor.value = null
   router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
-}
-
-function toggleMenu(drawingNo: string) {
-  menuFor.value = menuFor.value === drawingNo ? null : drawingNo
-}
-
-function menuAction(action: 'detail', drawingNo: string) {
-  menuFor.value = null
-  if (action === 'detail') openDetail(drawingNo)
 }
 
 onMounted(() => {
@@ -303,12 +292,6 @@ onMounted(() => {
                   <button class="btn sm" type="button" @click="openDetail(drawing.no)">
                     <DemoIcon name="eye" :size="13" />详情
                   </button>
-                  <button class="icon-btn" type="button" @click="toggleMenu(drawing.no)">
-                    <DemoIcon name="ellipsis" :size="15" />
-                  </button>
-                  <div v-if="menuFor === drawing.no" class="dropdown row-dropdown">
-                    <button class="dd-item" type="button" @click="menuAction('detail', drawing.no)">查看详情</button>
-                  </div>
                 </td>
               </tr>
 
@@ -834,45 +817,6 @@ onMounted(() => {
   justify-content: center;
   gap: 5px;
   white-space: nowrap;
-}
-
-.dropdown {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  z-index: 20;
-  min-width: 120px;
-  padding: 5px;
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-}
-
-.dd-item {
-  display: block;
-  width: 100%;
-  padding: 7px 9px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-2);
-  text-align: left;
-  cursor: pointer;
-  font-size: 11.5px;
-}
-
-.dd-item:hover {
-  background: var(--hover);
-  color: var(--text-1);
-}
-
-.dd-item.danger {
-  color: var(--danger);
-}
-
-.dd-item.danger:hover {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 /* ================= 展开零件卡片 ================= */

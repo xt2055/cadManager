@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,7 +211,8 @@ func UploadAttachment(repository attachment.Repository, objectStorage storage.Ob
 
 func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, objectStorage storage.ObjectStorage) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+		user, ok := middleware.UserFromContext(request.Context())
+		if !ok {
 			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
 			return
 		}
@@ -313,40 +315,37 @@ func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, ob
 			current.Author = strings.TrimSpace(input.Author)
 			response.WriteData(writer, http.StatusOK, current)
 		case http.MethodDelete:
-			// 存档图纸的正式成果受变更工单保护，禁止直接删除附件。
-
-			if !recordMissing && item.DrawingNo != "" {
-				archived, statusErr := drawingArchivedByNo(request.Context(), pool, item.DrawingNo)
-				if statusErr != nil {
-					response.WriteError(writer, http.StatusInternalServerError, "图纸状态读取失败")
-					return
-				}
-				if archived {
-					response.WriteError(writer, http.StatusConflict, "图纸已存档，附件删除需通过变更工单")
-					return
-				}
-			}
 			identity, hasIdentity := repository.(attachment.IdentityRepository)
-			attachmentID := strings.TrimSpace(request.URL.Query().Get("attachmentId"))
-			var deleted attachment.Attachment
-			if hasIdentity {
-				if attachmentID == "" {
-					response.WriteError(writer, http.StatusBadRequest, "删除附件必须提供 attachmentId")
-					return
-				}
-				item, findErr := identity.FindByID(request.Context(), attachmentID)
-				if findErr != nil {
-					writeAttachmentError(writer, findErr)
-					return
-				}
-				if item.StorageKey != key && item.CurrentStorageKey != key {
-					response.WriteError(writer, http.StatusNotFound, "附件不存在")
-					return
-				}
-				deleted, err = identity.DeleteByID(request.Context(), attachmentID, "")
-			} else {
-				err = repository.Delete(request.Context(), key, "")
+			if !hasIdentity {
+				response.WriteError(writer, http.StatusNotImplemented, "附件删除尚未配置")
+				return
 			}
+			attachmentID := strings.TrimSpace(request.URL.Query().Get("attachmentId"))
+			if attachmentID == "" {
+				response.WriteError(writer, http.StatusBadRequest, "删除附件必须提供 attachmentId")
+				return
+			}
+			item, findErr := identity.FindByID(request.Context(), attachmentID)
+			if findErr != nil {
+				writeAttachmentError(writer, findErr)
+				return
+			}
+			if item.StorageKey != key && item.CurrentStorageKey != key {
+				response.WriteError(writer, http.StatusNotFound, "附件不存在")
+				return
+			}
+			ownerID, archived, permissionErr := attachmentDeletionPermission(request.Context(), pool, attachmentID)
+			if permissionErr != nil {
+				response.WriteError(writer, http.StatusInternalServerError, "图纸文件删除权限读取失败")
+				return
+			}
+			if statusCode, message := attachmentDeletionDecision(ownerID, archived, user.ID, hasAdminRole(user.Roles)); statusCode != http.StatusOK {
+				response.WriteError(writer, statusCode, message)
+				return
+			}
+			var deleted attachment.Attachment
+			deleted, err = identity.DeleteByID(request.Context(), attachmentID, "")
+
 			if err != nil {
 				writeAttachmentError(writer, err)
 				return
@@ -385,6 +384,37 @@ func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, ob
 			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	}
+}
+
+func attachmentDeletionDecision(ownerID string, archived bool, userID string, admin bool) (int, string) {
+	if archived {
+		return http.StatusConflict, "图纸已存档，不能删除图纸文件"
+	}
+	if !admin && ownerID != userID {
+		return http.StatusForbidden, "只有图纸创建者或管理员可以删除图纸文件"
+	}
+	return http.StatusOK, ""
+}
+
+func attachmentDeletionPermission(ctx context.Context, pool *pgxpool.Pool, attachmentID string) (string, bool, error) {
+	if pool == nil {
+		return "", false, errors.New("数据库连接未配置")
+	}
+	var ownerID, status string
+	err := pool.QueryRow(ctx, `
+		SELECT COALESCE(d.created_by::text, parent.created_by::text, ''), COALESCE(d.status::text, parent.status::text, '')
+		FROM attachments a
+		LEFT JOIN drawings d ON d.id = a.drawing_id
+		LEFT JOIN parts p ON p.id = a.part_id
+		LEFT JOIN drawing_part_relations owner_relation ON owner_relation.part_id = p.id AND owner_relation.relation_type = 'owned' AND owner_relation.status = 'active'
+		LEFT JOIN drawings parent ON parent.id = owner_relation.drawing_id
+		WHERE a.id = $1::uuid AND a.deleted_at IS NULL
+		ORDER BY owner_relation.created_at NULLS FIRST
+		LIMIT 1`, attachmentID).Scan(&ownerID, &status)
+	if err != nil {
+		return "", false, err
+	}
+	return ownerID, status == "archived", nil
 }
 
 func validAttachmentRole(role attachment.Role) bool {

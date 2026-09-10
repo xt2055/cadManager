@@ -19,6 +19,7 @@ import { isTauri } from '@tauri-apps/api/core'
 import { saveDownloadFile } from '@/services/tauri/cad-edit.service'
 import { convertCadToPdfBlob } from '@/services/cad-pdf-export.service'
 import { changeRequestService } from '@/services/change-request.service'
+import { canDeleteDrawingFiles } from './drawing-file-delete'
 
 defineOptions({
   name: 'DrawingPreviewTab',
@@ -624,6 +625,20 @@ const canEditFiles = computed(() => {
   }
   const creator = (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
   return creator || admin
+})
+
+const canDeleteFiles = computed(() => {
+  const item = currentItem.value
+  const current = authStore.currentUser
+  if (!item || !current) return false
+  const rawCreator = (item as { createdBy?: unknown }).createdBy
+  const creator = typeof rawCreator === 'string' ? rawCreator : ('by' in item && typeof item.by === 'string' ? item.by : '')
+  return canDeleteDrawingFiles({
+    status: item.status,
+    creator,
+    userName: current.displayName,
+    admin: current.roles?.includes('admin') ?? false,
+  })
 })
 // 心跳新鲜度：30s 一次心跳，90s 内有成功记录视为保护生效中。
 function isHeartbeatFresh(session: LocalActiveEditSession): boolean {
@@ -1545,7 +1560,7 @@ function closeReidentifyModal() {
                   <span v-if="isHistoryUnread(file)" class="hist-count">{{ file.history?.length }}</span>
                 </button>
                 <button
-                  v-if="canEditFiles"
+                  v-if="canDeleteFiles"
                   class="btn sm danger"
                   type="button"
                   title="删除文件"
