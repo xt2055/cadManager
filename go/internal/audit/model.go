@@ -40,6 +40,7 @@ type ListFilter struct {
 	DrawingNo  string
 	TargetType string
 	ActorID    string
+	Actor      string
 	Result     string
 	Keyword    string
 	From       time.Time
@@ -53,6 +54,22 @@ type Page struct {
 	PageSize int   `json:"pageSize"`
 }
 
+type Option struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type OptionPage struct {
+	List []Option `json:"list"`
+}
+
+type OptionFilter struct {
+	Kind      string
+	Keyword   string
+	Limit     int
+	AdminOnly bool
+}
+
 type Repository interface {
 	Create(ctx context.Context, input CreateInput, actorID, actorName, ipAddress, userAgent string) (Log, error)
 	List(ctx context.Context, filter ListFilter) (Page, error)
@@ -60,4 +77,8 @@ type Repository interface {
 
 type AdminRepository interface {
 	ListAdmin(ctx context.Context, filter ListFilter) (Page, error)
+}
+
+type OptionRepository interface {
+	Options(ctx context.Context, filter OptionFilter) (OptionPage, error)
 }

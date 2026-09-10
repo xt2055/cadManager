@@ -20,7 +20,14 @@ func DrawingOperationLogs(repository audit.Repository) http.HandlerFunc {
 		}
 		switch request.Method {
 		case http.MethodGet:
-			filter := audit.ListFilter{Page: queryInt(request, "page", 1), PageSize: queryInt(request, "page_size", 50), Action: request.URL.Query().Get("action"), DrawingNo: request.URL.Query().Get("drawing_no")}
+			filter := audit.ListFilter{
+				Page:      queryInt(request, "page", 1),
+				PageSize:  queryInt(request, "page_size", 50),
+				Action:    strings.TrimSpace(request.URL.Query().Get("action")),
+				DrawingNo: strings.TrimSpace(request.URL.Query().Get("drawing_no")),
+				Actor:     strings.TrimSpace(request.URL.Query().Get("actor")),
+				Keyword:   strings.TrimSpace(request.URL.Query().Get("keyword")),
+			}
 			if filter.Page < 1 {
 				filter.Page = 1
 			}
@@ -59,6 +66,38 @@ func DrawingOperationLogs(repository audit.Repository) http.HandlerFunc {
 		default:
 			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	}
+}
+
+func AuditLogOptions(repository audit.OptionRepository, adminOnly bool) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := middleware.UserFromContext(request.Context()); !ok {
+			response.WriteError(writer, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if request.Method != http.MethodGet {
+			response.WriteError(writer, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		filter := audit.OptionFilter{
+			Kind:      strings.TrimSpace(request.URL.Query().Get("kind")),
+			Keyword:   strings.TrimSpace(request.URL.Query().Get("keyword")),
+			Limit:     queryInt(request, "limit", 20),
+			AdminOnly: adminOnly,
+		}
+		if filter.Kind != "drawing" && filter.Kind != "actor" {
+			response.WriteError(writer, http.StatusBadRequest, "候选类型无效")
+			return
+		}
+		if filter.Limit < 1 || filter.Limit > 50 {
+			filter.Limit = 20
+		}
+		page, err := repository.Options(request.Context(), filter)
+		if err != nil {
+			response.WriteError(writer, http.StatusInternalServerError, "操作日志候选读取失败")
+			return
+		}
+		response.WriteData(writer, http.StatusOK, page)
 	}
 }
 

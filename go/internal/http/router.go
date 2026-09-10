@@ -108,12 +108,14 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/cad/convert-dwg", drawingHandler(handlers.ConvertDxfToDwg(convService, cfg.MaxUploadBytes)))
 	auditRepository := audit.NewPGRepository(pool)
 	mux.Handle("/api/drawing-operation-logs", drawingHandler(handlers.DrawingOperationLogs(auditRepository)))
+	mux.Handle("/api/drawing-operation-logs/options", drawingHandler(handlers.AuditLogOptions(auditRepository, false)))
 
 	// 管理端接口（admin 角色）：日志查看与更新管理
 	adminGuard := func(next http.Handler) http.Handler {
 		return protectedUsers(middleware.RequireAdmin(next))
 	}
 	mux.Handle("/api/admin/audit-logs", adminGuard(handlers.AdminOperationLogs(auditRepository)))
+	mux.Handle("/api/admin/audit-logs/options", adminGuard(handlers.AuditLogOptions(auditRepository, true)))
 	mux.Handle("/api/admin/upload-reconciliation", adminGuard(handlers.UploadReconciliation(uploadService)))
 	mux.Handle("/api/admin/drawings", adminGuard(handlers.AdminDrawings(pool)))
 	mux.Handle("/api/admin/drawings/", adminGuard(handlers.AdminDrawingResource(pool, attachmentStorage, auditRepository)))

@@ -75,7 +75,6 @@ html[data-skin='juli'] .desktop-layout { animation: juli-workspace-in 1.3s cubic
 .juli-transition .juli-letter { fill: transparent; stroke: #85edfa; stroke-width: .7; stroke-dasharray: 400; stroke-dashoffset: 400; animation: juli-letter 3.6s ease forwards; }
 .juli-transition .juli-construction { stroke: #408ba166; stroke-width: .6; fill: none; }
 .juli-transition-caption { position: absolute; bottom: 15%; color: #9ccbd9; font: 11px monospace; letter-spacing: 5px; animation: juli-panel 1s ease both; }
-.juli-transition-skip { position: absolute; bottom: 25px; right: 30px; color: #b5dce7; background: transparent; border: 1px solid #43829a; padding: 8px 18px; cursor: pointer; }
 .juli-login-logo { max-width: 310px; margin-bottom: 20px; }
 .juli-logo-stage { width: min(980px,86vw); position: relative; z-index: 1; }
 .juli-transition .juli-logo-stage svg { width: 100%; }

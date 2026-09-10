@@ -18,6 +18,24 @@ export interface OperationLogPage {
   pageSize: number
 }
 
+export interface OperationLogOption {
+  value: string
+  label: string
+}
+
+export interface OperationLogOptionPage {
+  list: OperationLogOption[]
+}
+
+export interface DrawingOperationLogQuery {
+  page?: number
+  pageSize?: number
+  action?: ActivityType
+  drawingNo?: string
+  actor?: string
+  keyword?: string
+}
+
 export interface AdminOperationLogQuery {
   page?: number
   pageSize?: number
@@ -63,13 +81,15 @@ export async function createDrawingOperationLog(input: OperationLogInput): Promi
   return unwrap<ActivityLog>(await response.json())
 }
 
-export async function listDrawingOperationLogs(options: { page?: number; pageSize?: number; action?: ActivityType; drawingNo?: string } = {}): Promise<OperationLogPage> {
+export async function listDrawingOperationLogs(options: DrawingOperationLogQuery = {}): Promise<OperationLogPage> {
   const query = new URLSearchParams({
     page: String(options.page ?? 1),
-    page_size: String(options.pageSize ?? 100),
+    page_size: String(options.pageSize ?? 20),
   })
   if (options.action) query.set('action', options.action)
   if (options.drawingNo) query.set('drawing_no', options.drawingNo)
+  if (options.actor) query.set('actor', options.actor)
+  if (options.keyword) query.set('keyword', options.keyword)
   const response = await fetch(`${getApiBaseUrl()}/drawing-operation-logs?${query}`, {
     method: 'GET',
     headers: authHeaders(),
@@ -77,6 +97,23 @@ export async function listDrawingOperationLogs(options: { page?: number; pageSiz
   })
   if (!response.ok) throw new Error(`图纸操作日志读取失败：HTTP ${response.status}`)
   return unwrap<OperationLogPage>(await response.json())
+}
+
+export async function listOperationLogOptions(
+  adminOnly: boolean,
+  kind: 'drawing' | 'actor',
+  keyword = '',
+): Promise<OperationLogOptionPage> {
+  const query = new URLSearchParams({ kind, limit: '50' })
+  if (keyword.trim()) query.set('keyword', keyword.trim())
+  const path = adminOnly ? '/admin/audit-logs/options' : '/drawing-operation-logs/options'
+  const response = await fetch(`${getApiBaseUrl()}${path}?${query}`, {
+    method: 'GET',
+    headers: authHeaders(),
+    credentials: 'include',
+  })
+  if (!response.ok) throw new Error(`操作日志候选读取失败：HTTP ${response.status}`)
+  return unwrap<OperationLogOptionPage>(await response.json())
 }
 
 export async function listAdminOperationLogs(options: AdminOperationLogQuery = {}): Promise<OperationLogPage> {

@@ -1,5 +1,5 @@
 import type { ActivityLog, ActivityResult, ActivityTargetType, ActivityType } from '@/types/domain.types'
-import type { AdminOperationLogQuery, OperationLogPage } from '@/services/drawing-operation-log.service'
+import type { AdminOperationLogQuery, DrawingOperationLogQuery, OperationLogPage } from '@/services/drawing-operation-log.service'
 
 export interface CreateOperationLogInput {
   drawingNo: string
@@ -13,7 +13,7 @@ export interface CreateOperationLogInput {
 
 export interface AuditGateway {
   create(input: CreateOperationLogInput): Promise<ActivityLog>
-  listDrawing(options?: { page?: number; pageSize?: number; action?: ActivityType; drawingNo?: string }): Promise<OperationLogPage>
+  listDrawing(options?: DrawingOperationLogQuery): Promise<OperationLogPage>
   listAdmin(options?: AdminOperationLogQuery): Promise<OperationLogPage>
 }
 

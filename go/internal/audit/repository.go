@@ -53,9 +53,21 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateInput, a
 }
 
 func (repository *PGRepository) List(ctx context.Context, filter ListFilter) (Page, error) {
-	where := `WHERE metadata ? 'drawingNo' AND ($1 = '' OR action = $1) AND ($2 = '' OR metadata->>'drawingNo' = $2)`
+	where := `WHERE a.metadata ? 'drawingNo'
+		AND ($1 = '' OR a.action = $1)
+		AND ($2 = '' OR lower(COALESCE(a.metadata->>'drawingNo', '')) LIKE $2)
+		AND ($3 = '' OR lower(concat_ws(' ', u.display_name, u.account)) LIKE $3)
+		AND ($4 = '' OR lower(concat_ws(' ', a.summary, a.metadata->>'drawingNo', a.metadata->>'drawingName', u.display_name, u.account)) LIKE $4)`
+	like := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return ""
+		}
+		return "%" + value + "%"
+	}
+	args := []any{filter.Action, like(filter.DrawingNo), like(filter.Actor), like(filter.Keyword)}
 	var total int
-	if err := repository.pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs `+where, filter.Action, filter.DrawingNo).Scan(&total); err != nil {
+	if err := repository.pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id `+where, args...).Scan(&total); err != nil {
 		return Page{}, fmt.Errorf("统计图纸操作日志失败: %w", err)
 	}
 	offset := (filter.Page - 1) * filter.PageSize
@@ -66,7 +78,7 @@ func (repository *PGRepository) List(ctx context.Context, filter ListFilter) (Pa
 		       COALESCE(a.metadata->'detail', '{}'::jsonb)
 		FROM audit_logs a
 		LEFT JOIN users u ON u.id = a.actor_id
-		`+where+` ORDER BY a.created_at DESC LIMIT $3 OFFSET $4`, filter.Action, filter.DrawingNo, filter.PageSize, offset)
+		`+where+` ORDER BY a.created_at DESC, a.id DESC LIMIT $5 OFFSET $6`, append(args, filter.PageSize, offset)...)
 	if err != nil {
 		return Page{}, fmt.Errorf("查询图纸操作日志失败: %w", err)
 	}
@@ -90,6 +102,75 @@ func (repository *PGRepository) List(ctx context.Context, filter ListFilter) (Pa
 		return Page{}, fmt.Errorf("读取图纸操作日志失败: %w", err)
 	}
 	return Page{List: items, Total: total, Page: filter.Page, PageSize: filter.PageSize}, nil
+}
+
+func (repository *PGRepository) Options(ctx context.Context, filter OptionFilter) (OptionPage, error) {
+	keyword := strings.ToLower(strings.TrimSpace(filter.Keyword))
+	if keyword != "" {
+		keyword = "%" + keyword + "%"
+	}
+
+	adminWhere := ""
+	if filter.AdminOnly {
+		adminWhere = ` AND EXISTS (
+			SELECT 1 FROM user_roles admin_role
+			WHERE admin_role.user_id = a.actor_id AND admin_role.role = 'admin'
+		)`
+	}
+
+	var query string
+	switch filter.Kind {
+	case "drawing":
+		query = `
+			SELECT a.metadata->>'drawingNo',
+			       concat_ws(' · ', a.metadata->>'drawingNo', MAX(NULLIF(a.metadata->>'drawingName', '')))
+			FROM audit_logs a
+			WHERE a.metadata ? 'drawingNo'
+			  AND COALESCE(a.metadata->>'drawingNo', '') <> ''
+			  AND ($1 = '' OR lower(a.metadata->>'drawingNo') LIKE $1)` + adminWhere + `
+			GROUP BY a.metadata->>'drawingNo'
+			ORDER BY a.metadata->>'drawingNo'
+			LIMIT $2`
+	case "actor":
+		value := `COALESCE(NULLIF(u.display_name, ''), u.account, '未知用户')`
+		if filter.AdminOnly {
+			value = "a.actor_id::text"
+		}
+		query = `
+			SELECT ` + value + `,
+			       concat_ws(' · ', NULLIF(u.display_name, ''), NULLIF(u.account, ''))
+			FROM audit_logs a
+			LEFT JOIN users u ON u.id = a.actor_id
+			WHERE a.actor_id IS NOT NULL
+			  AND ($1 = '' OR lower(concat_ws(' ', u.display_name, u.account)) LIKE $1)` + adminWhere + `
+			GROUP BY a.actor_id, u.display_name, u.account
+			ORDER BY lower(concat_ws(' ', u.display_name, u.account)), a.actor_id
+			LIMIT $2`
+	default:
+		return OptionPage{}, fmt.Errorf("未知日志候选类型: %s", filter.Kind)
+	}
+
+	rows, err := repository.pool.Query(ctx, query, keyword, filter.Limit)
+	if err != nil {
+		return OptionPage{}, fmt.Errorf("查询操作日志候选失败: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]Option, 0)
+	for rows.Next() {
+		var item Option
+		if err := rows.Scan(&item.Value, &item.Label); err != nil {
+			return OptionPage{}, fmt.Errorf("读取操作日志候选失败: %w", err)
+		}
+		if item.Label == "" {
+			item.Label = item.Value
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return OptionPage{}, fmt.Errorf("读取操作日志候选失败: %w", err)
+	}
+	return OptionPage{List: items}, nil
 }
 
 func (repository *PGRepository) ListAdmin(ctx context.Context, filter ListFilter) (Page, error) {

@@ -624,7 +624,6 @@ onBeforeUnmount(() => {
       <div class="juli-logo-shockwave" aria-hidden="true"></div>
       <div class="juli-logo-flash" aria-hidden="true"></div>
       <div class="juli-transition-caption">身份认证通过 ／ 正在绘制数字工场</div>
-      <button class="juli-transition-skip" type="button" @click="finishJuliTransition?.()">跳过动画</button>
     </div>
   </Teleport>
   <div
