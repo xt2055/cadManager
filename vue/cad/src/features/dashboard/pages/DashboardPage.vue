@@ -20,6 +20,7 @@ const drawingStore = useDrawingStore()
 const reviewStore = useReviewStore()
 const systemStore = useSystemStatusStore()
 const selectedWorkspace = ref<WorkspaceRole | null>(null)
+const activePanel = ref<'documents' | 'activity'>('documents')
 const workspaces = computed(() => availableWorkspaces(auth.currentUser?.roles ?? []))
 const workspace = computed(() => selectedWorkspace.value && workspaces.value.includes(selectedWorkspace.value) ? selectedWorkspace.value : workspaces.value[0] ?? null)
 const keyword = ref('')
@@ -27,7 +28,7 @@ const drawingFilter = ref<DrawingStatus | ''>('')
 const reviewFilter = ref<'pending' | 'completed'>('pending')
 const reviewResult = ref<'' | 'pass' | 'rejected'>('')
 const page = ref(1)
-const pageSize = 8
+const pageSize = computed(() => workspace.value === 'admin' ? 4 : 5)
 const refreshing = ref(false)
 const dataError = ref('')
 const auditError = ref('')
@@ -98,9 +99,9 @@ const reviewRows = computed(() => {
   return items.filter(item => (reviewFilter.value === 'pending' || !reviewResult.value || item.result === reviewResult.value) && (!search || [item.no, item.name, item.node, item.initiator].some(value => value?.toLowerCase().includes(search))))
 })
 const total = computed(() => workspace.value === 'reviewer' ? reviewRows.value.length : filteredDrawings.value.length)
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
-const visibleDrawings = computed(() => filteredDrawings.value.slice((page.value - 1) * pageSize, page.value * pageSize))
-const visibleReviews = computed(() => reviewRows.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+const visibleDrawings = computed(() => filteredDrawings.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+const visibleReviews = computed(() => reviewRows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const stateBreakdown = computed(() => (['draft', 'reviewing', 'published', 'archived', 'disabled'] as const).map(status => ({ status, label: STATUS[status].t, count: drawings.value.filter(item => item.status === status).length })))
 const storage = computed(() => systemStore.status?.storage)
 const serviceReady = computed(() => systemStore.isOnline && systemStore.status?.service.status === 'ok')
@@ -108,6 +109,7 @@ const serviceReady = computed(() => systemStore.isOnline && systemStore.status?.
 function go(route: RouteNameKey) { void router.push({ name: route }) }
 function openDrawing(no: string) { void router.push({ name: RouteName.DrawingPreview, params: { drawingId: no } }) }
 function showMetric(filter: string | null) {
+  activePanel.value = 'documents'
   if (filter === null) { go(RouteName.PartIndexLibrary); return }
   if (workspace.value === 'reviewer') {
     reviewFilter.value = filter === 'pending' ? 'pending' : 'completed'
@@ -142,6 +144,7 @@ async function loadData(force = false) {
   if (!disposed && current === requestGeneration) refreshing.value = false
 }
 watch([workspace, () => auth.currentUser?.id], () => {
+  activePanel.value = 'documents'
   keyword.value = ''; drawingFilter.value = ''; reviewFilter.value = 'pending'; reviewResult.value = ''; page.value = 1; activity.value = []
   void loadData()
 }, { immediate: true })
@@ -153,17 +156,18 @@ onBeforeUnmount(() => { disposed = true; requestGeneration++ })
 <template>
   <div class="page cad-workbench">
     <header class="wb-header">
-      <div class="wb-heading"><div class="wb-eyebrow"><DemoIcon name="ruler" :size="15" />CAD 图纸管理<span>/</span>{{ identity }}</div><h1>{{ workspace ? workspaceLabels[workspace] : '工作台' }}</h1><p>{{ workspace ? descriptions[workspace] : '当前账号尚未分配工作角色。' }}</p></div>
+      <div class="wb-heading"><div class="wb-heading-title"><h1>工作台</h1><span class="wb-identity">{{ identity }}</span></div><p>{{ workspace ? descriptions[workspace] : '当前账号尚未分配工作角色。' }}</p></div>
+      <div v-if="workspaces.length > 1" class="wb-role-switch" role="group" aria-label="切换工作视图"><button v-for="role in workspaces" :key="role" type="button" :aria-pressed="workspace === role" :class="{ active: workspace === role }" @click="selectedWorkspace = role">{{ workspaceLabels[role] }}</button></div>
       <div class="wb-header-actions"><span class="wb-date">{{ today }}</span><button class="btn wb-refresh" type="button" :disabled="refreshing" aria-label="刷新工作台" @click="loadData(true)"><DemoIcon name="refresh-cw" :size="16" :class="{ 'wb-spinning': refreshing }" /></button><button v-if="workspace" class="btn primary" type="button" @click="go(primaryAction.route)"><DemoIcon :name="primaryAction.icon" :size="16" />{{ primaryAction.label }}</button></div>
     </header>
-    <div v-if="workspaces.length > 1" class="wb-role-switch" role="group" aria-label="切换工作视图"><button v-for="role in workspaces" :key="role" type="button" :aria-pressed="workspace === role" :class="{ active: workspace === role }" @click="selectedWorkspace = role">{{ workspaceLabels[role] }}</button></div>
     <template v-if="workspace">
       <section class="wb-metrics" aria-label="工作概览">
-        <button v-for="metric in metrics" :key="metric.label" class="wb-metric" :class="metric.tone" type="button" @click="showMetric(metric.filter)"><span class="wb-metric-label">{{ metric.label }}<DemoIcon :name="metric.icon" :size="17" /></span><span class="wb-metric-number">{{ sourceLoading || dataError ? '—' : metric.value }}<small>{{ metric.unit }}</small></span><span class="wb-metric-bottom">{{ workspace === 'reviewer' ? '个人审核记录' : workspace === 'designer' ? '本人创建或负责设计' : '当前图纸库' }}<DemoIcon name="chevron-right" :size="14" /></span></button>
+        <button v-for="metric in metrics" :key="metric.label" class="wb-metric" :class="metric.tone" type="button" @click="showMetric(metric.filter)"><span class="wb-metric-label"><DemoIcon :name="metric.icon" :size="18" />{{ metric.label }}</span><span class="wb-metric-number">{{ sourceLoading || dataError ? '—' : metric.value }}<small>{{ metric.unit }}</small><DemoIcon name="chevron-right" :size="14" /></span></button>
       </section>
       <div class="wb-layout">
         <main class="wb-main">
-          <section class="wb-panel wb-documents" :aria-busy="sourceLoading">
+          <div v-if="workspace === 'admin'" class="wb-view-switch" role="group" aria-label="切换工作内容"><button type="button" :class="{ active: activePanel === 'documents' }" :aria-pressed="activePanel === 'documents'" @click="activePanel = 'documents'"><DemoIcon name="folder-tree" :size="16" />图纸资产</button><button type="button" :class="{ active: activePanel === 'activity' }" :aria-pressed="activePanel === 'activity'" @click="activePanel = 'activity'"><DemoIcon name="history" :size="16" />最近操作</button></div>
+          <section v-show="activePanel === 'documents'" class="wb-panel wb-documents" :aria-busy="sourceLoading">
             <div class="wb-panel-heading"><h2><DemoIcon :name="workspace === 'reviewer' ? 'clipboard-check' : 'folder-tree'" :size="17" />{{ workspace === 'reviewer' ? '审核任务' : workspace === 'designer' ? '我的设计图纸' : '图纸资产' }}</h2><button class="wb-text-button" type="button" @click="go(workspace === 'reviewer' ? RouteName.ReviewPending : RouteName.DrawingLibrary)">{{ workspace === 'reviewer' ? '审核中心' : '打开图纸库' }}<DemoIcon name="arrow-up-right" :size="14" /></button></div>
             <div class="wb-document-tools">
               <div class="wb-tabs" role="group" aria-label="筛选工作内容">
@@ -176,20 +180,17 @@ onBeforeUnmount(() => { disposed = true; requestGeneration++ })
             <div v-if="dataError" class="wb-message error" role="alert"><DemoIcon name="alert-circle" :size="20" /><strong>工作数据加载失败</strong><p>{{ dataError }}</p><button class="btn" type="button" :disabled="refreshing" @click="loadData(true)">重新加载</button></div>
             <div v-else-if="sourceLoading && !total" class="wb-message" role="status"><DemoIcon name="loader" :size="24" class="wb-spinning" /><p>正在加载工作数据…</p></div>
             <div v-else-if="!total" class="wb-message"><div class="wb-empty-icon"><DemoIcon :name="keyword ? 'search-x' : workspace === 'reviewer' ? 'clipboard-check' : 'folder-open'" :size="28" /></div><strong>{{ keyword || drawingFilter ? '没有匹配的图纸' : workspace === 'reviewer' ? reviewFilter === 'pending' ? '当前没有分配给你的待审任务' : '还没有签署记录' : workspace === 'designer' ? '还没有我的设计图纸' : '图纸库暂无项目' }}</strong><p>{{ keyword || drawingFilter ? '调整关键词或切换筛选条件。' : workspace === 'reviewer' ? '分配到你的审核任务将在这里显示。' : workspace === 'designer' ? '从新建图纸开始，或在图纸库中查找项目。' : '团队创建的项目与图纸会汇总到这里。' }}</p><button v-if="keyword || drawingFilter" class="btn" type="button" @click="clearSearch">清空筛选</button><button v-else-if="workspace === 'designer'" class="btn primary" type="button" @click="go(RouteName.DrawingCreate)">新建图纸</button></div>
-            <div v-else class="wb-table-scroll">
+            <div v-else class="wb-table-area">
               <table v-if="workspace !== 'reviewer'" class="wb-table"><thead><tr><th>图纸 / 项目</th><th>版本</th><th>状态</th><th>文件</th><th>更新于</th><th><span class="wb-sr-only">操作</span></th></tr></thead><tbody><tr v-for="drawing in visibleDrawings" :key="drawing.id || drawing.no"><td><button class="wb-drawing-title" type="button" @click="openDrawing(drawing.no)"><span class="wb-file-icon"><DemoIcon name="file" :size="19" /></span><span><strong>{{ drawing.name || drawing.no }}</strong><small>{{ drawing.no }}<template v-if="drawing.project && drawing.project !== drawing.no"> · {{ drawing.project }}</template></small></span></button></td><td class="wb-mono">{{ drawing.version || '—' }}</td><td><span class="wb-status" :class="drawing.status"><i />{{ STATUS[drawing.status].t }}</span></td><td class="wb-mono">{{ drawing.fileCount }}</td><td class="wb-time">{{ dateText(drawing.updatedAt) }}</td><td><button class="wb-open" type="button" :aria-label="`打开图纸 ${drawing.no}`" @click="openDrawing(drawing.no)"><DemoIcon name="chevron-right" :size="17" /></button></td></tr></tbody></table>
               <table v-else class="wb-table wb-review-table"><thead><tr><th>图纸 / 图号</th><th>审核节点</th><th>{{ reviewFilter === 'pending' ? '发起人' : '结论' }}</th><th>{{ reviewFilter === 'pending' ? '发起时间' : '签署时间' }}</th><th><span class="wb-sr-only">操作</span></th></tr></thead><tbody><tr v-for="review in visibleReviews" :key="review.id"><td><button class="wb-drawing-title" type="button" @click="openDrawing(review.no)"><span class="wb-file-icon"><DemoIcon name="file" :size="19" /></span><span><strong>{{ review.name }}</strong><small>{{ review.no }}</small></span></button></td><td><span class="wb-node">{{ review.node }}</span></td><td><span v-if="review.result" class="wb-status" :class="review.result === 'pass' ? 'published' : 'rejected'"><i />{{ review.result === 'pass' ? '通过' : '驳回' }}</span><span v-else>{{ review.initiator || '—' }}</span></td><td class="wb-time">{{ dateText(review.time) }}</td><td><button class="btn sm" :class="{ primary: reviewFilter === 'pending' }" type="button" @click="openDrawing(review.no)">{{ reviewFilter === 'pending' ? '查阅图纸' : '查看' }}</button></td></tr></tbody></table>
             </div>
             <footer v-if="total && !dataError" class="wb-pagination"><span>{{ workspace === 'reviewer' && reviewFilter === 'pending' ? '按发起时间排序，优先处理较早任务' : '按最近更新时间排序' }} · 共 {{ total }} 项</span><div><button type="button" :disabled="page <= 1" aria-label="上一页" @click="page--"><DemoIcon name="chevron-left" :size="16" /></button><span>{{ page }} / {{ pageCount }}</span><button type="button" :disabled="page >= pageCount" aria-label="下一页" @click="page++"><DemoIcon name="chevron-right" :size="16" /></button></div></footer>
           </section>
-          <section v-if="workspace === 'admin'" class="wb-panel wb-audit"><div class="wb-panel-heading"><h2><DemoIcon name="history" :size="17" />最近操作</h2><button class="wb-text-button" type="button" @click="go(RouteName.AdminLogs)">全部记录<DemoIcon name="arrow-up-right" :size="14" /></button></div><p v-if="auditError" class="wb-inline-message" role="alert">{{ auditError }}</p><p v-else-if="!activity.length" class="wb-inline-message">{{ refreshing ? '正在加载操作记录…' : '暂无操作记录' }}</p><ul v-else class="wb-activity"><li v-for="item in activity" :key="item.id"><span class="wb-activity-dot" :class="{ failed: item.result === 'failed' }" /><span><b>{{ item.user }}</b> {{ ACTIVITY_LABELS[item.act] || '操作图纸' }} <button v-if="item.drawingNo" type="button" @click="openDrawing(item.drawingNo)">{{ item.drawingName || item.drawingNo }}</button><em v-if="item.result === 'failed'">未成功</em></span><time>{{ dateText(item.occurredAt || item.time) }}</time></li></ul></section>
+          <section v-if="workspace === 'admin'" v-show="activePanel === 'activity'" class="wb-panel wb-audit"><div class="wb-panel-heading"><h2><DemoIcon name="history" :size="17" />最近操作</h2><button class="wb-text-button" type="button" @click="go(RouteName.AdminLogs)">全部记录<DemoIcon name="arrow-up-right" :size="14" /></button></div><p v-if="auditError" class="wb-inline-message" role="alert">{{ auditError }}</p><p v-else-if="!activity.length" class="wb-inline-message">{{ refreshing ? '正在加载操作记录…' : '暂无操作记录' }}</p><ul v-else class="wb-activity"><li v-for="item in activity" :key="item.id"><span class="wb-activity-dot" :class="{ failed: item.result === 'failed' }" /><span><b>{{ item.user }}</b> {{ ACTIVITY_LABELS[item.act] || '操作图纸' }} <button v-if="item.drawingNo" type="button" :title="item.drawingName || item.drawingNo" @click="openDrawing(item.drawingNo)">{{ item.drawingName || item.drawingNo }}</button><em v-if="item.result === 'failed'">未成功</em></span><time>{{ dateText(item.occurredAt || item.time) }}</time></li></ul><footer class="wb-audit-footer">展示最近 5 条操作，完整记录可在操作审计中查看。</footer></section>
         </main>
         <aside class="wb-aside">
           <section class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon :name="workspace === 'admin' ? 'sliders-horizontal' : 'layers'" :size="17" />{{ workspace === 'admin' ? '管理工具' : '常用工具' }}</h2></div><div class="wb-shortcuts" :class="{ 'admin-tools': workspace === 'admin' }"><button v-for="item in shortcuts" :key="item.route" type="button" @click="go(item.route)"><span class="wb-tool-icon"><DemoIcon :name="item.icon" :size="19" /></span><span><strong>{{ item.label }}</strong><small>{{ item.description }}</small></span><DemoIcon name="chevron-right" :size="14" /></button></div></section>
-          <template v-if="workspace === 'admin'">
-            <section class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="server" :size="17" />运行状态</h2><span class="wb-status" :class="serviceReady ? 'published' : 'draft'"><i />{{ systemStore.loading ? '检测中' : serviceReady ? '服务在线' : '待检查' }}</span></div><dl class="wb-system"><div><dt>数据库</dt><dd>{{ !systemStore.status ? '未获取' : systemStore.status.database.status === 'ok' ? '连接正常' : '连接异常' }}</dd></div><div><dt>在线用户</dt><dd>{{ systemStore.status ? systemStore.onlineCount : '—' }}<small v-if="systemStore.status"> 人</small></dd></div><div><dt>最近检测</dt><dd>{{ dateText(systemStore.lastChecked?.toISOString()) }}</dd></div></dl></section>
-            <section class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="hard-drive" :size="17" />文件存储与备份</h2></div><div class="wb-storage"><span>已存储文件</span><strong>{{ storage ? storage.formattedUsed : '—' }}</strong><p>{{ storage ? `${storage.fileCount} 份文件` : '存储信息暂未获取' }}</p></div><dl class="wb-system wb-storage-facts"><div><dt>存储状态</dt><dd>{{ !storage ? '未获取' : storage.status === 'ok' ? '正常' : '需检查' }}</dd></div><div><dt>备份</dt><dd>{{ storage?.backupStatus || '未配置' }}</dd></div></dl></section>
-          </template>
+          <section v-if="workspace === 'admin'" class="wb-panel wb-runtime"><div class="wb-panel-heading"><h2><DemoIcon name="server" :size="17" />运行与存储</h2><span class="wb-status" :class="serviceReady ? 'published' : 'draft'"><i />{{ systemStore.loading ? '检测中' : serviceReady ? '服务在线' : '待检查' }}</span></div><dl class="wb-system"><div><dt>数据库</dt><dd>{{ !systemStore.status ? '未获取' : systemStore.status.database.status === 'ok' ? '连接正常' : '连接异常' }}</dd></div><div><dt>在线用户</dt><dd>{{ systemStore.status ? systemStore.onlineCount : '—' }}<small v-if="systemStore.status"> 人</small></dd></div><div><dt>最近检测</dt><dd>{{ dateText(systemStore.lastChecked?.toISOString()) }}</dd></div></dl><div class="wb-storage"><DemoIcon name="hard-drive" :size="20" /><div><span>已存储文件</span><strong>{{ storage ? storage.formattedUsed : '—' }}</strong></div><p>{{ storage ? `${storage.fileCount} 份文件` : '暂未获取' }}</p></div><dl class="wb-system wb-storage-facts"><div><dt>存储状态</dt><dd>{{ !storage ? '未获取' : storage.status === 'ok' ? '正常' : '需检查' }}</dd></div><div><dt>备份</dt><dd>{{ storage?.backupStatus || '未配置' }}</dd></div></dl></section>
           <section v-else-if="workspace === 'designer'" class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="workflow" :size="17" />我的图纸状态</h2></div><div class="wb-distribution"><div class="wb-distribution-bar" aria-hidden="true"><span v-for="item in stateBreakdown.filter(item => item.count)" :key="item.status" :class="item.status" :style="{ flex: item.count }" /></div><button v-for="item in stateBreakdown" :key="item.status" type="button" @click="showMetric(item.status)"><span class="wb-status" :class="item.status"><i />{{ item.label }}</span><b>{{ dataError || sourceLoading ? '—' : item.count }}</b></button></div></section>
           <section v-else class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="stamp" :size="17" />最近签署</h2></div><p v-if="dataError" class="wb-inline-message">审核记录暂时不可用</p><p v-else-if="!completed.length" class="wb-inline-message">{{ sourceLoading ? '正在加载…' : '暂无个人签署记录' }}</p><ul v-else class="wb-signatures"><li v-for="item in completed.slice(0, 3)" :key="item.id"><button type="button" @click="openDrawing(item.no)">{{ item.name || item.no }}</button><div><span class="wb-status" :class="item.result === 'pass' ? 'published' : 'rejected'">{{ item.result === 'pass' ? '通过' : '驳回' }} · {{ item.node }}</span><time>{{ dateText(item.time) }}</time></div><p v-if="item.opinion">{{ item.opinion }}</p></li></ul></section>
         </aside>
