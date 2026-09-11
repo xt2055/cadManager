@@ -75,12 +75,12 @@ func (repository *PGRepository) Create(ctx context.Context, input CreateInput, o
 		return Attachment{}, fmt.Errorf("保存附件失败: %w", err)
 	}
 	var versionID string
-	if err := tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, 'release', $8::uuid) RETURNING id::text`, attachmentID, version, blobID, input.Name, object.MimeType, object.Size, input.Previewable, userID).Scan(&versionID); err != nil {
-		return Attachment{}, fmt.Errorf("保存附件版本失败: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid WHERE id = $1::uuid`, attachmentID, versionID); err != nil {
-		return Attachment{}, fmt.Errorf("设置附件当前版本失败: %w", err)
-	}
+		if err := tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, 'working', $8::uuid) RETURNING id::text`, attachmentID, version, blobID, input.Name, object.MimeType, object.Size, input.Previewable, userID).Scan(&versionID); err != nil {
+			return Attachment{}, fmt.Errorf("保存附件版本失败: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, original_version_id = COALESCE(original_version_id, $2::uuid) WHERE id = $1::uuid`, attachmentID, versionID); err != nil {
+			return Attachment{}, fmt.Errorf("设置附件当前版本失败: %w", err)
+		}
 	if err := tx.Commit(ctx); err != nil {
 		return Attachment{}, fmt.Errorf("提交附件事务失败: %w", err)
 	}
@@ -103,7 +103,7 @@ func ensureBlobTx(ctx context.Context, tx pgx.Tx, object StorageObject) (string,
 	return id, key, nil
 }
 
-const attachmentSelect = `SELECT a.id::text, COALESCE(d.drawing_no, parent.drawing_no, ''), p.part_no, a.file_role, a.logical_name, COALESCE(v.original_name, a.logical_name), COALESCE(b.storage_key, ''), COALESCE(b.storage_key, ''), COALESCE(v.mime_type, b.mime_type, 'application/octet-stream'), COALESCE(v.size_bytes, b.size_bytes, 0), COALESCE(v.size_bytes, b.size_bytes, 0), COALESCE(b.sha256, ''), COALESCE(b.sha256, ''), COALESCE(v.version, 'v1.0'), COALESCE(v.previewable, false), COALESCE(a.uploaded_by::text, ''), COALESCE(NULLIF(u.display_name, ''), u.account, ''), a.created_at, a.revision, a.current_version_id::text, COALESCE(a.author, '') FROM attachments a LEFT JOIN attachment_versions v ON v.id = a.current_version_id LEFT JOIN file_blobs b ON b.id = v.blob_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN parts p ON p.id = a.part_id LEFT JOIN drawing_part_relations owner_relation ON owner_relation.part_id = p.id AND owner_relation.relation_type = 'owned' AND owner_relation.status = 'active' LEFT JOIN drawings parent ON parent.id = owner_relation.drawing_id LEFT JOIN users u ON u.id = a.uploaded_by`
+const attachmentSelect = `SELECT a.id::text, COALESCE(d.drawing_no, parent.drawing_no, ''), p.part_no, a.file_role, a.logical_name, COALESCE(v.original_name, a.logical_name), COALESCE(b.storage_key, ''), COALESCE(b.storage_key, ''), COALESCE(v.mime_type, b.mime_type, 'application/octet-stream'), COALESCE(v.size_bytes, b.size_bytes, 0), COALESCE(v.size_bytes, b.size_bytes, 0), COALESCE(b.sha256, ''), COALESCE(b.sha256, ''), COALESCE(v.version, 'v1.0'), COALESCE(v.previewable, false), COALESCE(a.uploaded_by::text, ''), COALESCE(NULLIF(u.display_name, ''), u.account, ''), a.created_at, a.revision, a.current_version_id::text, COALESCE(a.author, ''), a.file_category, a.is_primary_model FROM attachments a LEFT JOIN attachment_versions v ON v.id = a.current_version_id LEFT JOIN file_blobs b ON b.id = v.blob_id LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN parts p ON p.id = a.part_id LEFT JOIN drawing_part_relations owner_relation ON owner_relation.part_id = p.id AND owner_relation.relation_type = 'owned' AND owner_relation.status = 'active' LEFT JOIN drawings parent ON parent.id = owner_relation.drawing_id LEFT JOIN users u ON u.id = a.uploaded_by`
 
 func (repository *PGRepository) findByID(ctx context.Context, id, key string) (Attachment, error) {
 	query := attachmentSelect + ` WHERE a.id = $1::uuid AND a.deleted_at IS NULL`
@@ -150,11 +150,18 @@ func scanAttachment(row interface{ Scan(...any) error }) (Attachment, error) {
 	var partNo *string
 	var createdAt time.Time
 	var revision int64
-	err := row.Scan(&item.ID, &item.DrawingNo, &partNo, &item.Role, &item.Name, &item.CurrentName, &item.StorageKey, &item.CurrentStorageKey, &item.CurrentMimeType, &item.Size, &item.CurrentSize, &item.SHA256, &item.CurrentSHA256, &item.Version, &item.Previewable, &item.UploadedByID, &item.UploadedBy, &createdAt, &revision, &item.CurrentVersionID, &item.Author)
+	err := row.Scan(&item.ID, &item.DrawingNo, &partNo, &item.Role, &item.Name, &item.CurrentName, &item.StorageKey, &item.CurrentStorageKey, &item.CurrentMimeType, &item.Size, &item.CurrentSize, &item.SHA256, &item.CurrentSHA256, &item.Version, &item.Previewable, &item.UploadedByID, &item.UploadedBy, &createdAt, &revision, &item.CurrentVersionID, &item.Author, &item.FileCategory, &item.IsPrimaryModel)
 	if err != nil {
 		return Attachment{}, err
 	}
 	item.PartNo = partNo
+	if item.FileCategory == "auto" {
+		item.FileCategory = FileCategory(item.CurrentName)
+	}
+	if item.FileCategory == "model3d" {
+		item.Name = item.CurrentName
+		item.Previewable = false // The first phase manages originals; no 3D converter is configured.
+	}
 	item.Revision = revision
 	item.MimeType = item.CurrentMimeType
 	item.CreatedAt = createdAt.Format("2006-01-02 15:04:05")
@@ -211,7 +218,7 @@ func (repository *PGRepository) SetCurrentVersionByID(ctx context.Context, attac
 	if err != nil {
 		return fmt.Errorf("保存当前附件版本失败: %w", err)
 	}
-	if result, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, revision = revision + 1 WHERE id = $1::uuid AND deleted_at IS NULL`, attachmentID, versionID); err != nil {
+		if result, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, original_version_id = COALESCE(original_version_id, $2::uuid), revision = revision + 1 WHERE id = $1::uuid AND deleted_at IS NULL`, attachmentID, versionID); err != nil {
 		return err
 	} else if result.RowsAffected() == 0 {
 		return ErrNotFound

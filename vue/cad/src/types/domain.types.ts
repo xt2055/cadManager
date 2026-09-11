@@ -43,6 +43,8 @@ export interface DrawingFileHistoryItem {
 	}
 
 export interface DrawingFile {
+	fileCategory?: 'drawing2d' | 'model3d' | 'other'
+	isPrimaryModel?: boolean
   id: string
   name: string
   rawName?: string

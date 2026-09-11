@@ -11,6 +11,7 @@ export type ModalType =
   | 'sync-original'
   | 'exit'
   | 'add-user'
+  | 'edit-user-role'
   | 'reset-user'
   | 'edit-flow'
   | 'confirm'

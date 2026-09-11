@@ -379,9 +379,9 @@ func TestEnsureInitialVersionRegistersAndSwitchesPointer(t *testing.T) {
 		t.Fatalf("版本 = %q; want v1.0", item.Version)
 	}
 	list, _ := versionRepo.ListByAttachment(context.Background(), "att-001")
-	if len(list) != 1 || list[0].Version != "v1.0" || list[0].VersionKind != "release" {
-		t.Fatalf("版本记录 = %+v; want 单条 v1.0 release", list)
-	}
+		if len(list) != 1 || list[0].Version != "v1.0" || list[0].VersionKind != "working" {
+			t.Fatalf("版本记录 = %+v; want 单条 v1.0 working", list)
+		}
 	// 原始文件未被改动
 	if got := mustRead(t, objectStorage, testSourceKey); string(got) != "raw-exb-content" {
 		t.Fatalf("原始文件被覆盖: %q", got)

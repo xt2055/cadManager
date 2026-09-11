@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -24,15 +25,16 @@ func drawingArchivedByNo(ctx context.Context, pool *pgxpool.Pool, drawingNo stri
 }
 
 type changeCreateRequest struct {
-	DrawingID      string `json:"drawingId"`
-	Reason         string `json:"reason"`
-	Scope          string `json:"scope"`
-	Title          string `json:"title"`
-	ExecutorID     string `json:"executorId"`
-	RequireVerify  *bool  `json:"requireVerify"`
-	AutoApprove    bool   `json:"autoApprove"`
-	ApproveOpinion string `json:"approveOpinion"`
-	WaiveReason    string `json:"waiveReason"`
+	DrawingID      string   `json:"drawingId"`
+	Reason         string   `json:"reason"`
+	Scope          string   `json:"scope"`
+	Title          string   `json:"title"`
+	ExecutorID     string   `json:"executorId"`
+	RequireVerify  *bool    `json:"requireVerify"`
+	AutoApprove    bool     `json:"autoApprove"`
+	ApproveOpinion string   `json:"approveOpinion"`
+	WaiveReason    string   `json:"waiveReason"`
+	AttachmentIDs  []string `json:"attachmentIds"`
 }
 
 type changeApproveRequest struct {
@@ -67,9 +69,9 @@ func ChangeRequests(service change.Service) http.HandlerFunc {
 		switch request.Method {
 		case http.MethodGet:
 			filter := change.ListFilter{
-				DrawingID:  request.URL.Query().Get("drawing_id"),
-				Status:     change.Status(request.URL.Query().Get("status")),
-				OpenOnly:   request.URL.Query().Get("open") == "1",
+				DrawingID: request.URL.Query().Get("drawing_id"),
+				Status:    change.Status(request.URL.Query().Get("status")),
+				OpenOnly:  request.URL.Query().Get("open") == "1",
 			}
 			if request.URL.Query().Get("mine") == "1" {
 				filter.ExecutorID = user.ID
@@ -99,6 +101,7 @@ func ChangeRequests(service change.Service) http.HandlerFunc {
 				AutoApprove:    payload.AutoApprove,
 				ApproveOpinion: payload.ApproveOpinion,
 				WaiveReason:    payload.WaiveReason,
+				AttachmentIDs:  payload.AttachmentIDs,
 			})
 			if err != nil {
 				writeChangeError(writer, err)
@@ -203,6 +206,7 @@ func ChangeRequestResource(service change.Service) http.HandlerFunc {
 			return
 		}
 		if err != nil {
+			log.Printf("[change-request] id=%s action=%s error=%v", id, segments[1], err)
 			writeChangeError(writer, err)
 			return
 		}
@@ -223,6 +227,8 @@ func writeChangeError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, change.ErrNoArchive):
 		response.WriteError(writer, http.StatusConflict, err.Error())
 	case errors.Is(err, change.ErrStaleSubmit):
+		response.WriteError(writer, http.StatusConflict, err.Error())
+	case errors.Is(err, change.ErrActiveEditSession):
 		response.WriteError(writer, http.StatusConflict, err.Error())
 	default:
 		if message := err.Error(); strings.Contains(message, "不能为空") || strings.Contains(message, "必须") || strings.Contains(message, "无效") {

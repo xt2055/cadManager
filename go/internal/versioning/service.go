@@ -120,22 +120,19 @@ func (service *Service) EnsureInitialVersion(ctx context.Context, sourceKey, use
 		return fmt.Errorf("关闭初始版本内容失败: %w", closeErr)
 	}
 
-	created, err := service.versions.CreateWithPromotion(ctx, CreateInput{
-		AttachmentID:     attachmentItem.ID,
-		SourceStorageKey: attachmentItem.StorageKey,
-		Version:          "v1.0",
-		VersionKind:      "release",
-		Size:             info.Size,
-		MimeType:         info.MimeType,
-		SHA256:           sourceHash,
-		CreatedBy:        userID,
-		CurrentName:      filepath.Base(initialKey),
-	}, initialKey)
-	if err != nil {
+		_, err = service.versions.CreateWithPromotion(ctx, CreateInput{
+			AttachmentID:     attachmentItem.ID,
+			SourceStorageKey: attachmentItem.StorageKey,
+			Version:          "v1.0",
+			VersionKind:      "working",
+			Size:             info.Size,
+			MimeType:         info.MimeType,
+			SHA256:           sourceHash,
+			CreatedBy:        userID,
+			CurrentName:      filepath.Base(initialKey),
+		}, initialKey)
 		return err
 	}
-	return service.versions.PromoteInitial(ctx, created.ID)
-}
 
 // OpenVersionContent 读取版本文件内容，用于下载。
 func (service *Service) OpenVersionContent(ctx context.Context, versionID string) (io.ReadCloser, Version, error) {
@@ -446,19 +443,25 @@ func (service *Service) StartCleanup(ctx context.Context) {
 }
 
 func nextWorkingVersion(latest Version, base string) (string, error) {
-	base = strings.TrimSpace(base)
-	if latest.Version == "" || latest.VersionKind == "release" {
-		return base + "-w001", nil
+	current := strings.TrimSpace(latest.Version)
+	if current == "" {
+		current = strings.TrimSpace(base)
 	}
-	separator := strings.LastIndex(latest.Version, "-w")
-	if separator < 0 || len(latest.Version)-separator-2 != 3 {
-		return "", errors.New("文件版本号无效")
+	if current == "" {
+		current = "v1.0"
 	}
-	number, err := strconv.Atoi(latest.Version[separator+2:])
+	if latest.ReleaseNumber != nil || latest.VersionKind == "release" {
+		return current + "-w001", nil
+	}
+	separator := strings.LastIndex(current, "-w")
+	if separator < 0 || len(current)-separator-2 != 3 {
+		return current + "-w001", nil
+	}
+	number, err := strconv.Atoi(current[separator+2:])
 	if err != nil || number >= 999 {
 		return "", errors.New("文件版本号无效")
 	}
-	return latest.Version[:separator+2] + fmt.Sprintf("%03d", number+1), nil
+	return current[:separator+2] + fmt.Sprintf("%03d", number+1), nil
 }
 
 func hashReader(reader io.Reader) (string, error) {

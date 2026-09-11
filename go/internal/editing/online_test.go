@@ -19,45 +19,47 @@ func (f fakeOnlineDrawing) FindByNo(ctx context.Context, no string) (drawing.Dra
 
 // fakeOnlineGate 变更工单门禁替身，覆盖在线开启/保存所需的全部查询与登记。
 type fakeOnlineGate struct {
-	requestID        string
-	executing        bool
-	workAttID        string
-	workVersionID    string
-	found            bool
-	baseline         string
-	recordErr        error
-	recorded         []string
-	conflictOnRecord bool
+	requestID           string
+	executing           bool
+	workAttID           string
+	workVersionID       string
+	found               bool
+	baseline            string
+	recordErr           error
+	recorded            []string
+	recordedAttachments []string
+	conflictOnRecord    bool
 }
 
-func (g *fakeOnlineGate) CanEditArchived(ctx context.Context, drawingID, userID string) (bool, string, error) {
+func (g *fakeOnlineGate) CanEditArchived(ctx context.Context, drawingID, attachmentID, userID string) (bool, string, error) {
 	if g.requestID == "" {
 		return false, "", nil
 	}
 	return true, g.requestID, nil
 }
 
-func (g *fakeOnlineGate) WorkVersion(ctx context.Context, requestID string) (string, string, string, bool, error) {
-	if g.found {
-		return g.workAttID, "history/work.dwg", g.workVersionID, true, nil
+func (g *fakeOnlineGate) WorkVersion(ctx context.Context, requestID, attachmentID string) (string, string, bool, error) {
+	if g.found && (g.workAttID == "" || g.workAttID == attachmentID) {
+		return "history/work.dwg", g.workVersionID, true, nil
 	}
-	return "", "", "", false, nil
+	return "", "", false, nil
 }
 
-func (g *fakeOnlineGate) EditBaseline(ctx context.Context, requestID string) (string, bool, error) {
+func (g *fakeOnlineGate) EditBaseline(ctx context.Context, requestID, attachmentID string) (string, bool, error) {
 	return g.baseline, g.baseline != "", nil
 }
 
-func (g *fakeOnlineGate) RecordWorkVersion(ctx context.Context, requestID, versionID string) error {
+func (g *fakeOnlineGate) RecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID string) error {
 	g.recorded = append(g.recorded, versionID)
+	g.recordedAttachments = append(g.recordedAttachments, attachmentID)
 	return g.recordErr
 }
 
-func (g *fakeOnlineGate) CompareAndRecordWorkVersion(ctx context.Context, requestID, versionID, expectedVersionID, userID string) (bool, error) {
+func (g *fakeOnlineGate) CompareAndRecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID, expectedVersionID, userID string) (bool, error) {
 	if g.conflictOnRecord || !g.executing || expectedVersionID != g.workVersionID {
 		return false, nil
 	}
-	return true, g.RecordWorkVersion(ctx, requestID, versionID)
+	return true, g.RecordWorkVersion(ctx, requestID, attachmentID, versionID)
 }
 
 func (g *fakeOnlineGate) StillExecuting(ctx context.Context, requestID string) (bool, error) {
@@ -115,6 +117,9 @@ func TestOnlineSaveDraftRegistersWorkingVersion(t *testing.T) {
 	}
 	if result.WorkVersionID == "" || len(gate.recorded) != 1 || gate.recorded[0] != result.WorkVersionID {
 		t.Fatalf("未把捕获的工作版本登记到工单: result=%+v recorded=%v", result, gate.recorded)
+	}
+	if len(gate.recordedAttachments) != 1 || gate.recordedAttachments[0] != item.ID {
+		t.Fatalf("工作版本登记到了错误附件: %v", gate.recordedAttachments)
 	}
 	if gate.baseline == "" {
 		t.Log("baseline 未透传，检查捕获基准")

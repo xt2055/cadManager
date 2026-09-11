@@ -10,10 +10,11 @@ func TestNextWorkingVersion(t *testing.T) {
 		want   string
 		valid  bool
 	}{
-		{name: "首个工作版本", base: "A-001", want: "A-001-w001", valid: true},
-		{name: "递增工作版本", latest: "A-001-w009", base: "A-001", want: "A-001-w010", valid: true},
-		{name: "缺少后缀", latest: "A-001", base: "A-001", valid: false},
-		{name: "超过范围", latest: "A-001-w999", base: "A-001", valid: false},
+			{name: "首个工作版本", base: "A-001", want: "A-001-w001", valid: true},
+			{name: "递增工作版本", latest: "A-001-w009", base: "A-001", want: "A-001-w010", valid: true},
+			{name: "缺少后缀", latest: "A-001", base: "A-001", want: "A-001-w001", valid: true},
+			{name: "正式版本后续工作版", latest: "V2", base: "V2", want: "V2-w001", valid: true},
+			{name: "超过范围", latest: "A-001-w999", base: "A-001", valid: false},
 	}
 
 	for _, test := range tests {

@@ -30,6 +30,7 @@ func EnsurePartIndexSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		"000034_attachment_title_blocks.sql",
 		"000035_part_indexes.sql",
 		"000036_material_bom_metadata.sql",
+		"000037_model_files.sql",
 	} {
 		version := strings.TrimSuffix(name, ".sql")
 		var applied bool

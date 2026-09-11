@@ -43,6 +43,14 @@ export interface ProposedAttributes {
   version?: string
 }
 
+export interface ChangeTarget {
+  attachmentId: string
+  name: string
+  fileCategory: 'auto' | 'drawing2d' | 'model3d' | 'other'
+  drawingNo: string
+  partNo?: string
+}
+
 export interface ChangeRequest {
   id: string
   requestNo: string
@@ -72,6 +80,7 @@ export interface ChangeRequest {
   diffs?: ChangeDiff[]
   actions?: ChangeAction[]
   submissions?: ChangeSubmission[]
+  targets?: ChangeTarget[]
 }
 
 export interface ChangeUserOption {
@@ -90,6 +99,7 @@ export interface CreateChangeInput {
   autoApprove?: boolean
   approveOpinion?: string
   waiveReason?: string
+  attachmentIds: string[]
 }
 
 function apiBaseUrl(): string {
@@ -120,6 +130,14 @@ async function request<T>(method: string, path: string, payload?: unknown): Prom
 }
 
 export const changeRequestService = {
+  list(params: { drawingId?: string; status?: string; open?: boolean } = {}): Promise<ChangeRequest[]> {
+    const query = new URLSearchParams()
+    if (params.drawingId) query.set('drawing_id', params.drawingId)
+    if (params.status) query.set('status', params.status)
+    if (params.open) query.set('open', '1')
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return request('GET', `/change-requests${suffix}`)
+  },
   listByDrawing(drawingId: string): Promise<ChangeRequest[]> {
     return request('GET', `/change-requests?drawing_id=${encodeURIComponent(drawingId)}`)
   },

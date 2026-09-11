@@ -15,6 +15,8 @@ export const RouteName = {
   PartIndexDetail: 'part-index-detail',
 
   DrawingPreview: 'drawing-preview',
+  DrawingChanges: 'drawing-changes',
+  DrawingModels: 'drawing-models',
   DrawingStructure: 'drawing-structure',
   DrawingVersions: 'drawing-versions',
   DrawingBorrow: 'drawing-borrow',
@@ -25,6 +27,7 @@ export const RouteName = {
 
   ReviewCenter: 'review-center',
   ReviewPending: 'review-pending',
+  ReviewWorkspace: 'review-workspace',
   ReviewCompleted: 'review-completed',
 
   OperationLogs: 'operation-logs',
@@ -35,6 +38,8 @@ export const RouteName = {
   AdminAccounts: 'admin-accounts',
   AdminReviewFlows: 'admin-review-flows',
   AdminDrawings: 'admin-drawings',
+  AdminChangeApprovals: 'admin-change-approvals',
+  AdminChangeRecords: 'admin-change-records',
   AdminLogs: 'admin-logs',
   AdminSystemLogs: 'admin-system-logs',
   AdminUpdates: 'admin-updates',

@@ -4,6 +4,7 @@ import { onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { versioningService } from '@/app/container'
+import { formalVersionLabel } from '@/modules/versioning/versioning-service'
 import type { FileVersionInfo } from '@/types/application.types'
 import type { FileView } from '@/modules/drawing'
 import { useDrawingStore } from '@/stores/drawing.store'
@@ -107,11 +108,11 @@ function formatTime(iso: string): string {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-function kindLabel(kind: string): string {
-  if (kind === 'release') return '正式版本'
-  if (kind === 'working') return '工作版本'
-  if (kind === 'initial') return '初始版本'
-  return kind
+function kindLabel(version: FileVersionInfo): string {
+  if (version.releaseNumber) return '正式版本'
+  if (version.isOriginal) return '原始文件'
+  if (version.versionKind === 'working') return '工作版本'
+  return version.versionKind || '版本'
 }
 
 async function downloadVersion(version: FileVersionInfo) {
@@ -173,8 +174,8 @@ function compareVersion(version: FileVersionInfo) {
   <div class="ver-grid">
     <div class="card">
       <div class="card-title">
-        <DemoIcon name="history" :size="16" />版本时间线
-        <span class="hint">所有版本永久保留 · 回退不删除任何版本</span>
+        <DemoIcon name="history" :size="16" />正式版本时间线
+        <span class="hint">仅保留原始文件与正式发布 · 中间工作文件发布后清理</span>
       </div>
 
       <div v-if="cadFiles.length > 1" class="file-picker">
@@ -197,13 +198,14 @@ function compareVersion(version: FileVersionInfo) {
           v-for="version in versions"
           :key="version.id"
           class="tl-item"
-          :class="{ cur: version.isCurrentRelease || version.versionKind === 'release' }"
+          :class="{ cur: version.isCurrentRelease || Boolean(version.releaseNumber) }"
         >
           <div class="tl-dot"></div>
           <div class="tl-head">
-            <span class="v">{{ version.version }}</span>
-            <span class="tag" :class="version.versionKind === 'release' ? 'ok' : 'mute'">{{ kindLabel(version.versionKind) }}</span>
-            <span v-if="version.versionKind === 'release'" class="tag ok">当前正式</span>
+            <span class="v">{{ formalVersionLabel(version) }}</span>
+            <span class="tag" :class="version.releaseNumber || version.isOriginal ? 'ok' : 'mute'">{{ kindLabel(version) }}</span>
+            <span v-if="version.isCurrentRelease" class="tag ok">当前正式</span>
+            <span v-if="version.isOriginal && version.releaseNumber" class="tag info">原始文件</span>
             <span class="tl-size">{{ formatSize(version.size) }}</span>
           </div>
           <div class="tl-meta">
@@ -218,7 +220,7 @@ function compareVersion(version: FileVersionInfo) {
               <DemoIcon name="download" :size="13" />下载
             </button>
             <button
-              v-if="isAdmin && version.versionKind !== 'release'"
+              v-if="isAdmin && !version.releaseNumber && !version.isOriginal"
               class="btn sm primary"
               type="button"
               :disabled="busyVersionId === version.id"

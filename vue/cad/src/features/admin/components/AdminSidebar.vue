@@ -18,6 +18,8 @@ const items = [
   { name: RouteName.AdminAccounts, label: '账号管理', icon: 'user-plus' },
   { name: RouteName.AdminReviewFlows, label: '审核流程', icon: 'workflow' },
   { name: RouteName.AdminDrawings, label: '图纸管理', icon: 'layers' },
+  { name: RouteName.AdminChangeApprovals, label: '变更审批', icon: 'clipboard-check' },
+  { name: RouteName.AdminChangeRecords, label: '变更记录', icon: 'history' },
   { name: RouteName.AdminLogs, label: '操作日志', icon: 'scroll-text' },
   { name: RouteName.AdminAttributes, label: '图纸属性', icon: 'sliders-horizontal' },
   { name: RouteName.AdminConversions, label: '转换队列', icon: 'refresh-cw' },

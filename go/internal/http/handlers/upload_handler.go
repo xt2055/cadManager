@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"cadguanliq/internal/attachment"
+
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
 	"cadguanliq/internal/upload"
@@ -297,6 +299,8 @@ func writeUploadError(writer http.ResponseWriter, err error) {
 		return
 	}
 	switch {
+	case errors.Is(err, attachment.ErrModelPermission):
+		response.WriteError(writer, http.StatusForbidden, err.Error())
 	case errors.Is(err, upload.ErrNotFound):
 		response.WriteError(writer, http.StatusNotFound, err.Error())
 	case errors.Is(err, upload.ErrExpired):

@@ -2,6 +2,7 @@ import { RouteName } from '@/router/route-names'
 import type { DrawingDetailTabItem } from '@/constants/drawing.constants'
 
 export const drawingDetailTabs: DrawingDetailTabItem[] = [
+  { key: 'models', title: '3D 图纸', icon: 'box', routeName: RouteName.DrawingModels },
   {
     key: 'preview',
     title: '图纸文件',
@@ -13,6 +14,12 @@ export const drawingDetailTabs: DrawingDetailTabItem[] = [
     title: '图纸结构',
     icon: 'folder-tree',
     routeName: RouteName.DrawingStructure,
+  },
+  {
+    key: 'changes',
+    title: '变更工单',
+    icon: 'folder-lock',
+    routeName: RouteName.DrawingChanges,
   },
   {
     key: 'versions',

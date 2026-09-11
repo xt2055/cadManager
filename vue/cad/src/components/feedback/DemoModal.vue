@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { buildUserRoleUpdate, USER_ROLE_OPTIONS } from '@/features/admin/account-role-editor'
 import { useUiStore } from '@/stores/ui.store'
 import { fetchReviewerCandidates } from '@/services/auth/candidate-user.service'
 import { useAdminStore } from '@/stores/admin.store'
@@ -92,6 +93,9 @@ const modal = computed(() => uiStore.modal)
 watch(modal, (current) => {
   if (current?.type === 'add-user') {
     resetUserForm()
+  } else if (current?.type === 'edit-user-role') {
+    const user = adminStore.users.find((item) => item.id === current.payload?.userId)
+    userRoles.value = user ? [...user.roles] : []
   } else if (current?.type === 'reset-user') {
     resetPassword.value = ''
   } else if (current?.type === 'edit-flow') {
@@ -146,6 +150,13 @@ function toggleRole(role: UserRole) {
         roles: userRoles.value,
       })
       uiStore.toast('账号已分配 · 初始密码已保存')
+    } else if (current.type === 'edit-user-role') {
+      const userId = current.payload?.userId
+      if (!userId) throw new Error('未找到目标账号')
+      const user = adminStore.users.find((item) => item.id === userId)
+      if (!user) throw new Error('未找到目标账号')
+      await adminStore.updateUser(userId, buildUserRoleUpdate(user, userRoles.value))
+      uiStore.toast('账号身份已更新')
     } else if (current.type === 'reset-user') {
       const userId = current.payload?.userId
       if (!userId) throw new Error('未找到目标账号')
@@ -224,7 +235,12 @@ function toggleRole(role: UserRole) {
            <div class="note"><DemoIcon name="user-plus" :size="14" /><div>系统不开放自行注册，账号仅能由管理员在此分配。</div></div>
            <div class="modal-form-grid"><div class="field"><label for="user-account">登录账号 *</label><input id="user-account" v-model="userAccount" class="inp" placeholder="如 zhang" autocomplete="off" /></div><div class="field"><label for="user-name">姓名 *</label><input id="user-name" v-model="userName" class="inp" placeholder="如 张工" autocomplete="off" /></div></div>
            <div class="field"><label for="user-password">初始密码 *</label><input id="user-password" v-model="userPassword" class="inp" type="password" placeholder="请输入初始密码" autocomplete="new-password" /></div>
-           <div class="field field-last"><label>角色 *</label><div class="role-checks"><label v-for="role in ([['designer', '设计人员'], ['reviewer', '审核人员'], ['admin', '管理员']] as const)" :key="role[0]" class="role-check"><input type="checkbox" :checked="userRoles.includes(role[0])" @change="toggleRole(role[0])" /><span>{{ role[1] }}</span></label></div></div>
+           <div class="field field-last"><label>角色 *</label><div class="role-checks"><label v-for="role in USER_ROLE_OPTIONS" :key="role.value" class="role-check"><input type="checkbox" :checked="userRoles.includes(role.value)" @change="toggleRole(role.value)" /><span>{{ role.label }}</span></label></div></div>
+         </template>
+
+         <template v-else-if="modal.type === 'edit-user-role'">
+           <div class="note"><DemoIcon name="users" :size="14" /><div>正在修改账号「{{ modal.payload?.account || '未知账号' }}」的身份。一个账号可同时拥有多个身份。</div></div>
+           <div class="field field-last"><label>身份 *</label><div class="role-checks"><label v-for="role in USER_ROLE_OPTIONS" :key="role.value" class="role-check"><input type="checkbox" :checked="userRoles.includes(role.value)" @change="toggleRole(role.value)" /><span>{{ role.label }}</span></label></div></div>
          </template>
 
          <template v-else-if="modal.type === 'reset-user'">
@@ -258,7 +274,7 @@ function toggleRole(role: UserRole) {
 
       <footer class="modal-foot">
         <button class="btn" type="button" @click="close">取消</button>
-         <button class="btn primary" :class="{ danger: modal.type === 'confirm' && modal.payload?.danger }" type="button" @click="submit"><DemoIcon :name="modal.type === 'confirm' && modal.payload?.danger ? 'alert-triangle' : 'check'" :size="14" />{{ modal.type === 'confirm' ? (modal.payload?.confirmText || '确定') : modal.type === 'exit' ? '退出' : modal.type === 'borrow-drawing' ? '建立借用' : modal.type === 'revert' ? '执行回退' : modal.type === 'add-user' ? '创建账号' : modal.type === 'reset-user' ? '重置密码' : '保存流程' }}</button>
+         <button class="btn primary" :class="{ danger: modal.type === 'confirm' && modal.payload?.danger }" type="button" @click="submit"><DemoIcon :name="modal.type === 'confirm' && modal.payload?.danger ? 'alert-triangle' : 'check'" :size="14" />{{ modal.type === 'confirm' ? (modal.payload?.confirmText || '确定') : modal.type === 'exit' ? '退出' : modal.type === 'borrow-drawing' ? '建立借用' : modal.type === 'revert' ? '执行回退' : modal.type === 'add-user' ? '创建账号' : modal.type === 'edit-user-role' ? '保存身份' : modal.type === 'reset-user' ? '重置密码' : '保存流程' }}</button>
       </footer>
     </section>
   </div>

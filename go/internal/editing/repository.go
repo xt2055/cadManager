@@ -43,12 +43,22 @@ func (repository *PGRepository) CompleteWorkingSession(ctx context.Context, sess
 		return ErrSessionNotFound
 	}
 	if versionID != "" {
-		tag, err := tx.Exec(ctx, `UPDATE change_requests cr SET submitted_attachment_version_id=$2::uuid WHERE cr.id=$1::uuid AND EXISTS (SELECT 1 FROM attachment_versions v JOIN attachments a ON a.id=v.attachment_id WHERE v.id=$2::uuid AND a.id=$3::uuid AND a.drawing_id=cr.drawing_id AND v.deleted_at IS NULL)`, session.ChangeRequestID, versionID, session.AttachmentID)
+		tag, err := tx.Exec(ctx, `
+			UPDATE change_request_targets target
+			SET work_attachment_version_id = $2::uuid, updated_at = now()
+			WHERE target.request_id = $1::uuid
+			  AND target.attachment_id = $3::uuid
+			  AND EXISTS (
+				SELECT 1 FROM attachment_versions version
+				WHERE version.id = $2::uuid
+				  AND version.attachment_id = target.attachment_id
+				  AND version.deleted_at IS NULL
+			  )`, session.ChangeRequestID, versionID, session.AttachmentID)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() != 1 {
-			return errors.New("工作版本与编辑会话不匹配")
+			return errors.New("工作版本与编辑会话或变更对象不匹配")
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE edit_sessions SET status='closed',closed_at=now(),last_seen_at=now() WHERE id=$1::uuid`, session.ID); err != nil {

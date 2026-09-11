@@ -51,6 +51,14 @@ type Diff struct {
 	NewValue string `json:"newValue"`
 }
 
+type Target struct {
+	AttachmentID string `json:"attachmentId"`
+	Name         string `json:"name"`
+	FileCategory string `json:"fileCategory"`
+	DrawingNo    string `json:"drawingNo"`
+	PartNo       string `json:"partNo,omitempty"`
+}
+
 // Submission 一次提交完成形成的不可变快照轮次：
 // 记录本轮实际修改说明、拟发布属性、基线/成果文件版本与本轮差异，
 // 保证验收所见即所发布，退回重提不再与旧轮次混淆。
@@ -111,6 +119,7 @@ type Request struct {
 	Diffs               []Diff         `json:"diffs,omitempty"`
 	Actions             []ActionRecord `json:"actions,omitempty"`
 	Submissions         []Submission   `json:"submissions,omitempty"`
+	Targets             []Target       `json:"targets,omitempty"`
 }
 
 // ActionRecord 工单操作时间线单条记录。
@@ -129,9 +138,10 @@ type CreateInput struct {
 	Title          string
 	ExecutorID     string
 	RequireVerify  *bool
-	AutoApprove    bool   // 管理员直接发起并批准
-	ApproveOpinion string // 管理员直接批准时的审批意见（必填）
-	WaiveReason    string // 管理员直接批准且免验收时的独立原因（必填）
+	AutoApprove    bool     // 管理员直接发起并批准
+	ApproveOpinion string   // 管理员直接批准时的审批意见（必填）
+	WaiveReason    string   // 管理员直接批准且免验收时的独立原因（必填）
+	AttachmentIDs  []string // 本次允许修改的附件清单
 }
 
 // ApproveInput 管理员审批通过。

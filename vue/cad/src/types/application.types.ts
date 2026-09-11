@@ -53,6 +53,8 @@ export interface CreateUploadSessionItemInput {
 }
 
 export interface StoredAttachment {
+	fileCategory?: 'drawing2d' | 'model3d' | 'other'
+	isPrimaryModel?: boolean
   id: string
   name: string
   storageKey: string
@@ -137,6 +139,7 @@ export interface ActiveEditSessionInfo {
   online?: boolean
 }
 export interface FileVersionInfo {
+  originalName?: string
   id: string
   attachmentId: string
   storageKey: string
@@ -148,6 +151,8 @@ export interface FileVersionInfo {
   createdByName?: string
   createdAt: string
   isCurrentRelease?: boolean
+  releaseNumber?: number
+  isOriginal?: boolean
 }
 export interface EditSessionControlResult {
   sessionId: string

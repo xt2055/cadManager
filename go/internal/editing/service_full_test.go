@@ -931,27 +931,27 @@ type fakeChangeGate struct {
 	baselineGet string
 }
 
-func (g *fakeChangeGate) CanEditArchived(ctx context.Context, drawingID, userID string) (bool, string, error) {
+func (g *fakeChangeGate) CanEditArchived(ctx context.Context, drawingID, attachmentID, userID string) (bool, string, error) {
 	return false, "", nil
 }
 
-func (g *fakeChangeGate) WorkVersion(ctx context.Context, requestID string) (string, string, string, bool, error) {
+func (g *fakeChangeGate) WorkVersion(ctx context.Context, requestID, attachmentID string) (string, string, bool, error) {
 	if g.workKey != "" {
-		return "att-001", g.workKey, "ver-work", true, nil
+		return g.workKey, "ver-work", true, nil
 	}
-	return "", "", "", false, nil
+	return "", "", false, nil
 }
 
-func (g *fakeChangeGate) EditBaseline(ctx context.Context, requestID string) (string, bool, error) {
+func (g *fakeChangeGate) EditBaseline(ctx context.Context, requestID, attachmentID string) (string, bool, error) {
 	g.baselineGet = requestID
 	return g.baseline, g.baselineSet, nil
 }
 
-func (g *fakeChangeGate) CompareAndRecordWorkVersion(ctx context.Context, requestID, versionID, expectedVersionID, userID string) (bool, error) {
-	return true, g.RecordWorkVersion(ctx, requestID, versionID)
+func (g *fakeChangeGate) CompareAndRecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID, expectedVersionID, userID string) (bool, error) {
+	return true, g.RecordWorkVersion(ctx, requestID, attachmentID, versionID)
 }
 
-func (g *fakeChangeGate) RecordWorkVersion(ctx context.Context, requestID, versionID string) error {
+func (g *fakeChangeGate) RecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID string) error {
 	g.recordedID = versionID
 	return g.recordErr
 }

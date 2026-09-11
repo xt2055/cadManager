@@ -286,7 +286,9 @@ func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, ob
 				return
 			}
 			var input struct {
-				Author string `json:"author"`
+				Author           string `json:"author"`
+				PrimaryModel     *bool  `json:"primaryModel"`
+				ExpectedRevision int64  `json:"expectedRevision"`
 			}
 			decoder := json.NewDecoder(request.Body)
 			decoder.DisallowUnknownFields()
@@ -301,6 +303,30 @@ func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, ob
 			}
 			if current.StorageKey != key && current.CurrentStorageKey != key {
 				response.WriteError(writer, http.StatusNotFound, "附件不存在")
+				return
+			}
+			if input.PrimaryModel != nil {
+				if !*input.PrimaryModel || input.ExpectedRevision < 1 || input.Author != "" {
+					response.WriteError(writer, http.StatusBadRequest, "主模型参数无效")
+					return
+				}
+				models, ok := repository.(interface {
+					SetPrimaryModel(context.Context, string, int64, string) (attachment.Attachment, error)
+				})
+				if !ok {
+					response.WriteError(writer, http.StatusNotImplemented, "主模型管理尚未配置")
+					return
+				}
+				updated, err := models.SetPrimaryModel(request.Context(), attachmentID, input.ExpectedRevision, user.ID)
+				if errors.Is(err, attachment.ErrModelPermission) {
+					response.WriteError(writer, http.StatusForbidden, err.Error())
+					return
+				}
+				if err != nil {
+					writeAttachmentError(writer, err)
+					return
+				}
+				response.WriteData(writer, http.StatusOK, updated)
 				return
 			}
 			if current.Role != attachment.RoleMaterial && current.Role != attachment.RoleCraft {

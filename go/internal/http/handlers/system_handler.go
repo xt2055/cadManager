@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -58,6 +56,7 @@ type StorageStatusSnapshot struct {
 	FormattedUsed string `json:"formattedUsed"`
 	FormattedDisk string `json:"formattedDisk"`
 	BackupStatus  string `json:"backupStatus"`
+	Source        string `json:"source"`
 }
 
 type OnlineUsersSnapshot struct {
@@ -90,31 +89,17 @@ func SystemStatus(pool *pgxpool.Pool, cfg config.Config, authService *auth.Servi
 
 		var fileCount int64
 		var usedBytes int64
-		storageStatus := "ok"
-		if pool != nil {
+		storageStatus := "not_configured"
+		if pool != nil && dbStatus == "ok" {
 			if err := pool.QueryRow(ctx, `
-				SELECT count(*), COALESCE(sum(size_bytes), 0)
-				FROM attachments
-				WHERE deleted_at IS NULL`).Scan(&fileCount, &usedBytes); err != nil {
-				storageStatus = "degraded"
-			}
-		}
-
-		if usedBytes == 0 && cfg.StorageRoot != "" {
-			var diskBytes int64
-			var diskCount int64
-			_ = filepath.Walk(cfg.StorageRoot, func(path string, info os.FileInfo, err error) error {
-				if err == nil && info != nil && !info.IsDir() {
-					diskBytes += info.Size()
-					diskCount++
-				}
-				return nil
-			})
-			if diskBytes > 0 {
-				usedBytes = diskBytes
-				if fileCount == 0 {
-					fileCount = diskCount
-				}
+				SELECT count(*), COALESCE(sum(v.size_bytes), 0)
+				FROM attachments a
+				JOIN attachment_versions v ON v.id = a.current_version_id
+				WHERE a.deleted_at IS NULL
+				  AND v.deleted_at IS NULL`).Scan(&fileCount, &usedBytes); err != nil {
+				storageStatus = "error"
+			} else {
+				storageStatus = "ok"
 			}
 		}
 		diskTotal, diskFree := diskSpace(cfg.StorageRoot)
@@ -154,6 +139,7 @@ func SystemStatus(pool *pgxpool.Pool, cfg config.Config, authService *auth.Servi
 				FormattedUsed: formatBytes(usedBytes),
 				FormattedDisk: formatBytes(diskTotal) + " / 剩余 " + formatBytes(diskFree),
 				BackupStatus:  "未配置",
+				Source:        "database",
 			},
 			SMB:  smb.Inspect(ctx, cfg.SMB),
 			CAXA: caxaStatus(cfg.CaxaBin),

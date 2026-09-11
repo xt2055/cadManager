@@ -6,6 +6,7 @@ import (
 )
 
 type Version struct {
+	OriginalName     string     `json:"originalName"`
 	ID               string     `json:"id"`
 	AttachmentID     string     `json:"attachmentId"`
 	StorageKey       string     `json:"storageKey"`
@@ -25,6 +26,8 @@ type Version struct {
 	ReleasedBy       string     `json:"releasedBy,omitempty"`
 	ReleasedAt       *time.Time `json:"releasedAt,omitempty"`
 	IsCurrentRelease bool       `json:"isCurrentRelease"`
+	ReleaseNumber    *int       `json:"releaseNumber,omitempty"`
+	IsOriginal       bool       `json:"isOriginal"`
 	DeletedAt        *time.Time `json:"deletedAt,omitempty"`
 }
 

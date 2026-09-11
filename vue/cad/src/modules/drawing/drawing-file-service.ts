@@ -5,6 +5,7 @@ import type {
 } from '@/types/application.types'
 
 export interface DrawingFileGateway {
+  setPrimaryModel(storageKey: string, attachmentId: string, expectedRevision: number): Promise<void>
   readAttachment(storageKey: string): Promise<Blob>
   exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob>
   identifyDrawingFile(file: Blob, name: string, options?: DrawingFileIdentifyOptions): Promise<DrawingFileIdentity>
@@ -20,6 +21,9 @@ export class DrawingFileService {
   public constructor(private readonly gateway: DrawingFileGateway) {}
 
   read(storageKey: string): Promise<Blob> { return this.gateway.readAttachment(storageKey) }
+  setPrimaryModel(storageKey: string, attachmentId: string, expectedRevision: number): Promise<void> {
+    return this.gateway.setPrimaryModel(storageKey, attachmentId, expectedRevision)
+  }
   exportBOM(drawingNo: string, storageKey: string, items: unknown[]): Promise<Blob> { return this.gateway.exportBOM(drawingNo, storageKey, items) }
   identify(file: Blob, name: string, options?: DrawingFileIdentifyOptions): Promise<DrawingFileIdentity> {
     return this.gateway.identifyDrawingFile(file, name, options)

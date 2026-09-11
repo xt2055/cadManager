@@ -53,16 +53,15 @@ type ReviewAssigneeLookup interface {
 
 // ChangeGate 提供存档图纸的变更工单授权与工作版本隔离能力。
 type ChangeGate interface {
-	// CanEditArchived 报告用户是否因持有执行中的工单而可编辑该存档图纸，返回工单 ID。
-	CanEditArchived(ctx context.Context, drawingID, userID string) (bool, string, error)
-	// WorkVersion 返回工单当前工作成果版本（附件 ID / 存储键 / 版本 ID）；无工作版本时 found=false。
-	WorkVersion(ctx context.Context, requestID string) (attachmentID, storageKey, versionID string, found bool, err error)
-	// EditBaseline 返回该工单当前工作版本（无工作版本时为工单文件基线）的内容哈希，
-	// 供结束编辑时以"上一次工单成果"为比较基准；基线缺失时 found=false。
-	EditBaseline(ctx context.Context, requestID string) (sha string, found bool, err error)
-	// RecordWorkVersion 把工单最新工作版本登记到工单；工单已不可写时返回工单包定义的 ErrNotExecuting。
-	RecordWorkVersion(ctx context.Context, requestID, versionID string) error
-	CompareAndRecordWorkVersion(ctx context.Context, requestID, versionID, expectedVersionID, userID string) (bool, error)
+	// CanEditArchived 报告用户是否因持有执行中的工单而可编辑该存档图纸附件，返回工单 ID。
+	CanEditArchived(ctx context.Context, drawingID, attachmentID, userID string) (bool, string, error)
+	// WorkVersion 返回工单中指定附件的当前工作成果；无工作版本时 found=false。
+	WorkVersion(ctx context.Context, requestID, attachmentID string) (storageKey, versionID string, found bool, err error)
+	// EditBaseline 返回指定附件的当前工作版本（无工作版本时为创建工单时基线）内容哈希。
+	EditBaseline(ctx context.Context, requestID, attachmentID string) (sha string, found bool, err error)
+	// RecordWorkVersion 把指定附件的最新工作版本登记到工单目标。
+	RecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID string) error
+	CompareAndRecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID, expectedVersionID, userID string) (bool, error)
 	// StillExecuting 报告工单是否仍处于可编辑（executing）状态。
 	StillExecuting(ctx context.Context, requestID string) (bool, error)
 }
@@ -130,11 +129,11 @@ func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, 
 	// 存档变更工单：若该工单已登记工作成果版本，则基于它继续编辑，
 	// 不回到正式版本，保证未验收成果与正式版隔离。
 	if changeRequestID != "" && service.changes != nil {
-		attID, storageKey, _, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID)
+		storageKey, _, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID, item.ID)
 		if gateErr != nil {
 			return "", fmt.Errorf("读取工单工作版本失败: %w", gateErr)
 		}
-		if found && attID == item.ID && storageKey != "" {
+		if found && storageKey != "" {
 			if reader, _, openErr := service.storage.Open(ctx, storageKey); openErr == nil {
 				_ = reader.Close()
 				return storageKey, nil
@@ -143,7 +142,7 @@ func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, 
 			}
 		}
 		if found {
-			return "", errors.New("工单工作版本与目标附件不匹配或存储键缺失")
+			return "", errors.New("工单工作版本存储键缺失")
 		}
 	}
 	ext := filepath.Ext(item.StorageKey)
@@ -243,7 +242,7 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	// 图纸生命周期 × 身份统一授权：角色门禁并入状态矩阵——
 	// 审核中当前节点责任人可编辑（即使无 designer 角色）；存档仅管理员经解除存档后编辑；
 	// 草稿/生产仅创建者或管理员可编辑。其他用户一律走「本地查看（只读）」。
-	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo)
+	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo, item.ID)
 	if err != nil {
 		return OpenResult{}, err
 	}
@@ -372,7 +371,7 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 // authorizeEdit 图纸生命周期 × 身份的编辑授权矩阵（后端强校验）。
 // 返回的 changeRequestID 非空表示这次编辑受某张执行中的存档变更工单授权，
 // 编辑成果须登记为工作版本、验收后才发布，不得直接切换正式指针。
-func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, drawingNo string) (string, error) {
+func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, drawingNo, attachmentID string) (string, error) {
 	admin := isAdmin(user.Roles)
 	designer := false
 	for _, role := range user.Roles {
@@ -419,7 +418,7 @@ func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, d
 		// 存档图纸默认只读；仅当存在执行中的变更工单且当前用户是指定执行人时放行编辑，
 		// 并把工单 ID 透传给会话，用于把工作成果隔离在未验收版本上。
 		if service.changes != nil {
-			allowed, requestID, gateErr := service.changes.CanEditArchived(ctx, item.ID, user.ID)
+			allowed, requestID, gateErr := service.changes.CanEditArchived(ctx, item.ID, attachmentID, user.ID)
 			if gateErr != nil {
 				return "", fmt.Errorf("查询变更工单授权失败: %w", gateErr)
 			}
@@ -555,7 +554,7 @@ func (service *Service) OnlineOpen(ctx context.Context, user auth.AuthUser, stor
 	}
 	releasePath := "/cad/source?storageKey=" + url.QueryEscape(item.StorageKey)
 	fileName := filepath.Base(firstNonEmpty(item.CurrentName, item.Name))
-	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo)
+	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo, item.ID)
 	if err != nil {
 		return OnlineOpenResult{}, err
 	}
@@ -563,12 +562,9 @@ func (service *Service) OnlineOpen(ctx context.Context, user auth.AuthUser, stor
 		log.Printf("[Online Edit] opened attachment=%s revision=%d user=%s", item.ID, item.Revision, user.ID)
 		return OnlineOpenResult{Revision: item.Revision, LoadURL: releasePath, FileName: fileName}, nil
 	}
-	attID, workKey, workVersionID, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID)
+	workKey, workVersionID, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID, item.ID)
 	if gateErr != nil {
 		return OnlineOpenResult{}, fmt.Errorf("读取工单工作版本失败: %w", gateErr)
-	}
-	if found && attID != item.ID {
-		return OnlineOpenResult{}, errors.New("工单工作版本与目标附件不匹配")
 	}
 	if found {
 		fileName = filepath.Base(workKey)
@@ -577,10 +573,9 @@ func (service *Service) OnlineOpen(ctx context.Context, user auth.AuthUser, stor
 	return OnlineOpenResult{RequiresTicket: true, ChangeRequestID: changeRequestID, LoadURL: releasePath, FileName: fileName}, nil
 }
 
-// OnlineSaveDraft 把浏览器在线编辑产出的 DWG 登记为变更工单的工作版本：
-// 以工单上一次成果（或基线）为比较基准捕获新版本，仅更新工单 submitted_attachment_version_id，
-// 绝不切换附件正式当前指针。baseWorkVersionID 为编辑器加载时的工单工作版本（无工作版本时为空），
-// 与工单当前工作版本不一致说明他人已推进成果，返回 ErrWorkVersionConflict 而不覆盖。
+// OnlineSaveDraft 把浏览器在线编辑产出的 DWG 登记为对应变更目标的工作版本：
+// 以该附件上一次成果（或创建工单时基线）为比较基准捕获新版本，绝不切换正式当前指针。
+// baseWorkVersionID 为编辑器加载时的该附件工作版本；与当前值不一致时拒绝覆盖。
 // 捕获或登记失败时不删除已生成内容、不动正式版本，用户可安全重试。
 func (service *Service) OnlineSaveDraft(ctx context.Context, user auth.AuthUser, storageKey, requestID, baseWorkVersionID, fileName string, content []byte) (OnlineSaveResult, error) {
 	if service.attachments == nil || service.versions == nil {
@@ -603,7 +598,7 @@ func (service *Service) OnlineSaveDraft(ctx context.Context, user auth.AuthUser,
 	if !isCADFile(item.Name) {
 		return OnlineSaveResult{}, errors.New("当前附件不是可编辑的 CAD 文件")
 	}
-	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo)
+	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo, item.ID)
 	if err != nil {
 		return OnlineSaveResult{}, err
 	}
@@ -620,12 +615,9 @@ func (service *Service) OnlineSaveDraft(ctx context.Context, user auth.AuthUser,
 	if !executing {
 		return OnlineSaveResult{}, ErrTicketClosed
 	}
-	attID, _, currentWorkID, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID)
+	_, currentWorkID, found, gateErr := service.changes.WorkVersion(ctx, changeRequestID, item.ID)
 	if gateErr != nil {
 		return OnlineSaveResult{}, fmt.Errorf("读取工单工作版本失败: %w", gateErr)
-	}
-	if found && attID != item.ID {
-		return OnlineSaveResult{}, errors.New("工单工作版本与目标附件不匹配")
 	}
 	expected := strings.TrimSpace(baseWorkVersionID)
 	if found {
@@ -636,7 +628,7 @@ func (service *Service) OnlineSaveDraft(ctx context.Context, user auth.AuthUser,
 		return OnlineSaveResult{}, ErrWorkVersionConflict
 	}
 	baselineSHA := ""
-	if sha, ok, baseErr := service.changes.EditBaseline(ctx, changeRequestID); baseErr != nil {
+	if sha, ok, baseErr := service.changes.EditBaseline(ctx, changeRequestID, item.ID); baseErr != nil {
 		return OnlineSaveResult{}, baseErr
 	} else if ok {
 		baselineSHA = sha
@@ -654,7 +646,7 @@ func (service *Service) OnlineSaveDraft(ctx context.Context, user auth.AuthUser,
 	if capErr != nil {
 		return OnlineSaveResult{}, fmt.Errorf("保存编辑版本失败，请重试: %w", capErr)
 	}
-	recorded, regErr := service.changes.CompareAndRecordWorkVersion(ctx, changeRequestID, version.ID, expected, user.ID)
+	recorded, regErr := service.changes.CompareAndRecordWorkVersion(ctx, changeRequestID, item.ID, version.ID, expected, user.ID)
 	if regErr != nil {
 		return OnlineSaveResult{}, regErr
 	}
@@ -749,7 +741,7 @@ func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID
 			return CloseResult{}, gateErr
 		}
 		executing = ok
-		if sha, found, baseErr := service.changes.EditBaseline(ctx, session.ChangeRequestID); baseErr != nil {
+		if sha, found, baseErr := service.changes.EditBaseline(ctx, session.ChangeRequestID, session.AttachmentID); baseErr != nil {
 			return CloseResult{}, baseErr
 		} else if found {
 			baselineSHA = sha

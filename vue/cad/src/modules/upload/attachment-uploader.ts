@@ -4,6 +4,7 @@ import type { UploadGateway } from './upload-gateway'
 export type AttachmentRole = 'assembly' | 'part' | 'material' | 'craft' | 'other'
 
 export interface AttachmentTarget {
+  fileCategory?: 'drawing2d' | 'model3d' | 'other'
   id: string
   name: string
   revision?: number
@@ -26,7 +27,7 @@ export class AttachmentUploader {
     const session = await this.gateway.createSession({
       kind: 'attachment',
       idempotencyKey: `attachment-replace:${target.id}:${revision}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-      metadata: { drawingNo, attachmentId: target.id, expectedRevision: revision, ...(target.author ? { author: target.author } : {}) },
+      metadata: { drawingNo, attachmentId: target.id, expectedRevision: revision, ...(target.fileCategory ? { fileCategory: target.fileCategory } : {}), ...(target.author ? { author: target.author } : {}) },
     })
     try {
       const item = await this.gateway.createItem(session.id, {
@@ -60,6 +61,7 @@ export class AttachmentUploader {
 	        drawingNo,
 	        partNo: target.partNo || '',
 	        role: target.role,
+	        ...(target.fileCategory ? { fileCategory: target.fileCategory } : {}),
 		        ...(target.createPart ? { createPart: target.createPart } : {}),
             ...(target.author ? { author: target.author } : {}),
 

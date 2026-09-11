@@ -13,6 +13,8 @@ const (
 )
 
 type Attachment struct {
+	FileCategory      string  `json:"fileCategory"`
+	IsPrimaryModel    bool    `json:"isPrimaryModel"`
 	Revision          int64   `json:"revision"`
 	ID                string  `json:"id"`
 	CurrentVersionID  string  `json:"currentVersionId,omitempty"`

@@ -82,6 +82,11 @@ export const routes: RouteRecordRaw[] = [
           import('@/features/drawings/layouts/DrawingDetailLayout.vue'),
         children: [
           {
+            path: 'changes',
+            name: RouteName.DrawingChanges,
+            component: () => import('@/features/drawings/pages/DrawingChangesPage.vue'),
+          },
+          {
             path: '',
             name: RouteName.DrawingDetail,
             redirect: { name: RouteName.DrawingPreview },
@@ -94,9 +99,15 @@ export const routes: RouteRecordRaw[] = [
           },
           {
             path: 'structure',
+            // Structure and 3D models share the existing drawing identity.
             name: RouteName.DrawingStructure,
             component: () =>
               import('@/features/drawings/detail-tabs/structure/DrawingStructureTab.vue'),
+          },
+          {
+            path: 'models',
+            name: RouteName.DrawingModels,
+            component: () => import('@/features/drawings/detail-tabs/models/DrawingModelsTab.vue'),
           },
           {
             path: 'versions',
@@ -150,6 +161,11 @@ export const routes: RouteRecordRaw[] = [
             component: () => import('@/features/reviews/pages/ReviewPendingPage.vue'),
           },
           {
+            path: 'task/:drawingNo',
+            name: RouteName.ReviewWorkspace,
+            component: () => import('@/features/reviews/pages/ReviewWorkspacePage.vue'),
+          },
+          {
             path: 'completed',
             name: RouteName.ReviewCompleted,
             component: () =>
@@ -200,6 +216,16 @@ export const routes: RouteRecordRaw[] = [
         path: 'drawings',
         name: RouteName.AdminDrawings,
         component: () => import('@/features/admin/pages/AdminDrawingsPage.vue'),
+      },
+      {
+        path: 'change-approvals',
+        name: RouteName.AdminChangeApprovals,
+        component: () => import('@/features/admin/pages/AdminChangeApprovalsPage.vue'),
+      },
+      {
+        path: 'change-records',
+        name: RouteName.AdminChangeRecords,
+        component: () => import('@/features/admin/pages/AdminChangeRecordsPage.vue'),
       },
       {
         path: 'logs',

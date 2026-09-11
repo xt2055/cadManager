@@ -17,13 +17,14 @@ import (
 )
 
 var (
-	ErrNotFound     = errors.New("变更工单不存在")
-	ErrForbidden    = errors.New("无权执行该变更工单操作")
-	ErrState        = errors.New("工单当前状态不允许该操作")
-	ErrOpenExists   = errors.New("该图纸已存在未结束的变更工单")
-	ErrNoArchive    = errors.New("仅已存档的图纸可以发起变更工单")
-	ErrNotExecuting = errors.New("变更工单已不在执行中，无法登记本次成果")
-	ErrStaleSubmit  = errors.New("工单成果已更新，请刷新后重新验收")
+	ErrNotFound          = errors.New("变更工单不存在")
+	ErrForbidden         = errors.New("无权执行该变更工单操作")
+	ErrState             = errors.New("工单当前状态不允许该操作")
+	ErrOpenExists        = errors.New("该图纸已存在未结束的变更工单")
+	ErrNoArchive         = errors.New("仅已存档的图纸可以发起变更工单")
+	ErrNotExecuting      = errors.New("变更工单已不在执行中，无法登记本次成果")
+	ErrStaleSubmit       = errors.New("工单成果已更新，请刷新后重新验收")
+	ErrActiveEditSession = errors.New("请先在图纸文件页结束本地编辑，保存工作版本后再提交工单")
 )
 
 // Service 变更工单业务接口，同时作为编辑门禁的工单查询依赖。
@@ -38,15 +39,15 @@ type Service interface {
 	Verify(ctx context.Context, user auth.AuthUser, id string, input DecisionInput) (Request, error)
 	ReturnForEdit(ctx context.Context, user auth.AuthUser, id string, input DecisionInput) (Request, error)
 	Cancel(ctx context.Context, user auth.AuthUser, id string, input DecisionInput) (Request, error)
-	// CanEditArchived 报告指定用户是否因持有执行中的工单而可编辑该存档图纸。
-	CanEditArchived(ctx context.Context, drawingID, userID string) (bool, string, error)
-	// WorkVersion 返回工单当前工作成果版本（附件 ID / 存储键 / 版本 ID）；无工作版本时 found=false。
-	WorkVersion(ctx context.Context, requestID string) (attachmentID, storageKey, versionID string, found bool, err error)
-	// RecordWorkVersion 把工单最新工作版本登记到工单（仅在工单仍执行中时生效）。
-	RecordWorkVersion(ctx context.Context, requestID, versionID string) error
-	CompareAndRecordWorkVersion(ctx context.Context, requestID, versionID, expectedVersionID, userID string) (bool, error)
-	// EditBaseline 返回工单当前工作版本（无工作版本时回退到工单文件基线版本）的内容哈希。
-	EditBaseline(ctx context.Context, requestID string) (sha string, found bool, err error)
+	// CanEditArchived 报告指定用户是否因持有执行中的工单而可编辑该存档图纸附件。
+	CanEditArchived(ctx context.Context, drawingID, attachmentID, userID string) (bool, string, error)
+	// WorkVersion 返回工单中指定附件的当前工作成果（存储键 / 版本 ID）；无工作版本时 found=false。
+	WorkVersion(ctx context.Context, requestID, attachmentID string) (storageKey, versionID string, found bool, err error)
+	// RecordWorkVersion 把指定附件的最新工作版本登记到工单目标（仅在工单仍执行中时生效）。
+	RecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID string) error
+	CompareAndRecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID, expectedVersionID, userID string) (bool, error)
+	// EditBaseline 返回指定附件的当前工作版本（无工作版本时回退到创建工单时基线）的内容哈希。
+	EditBaseline(ctx context.Context, requestID, attachmentID string) (sha string, found bool, err error)
 	// StillExecuting 报告工单是否仍处于可编辑（executing）状态。
 	StillExecuting(ctx context.Context, requestID string) (bool, error)
 	// HasActiveEditSession 报告工单是否仍有未关闭的编辑会话（提交/终止前需清空）。
@@ -118,6 +119,20 @@ func (s *PGService) Create(ctx context.Context, user auth.AuthUser, drawingID st
 	if status != "archived" {
 		return Request{}, ErrNoArchive
 	}
+	attachmentIDs := uniqueStrings(input.AttachmentIDs)
+	if len(attachmentIDs) == 0 {
+		return Request{}, errors.New("请至少选择一个要变更的图纸文件")
+	}
+	var targetCount int
+	if err := tx.QueryRow(ctx, `SELECT count(DISTINCT a.id) FROM attachments a
+		LEFT JOIN parts p ON p.id = a.part_id
+		LEFT JOIN drawing_part_relations r ON r.part_id = p.id AND r.drawing_id = $1::uuid AND r.status = 'active'
+		WHERE a.id = ANY($2::uuid[]) AND a.deleted_at IS NULL AND (a.drawing_id = $1::uuid OR r.id IS NOT NULL)`, drawingID, attachmentIDs).Scan(&targetCount); err != nil {
+		return Request{}, fmt.Errorf("校验变更对象失败: %w", err)
+	}
+	if targetCount != len(attachmentIDs) {
+		return Request{}, errors.New("所选变更对象不存在或不属于当前项目")
+	}
 
 	var baseVersionID *string
 	err = tx.QueryRow(ctx, `
@@ -164,7 +179,16 @@ func (s *PGService) Create(ctx context.Context, user auth.AuthUser, drawingID st
 		return Request{}, fmt.Errorf("创建变更工单失败: %w", err)
 	}
 
-	if err := s.logAction(ctx, tx, id, user.ID, ActionCreate, "发起变更申请"); err != nil {
+	for _, attachmentID := range attachmentIDs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO change_request_targets (request_id, attachment_id, base_attachment_version_id)
+			SELECT $1::uuid, a.id, a.current_version_id
+			FROM attachments a
+			WHERE a.id = $2::uuid`, id, attachmentID); err != nil {
+			return Request{}, fmt.Errorf("保存变更对象失败: %w", err)
+		}
+	}
+	if err := s.logAction(ctx, tx, id, user.ID, ActionCreate, fmt.Sprintf("发起变更申请，共 %d 个文件", len(attachmentIDs))); err != nil {
 		return Request{}, err
 	}
 	if autoApprove {
@@ -189,6 +213,23 @@ func (s *PGService) Create(ctx context.Context, user auth.AuthUser, drawingID st
 		return Request{}, err
 	}
 	return s.Get(ctx, id)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func waivedReason(autoApprove, requireVerify bool, opinion string) string {
@@ -363,12 +404,18 @@ func (s *PGService) Cancel(ctx context.Context, user auth.AuthUser, id string, i
 	if err := s.markSubmission(ctx, tx, currentSubmission, "returned"); err != nil {
 		return Request{}, err
 	}
-	if err := s.logAction(ctx, tx, id, user.ID, ActionCancel, "终止工单："+opinion); err != nil {
-		return Request{}, err
-	}
-	if err := s.audit(ctx, tx, id, drawingNo, user.ID, "change_request_cancel", "终止变更工单"); err != nil {
-		return Request{}, err
-	}
+		if err := s.logAction(ctx, tx, id, user.ID, ActionCancel, "终止工单："+opinion); err != nil {
+			return Request{}, err
+		}
+		if err := s.audit(ctx, tx, id, drawingNo, user.ID, "change_request_cancel", "终止变更工单"); err != nil {
+			return Request{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE change_request_targets SET work_attachment_version_id = NULL, updated_at = now() WHERE request_id = $1::uuid`, id); err != nil {
+			return Request{}, fmt.Errorf("断开工单工作版本失败: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `SELECT prune_attachment_work(attachment_id) FROM change_request_targets WHERE request_id = $1::uuid ORDER BY attachment_id`, id); err != nil {
+			return Request{}, fmt.Errorf("清理中间工作版本失败: %w", err)
+		}
 	if err := tx.Commit(ctx); err != nil {
 		return Request{}, err
 	}
@@ -442,7 +489,7 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 		return Request{}, err
 	}
 	if active {
-		return Request{}, errors.New("请先结束编辑会话后再提交变更")
+		return Request{}, ErrActiveEditSession
 	}
 
 	// 存档期正式列未被普通编辑改动，当前列即基线；据此生成本轮属性与文件差异快照。
@@ -450,12 +497,6 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 	if err := tx.QueryRow(ctx, `SELECT name, material, vendor, version FROM drawings WHERE id = $1::uuid`, drawingID).Scan(&curName, &curMaterial, &curVendor, &curVersion); err != nil {
 		return Request{}, err
 	}
-	// 本轮成果文件版本：工单当前工作版本（无则为空，表示文件未改动）。
-	var submittedVersionID *string
-	if err := tx.QueryRow(ctx, `SELECT submitted_attachment_version_id::text FROM change_requests WHERE id = $1::uuid`, id).Scan(&submittedVersionID); err != nil {
-		return Request{}, err
-	}
-
 	proposedJSON, err := json.Marshal(input.Proposed)
 	if err != nil {
 		return Request{}, err
@@ -470,16 +511,25 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO change_request_submissions (request_id, round, submitted_by, actual_changes, proposed_attributes,
 		    base_attachment_version_id, submitted_attachment_version_id, status)
-		VALUES ($1::uuid, $2, $3::uuid, $4, $5::jsonb, $6::uuid, $7::uuid, 'pending')
+		VALUES ($1::uuid, $2, $3::uuid, $4, $5::jsonb, $6::uuid, NULL, 'pending')
 		RETURNING id::text`,
-		id, round, user.ID, actualChanges, string(proposedJSON), baseVersionID, submittedVersionID).Scan(&submissionID); err != nil {
+		id, round, user.ID, actualChanges, string(proposedJSON), baseVersionID).Scan(&submissionID); err != nil {
 		return Request{}, fmt.Errorf("创建提交快照失败: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO change_request_submission_targets (
+			submission_id, attachment_id, base_attachment_version_id, submitted_attachment_version_id
+		)
+		SELECT $2::uuid, attachment_id, base_attachment_version_id, work_attachment_version_id
+		FROM change_request_targets
+		WHERE request_id = $1::uuid`, id, submissionID); err != nil {
+		return Request{}, fmt.Errorf("创建文件提交快照失败: %w", err)
 	}
 
 	if err := s.snapshotAttributeDiffs(ctx, tx, id, submissionID, input.Proposed, curName, curMaterial, curVendor, curVersion); err != nil {
 		return Request{}, err
 	}
-	if err := s.snapshotFileDiff(ctx, tx, id, submissionID, baseVersionID, submittedVersionID); err != nil {
+	if err := s.snapshotFileDiffs(ctx, tx, id, submissionID); err != nil {
 		return Request{}, err
 	}
 
@@ -487,15 +537,16 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 	if !requireVerify {
 		nextStatus = StatusCompleted
 	}
+	// 完成时间使用独立布尔参数，避免状态参数在 varchar 赋值和 text 比较中产生类型冲突。
 	tag, err := tx.Exec(ctx, `
 		UPDATE change_requests
 		SET status = $2, proposed_attributes = $3::jsonb, actual_changes = $4, submitted_at = now(),
 		    current_submission_id = $5::uuid,
-		    completed_at = CASE WHEN $2 = 'completed' THEN now() ELSE completed_at END
+		    completed_at = CASE WHEN $6::boolean THEN now() ELSE completed_at END
 		WHERE id = $1::uuid AND status = 'executing'`,
-		id, string(nextStatus), string(proposedJSON), actualChanges, submissionID)
+		id, string(nextStatus), string(proposedJSON), actualChanges, submissionID, !requireVerify)
 	if err != nil {
-		return Request{}, err
+		return Request{}, fmt.Errorf("更新工单提交状态失败: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return Request{}, ErrState
@@ -531,37 +582,54 @@ func (s *PGService) snapshotAttributeDiffs(ctx context.Context, tx pgx.Tx, id, s
 			return err
 		}
 	}
-	if proposed.Vendor != nil && strings.TrimSpace(*proposed.Vendor) != curVendor {
-		if err := s.addDiff(ctx, tx, id, submissionID, "attribute", "供应商", curVendor, strings.TrimSpace(*proposed.Vendor)); err != nil {
+		if proposed.Vendor != nil && strings.TrimSpace(*proposed.Vendor) != curVendor {
+			if err := s.addDiff(ctx, tx, id, submissionID, "attribute", "供应商", curVendor, strings.TrimSpace(*proposed.Vendor)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+// snapshotFileDiffs 记录本轮每个目标文件成果相对创建工单时基线的差异。
+func (s *PGService) snapshotFileDiffs(ctx context.Context, tx pgx.Tx, id, submissionID string) error {
+	rows, err := tx.Query(ctx, `
+		SELECT COALESCE(current_version.original_name, attachment.logical_name),
+		       COALESCE(CASE WHEN base_version.release_number IS NOT NULL THEN 'V' || base_version.release_number::text ELSE '原始文件' END, '原始文件'),
+		       'V' || COALESCE(submitted_version.release_number, (SELECT COALESCE(MAX(v.release_number), 0) + 1 FROM attachment_versions v WHERE v.attachment_id = target.attachment_id))::text,
+		       LEFT(COALESCE(submitted_blob.sha256, ''), 12)
+		FROM change_request_submission_targets target
+		JOIN attachments attachment ON attachment.id = target.attachment_id
+		LEFT JOIN attachment_versions current_version ON current_version.id = attachment.current_version_id
+		LEFT JOIN attachment_versions base_version ON base_version.id = target.base_attachment_version_id AND base_version.attachment_id = target.attachment_id
+		JOIN attachment_versions submitted_version ON submitted_version.id = target.submitted_attachment_version_id AND submitted_version.attachment_id = target.attachment_id
+		LEFT JOIN file_blobs submitted_blob ON submitted_blob.id = submitted_version.blob_id
+		WHERE target.submission_id = $1::uuid
+		  AND target.submitted_attachment_version_id IS DISTINCT FROM target.base_attachment_version_id
+		ORDER BY attachment.logical_name`, submissionID)
+	if err != nil {
+		return fmt.Errorf("读取文件提交快照失败: %w", err)
+	}
+	type fileDiff struct{ name, baseVersion, submittedVersion, submittedHash string }
+	diffs := make([]fileDiff, 0)
+	for rows.Next() {
+		var diff fileDiff
+		if err := rows.Scan(&diff.name, &diff.baseVersion, &diff.submittedVersion, &diff.submittedHash); err != nil {
+			rows.Close()
 			return err
 		}
+		diffs = append(diffs, diff)
 	}
-	if proposed.Version != nil && strings.TrimSpace(*proposed.Version) != curVersion {
-		if err := s.addDiff(ctx, tx, id, submissionID, "attribute", "版本", curVersion, strings.TrimSpace(*proposed.Version)); err != nil {
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, diff := range diffs {
+		if err := s.addDiff(ctx, tx, id, submissionID, "file", diff.name, diff.baseVersion, diff.submittedVersion); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// snapshotFileDiff 记录本轮文件成果相对基线的差异（含版本与哈希前缀）。
-func (s *PGService) snapshotFileDiff(ctx context.Context, tx pgx.Tx, id, submissionID string, baseVersionID, submittedVersionID *string) error {
-	if submittedVersionID == nil || *submittedVersionID == "" {
-		return nil
-	}
-	if baseVersionID != nil && *baseVersionID == *submittedVersionID {
-		return nil
-	}
-	var subVersion, baseVersion, subHash string
-	if err := tx.QueryRow(ctx, `SELECT version, LEFT(COALESCE(b.sha256, ''), 12) FROM attachment_versions av LEFT JOIN file_blobs b ON b.id = av.blob_id WHERE av.id = $1::uuid`, *submittedVersionID).Scan(&subVersion, &subHash); err != nil {
-		return fmt.Errorf("读取成果文件版本失败: %w", err)
-	}
-	if baseVersionID != nil && *baseVersionID != "" {
-		if err := tx.QueryRow(ctx, `SELECT version FROM attachment_versions WHERE id = $1::uuid`, *baseVersionID).Scan(&baseVersion); err != nil {
-			return fmt.Errorf("读取基线文件版本失败: %w", err)
-		}
-	}
-	return s.addDiff(ctx, tx, id, submissionID, "file", "图纸文件", baseVersion, subVersion+" (sha="+subHash+")")
 }
 
 func (s *PGService) Verify(ctx context.Context, user auth.AuthUser, id string, input DecisionInput) (Request, error) {
@@ -631,18 +699,16 @@ func (s *PGService) Verify(ctx context.Context, user auth.AuthUser, id string, i
 	return s.Get(ctx, id)
 }
 
-// applyCompletion 在工单完成时把"当前提交快照"的属性与文件正式发布生效。
-// 发布内容以 current_submission 为准，与验收员所看到的本轮差异严格一致；
-// 兼容历史数据：无提交快照时回退到工单顶层字段。
-// 必须在事务内、状态已置 completed 之后调用。存档期正式列未被普通编辑改动，故当前列即基线。
+// applyCompletion 在工单完成时把当前提交快照中的属性和全部文件工作版本正式发布。
+// 发布内容以 current_submission 为准，与验收员看到的本轮差异一致。
+// 必须在事务内、状态已置 completed 之后调用。
 func (s *PGService) applyCompletion(ctx context.Context, tx pgx.Tx, id, drawingID, actorID string) error {
 	var proposedRaw []byte
-	var submittedVersionID *string
 	if err := tx.QueryRow(ctx, `
-		SELECT sub.proposed_attributes, sub.submitted_attachment_version_id::text
+		SELECT sub.proposed_attributes
 		FROM change_requests cr
 		JOIN change_request_submissions sub ON sub.id = cr.current_submission_id AND sub.request_id = cr.id
-		WHERE cr.id = $1::uuid`, id).Scan(&proposedRaw, &submittedVersionID); err != nil {
+		WHERE cr.id = $1::uuid`, id).Scan(&proposedRaw); err != nil {
 		return err
 	}
 	var proposed ProposedAttributes
@@ -661,9 +727,7 @@ func (s *PGService) applyCompletion(ctx context.Context, tx pgx.Tx, id, drawingI
 	if proposed.Vendor != nil {
 		newVendor = strings.TrimSpace(*proposed.Vendor)
 	}
-	if proposed.Version != nil {
-		newVersion = strings.TrimSpace(*proposed.Version)
-	}
+	// 正式版本号由发布规则分配，不接受手工填写的版本号。
 	if newName != nil || newMaterial != nil || newVendor != nil || newVersion != nil {
 		if _, err := tx.Exec(ctx, `
 			UPDATE drawings
@@ -673,30 +737,34 @@ func (s *PGService) applyCompletion(ctx context.Context, tx pgx.Tx, id, drawingI
 			return fmt.Errorf("应用变更属性失败: %w", err)
 		}
 	}
-	if submittedVersionID != nil {
-		var attachmentID string
-		err := tx.QueryRow(ctx, `SELECT attachment_id::text FROM attachment_versions WHERE id = $1::uuid`, *submittedVersionID).Scan(&attachmentID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE attachment_versions SET version_kind = 'release' WHERE id = $1::uuid`, *submittedVersionID); err != nil {
-			return fmt.Errorf("发布文件版本失败: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, revision = revision + 1 WHERE id = $1::uuid`, attachmentID, *submittedVersionID); err != nil {
-			return fmt.Errorf("切换正式版本指针失败: %w", err)
-		}
+	if _, err := tx.Exec(ctx, `
+		SELECT publish_attachment_formal(target.attachment_id, target.submitted_attachment_version_id)
+		FROM change_requests request
+		JOIN change_request_submission_targets target ON target.submission_id = request.current_submission_id
+		WHERE request.id = $1::uuid AND target.submitted_attachment_version_id IS NOT NULL
+		ORDER BY target.attachment_id`, id); err != nil {
+		return fmt.Errorf("发布文件版本失败: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE drawings SET version = 'V' || (1 + (SELECT count(*) FROM change_requests WHERE drawing_id = $1::uuid AND status = 'completed'))::text,
+		updated_by = $2::uuid, revision = revision + 1 WHERE id = $1::uuid`, drawingID, actorID); err != nil {
+		return fmt.Errorf("更新图纸正式版本号失败: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT prune_attachment_work(target.attachment_id)
+		FROM change_requests request JOIN change_request_submission_targets target ON target.submission_id = request.current_submission_id
+		WHERE request.id = $1::uuid ORDER BY target.attachment_id`, id); err != nil {
+		return fmt.Errorf("清理中间工作版本失败: %w", err)
 	}
 	return nil
 }
 
-func (s *PGService) CanEditArchived(ctx context.Context, drawingID, userID string) (bool, string, error) {
+func (s *PGService) CanEditArchived(ctx context.Context, drawingID, attachmentID, userID string) (bool, string, error) {
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text FROM change_requests
-		WHERE drawing_id = $1::uuid AND status = 'executing' AND executor_id = $2::uuid
-		ORDER BY created_at DESC LIMIT 1`, drawingID, userID).Scan(&id)
+		SELECT cr.id::text FROM change_requests cr
+		JOIN change_request_targets target ON target.request_id = cr.id AND target.attachment_id = $3::uuid
+		WHERE cr.drawing_id = $1::uuid AND cr.status = 'executing' AND cr.executor_id = $2::uuid
+		ORDER BY cr.created_at DESC LIMIT 1`, drawingID, userID, attachmentID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, "", nil
 	}
@@ -706,54 +774,70 @@ func (s *PGService) CanEditArchived(ctx context.Context, drawingID, userID strin
 	return true, id, nil
 }
 
-func (s *PGService) WorkVersion(ctx context.Context, requestID string) (string, string, string, bool, error) {
-	var attachmentID, storageKey, versionID string
+func (s *PGService) WorkVersion(ctx context.Context, requestID, attachmentID string) (string, string, bool, error) {
+	var storageKey, versionID string
 	err := s.pool.QueryRow(ctx, `
-		SELECT av.attachment_id::text, COALESCE(b.storage_key, ''), av.id::text
-		FROM change_requests cr
-		JOIN attachment_versions av ON av.id = cr.submitted_attachment_version_id
+		SELECT COALESCE(b.storage_key, ''), av.id::text
+		FROM change_request_targets target
+		JOIN attachment_versions av ON av.id = target.work_attachment_version_id AND av.attachment_id = target.attachment_id
 		LEFT JOIN file_blobs b ON b.id = av.blob_id
-		WHERE cr.id = $1::uuid AND cr.submitted_attachment_version_id IS NOT NULL`, requestID).
-		Scan(&attachmentID, &storageKey, &versionID)
+		WHERE target.request_id = $1::uuid AND target.attachment_id = $2::uuid`, requestID, attachmentID).
+		Scan(&storageKey, &versionID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", "", false, nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return "", "", "", false, err
+		return "", "", false, err
 	}
-	return attachmentID, storageKey, versionID, true, nil
+	return storageKey, versionID, true, nil
 }
 
-// RecordWorkVersion 把工单最新工作版本登记到工单。
-// 仅当工单仍处于 executing 且该版本确属本工单图纸的附件时更新成功；
-// 更新 0 行时进一步区分"工单已不可写"（返回 ErrNotExecuting）与"版本不匹配/数据异常"（返回错误），
-// 绝不把 0 行当作成功。
-func (s *PGService) CompareAndRecordWorkVersion(ctx context.Context, requestID, versionID, expectedVersionID, userID string) (bool, error) {
-	// 比较和更新必须是同一条 SQL，防止捕获文件期间其他编辑推进成果。
+// CompareAndRecordWorkVersion 以附件当前工作版本为乐观锁，防止同一文件的并发保存互相覆盖。
+func (s *PGService) CompareAndRecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID, expectedVersionID, userID string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE change_requests cr SET submitted_attachment_version_id = $2::uuid
-		WHERE cr.id = $1::uuid AND cr.status = 'executing' AND cr.executor_id = $4::uuid
-		  AND cr.submitted_attachment_version_id IS NOT DISTINCT FROM NULLIF($3, '')::uuid
+		WITH locked_request AS (
+			SELECT id
+			FROM change_requests
+			WHERE id = $1::uuid AND status = 'executing' AND executor_id = $5::uuid
+			FOR UPDATE
+		)
+		UPDATE change_request_targets target
+		SET work_attachment_version_id = $3::uuid, updated_at = now()
+		FROM locked_request request
+		WHERE target.request_id = request.id
+		  AND target.attachment_id = $2::uuid
+		  AND target.work_attachment_version_id IS NOT DISTINCT FROM NULLIF($4, '')::uuid
 		  AND EXISTS (
-			SELECT 1 FROM attachment_versions av JOIN attachments a ON a.id = av.attachment_id
-			WHERE av.id = $2::uuid AND a.drawing_id = cr.drawing_id
-		  )`, requestID, versionID, expectedVersionID, userID)
+			SELECT 1 FROM attachment_versions av
+			WHERE av.id = $3::uuid
+			  AND av.attachment_id = target.attachment_id
+			  AND av.deleted_at IS NULL
+		  )`, requestID, attachmentID, versionID, expectedVersionID, userID)
 	if err != nil {
 		return false, fmt.Errorf("登记工单工作版本失败: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
 
-func (s *PGService) RecordWorkVersion(ctx context.Context, requestID, versionID string) error {
+func (s *PGService) RecordWorkVersion(ctx context.Context, requestID, attachmentID, versionID string) error {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE change_requests cr
-		SET submitted_attachment_version_id = $2::uuid
-		WHERE cr.id = $1::uuid AND cr.status = 'executing'
+		WITH locked_request AS (
+			SELECT id
+			FROM change_requests
+			WHERE id = $1::uuid AND status = 'executing'
+			FOR UPDATE
+		)
+		UPDATE change_request_targets target
+		SET work_attachment_version_id = $3::uuid, updated_at = now()
+		FROM locked_request request
+		WHERE target.request_id = request.id
+		  AND target.attachment_id = $2::uuid
 		  AND EXISTS (
 			SELECT 1 FROM attachment_versions av
-			JOIN attachments a ON a.id = av.attachment_id
-			WHERE av.id = $2::uuid AND a.drawing_id = cr.drawing_id
-		  )`, requestID, versionID)
+			WHERE av.id = $3::uuid
+			  AND av.attachment_id = target.attachment_id
+			  AND av.deleted_at IS NULL
+		  )`, requestID, attachmentID, versionID)
 	if err != nil {
 		return fmt.Errorf("登记工单工作版本失败: %w", err)
 	}
@@ -771,20 +855,19 @@ func (s *PGService) RecordWorkVersion(ctx context.Context, requestID, versionID 
 	if status != string(StatusExecuting) {
 		return ErrNotExecuting
 	}
-	return errors.New("工作版本与工单图纸不匹配，拒绝登记")
+	return errors.New("工作版本与工单变更对象不匹配，拒绝登记")
 }
 
-// EditBaseline 返回工单当前工作版本；无工作版本时回退到工单基线版本（创建工单时的正式当前版本）。
-// 结束编辑时以其为比较基准，保证恢复到正式基线（A→B→A）也生成反映 A 的新成果版本。
-func (s *PGService) EditBaseline(ctx context.Context, requestID string) (string, bool, error) {
+// EditBaseline 返回指定附件当前工作版本的哈希；无工作版本时回退到创建工单时冻结的正式基线。
+func (s *PGService) EditBaseline(ctx context.Context, requestID, attachmentID string) (string, bool, error) {
 	var sha string
 	err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(b.sha256, '')
-		FROM change_requests cr
-		LEFT JOIN attachment_versions wv ON wv.id = cr.submitted_attachment_version_id
-		LEFT JOIN attachment_versions bv ON bv.id = cr.base_attachment_version_id
+		FROM change_request_targets target
+		LEFT JOIN attachment_versions wv ON wv.id = target.work_attachment_version_id AND wv.attachment_id = target.attachment_id
+		LEFT JOIN attachment_versions bv ON bv.id = target.base_attachment_version_id AND bv.attachment_id = target.attachment_id
 		LEFT JOIN file_blobs b ON b.id = COALESCE(wv.blob_id, bv.blob_id)
-		WHERE cr.id = $1::uuid`, requestID).Scan(&sha)
+		WHERE target.request_id = $1::uuid AND target.attachment_id = $2::uuid`, requestID, attachmentID).Scan(&sha)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -854,6 +937,9 @@ func (s *PGService) Get(ctx context.Context, id string) (Request, error) {
 		return Request{}, err
 	}
 	if item.Actions, err = s.loadActions(ctx, id); err != nil {
+		return Request{}, err
+	}
+	if item.Targets, err = s.loadTargets(ctx, id); err != nil {
 		return Request{}, err
 	}
 	return item, nil
@@ -992,6 +1078,33 @@ func (s *PGService) loadSubmissions(ctx context.Context, requestID string) ([]Su
 		}
 	}
 	return items, diffRows.Err()
+}
+
+func (s *PGService) loadTargets(ctx context.Context, requestID string) ([]Target, error) {
+	rows, err := s.pool.Query(ctx, `SELECT a.id::text, COALESCE(v.original_name, a.logical_name), a.file_category,
+		COALESCE(d.drawing_no, parent.drawing_no, request.drawing_no), COALESCE(p.part_no, '')
+		FROM change_request_targets t
+		JOIN change_requests request ON request.id = t.request_id
+		JOIN attachments a ON a.id = t.attachment_id AND a.deleted_at IS NULL
+		LEFT JOIN attachment_versions v ON v.id = a.current_version_id
+		LEFT JOIN drawings d ON d.id = a.drawing_id
+		LEFT JOIN parts p ON p.id = a.part_id
+		LEFT JOIN drawing_part_relations r ON r.part_id = p.id AND r.drawing_id = request.drawing_id AND r.status = 'active'
+		LEFT JOIN drawings parent ON parent.id = r.drawing_id
+		WHERE t.request_id = $1::uuid ORDER BY COALESCE(p.part_no, ''), a.file_category, a.logical_name`, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Target, 0)
+	for rows.Next() {
+		var item Target
+		if err := rows.Scan(&item.AttachmentID, &item.Name, &item.FileCategory, &item.DrawingNo, &item.PartNo); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *PGService) loadActions(ctx context.Context, requestID string) ([]ActionRecord, error) {

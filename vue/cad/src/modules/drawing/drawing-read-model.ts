@@ -13,6 +13,9 @@ function formatFileSize(bytes: number): string {
 }
 
 export interface FileView {
+  fileCategory?: 'drawing2d' | 'model3d' | 'other'
+  isPrimaryModel?: boolean
+  revision?: number
   id: string
   name: string
   size: string
@@ -259,6 +262,8 @@ export class DrawingReadModelMapper {
         continue
       }
       const file: DrawingFile = {
+        fileCategory: item.fileCategory,
+        isPrimaryModel: item.isPrimaryModel,
         id: item.id,
         name,
         rawName: item.currentName && item.currentName !== name ? item.currentName : undefined,
@@ -355,6 +360,9 @@ export class DrawingReadModelMapper {
   }
 
   private toFileView(file: {
+    fileCategory?: 'drawing2d' | 'model3d' | 'other'
+    isPrimaryModel?: boolean
+    revision?: number
     id: string
     name: string
     size: string
@@ -387,6 +395,9 @@ export class DrawingReadModelMapper {
     }>
   }): FileView {
     return {
+      fileCategory: file.fileCategory,
+      isPrimaryModel: file.isPrimaryModel,
+      revision: file.revision,
       id: file.id,
       name: file.name,
       size: file.size,

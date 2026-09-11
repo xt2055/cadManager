@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { drawingFileService, versioningService } from '@/app/container'
+import { formalVersionLabel } from '@/modules/versioning/versioning-service'
+import { changeRequestService } from '@/services/change-request.service'
 import type { FileVersionInfo } from '@/types/application.types'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
@@ -25,6 +27,7 @@ const fileId = computed(() => String(route.query.fileId ?? ''))
 const targetFile = ref<FileView | null>(null)
 const selectedNodeId = ref<string | null>(null)
 const versionRecords = ref<FileVersionInfo[]>([])
+const changing = ref(false)
 
 interface HistoryTreeNode {
   id: string
@@ -41,12 +44,18 @@ interface HistoryTreeNode {
   mimeType?: string
   previewable: boolean
   isCurrent: boolean
+  isLatest?: boolean
+  isOriginal?: boolean
+  releaseNumber?: number
   index: number
 }
 
 // 加载指定文件
 async function loadFile() {
-  await drawingStore.load()
+  // 验收可能在其他页面完成，进入历史页时保留旧图纸并刷新正式版本信息。
+  try { await drawingStore.refresh() } catch {
+    uiStore.toast('图纸信息暂未刷新，将继续读取服务器版本记录', 'warn')
+  }
   const currentDrawing = drawingStore.getDrawing(drawingId.value)
   const currentFiles = currentDrawing ? [...currentDrawing.files, ...currentDrawing.otherFiles] : []
   const structureFiles = drawingStore.parts.flatMap((part) => [...part.files, ...part.otherFiles])
@@ -65,18 +74,27 @@ async function loadFile() {
   targetFile.value = file || null
   versionRecords.value = []
   selectedNodeId.value = null
+  changing.value = false
+  if (drawingId.value) {
+    try {
+      const requests = await changeRequestService.listByDrawing(drawingStore.getDrawing(drawingId.value)?.id || drawingId.value)
+      changing.value = requests.some((item) => ['pending_approval', 'executing', 'pending_verify'].includes(item.status))
+    } catch {
+      changing.value = false
+    }
+  }
   if (!file) return
 
   const currentKey = file.currentStorageKey || file.storageKey
   if (currentKey) {
     try {
-      versionRecords.value = await versioningService.list(currentKey)
+      versionRecords.value = await versioningService.list(currentKey, file.id)
     } catch (error) {
       console.warn('加载后端版本记录失败，回退文档历史记录', error)
     }
   }
-  const currentRecord = versionRecords.value.find((item) => item.storageKey === currentKey)
-  selectedNodeId.value = currentRecord?.id || file.id
+  const latestRecord = [...versionRecords.value].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]
+  selectedNodeId.value = latestRecord?.id || file.id
 }
 
 function formatVersionSize(size: number): string {
@@ -98,15 +116,19 @@ const historyTree = computed<HistoryTreeNode[]>(() => {
       nodes.push({
         id: item.id,
         versionId: item.id,
-        version: item.version,
-        name: targetFile.value?.name || item.storageKey.split('/').pop() || item.version,
+        version: formalVersionLabel(item),
+        name: item.originalName || targetFile.value?.name || item.storageKey.split('/').pop() || item.version,
         size: formatVersionSize(item.size),
         uploadedBy: item.createdByName || targetFile.value?.uploadedBy || '未知用户',
         uploadedAt: item.createdAt,
         storageKey: item.storageKey,
         mimeType: item.mimeType,
         previewable: true,
-        isCurrent: item.storageKey === currentKey,
+        // 以附件的服务器版本指针为准；存储键可能被多个相同内容的版本复用。
+        isCurrent: item.isCurrentRelease ?? (item.storageKey === currentKey),
+        isLatest: index === records.length - 1,
+        isOriginal: item.isOriginal,
+        releaseNumber: item.releaseNumber,
         index: index + 1,
       })
     })
@@ -160,7 +182,6 @@ const selectedNode = computed<HistoryTreeNode | null>(() => {
   if (!selectedNodeId.value) return historyTree.value[historyTree.value.length - 1] || null
   return historyTree.value.find((n) => n.id === selectedNodeId.value) || historyTree.value[historyTree.value.length - 1] || null
 })
-
 function selectNode(node: HistoryTreeNode) {
   selectedNodeId.value = node.id
 }
@@ -256,7 +277,7 @@ watch([drawingId, fileId], () => {
           <DemoIcon name="history" :size="18" class="title-icon" />
           <span class="file-main-name">{{ targetFile?.name || '图纸文件版本历史树' }}</span>
           <span class="tag info">{{ targetFile?.partNo || targetFile?.drawingNo || drawingId }}</span>
-          <span class="tag ok">共 {{ historyTree.length }} 个演进版本</span>
+          <span class="tag ok">共 {{ historyTree.length }} 个正式版本</span>
         </div>
       </div>
 
@@ -267,14 +288,19 @@ watch([drawingId, fileId], () => {
       </div>
     </header>
 
+    <div v-if="changing" class="version-notice" role="status">
+      <DemoIcon name="info" :size="17" />
+      <span>图纸变更中。正式历史仍显示已发布版本，本轮修改通过验收后才会成为新的正式版本。</span>
+    </div>
+
     <!-- 核心两栏式工作区 -->
     <main class="history-body">
       <!-- 左侧：版本演进树 -->
       <section class="tree-sidebar card">
         <div class="sidebar-head">
           <DemoIcon name="git-commit" :size="16" />
-          <span>版本演进历史树</span>
-          <span class="hint">按替换流转时间正序</span>
+          <span>正式版本历史</span>
+          <span class="hint">仅保留原始文件与正式发布</span>
         </div>
 
         <div class="tree-timeline-container">
@@ -297,8 +323,9 @@ watch([drawingId, fileId], () => {
             <div class="node-card">
               <div class="node-card-top">
                 <span class="node-ver">{{ node.version }}</span>
-                <span v-if="node.isCurrent" class="tag ok tag-xs">当前生效</span>
-                <span v-else class="tag mute tag-xs">历史归档</span>
+                <span v-if="node.isCurrent" class="tag ok tag-xs">当前正式</span>
+                <span v-if="node.isOriginal" class="tag info tag-xs">原始文件</span>
+                <span v-else-if="node.releaseNumber" class="tag mute tag-xs">正式版本</span>
                 <span class="node-size mono">{{ node.size }}</span>
               </div>
 
@@ -321,8 +348,9 @@ watch([drawingId, fileId], () => {
             <div class="detail-header-left">
               <div class="ver-badge-large">
                 <span class="v-text">{{ selectedNode.version }}</span>
-                <span v-if="selectedNode.isCurrent" class="tag ok">当前生效最新版本</span>
-                <span v-else class="tag mute">已归档历史版本</span>
+                <span v-if="selectedNode.isCurrent" class="tag ok">当前正式版本</span>
+                <span v-if="selectedNode.isOriginal" class="tag info">原始文件</span>
+                <span v-else-if="selectedNode.releaseNumber" class="tag mute">已发布正式版本</span>
               </div>
               <h2 class="detail-file-name">{{ selectedNode.name }}</h2>
             </div>
@@ -418,8 +446,8 @@ watch([drawingId, fileId], () => {
           <div class="note history-security-note">
             <DemoIcon name="lock" :size="15" />
             <div>
-              <b>历史图纸版本防护机制：</b>
-              本系统严格遵循工程图纸审计规范，所有历史阶段图纸物理文件与矢量 DXF 均永久保全。替换操作不删除任何原文件，支持随时回溯下载与比对。
+              <b>正式版本保留规则：</b>
+              历史页只保留原始文件和每次正式发布的版本。编辑过程中的中间文件在发布成功后自动清理；工单原因、执行人和审批意见仍可在变更记录中追溯。
             </div>
           </div>
         </template>
@@ -429,6 +457,8 @@ watch([drawingId, fileId], () => {
 </template>
 
 <style scoped>
+.version-notice { display: flex; align-items: center; gap: 10px; padding: 12px 20px; margin: 0 24px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); color: var(--text-muted); font-size: 13px; line-height: 1.6; flex-shrink: 0; }
+.version-notice svg { flex-shrink: 0; color: var(--accent); }
 .file-history-page {
   display: flex;
   flex-direction: column;

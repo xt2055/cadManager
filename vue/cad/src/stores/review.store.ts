@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { reviewService } from '@/app/container'
+import { isAssignedReviewer } from '@/features/reviews/review-workspace'
 import type { ApiCompletedAction, ApiReviewCase, ReviewFlowDto } from '@/modules/review'
 import { useAuthStore } from '@/stores/auth.store'
 
@@ -31,7 +32,7 @@ export const useReviewStore = defineStore('review', () => {
       const activeNode = [...reviewCase.nodes]
         .filter((node) => node.status === 'pending')
         .sort((a, b) => a.order - b.order)[0]
-      if (!activeNode || (activeNode.assignedName !== user.displayName && activeNode.assignedName !== user.account)) return []
+      if (!activeNode || !isAssignedReviewer(activeNode, user)) return []
       return [{
         reviewCaseId: reviewCase.id,
         no: reviewCase.drawingNo,

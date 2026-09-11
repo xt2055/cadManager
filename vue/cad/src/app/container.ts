@@ -71,6 +71,7 @@ export const borrowCommandService = new BorrowCommandService({
 })
 
 export const drawingFileService = new DrawingFileService({
+  setPrimaryModel: (storageKey, attachmentId, expectedRevision) => apiDataProvider.setPrimaryModel(storageKey, attachmentId, expectedRevision),
   readAttachment: (storageKey) => apiDataProvider.readAttachment(storageKey),
   exportBOM: (drawingNo, storageKey, items) => apiDataProvider.exportBOM(drawingNo, storageKey, items),
   identifyDrawingFile: (file, name, options) => apiDataProvider.identifyDrawingFile(file, name, options),

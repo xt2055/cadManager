@@ -171,6 +171,12 @@ export class ApiDataProvider {
     })
   }
 
+  async setPrimaryModel(storageKey: string, attachmentId: string, expectedRevision: number): Promise<void> {
+    await this.request(`/attachments/${encodeURIComponent(storageKey)}?attachmentId=${encodeURIComponent(attachmentId)}`, {
+      method: 'PATCH', body: JSON.stringify({ primaryModel: true, expectedRevision }),
+    })
+  }
+
 
   async createUploadSession(input: CreateUploadSessionInput): Promise<UploadSession> {
     return this.request<UploadSession>('/upload-sessions', {
@@ -446,8 +452,9 @@ export class ApiDataProvider {
     }
   }
 
-  async listFileVersions(storageKey: string): Promise<FileVersionInfo[]> {
-    const body = await this.request<unknown>(`/file-versions?storageKey=${encodeURIComponent(storageKey)}`, { method: 'GET' })
+  async listFileVersions(storageKey: string, attachmentId?: string): Promise<FileVersionInfo[]> {
+    const query = attachmentId ? `attachmentId=${encodeURIComponent(attachmentId)}` : `storageKey=${encodeURIComponent(storageKey)}`
+    const body = await this.request<unknown>(`/file-versions?${query}`, { method: 'GET' })
     const payload = isRecord(body) && 'data' in body ? body.data : body
     if (!Array.isArray(payload)) return []
     return payload as FileVersionInfo[]

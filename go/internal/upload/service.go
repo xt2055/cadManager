@@ -966,12 +966,49 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 		return nil, errors.New("待提交文件缺少内容对象")
 	}
 	var attachmentMetadata struct {
-		CreatePart *drawing.CreatePartInput `json:"createPart"`
-		Author     string                   `json:"author"`
+		CreatePart   *drawing.CreatePartInput `json:"createPart"`
+		Author       string                   `json:"author"`
+		FileCategory string                   `json:"fileCategory"`
 	}
 	if len(metadata) > 0 {
 		if err := json.Unmarshal(metadata, &attachmentMetadata); err != nil {
 			return nil, fmt.Errorf("附件会话元数据格式无效: %w", err)
+		}
+	}
+	category := attachment.FileCategory(item.OriginalName)
+	if attachmentMetadata.FileCategory == "model3d" {
+		if !attachment.IsModelUpload(item.OriginalName, "model3d") {
+			return nil, errors.New("不支持的 3D 文件格式，请上传模型或 ZIP 装配包")
+		}
+		category = "model3d"
+	}
+	// Replacement ownership comes from the attachment, never from client metadata.
+	if item.AttachmentID != "" {
+		var oldName, oldCategory, ownerNo, partNo string
+		err := tx.QueryRow(ctx, `SELECT COALESCE(v.original_name, a.logical_name), a.file_category,
+			COALESCE(d.drawing_no, parent.drawing_no, ''), COALESCE(p.part_no, '')
+			FROM attachments a LEFT JOIN attachment_versions v ON v.id = a.current_version_id
+			LEFT JOIN drawings d ON d.id = a.drawing_id LEFT JOIN parts p ON p.id = a.part_id
+			LEFT JOIN drawing_part_relations r ON r.part_id = p.id AND r.relation_type = 'owned' AND r.status = 'active'
+			LEFT JOIN drawings parent ON parent.id = r.drawing_id WHERE a.id = $1::uuid AND a.deleted_at IS NULL`, item.AttachmentID).Scan(&oldName, &oldCategory, &ownerNo, &partNo)
+		if err != nil {
+			return nil, err
+		}
+		oldModel := attachment.IsModelUpload(oldName, oldCategory)
+		if oldModel && category != "model3d" {
+			return nil, errors.New("3D 文件只能替换为模型或 ZIP 装配包")
+		}
+		if oldModel || category == "model3d" {
+			if item.DrawingNo != ownerNo || drawing.NormalizePartNo(item.PartNo) != drawing.NormalizePartNo(partNo) {
+				return nil, attachment.ErrModelPermission
+			}
+			if err := attachment.AuthorizeModelWrite(ctx, tx, ownerNo, partNo, userID); err != nil {
+				return nil, err
+			}
+		}
+	} else if category == "model3d" {
+		if err := attachment.AuthorizeModelWrite(ctx, tx, item.DrawingNo, item.PartNo, userID); err != nil {
+			return nil, err
 		}
 	}
 	currentName := item.OriginalName
@@ -1030,11 +1067,11 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 			err = tx.QueryRow(ctx, `INSERT INTO attachments (part_id, file_role, logical_name, uploaded_by, author) VALUES ($1::uuid, $2, $3, $4::uuid, $5) RETURNING id::text`, ownerID, item.Role, item.OriginalName, userID, strings.TrimSpace(attachmentMetadata.Author)).Scan(&attachmentID)
 		}
 		if err == nil {
-			err = tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, 'v1.0', $2::uuid, $3, $4, $5, $6, 'release', $7::uuid) RETURNING id::text`, attachmentID, currentBlobID, currentName, currentMime, currentSize, isPreviewable(currentName, currentMime), userID).Scan(&versionID)
-		}
-		if err == nil {
-			_, err = tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid WHERE id = $1::uuid`, attachmentID, versionID)
-		}
+				err = tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, 'v1.0', $2::uuid, $3, $4, $5, $6, 'working', $7::uuid) RETURNING id::text`, attachmentID, currentBlobID, currentName, currentMime, currentSize, isPreviewable(currentName, currentMime), userID).Scan(&versionID)
+			}
+			if err == nil {
+				_, err = tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, original_version_id = COALESCE(original_version_id, $2::uuid) WHERE id = $1::uuid`, attachmentID, versionID)
+			}
 		version = "v1.0"
 	} else {
 		if item.ExpectedRevision == nil {
@@ -1063,6 +1100,17 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 			return nil, fmt.Errorf("文件版本已被其他用户修改，请刷新后重试: %w", ErrConflict)
 		}
 		attachmentID = item.AttachmentID
+	}
+	if err != nil {
+		return nil, fmt.Errorf("保存附件失败: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE attachments SET file_category = $2 WHERE id = $1::uuid`, attachmentID, category); err != nil {
+		return nil, err
+	}
+	if category == "model3d" {
+		if _, err = tx.Exec(ctx, `INSERT INTO audit_logs (actor_id, action, resource_type, resource_id, summary) VALUES ($1::uuid, 'upload', 'file', $2::uuid, $3)`, userID, attachmentID, "保存 3D 文件版本 "+item.OriginalName); err != nil {
+			return nil, err
+		}
 	}
 	result := map[string]any{"sessionId": sessionID, "attachmentId": attachmentID, "versionId": versionID, "storageKey": currentKey, "currentStorageKey": currentKey, "version": version, "status": "committed"}
 	if item.ExpectedRevision != nil {
@@ -1294,7 +1342,7 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		if partID != "" {
 			attachmentDrawingID = ""
 		}
-		attachmentID, err := insertAttachmentVersionTx(ctx, tx, attachmentDrawingID, partID, item.role, item.name, currentName, currentMime, currentSize, currentBlobID, userID, "v1.0", "release")
+			attachmentID, err := insertAttachmentVersionTx(ctx, tx, attachmentDrawingID, partID, item.role, item.name, currentName, currentMime, currentSize, currentBlobID, userID, "v1.0", "working")
 		if err != nil {
 			return nil, fmt.Errorf("创建项目附件失败: %w", err)
 		}
@@ -1906,15 +1954,18 @@ func insertAttachmentVersionTx(ctx context.Context, tx pgx.Tx, drawingID, partID
 	if err != nil {
 		return "", err
 	}
+	if _, err := tx.Exec(ctx, `UPDATE attachments SET file_category = $2 WHERE id = $1::uuid`, attachmentID, attachment.FileCategory(logicalName)); err != nil {
+		return "", err
+	}
 	var versionID string
 	if err := tx.QueryRow(ctx, `INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, $9::uuid) RETURNING id::text`, attachmentID, version, blobID, currentName, mimeType, size, isPreviewable(currentName, mimeType), versionKind, userID).Scan(&versionID); err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid WHERE id = $1::uuid`, attachmentID, versionID); err != nil {
-		return "", err
+		if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id = $2::uuid, original_version_id = COALESCE(original_version_id, $2::uuid) WHERE id = $1::uuid`, attachmentID, versionID); err != nil {
+			return "", err
+		}
+		return attachmentID, nil
 	}
-	return attachmentID, nil
-}
 
 func isUniqueViolation(err error) bool {
 	return strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "SQLSTATE 23505")

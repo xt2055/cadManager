@@ -12,6 +12,7 @@ import { useUiStore } from '@/stores/ui.store'
 import { appContainer, drawingFileService } from '@/app/container'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import { extractCreationTitleBlocks } from '@/services/drawing-title-block.service'
+import { DRAWING_2D_ACCEPT, MODEL_FILE_ACCEPT, MODEL_EXTENSIONS, fileFormat, isDrawing2DFile } from '@/utils/model-formats'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import type { DrawingFileIdentity } from '@/modules/drawing'
 import type { UploadSessionSnapshot } from '@/types/application.types'
@@ -69,6 +70,10 @@ interface UploadedPart {
   file?: File
 }
 
+interface UploadedModel extends UploadedPart {
+  linkTo: string
+}
+
 interface IdentifiedPartFile {
   part: UploadedPart
   parsed: ReturnType<typeof parseDrawingNumber>
@@ -78,8 +83,14 @@ interface IdentifiedPartFile {
 
 const assemblyFile = ref<UploadedAssembly | null>(null)
 const partFiles = ref<UploadedPart[]>([])
+const modelFiles = ref<UploadedModel[]>([])
+const modelLinkTargets = computed(() => [
+  ...(assemblyFile.value ? [{ value: 'assembly', label: `总图 · ${assemblyFile.value.name}` }] : []),
+  ...partFiles.value.map((part) => ({ value: `part:${part.id}`, label: `零件图 · ${part.name}` })),
+])
 const isDraggingAssembly = ref(false)
 const isDraggingParts = ref(false)
+const isDraggingModels = ref(false)
 const isCreating = ref(false)
 const createStatus = ref('正在准备创建')
 const createError = ref('')
@@ -251,6 +262,7 @@ watch(() => drawingOperationsStore.pendingUploadSessionId, () => { void refreshU
 const assemblyFileInput = ref<HTMLInputElement | null>(null)
 const partFilesInput = ref<HTMLInputElement | null>(null)
 const partFolderInput = ref<HTMLInputElement | null>(null)
+const modelFilesInput = ref<HTMLInputElement | null>(null)
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -259,6 +271,7 @@ function formatFileSize(bytes: number): string {
 }
 
 async function handleAssemblySelected(file: File) {
+  if (!isDrawing2DFile(file)) { uiStore.toast('请选择 2D 工程图文件', 'warn'); return }
   assemblyFile.value = {
     name: file.name,
     size: formatFileSize(file.size),
@@ -320,6 +333,7 @@ function appendPartFiles(fileList: FileList | null) {
   for (let i = 0; i < fileList.length; i++) {
     const file = fileList[i]
     if (!file) continue
+    if (!isDrawing2DFile(file)) { uiStore.toast(`不支持的 2D 图纸格式：${file.name}`, 'warn'); continue }
     const exists = partFiles.value.some((p) => p.name === file.name)
     if (!exists) {
       added.push({
@@ -349,18 +363,64 @@ function onPartsDrop(event: DragEvent) {
   appendPartFiles(event.dataTransfer?.files ?? null)
 }
 
+function appendModelFiles(fileList: FileList | null) {
+  if (!fileList?.length) return
+  const added: UploadedModel[] = []
+  for (const file of Array.from(fileList)) {
+    if (!MODEL_EXTENSIONS.includes(fileFormat(file.name))) {
+      uiStore.toast(`不支持的 3D 模型格式：${file.name}`, 'warn')
+      continue
+    }
+    if (modelFiles.value.some((item) => item.name === file.name)) continue
+    added.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: file.name,
+      size: formatFileSize(file.size),
+      file,
+      linkTo: '',
+    })
+  }
+  modelFiles.value.push(...added)
+  uiStore.toast(`已加入 ${added.length} 个 3D 模型文件`, 'ok')
+}
+
+function onModelsChange(event: Event) {
+  appendModelFiles((event.target as HTMLInputElement).files)
+}
+
+function onModelsDrop(event: DragEvent) {
+  isDraggingModels.value = false
+  appendModelFiles(event.dataTransfer?.files ?? null)
+}
+
+function triggerModelsPick() {
+  modelFilesInput.value?.click()
+}
+
+function removeModel(id: string) {
+  modelFiles.value = modelFiles.value.filter((item) => item.id !== id)
+}
+
+function clearAllModels() {
+  modelFiles.value = []
+}
+
 function removeAssembly() {
   assemblyFile.value = null
   partFiles.value = []
-  uiStore.toast('已移除总图文件，关联的零件图已重置', 'warn')
+  for (const model of modelFiles.value) model.linkTo = ''
+  uiStore.toast('已移除 2D 总图，零件图和 3D 关联已重置', 'warn')
 }
 
 function removePart(id: string) {
   partFiles.value = partFiles.value.filter((p) => p.id !== id)
+  for (const model of modelFiles.value) if (model.linkTo === `part:${id}`) model.linkTo = ''
 }
 
 function clearAllParts() {
+  const links = new Set(partFiles.value.map((part) => `part:${part.id}`))
   partFiles.value = []
+  for (const model of modelFiles.value) if (links.has(model.linkTo)) model.linkTo = ''
 }
 
 function supportsDrawingNumberIdentification(name: string): boolean {
@@ -566,8 +626,9 @@ async function performCreate() {
       version: 'v1.0',
       uploadedBy: operatorName,
       uploadedAt: '刚刚',
-      previewable: true,
-    } satisfies DrawingFile,
+        fileCategory: 'drawing2d' as const,
+        previewable: true,
+      } satisfies DrawingFile,
   }))
 
   const groupedPartEntries = [...validPartEntries.reduce((groups, entry) => {
@@ -619,6 +680,7 @@ async function performCreate() {
       version: 'v1.0',
        uploadedBy: operatorName,
       uploadedAt: '刚刚',
+      fileCategory: 'drawing2d' as const,
       previewable: true,
     }))
 
@@ -632,12 +694,42 @@ async function performCreate() {
         version: 'v1.0',
          uploadedBy: operatorName,
         uploadedAt: '刚刚',
+        fileCategory: 'drawing2d' as const,
         previewable: true,
       }
     : undefined
 
-  newProjectDrawing.files = assemblyDrawingFile ? [assemblyDrawingFile] : []
-  newProjectDrawing.otherFiles = otherDrawingFiles
+  const partNoByUploadId = new Map(validPartEntries.map((entry) => [entry.part.id, entry.parsed.no]))
+  const modelDrawingFiles: DrawingFile[] = modelFiles.value.map((model, index) => {
+    const requestedPartNo = model.linkTo.startsWith('part:') ? partNoByUploadId.get(model.linkTo.slice(5)) : undefined
+    const linkedPartNo = requestedPartNo && partsForStructure.some((part) => part.no === requestedPartNo) ? requestedPartNo : undefined
+    return {
+      id: `${Date.now()}-model-${index}`,
+      name: model.name,
+      size: model.size,
+      role: linkedPartNo ? 'part' : model.linkTo === 'assembly' ? 'assembly' : 'other',
+      drawingNo,
+      ...(linkedPartNo ? { partNo: linkedPartNo } : {}),
+      version: 'v1.0',
+      uploadedBy: operatorName,
+      uploadedAt: '刚刚',
+      fileCategory: 'model3d',
+      previewable: false,
+    }
+  })
+  for (const model of modelDrawingFiles.filter((file) => file.partNo)) {
+    const owner = partsForStructure.find((part) => part.no === model.partNo)
+    if (owner) owner.files = [...(owner.files ?? []), model]
+  }
+
+  newProjectDrawing.files = [
+    ...(assemblyDrawingFile ? [assemblyDrawingFile] : []),
+    ...modelDrawingFiles.filter((file) => file.role === 'assembly'),
+  ]
+  newProjectDrawing.otherFiles = [
+    ...otherDrawingFiles,
+    ...modelDrawingFiles.filter((file) => file.role === 'other'),
+  ]
 
   const attachments = [
     ...(assemblyFile.value
@@ -646,6 +738,7 @@ async function performCreate() {
     ...validPartEntries.map((entry) => ({ id: entry.file.id, content: entry.part.file })),
     ...otherFileEntries
        .map(({ part }, index) => ({ id: otherDrawingFiles[index]?.id ?? '', content: part.file })),
+    ...modelFiles.value.map((model, index) => ({ id: modelDrawingFiles[index]?.id ?? '', content: model.file })),
   ]
 
   newProjectDrawing.remark = formRemark.value.trim()
@@ -671,7 +764,7 @@ async function performCreate() {
      ? `；${unidentifiedPartNames.join('、')} 未识别出图号，已暂用文件名，可在零件详情页修改`
      : ''
    uiStore.toast(`项目「${projectNo}」已成功创建，总图图号为「${drawingNo}」${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}${fallbackMessage}`, unidentifiedPartNames.length ? 'warn' : 'ok')
-  router.push({ name: 'drawing-preview', params: { drawingId: newProjectDrawing.no } })
+  router.push({ name: modelFiles.value.length && !assemblyFile.value ? 'drawing-models' : 'drawing-preview', params: { drawingId: newProjectDrawing.no } })
 }
 
 async function retryFailedUpload() {
@@ -861,7 +954,7 @@ async function retryFailedUpload() {
           <input
             ref="assemblyFileInput"
             type="file"
-            accept=".exb,.dwg,.dxf,.pdf,.step,.stp"
+            :accept="DRAWING_2D_ACCEPT"
             class="hidden-input"
             @change="onAssemblyChange"
           />
@@ -878,8 +971,8 @@ async function retryFailedUpload() {
                 <DemoIcon name="layers" :size="28" />
               </div>
               <div class="upload-texts">
-                <b>上传项目总图</b>
-              <p>支持 .exb / .dwg / .dxf / .pdf · 单文件 ≤ 100MB；选择后按文件名识别图号</p>
+                <b>上传 2D 项目总图</b>
+              <p>支持 EXB / DWG / DXF / PDF 等工程图格式。3D 模型请在下方独立上传。</p>
               </div>
               <div class="upload-actions">
                 <button class="btn sm primary" type="button" @click="triggerAssemblyPick">
@@ -911,7 +1004,7 @@ async function retryFailedUpload() {
           <div class="parts-upload-container">
             <div class="parts-header">
               <div class="parts-title-wrap">
-                <h3>零件图文件上传</h3>
+                <h3>2D 零件图文件上传</h3>
                 <span class="badge muted-badge">{{ partFiles.length }} 个</span>
               </div>
               <span class="parts-lock-tip">
@@ -922,14 +1015,15 @@ async function retryFailedUpload() {
             <input
               ref="partFilesInput"
               type="file"
+              :accept="DRAWING_2D_ACCEPT"
               multiple
-              accept=".exb,.dwg,.dxf,.pdf,.step,.stp"
               class="hidden-input"
               @change="onPartsChange"
             />
             <input
               ref="partFolderInput"
               type="file"
+              :accept="DRAWING_2D_ACCEPT"
               multiple
               webkitdirectory
               class="hidden-input"
@@ -947,8 +1041,8 @@ async function retryFailedUpload() {
                 <DemoIcon name="boxes" :size="24" />
               </div>
               <div class="upload-texts">
-                <b>批量上传零件图（可选）</b>
-                <p>支持多选多个零件文件或直接选择整目录文件夹</p>
+                <b>批量上传 2D 零件图（可选）</b>
+                <p>只接收 2D 工程图，可多选文件或直接选择整目录</p>
               </div>
               <div class="upload-actions">
                 <button class="btn sm" type="button" @click="triggerPartsPick">
@@ -973,6 +1067,60 @@ async function retryFailedUpload() {
                   <button class="icon-btn xs" type="button" title="移除" @click="removePart(part.id)">
                     <DemoIcon name="x" :size="12" />
                   </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="parts-upload-container model-upload-container">
+            <div class="parts-header">
+              <div class="parts-title-wrap">
+                <h3>3D 模型文件上传</h3>
+                <span class="badge muted-badge">{{ modelFiles.length }} 个</span>
+              </div>
+              <span class="parts-lock-tip"><DemoIcon name="link" :size="12" />关联为可选项</span>
+            </div>
+
+            <input
+              ref="modelFilesInput"
+              type="file"
+              :accept="MODEL_FILE_ACCEPT"
+              multiple
+              class="hidden-input"
+              @change="onModelsChange"
+            />
+            <div
+              class="upload-box parts-box model-box"
+              :class="{ active: isDraggingModels }"
+              @dragover.prevent="isDraggingModels = true"
+              @dragleave.prevent="isDraggingModels = false"
+              @drop.prevent="onModelsDrop($event)"
+            >
+              <div class="upload-icon-wrap"><DemoIcon name="box" :size="24" /></div>
+              <div class="upload-texts">
+                <b>批量上传 3D 模型（可选）</b>
+                <p>支持 Z3PRT / Z3ASM / STEP / IGES 及主流 3D 格式，可选择是否关联某张 2D 图。</p>
+              </div>
+              <div class="upload-actions">
+                <button class="btn sm" type="button" @click="triggerModelsPick"><DemoIcon name="files" :size="13" />选择 3D 文件</button>
+              </div>
+            </div>
+
+            <div v-if="modelFiles.length" class="parts-list-card model-list-card">
+              <div class="parts-list-head">
+                <span>待上传 3D 模型（{{ modelFiles.length }}）</span>
+                <button class="text-btn danger" type="button" @click="clearAllModels">清空列表</button>
+              </div>
+              <div class="parts-list-body">
+                <div v-for="model in modelFiles" :key="model.id" class="part-item-row model-item-row">
+                  <DemoIcon name="box" :size="14" />
+                  <span class="part-name" :title="model.name">{{ model.name }}</span>
+                  <select v-model="model.linkTo" class="inp model-link-select" aria-label="选择关联的 2D 图纸">
+                    <option value="">不关联</option>
+                    <option v-for="target in modelLinkTargets" :key="target.value" :value="target.value">关联：{{ target.label }}</option>
+                  </select>
+                  <span class="part-size">{{ model.size }}</span>
+                  <button class="icon-btn xs" type="button" title="移除" @click="removeModel(model.id)"><DemoIcon name="x" :size="12" /></button>
                 </div>
               </div>
             </div>
@@ -1528,6 +1676,26 @@ async function retryFailedUpload() {
   gap: 4px;
   color: var(--warn);
   font-size: 11px;
+}
+
+.model-upload-container {
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.model-box {
+  background: color-mix(in srgb, var(--accent-soft) 26%, var(--panel-2));
+}
+
+.model-item-row {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) minmax(170px, 0.8fr) auto auto;
+}
+
+.model-link-select {
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 11.5px;
 }
 
 .parts-list-card {

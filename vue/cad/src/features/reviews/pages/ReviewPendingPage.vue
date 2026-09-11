@@ -3,18 +3,16 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { onMounted, onUnmounted } from 'vue'
+import { RouteName } from '@/router/route-names'
 import { useReviewStore } from '@/stores/review.store'
-import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'ReviewPendingPage' })
 
 const router = useRouter()
 const reviewStore = useReviewStore()
-const uiStore = useUiStore()
 
 function startReviewingFlow(no: string) {
-  uiStore.toast(`进入图纸「${no}」详情：请先查阅图纸文件，再前往审核流程签署意见`, 'info')
-  router.push({ name: 'drawing-preview', params: { drawingId: no } })
+  router.push({ name: RouteName.ReviewWorkspace, params: { drawingNo: no } })
 }
 
 onMounted(() => {
@@ -28,7 +26,7 @@ onUnmounted(() => reviewStore.stopPolling())
   <div class="page review-page">
     <div class="section-head">
       <h3>待我审核任务</h3>
-      <span class="lib-count">点击进入图纸详情 · 审阅图纸后完成签署与意见录入</span>
+      <span class="lib-count">进入审核工作台，处理当前轮到你的节点并填写意见</span>
     </div>
 
     <template v-if="reviewStore.myPendingReviews().length">
@@ -49,7 +47,7 @@ onUnmounted(() => reviewStore.stopPolling())
 
         <div class="review-row-actions">
           <button class="btn primary" type="button" @click="startReviewingFlow(review.no)">
-            <DemoIcon name="eye" :size="14" />查看并开始审核
+            <DemoIcon name="pencil" :size="14" />进入审核工作台
           </button>
         </div>
       </div>

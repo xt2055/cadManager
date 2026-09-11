@@ -26,6 +26,7 @@ export interface SystemStatusData {
     formattedUsed: string
     formattedDisk: string
     backupStatus: string
+    source: 'database'
   }
   smb: {
     enabled: boolean

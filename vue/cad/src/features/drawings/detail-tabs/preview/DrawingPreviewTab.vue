@@ -19,7 +19,9 @@ import { isTauri } from '@tauri-apps/api/core'
 import { saveDownloadFile } from '@/services/tauri/cad-edit.service'
 import { convertCadToPdfBlob } from '@/services/cad-pdf-export.service'
 import { changeRequestService } from '@/services/change-request.service'
+import { editableChangeTargets } from '../../components/detail/change-edit-access'
 import { canDeleteDrawingFiles } from './drawing-file-delete'
+import { isModelFile } from '@/utils/model-formats'
 
 defineOptions({
   name: 'DrawingPreviewTab',
@@ -121,7 +123,7 @@ const allFiles = computed<ProjectDrawingFile[]>(() => {
     appendOwnerFiles(currentItem.value as PartView)
   }
 
-  return sortProjectFiles(files)
+  return sortProjectFiles(files.filter((file) => !isModelFile(file)))
 })
 
 function sortProjectFiles(files: ProjectDrawingFile[]): ProjectDrawingFile[] {
@@ -591,41 +593,44 @@ async function relaunchEditorForFile(file: DrawingFile) {
   }
 }
 
-// 存档图纸经变更工单授权后可编辑：缓存当前用户是否持有该图纸执行中的工单。
-const openExecutingChange = ref(false)
+// 总图清单包含零件文件：按所属项目读取工单，再按附件 ID 判定授权。
+const changeTargetIds = ref<Set<string>>(new Set())
+const archivedProject = computed(() => drawingStore.getDrawing(rootDrawingNo.value)?.status === 'archived' || currentItem.value?.status === 'archived')
+let changeAccessSequence = 0
 async function refreshChangeEditAccess() {
-  const item = currentItem.value
+  const sequence = ++changeAccessSequence
   const current = authStore.currentUser
-  openExecutingChange.value = false
-  if (!item || item.status !== 'archived' || !current) return
-  const drawingId = (item as { id?: string }).id
+  changeTargetIds.value = new Set()
+  if (!archivedProject.value || !current) return
+  const drawingId = drawingStore.getDrawing(rootDrawingNo.value)?.id
   if (!drawingId) return
   try {
     const list = await changeRequestService.listByDrawing(drawingId)
-    const admin = current.roles?.includes('admin') ?? false
-    openExecutingChange.value = list.some((entry) => entry.status === 'executing' && (admin || entry.executorId === current.id))
+    const details = await Promise.all(list.filter((entry) => entry.status === 'executing' && entry.executorId === current.id)
+      .map((entry) => changeRequestService.get(entry.id)))
+    if (sequence === changeAccessSequence) changeTargetIds.value = editableChangeTargets(details, current.id)
   } catch {
-    openExecutingChange.value = false
+    if (sequence === changeAccessSequence) changeTargetIds.value = new Set()
   }
 }
-watch(() => currentItem.value, () => { void refreshChangeEditAccess() }, { immediate: true })
+watch([() => currentItem.value, rootDrawingNo, archivedProject, () => authStore.currentUser?.id], () => { void refreshChangeEditAccess() }, { immediate: true })
 
 // 编辑权限矩阵（前端显隐；后端 editing.Open 同步强校验）：
 // 草稿/生产 → 创建者或管理员；审核中 → 当前节点责任人或管理员；
 // 存档 → 仅当当前用户持有执行中的变更工单时可编辑。
-const canEditFiles = computed(() => {
+function canEditFile(file: DrawingFile): boolean {
   const item = currentItem.value
   const current = authStore.currentUser
   if (!item || !current) return false
   const admin = current.roles?.includes('admin') ?? false
-  if (item.status === 'archived') return openExecutingChange.value
+  if (archivedProject.value) return changeTargetIds.value.has(file.id)
   if (item.status === 'reviewing') {
     if (admin) return true
     return reviewStore.myPendingReviews().some((reviewCase) => reviewCase.no === item.no)
   }
   const creator = (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
   return creator || admin
-})
+}
 
 const canDeleteFiles = computed(() => {
   const item = currentItem.value
@@ -665,7 +670,8 @@ async function openReadonly(file: DrawingFile) {
   }
 }
 
-async function openEditor(file: DrawingFile) {  if (!currentItem.value) return
+async function openEditor(file: DrawingFile) {
+  if (!currentItem.value || !canEditFile(file)) return
   if (editingFileId.value) return
   if (!file.storageKey) {
     uiStore.toast('该文件尚未保存物理存储，无法使用本地 CAD 打开', 'warn')
@@ -1360,6 +1366,7 @@ function closeReidentifyModal() {
       </div>
 
       <div class="header-buttons">
+        <button class="btn" type="button" @click="router.push({ name: 'drawing-models', params: { drawingId: route.params.drawingId } })"><DemoIcon name="box" :size="14" />3D 图纸</button>
         <button class="btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId: route.params.drawingId } })">图纸对比</button>
         <button class="btn" type="button" title="选择文件与格式（EXB / DWG / PDF），打包为 zip 下载" @click="openDownloadModal">
           <DemoIcon name="download" :size="14" />下载
@@ -1500,7 +1507,7 @@ function closeReidentifyModal() {
                   <DemoIcon v-else name="eye" :size="13" />本地查看
                 </button>
                 <button
-                  v-if="false && canEditFiles"
+                  v-if="false && canEditFile(file)"
                   class="btn sm"
                   type="button"
                   title="使用网页 CAD 编辑器打开并编辑文件"
@@ -1519,7 +1526,7 @@ function closeReidentifyModal() {
                 >
                   <span class="pulse-dot"></span>编辑中
                 </button>
-                <template v-else-if="canEditFiles && !isFileLockedByOther(file)">
+                <template v-else-if="canEditFile(file) && !isFileLockedByOther(file)">
                   <button
                     class="btn sm"
                     type="button"
@@ -1547,7 +1554,7 @@ function closeReidentifyModal() {
                 </button>
 
                 <button
-                  v-if="canEditFiles"
+                  v-if="canEditFile(file)"
                   class="btn sm"
                   type="button"
                   title="替换当前图纸文件并生成新版本"

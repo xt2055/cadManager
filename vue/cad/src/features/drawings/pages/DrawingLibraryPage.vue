@@ -9,6 +9,7 @@ import { useDrawingStore } from '@/stores/drawing.store'
 import { useAttributeStore } from '@/stores/attribute.store'
 import type { DrawingStatus } from '@/types/domain.types'
 import { formatReadableDateTime } from '@/utils/date-time'
+import { drawingMediaLabel } from '@/utils/model-formats'
 
 defineOptions({ name: 'DrawingLibraryPage' })
 
@@ -19,6 +20,7 @@ const router = useRouter()
 
 const query = ref('')
 const status = ref<DrawingStatus | ''>('')
+const media = ref('')
 const mode = ref<'drawing' | 'part'>('drawing')
 const attributeFilters = ref<Record<string, string>>({})
 const expandedProjects = ref<Set<string>>(new Set())
@@ -78,6 +80,7 @@ const rows = computed(() => {
   const st = status.value
   return drawingStore.drawings.filter((drawing) => {
     if (drawing.status === 'disabled') return false
+    if (media.value && drawingMediaLabel(drawing) !== media.value) return false
     if (st && drawing.status !== st) return false
 
     const attributeText = attributeStore.sortedAttributes.flatMap((attribute) => [
@@ -109,6 +112,7 @@ const partRows = computed(() => {
   const st = status.value
   return drawingStore.parts.filter((part) => {
     if (part.status === 'disabled') return false
+    if (media.value && drawingMediaLabel(part) !== media.value) return false
     if (st && part.status !== st) return false
     return matchesPartSearch(part, q)
   })
@@ -135,7 +139,8 @@ function removeFilter(attributeId: string) {
 }
 
 function openDetail(drawingNo: string) {
-  router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
+  const owner = drawingStore.getDrawing(drawingNo) ?? drawingStore.getPart(drawingNo)
+  router.push({ name: owner && drawingMediaLabel(owner) === '3D' ? 'drawing-models' : 'drawing-preview', params: { drawingId: drawingNo } })
 }
 
 onMounted(() => {
@@ -227,6 +232,11 @@ onMounted(() => {
           </button>
         </label>
         <div class="toolbar-right">
+          <select v-model="media" class="inp status-select" aria-label="图纸维度">
+            <option value="">全部图纸类型</option>
+            <option value="2D">仅 2D</option><option value="3D">仅 3D</option><option value="2D + 3D">2D + 3D</option>
+            <option value="未上传图纸">未上传图纸</option>
+          </select>
            <select v-model="status" class="inp status-select">
              <option value="">全部状态</option>
              <option v-for="(item, key) in STATUS" :key="key" :value="key">{{ item.t }}</option>
@@ -268,6 +278,7 @@ onMounted(() => {
 
                 <td>
                   <strong>{{ drawing.name }}</strong>
+                  <span class="tag plain">{{ drawingMediaLabel(drawing) }}</span>
                   <small v-if="drawing.remark">{{ drawing.remark }}</small>
                 </td>
 
@@ -362,6 +373,7 @@ onMounted(() => {
               <td class="mono">{{ projectNoForPart(part) || '—' }}</td>
               <td>
                 <strong>{{ part.name }}</strong>
+                <span class="tag plain">{{ drawingMediaLabel(part) }}</span>
                 <small v-if="part.remark">{{ part.remark }}</small>
               </td>
               <td><span class="tag" :class="STATUS[part.status].c">{{ STATUS[part.status].t }}</span></td>

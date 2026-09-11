@@ -48,8 +48,8 @@ const visibleGroups = computed(() => groups.map((group) => ({
 const activeId = computed(() => {
   if (route.name === 'drawing-library' || route.name === 'drawing-create' || route.name === 'drawing-detail') return 'library'
   if (route.name === 'part-index-list' || route.name === 'part-index-detail') return 'parts'
-  if (route.name === 'review-pending' || route.name === 'review-completed' || route.name === 'review-center') return 'review'
-  if (route.name === 'admin-accounts' || route.name === 'admin-review-flows' || route.name === 'admin-drawing-control' || route.name === 'admin-logs') return 'admin'
+  if (route.name === 'review-pending' || route.name === 'review-completed' || route.name === 'review-center' || route.name === 'review-workspace') return 'review'
+  if (String(route.name || '').startsWith('admin-')) return 'admin'
   if (route.name === 'operation-logs') return 'history'
   if (route.name === 'settings') return 'settings'
   return 'dashboard'
