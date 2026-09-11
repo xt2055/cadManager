@@ -1415,9 +1415,9 @@ func (service *Service) commitDrawingCreateTx(ctx context.Context, tx pgx.Tx, us
 		if lifecycle != "active" {
 			return nil, fmt.Errorf("借用来源零件「%s」已停用或归档，无法借用", borrow.SourcePartNo)
 		}
-		if publishedRevision == nil || *publishedRevision == "" {
-			return nil, fmt.Errorf("借用来源零件「%s」必须存在 Published Revision", borrow.SourcePartNo)
-		}
+			if publishedRevision == nil || *publishedRevision == "" {
+				return nil, fmt.Errorf("借用来源零件「%s」尚未随图纸正式发布，不能借用", borrow.SourcePartNo)
+			}
 		if _, err := tx.Exec(ctx, `INSERT INTO drawing_part_relations (drawing_id, part_id, relation_type, qty, source_drawing_no, borrow_reason, borrowed_by, borrowed_at, status, created_by, updated_by) VALUES ($1::uuid, $2::uuid, 'borrowed', 1, NULLIF($3, ''), $4, $5::uuid, now(), $6, $5::uuid, $5::uuid)`, drawingID, sourcePartID, borrow.SourceDrawingNo, firstNonEmpty(borrow.Direction, "in"), userID, status); err != nil {
 			return nil, fmt.Errorf("保存借用记录失败: %w", err)
 		}

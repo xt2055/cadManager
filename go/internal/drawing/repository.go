@@ -402,9 +402,9 @@ func (repository *PGRepository) CreatePart(ctx context.Context, drawingID string
 	} else if err != nil {
 		return Part{}, fmt.Errorf("校验图纸状态失败: %w", err)
 	}
-	if drawingStatus == string(StatusArchived) {
-		return Part{}, errors.New("已归档图纸禁止修改结构")
-	}
+		if drawingStatus == string(StatusArchived) {
+			return Part{}, ErrArchivedLocked
+		}
 	var parentID *string
 	if strings.TrimSpace(input.ParentNo) != "" {
 		var value string

@@ -282,7 +282,7 @@ const candidateParts = computed(() => {
   if (borrowSearchMode.value === 'global-part') {
     // 全库全局穿透搜索（排除当前项目自身的零件）
     const curNo = currentItem.value?.no || ''
-    const allOtherParts = drawingStore.parts.filter((p) => p.parentNo !== curNo)
+    const allOtherParts = drawingStore.parts.filter((p) => p.parentNo !== curNo && isBorrowablePart(p))
     if (!q) return allOtherParts.slice(0, 100) // 默认展示前 100 项
     return allOtherParts.filter((p) =>
       p.no.toLowerCase().includes(q) ||
@@ -297,7 +297,7 @@ const candidateParts = computed(() => {
   const pNo = selectedSourceProjectNo.value || candidateProjects.value[0]?.no
   if (!pNo) return []
 
-  const parts = drawingStore.parts.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`))
+  const parts = drawingStore.parts.filter((p) => isBorrowablePart(p) && (p.parentNo === pNo || p.no.startsWith(`${pNo}-`)))
   if (!q) return parts
 
   return parts.filter((p) =>
@@ -309,8 +309,12 @@ const candidateParts = computed(() => {
 })
 
 // 计算各个项目的零件数量
+function isBorrowablePart(part: PartView): boolean {
+  return part.status === 'published' || part.status === 'archived'
+}
+
 function getProjectPartCount(pNo: string): number {
-  return drawingStore.parts.filter((p) => p.parentNo === pNo || p.no.startsWith(`${pNo}-`)).length
+  return drawingStore.parts.filter((p) => isBorrowablePart(p) && (p.parentNo === pNo || p.no.startsWith(`${pNo}-`))).length
 }
 
 // 获取零件所属项目的名称
@@ -325,6 +329,17 @@ const selectedPartDetail = computed(() => {
 })
 
 function openBorrowModal() {
+  if (archivedProject.value) {
+    uiStore.confirm('图纸已存档，无法直接借用零件', '存档图纸处于只读保护。如需把其他项目的零件挂到当前图纸，请先发起变更工单，经管理员审批后再修改。', {
+      confirmText: '去发起变更工单',
+      onConfirm: () => {
+        const drawingId = String(route.params.drawingId ?? currentItem.value?.no ?? '')
+        if (!drawingId) return
+        router.push({ name: 'drawing-changes', params: { drawingId } })
+      },
+    })
+    return
+  }
   isBorrowing.value = true
   borrowSearchMode.value = 'by-project'
   projectSearchQuery.value = ''
@@ -387,9 +402,21 @@ async function confirmBorrowPart() {
     borrowKeyBoundSignature.value = ''
     isBorrowing.value = false
     selectedSourcePartNo.value = ''
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('借用失败', err)
-    uiStore.toast(err.message || '借用零件失败，请重试', 'warn')
+    const message = err instanceof Error ? err.message : '借用零件失败，请重试'
+    if (archivedProject.value || /存档|归档|变更工单/.test(message)) {
+      uiStore.confirm('图纸已存档，无法直接借用零件', '存档图纸处于只读保护。如需把其他项目的零件挂到当前图纸，请先发起变更工单，经管理员审批后再修改。', {
+        confirmText: '去发起变更工单',
+        onConfirm: () => {
+          const drawingId = String(route.params.drawingId ?? currentItem.value?.no ?? '')
+          if (!drawingId) return
+          router.push({ name: 'drawing-changes', params: { drawingId } })
+        },
+      })
+      return
+    }
+    uiStore.toast(message, 'warn')
   } finally {
     isSubmittingBorrow.value = false
   }

@@ -446,15 +446,17 @@ func writeAtomicDrawingError(writer http.ResponseWriter, err error, fallback str
 		response.WriteError(writer, http.StatusConflict, "结构关系已被其他用户修改，请刷新后重试")
 	case errors.Is(err, drawing.ErrRevisionRequired):
 		response.WriteError(writer, http.StatusPreconditionRequired, "请求必须提供当前 revision")
-	case errors.Is(err, drawing.ErrIdempotencyConflict):
-		response.WriteError(writer, http.StatusConflict, "Idempotency-Key conflict")
-	default:
-		if strings.Contains(err.Error(), "不能") || strings.Contains(err.Error(), "必须") || strings.Contains(err.Error(), "无效") {
-			response.WriteError(writer, http.StatusBadRequest, err.Error())
-			return
+		case errors.Is(err, drawing.ErrIdempotencyConflict):
+			response.WriteError(writer, http.StatusConflict, "Idempotency-Key conflict")
+		case errors.Is(err, drawing.ErrArchivedLocked):
+			response.WriteError(writer, http.StatusConflict, "图纸已存档，请先发起变更工单并经管理员审批，修改内容将在验收通过后发布")
+		default:
+			if strings.Contains(err.Error(), "不能") || strings.Contains(err.Error(), "必须") || strings.Contains(err.Error(), "无效") {
+				response.WriteError(writer, http.StatusBadRequest, err.Error())
+				return
+			}
+			response.WriteError(writer, http.StatusInternalServerError, fallback)
 		}
-		response.WriteError(writer, http.StatusInternalServerError, fallback)
-	}
 }
 
 func validStatus(status drawing.Status) bool {

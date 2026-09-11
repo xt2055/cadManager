@@ -1,13 +1,14 @@
 package httpapi
 
-import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-
-	"cadguanliq/internal/config"
-)
+	import (
+		"encoding/json"
+		"net/http"
+		"net/http/httptest"
+		"strings"
+		"testing"
+	
+		"cadguanliq/internal/config"
+	)
 
 func TestNewRouterHealth(t *testing.T) {
 	handler := NewRouter(config.Config{AllowedOrigins: []string{"*"}}, nil, nil)
@@ -31,9 +32,11 @@ func TestNewRouterHealth(t *testing.T) {
 }
 
 func TestNewRouterCORSPreflight(t *testing.T) {
-	handler := NewRouter(config.Config{AllowedOrigins: []string{"http://localhost:5173"}}, nil, nil)
-	request := httptest.NewRequest(http.MethodOptions, "/api/health", nil)
-	request.Header.Set("Origin", "http://localhost:5173")
+	handler := NewRouter(config.Config{AllowedOrigins: []string{"http://127.0.0.1:5173"}}, nil, nil)
+	request := httptest.NewRequest(http.MethodOptions, "/api/drawings/6bd3ba06-41c8-4235-a072-831be21ad12a/borrows", nil)
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("Access-Control-Request-Method", "POST")
+	request.Header.Set("Access-Control-Request-Headers", "content-type,authorization,idempotency-key")
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
@@ -41,8 +44,14 @@ func TestNewRouterCORSPreflight(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("preflight status = %d, expected %d", response.Code, http.StatusNoContent)
 	}
-	if actual := response.Header().Get("Access-Control-Allow-Origin"); actual != "http://localhost:5173" {
+	if actual := response.Header().Get("Access-Control-Allow-Origin"); actual != "http://127.0.0.1:5173" {
 		t.Fatalf("allow origin = %q", actual)
+	}
+	allowed := strings.ToLower(response.Header().Get("Access-Control-Allow-Headers"))
+	for _, header := range []string{"content-type", "authorization", "idempotency-key"} {
+		if !strings.Contains(allowed, header) {
+			t.Fatalf("allow headers = %q, missing %s", allowed, header)
+		}
 	}
 }
 

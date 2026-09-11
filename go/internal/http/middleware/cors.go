@@ -14,8 +14,8 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 				writer.Header().Set("Access-Control-Allow-Credentials", "true")
 				writer.Header().Add("Vary", "Origin")
 			}
-			writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+				writer.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, Idempotency-Key, X-Chunk-SHA256")
+				writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			if request.Method == http.MethodOptions {
 				writer.WriteHeader(http.StatusNoContent)
 				return

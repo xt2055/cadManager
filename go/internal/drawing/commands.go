@@ -194,9 +194,9 @@ func (repository *PGRepository) Borrow(ctx context.Context, drawingID string, in
 	if lifecycle != "active" {
 		return Relation{}, errors.New("已停用或归档的零件不能借用")
 	}
-	if publishedRevision == nil || *publishedRevision == "" {
-		return Relation{}, errors.New("借用零件必须存在 Published Revision")
-	}
+		if publishedRevision == nil || *publishedRevision == "" {
+			return Relation{}, errors.New("该零件尚未随图纸正式发布，不能借用")
+		}
 	if err := validateParentRelation(ctx, tx, drawingID, input.ParentRelationID); err != nil {
 		return Relation{}, err
 	}
@@ -624,9 +624,9 @@ func lockDrawing(ctx context.Context, tx pgx.Tx, drawingID string) error {
 	if err != nil {
 		return fmt.Errorf("校验图纸失败: %w", err)
 	}
-	if status == string(StatusArchived) {
-		return errors.New("已归档图纸禁止修改结构")
-	}
+		if status == string(StatusArchived) {
+			return ErrArchivedLocked
+		}
 	return nil
 }
 
