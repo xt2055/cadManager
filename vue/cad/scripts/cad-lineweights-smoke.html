@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>CAD 图层与线宽回归验证</title>
+<style>body{margin:0;font:14px sans-serif;background:#eee}#status,button{margin:10px}#viewer{height:520px}canvas{max-width:100%}</style>
+<div id="app"></div>
+<script type="module">
+import { createApp, h, ref } from 'vue'
+import { AcApDocManager } from '@mlightcad/cad-simple-viewer'
+import Viewer from '../src/features/drawings/detail-tabs/preview/MlightCadViewer.vue'
+import { convertCadToPdfBlob } from '../src/services/cad-pdf-export.service.ts'
+const layer = (name, weight) => `0\nLAYER\n2\n${name}\n70\n0\n62\n7\n6\nCONTINUOUS\n370\n${weight}\n`
+const line = (id, y, weight, name = '0') => `0\nLINE\n5\n${id}\n100\nAcDbEntity\n8\n${name}\n370\n${weight}\n100\nAcDbLine\n10\n0\n20\n${y}\n30\n0\n11\n180\n21\n${y}\n31\n0\n`
+const dxf = `0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1027\n9\n$LWDISPLAY\n290\n0\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n2\n${layer('0',25)}${layer('粗实线层',70)}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n${line('1B7',0,18)}${line('1B8',30,35)}${line('1B9',60,-1,'粗实线层')}0\nENDSEC\n0\nEOF\n`
+window.cadDiagnostics = () => {
+  const manager = AcApDocManager.instance
+  return { active: manager.context.isActive, layers: manager.curDocument.database.tables.layerTable.numEntries }
+}
+const buffer = new TextEncoder().encode(dxf).buffer
+createApp({setup(){
+  const status=ref('正在加载：自下而上线宽为 0.18、0.35、0.70 mm')
+  const url=URL.createObjectURL(new Blob([buffer]))
+  function ready(){
+    const view=AcApDocManager.instance.curView
+    const widths=[]
+    view.cadScene.activeLayout.internalObject.traverse(object=>{
+      const materials=Array.isArray(object.material)?object.material:[object.material]
+      for(const m of materials)if(m?.isLineMaterial)widths.push(m.linewidth)
+    })
+    status.value='预览就绪；宽线像素：'+JSON.stringify([...new Set(widths)])
+  }
+  async function exportPdf(){
+    try {
+      const blob=await convertCadToPdfBlob(buffer,'线宽回归.dxf')
+      status.value=`PDF 导出成功：${blob.size} 字节；预览文档：${AcApDocManager.instance.curDocument.fileName || '已恢复'}`
+    }catch(e){status.value='失败：'+e.stack}
+  }
+  return ()=>h('div',[h('div',{id:'status'},status.value),h('button',{onClick:exportPdf},'验证 PDF 导出'),h('div',{id:'viewer'},[h(Viewer,{dxfUrl:url,fileName:'线宽回归.dxf',onReady:ready,onLoadError:e=>status.value=e})])])
+}}).mount('#app')
+</script>
+</html>

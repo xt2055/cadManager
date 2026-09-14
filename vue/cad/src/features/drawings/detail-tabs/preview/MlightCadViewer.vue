@@ -215,7 +215,7 @@ async function loadViewer(url: string) {
         mode: AcEdOpenMode.Read,
         progressiveRendering: false,
         sysVars: {
-          lwdisplay: false,
+          lwdisplay: true,
         },
       },
     })
@@ -239,7 +239,7 @@ async function loadViewer(url: string) {
       drawNoPlotLayers: false,
       progressiveRendering: false,
       sysVars: {
-        lwdisplay: false,
+        lwdisplay: true,
       },
     })
     if (!opened) throw new Error(`MLightCAD 无法解析图纸（传入文件名: ${fileName}）`)
