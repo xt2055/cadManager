@@ -1597,7 +1597,7 @@ function closeReidentifyModal() {
               <th>文件名</th>
                <th>版本</th>
                <th>上传人</th>
-               <th style="width: 440px; text-align: right">操作</th>
+               <th style="width: 560px; text-align: right">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -2948,7 +2948,7 @@ function closeReidentifyModal() {
 
 .files-table-card .tbl {
   width: 100%;
-  min-width: 1080px;
+  min-width: 1170px;
   table-layout: fixed;
 }
 
@@ -2957,6 +2957,11 @@ function closeReidentifyModal() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.files-table-card .tbl td.row-actions {
+  overflow: visible;
+  text-overflow: clip;
 }
 
 @media (max-width: 1280px) {
@@ -2973,7 +2978,7 @@ function closeReidentifyModal() {
 
 @media (max-width: 760px) {
   .files-table-card .tbl {
-    min-width: 1040px;
+    min-width: 1130px;
   }
 
   .files-table-card .tbl th:nth-child(2),
@@ -2983,7 +2988,7 @@ function closeReidentifyModal() {
 
   .files-table-card .tbl th:nth-child(5),
   .files-table-card .tbl td:nth-child(5) {
-    min-width: 420px;
+    min-width: 560px;
   }
 }
 
@@ -2997,8 +3002,8 @@ function closeReidentifyModal() {
 .files-table-card .tbl td:nth-child(4) { width: 110px; }
 .files-table-card .tbl th:nth-child(5),
 .files-table-card .tbl td:nth-child(5) {
-  width: 470px;
-  min-width: 470px;
+  width: 560px;
+  min-width: 560px;
 }
 
 .file-title-wrap {
