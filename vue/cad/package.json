@@ -38,6 +38,7 @@
     "dxf-parser": "^1.1.2",
     "dxf-viewer": "^1.0.48",
     "element-plus": "^2.12.0",
+    "jspdf": "4.2.1",
     "jszip": "^3.10.1",
     "lodash-es": "^4.17.21",
     "lucide-vue-next": "^1.0.0",

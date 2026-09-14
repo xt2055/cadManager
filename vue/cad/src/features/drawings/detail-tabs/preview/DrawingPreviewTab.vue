@@ -155,6 +155,105 @@ const selectedReplaceBlob = ref<File | null>(null)
 
 // 借用零件弹窗与多维度智能选型系统
 const isBorrowing = ref(false)
+const isCreatingDrawing = ref(false)
+const creatingDrawing = ref(false)
+type DrawingCreationStage = 'preparing' | 'uploading' | 'converting' | 'opening'
+const drawingCreationStage = ref<DrawingCreationStage>('preparing')
+const drawingCreationError = ref('')
+const newDrawingName = ref('')
+const newDrawingNo = ref('')
+const drawingCreationProgress = computed(() => ({
+  preparing: { step: 1, title: '正在准备空白图纸', detail: '正在校验 CAXA 模板，请稍候…' },
+  uploading: { step: 2, title: '正在创建图纸', detail: '正在创建草稿零件并保存空白模板…' },
+  converting: { step: 3, title: '正在同步新建图纸', detail: '正在读取刚创建的零件和附件信息…' },
+  opening: { step: 4, title: '正在准备并打开 CAXA', detail: '正在等待 DWG 就绪并启动本地编辑，首次可能需要几十秒…' },
+})[drawingCreationStage.value])
+const canCreateDrawing = computed(() => {
+  const project = drawingStore.getDrawing(rootDrawingNo.value)
+  const user = authStore.currentUser
+  return Boolean(project && user && ['draft', 'published'].includes(project.status)
+    && (user.roles?.includes('admin') || project.createdBy === user.displayName))
+})
+
+function openCreateDrawing() {
+  newDrawingName.value = ''
+  newDrawingNo.value = ''
+  drawingCreationError.value = ''
+  drawingCreationStage.value = 'preparing'
+  isCreatingDrawing.value = true
+}
+
+function closeCreateDrawing() {
+  if (creatingDrawing.value) return
+  isCreatingDrawing.value = false
+  drawingCreationError.value = ''
+}
+
+function guardDrawingCreationUnload(event: BeforeUnloadEvent) {
+  if (!creatingDrawing.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+async function createDrawing() {
+  if (creatingDrawing.value || !canCreateDrawing.value) return
+  const name = newDrawingName.value.trim()
+  const no = newDrawingNo.value.trim()
+  const parentNo = rootDrawingNo.value
+  if (!name || !no) {
+    uiStore.toast('请填写名称和图号', 'warn')
+    return
+  }
+  const normalize = (value: string) => value.replace(/[\s/\\]/g, '').toLowerCase()
+  if ([...drawingStore.drawings, ...drawingStore.parts].some((item) => normalize(item.no) === normalize(no))) {
+    uiStore.toast('图号已存在，请使用其他图号', 'warn')
+    return
+  }
+  drawingCreationError.value = ''
+  drawingCreationStage.value = 'preparing'
+  creatingDrawing.value = true
+  let created = false
+  try {
+    const response = await fetch(`${import.meta.env.BASE_URL}templates/blank.exb`)
+    if (!response.ok) throw new Error('空白 EXB 模板读取失败')
+    const content = await response.blob()
+    const signature = new Uint8Array(await content.slice(0, 8).arrayBuffer())
+    if (signature.length !== 8 || ![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((byte, index) => signature[index] === byte)) {
+      throw new Error('空白 EXB 模板无效')
+    }
+    const filename = `${no}(${name})`.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') + '.exb'
+    const file: DrawingFile = {
+      id: crypto.randomUUID(), name: filename, size: formatFileSize(content.size),
+      role: 'part', drawingNo: parentNo, partNo: no, version: 'v1.0',
+      uploadedBy: authStore.currentUser?.displayName || '', uploadedAt: formatCurrentTime(), previewable: true,
+    }
+    drawingCreationStage.value = 'uploading'
+    await drawingOperationsStore.createPartWithFile(parentNo, {
+      no, name, parentNo, project: drawingStore.getDrawing(parentNo)?.project || parentNo,
+      material: '—', spec: '', weight: 0, surfaceTreatment: '', partType: '自制件',
+      qty: 1, status: 'draft', ver: 'v1.0', hasFile: true, files: [file],
+    }, file, content)
+    created = true
+    drawingCreationStage.value = 'converting'
+    await drawingStore.refresh()
+    // 新建零件仅有这张附件；EXB 转换完成后展示名可能已经变为 DWG。
+    const savedFile = allFiles.value.find((entry) => entry.ownerNo === no && entry.role === 'part')
+    uiStore.toast(`图纸「${name}」已创建`, 'ok')
+    if (savedFile) {
+      drawingCreationStage.value = 'opening'
+      await openEditor(savedFile)
+    }
+    else uiStore.toast('图纸已创建，请刷新列表后点击「本地编辑」', 'warn')
+    isCreatingDrawing.value = false
+  } catch (error) {
+    const message = created ? '图纸已创建，但自动打开失败；请刷新列表后点击「本地编辑」' : error instanceof Error ? error.message : '新建图纸失败'
+    if (created) isCreatingDrawing.value = false
+    else drawingCreationError.value = message
+    uiStore.toast(message, 'warn')
+  } finally {
+    creatingDrawing.value = false
+  }
+}
 const isReidentifyingAll = ref(false)
 const HISTORY_READ_STORAGE_KEY = 'cad:read-file-history:v1'
 const borrowSearchMode = ref<'by-project' | 'global-part'>('by-project')
@@ -487,7 +586,7 @@ function getFileLockInfo(file: DrawingFile): ActiveEditSessionInfo | undefined {
   // 服务端会话记录的是原始存储键（EXB 上传场景），优先用原始键匹配。
   const originalKey = file.rawStorageKey || file.storageKey
   if (!originalKey) return undefined
-  return activeSessionList.value.find((s) => s.storageKey === originalKey || s.storageKey === file.storageKey)
+  return activeSessionList.value.find((s) => s.attachmentId ? s.attachmentId === file.id : s.storageKey === originalKey || s.storageKey === file.storageKey)
 }
 
 function isFileLockedByOther(file: DrawingFile): boolean {
@@ -569,7 +668,7 @@ async function relaunchEditor(session: LocalActiveEditSession) {
   if (editingFileId.value) return
   editingFileId.value = session.fileId
   try {
-    const result = await editingService.openSession(storageKey)
+    const result = await editingService.openSession(storageKey, session.fileId)
     session.openUrl = result.openUrl
     session.uncPath = result.uncPath
     session.lastHeartbeatAt = Date.now()
@@ -595,7 +694,7 @@ async function relaunchEditorForFile(file: DrawingFile) {
   if (editingFileId.value) return
   editingFileId.value = file.id
   try {
-    const result = await editingService.openSession(storageKey)
+    const result = await editingService.openSession(storageKey, file.id)
     myActiveSessions.value = [
       ...myActiveSessions.value.filter((s) => s.sessionId !== result.sessionId),
       {
@@ -719,7 +818,7 @@ async function openEditor(file: DrawingFile) {
     return
   }
   // 服务端仍保留自己的会话（例如关闭页面后重新打开）：重新认领并呼出 CAD，不新建占用。
-  const ownServerSession = activeSessionList.value.find((s) => s.isCurrent && (s.storageKey === file.rawStorageKey || s.storageKey === file.storageKey))
+  const ownServerSession = activeSessionList.value.find((s) => s.isCurrent && (s.attachmentId ? s.attachmentId === file.id : s.storageKey === file.rawStorageKey || s.storageKey === file.storageKey))
   if (ownServerSession) {
     await relaunchEditorForFile(file)
     return
@@ -729,7 +828,7 @@ async function openEditor(file: DrawingFile) {
   let sessionId: string | null = null
   try {
     // 会话占用与票据都以原始存储键为准（EXB 上传场景，当前键可能指向转换产物）。
-    const session = await editingService.openSession(file.rawStorageKey || file.storageKey)
+    const session = await editingService.openSession(file.rawStorageKey || file.storageKey, file.id)
     sessionId = session.sessionId
     window.localStorage.setItem('cad_last_edit_url', session.openUrl)
 
@@ -775,6 +874,7 @@ watch(
 )
 
 onMounted(() => {
+  window.addEventListener('beforeunload', guardDrawingCreationUnload)
   void Promise.all([drawingStore.load(), reviewStore.load()])
   sessionPollTimer = window.setInterval(() => {
     void refreshActiveSessions()
@@ -795,6 +895,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', guardDrawingCreationUnload)
   if (heartbeatTimer) {
     window.clearInterval(heartbeatTimer)
     heartbeatTimer = null
@@ -1019,7 +1120,7 @@ async function executeDownload() {
             const content = await drawingFileService.read(item.pdfKey)
             zip.file(fileName, content)
           } else {
-            // CAD 图纸（DWG / DXF）：读取二进制数据并在前端解析渲染为矢量 PDF
+            // CAD 图纸（DWG / DXF）：读取二进制数据并使用 CAD 查看器渲染为高清 PDF
             const cadSourceKey = item.dwgKey || item.file.storageKey || ''
             if (!cadSourceKey) throw new Error('缺少 CAD 图纸源文件')
             const cadBlob = await drawingFileService.read(cadSourceKey)
@@ -1393,6 +1494,9 @@ function closeReidentifyModal() {
       </div>
 
       <div class="header-buttons">
+        <button v-if="canCreateDrawing && isAssembly" class="btn primary" type="button" @click="openCreateDrawing">
+          <DemoIcon name="plus" :size="14" />新建图纸
+        </button>
         <button class="btn" type="button" @click="router.push({ name: 'drawing-models', params: { drawingId: route.params.drawingId } })"><DemoIcon name="box" :size="14" />3D 图纸</button>
         <button class="btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId: route.params.drawingId } })">图纸对比</button>
         <button class="btn" type="button" title="选择文件与格式（EXB / DWG / PDF），打包为 zip 下载" @click="openDownloadModal">
@@ -1848,6 +1952,32 @@ function closeReidentifyModal() {
         </div>
       </div>
     </div>
+    <Teleport to="body">
+    <div v-if="isCreatingDrawing" class="modal-backdrop creation-backdrop">
+      <div v-if="creatingDrawing" class="modal card drawing-creating-modal" role="alertdialog" aria-modal="true" aria-labelledby="drawing-creating-title" aria-describedby="drawing-creating-detail">
+        <div class="drawing-creating-spinner" aria-hidden="true"><span></span></div>
+        <div class="drawing-creating-copy">
+          <span class="drawing-creating-step">步骤 {{ drawingCreationProgress.step }} / 4</span>
+          <h3 id="drawing-creating-title">{{ drawingCreationProgress.title }}</h3>
+          <p id="drawing-creating-detail">{{ drawingCreationProgress.detail }}</p>
+          <strong>{{ newDrawingNo }} · {{ newDrawingName }}</strong>
+        </div>
+        <div class="drawing-creating-track" aria-hidden="true"><i :style="{ width: `${drawingCreationProgress.step * 25}%` }"></i></div>
+        <p class="drawing-creating-warning"><DemoIcon name="info" :size="15" />创建期间请勿刷新、返回或重复操作</p>
+      </div>
+      <form v-else class="modal card new-drawing-modal" role="dialog" aria-modal="true" aria-labelledby="new-drawing-title" @submit.prevent="createDrawing">
+        <div class="modal-head"><h3 id="new-drawing-title">新建图纸</h3></div>
+        <p>使用 CAXA 空白模板创建草稿零件，并在本机 CAXA 中绘制。保存后点击「结束编辑」回写版本。</p>
+        <div v-if="drawingCreationError" class="drawing-creation-error" role="alert"><DemoIcon name="alert-triangle" :size="16" />{{ drawingCreationError }}</div>
+        <label>名称<input v-model="newDrawingName" class="input" required maxlength="200" autofocus /></label>
+        <label>图号<input v-model="newDrawingNo" class="input" required maxlength="200" /></label>
+        <div class="modal-foot">
+          <button class="btn" type="button" @click="closeCreateDrawing">取消</button>
+          <button class="btn primary" type="submit">创建并本地编辑</button>
+        </div>
+      </form>
+    </div>
+    </Teleport>
     <!-- 借用其他项目零件弹窗 (支持千级项目/海量零件双模智能选型体系) -->
     <div v-if="isBorrowing" class="modal-backdrop">
       <div class="modal card borrow-modal">
@@ -2102,6 +2232,26 @@ function closeReidentifyModal() {
 </template>
 
 <style scoped>
+.new-drawing-modal { width: min(460px, calc(100vw - 32px)); padding: 24px; display: grid; gap: 18px; }
+.new-drawing-modal p { color: var(--text-2); line-height: 1.6; margin: 0; }
+.new-drawing-modal label { display: grid; gap: 8px; }
+.new-drawing-modal .modal-foot { display: flex; justify-content: flex-end; gap: 10px; }
+.creation-backdrop { z-index: 2900; cursor: wait; }
+.new-drawing-modal { cursor: default; }
+.drawing-creating-modal { width: min(480px, calc(100vw - 32px)); padding: 30px; display: grid; justify-items: center; gap: 16px; text-align: center; cursor: wait; }
+.drawing-creating-spinner { width: 54px; height: 54px; padding: 5px; border-radius: 50%; background: conic-gradient(var(--accent), transparent 65%); animation: drawing-creating-spin .85s linear infinite; }
+.drawing-creating-spinner span { display: block; width: 100%; height: 100%; border-radius: 50%; background: var(--panel); }
+.drawing-creating-copy { display: grid; justify-items: center; gap: 7px; }
+.drawing-creating-copy h3, .drawing-creating-copy p { margin: 0; }
+.drawing-creating-copy p { color: var(--text-2); line-height: 1.6; }
+.drawing-creating-copy strong { color: var(--text-1); font-family: 'JetBrains Mono', monospace; overflow-wrap: anywhere; }
+.drawing-creating-step { color: var(--accent); font-size: 12px; font-weight: 700; }
+.drawing-creating-track { width: 100%; height: 5px; overflow: hidden; border-radius: 999px; background: var(--panel-2); }
+.drawing-creating-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .35s ease; }
+.drawing-creating-warning, .drawing-creation-error { display: flex; align-items: center; gap: 8px; }
+.drawing-creating-warning { color: var(--text-2); font-size: 12px; margin: 0; }
+.drawing-creation-error { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+@keyframes drawing-creating-spin { to { transform: rotate(360deg); } }
 .ver-badge {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11.5px;
