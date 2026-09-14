@@ -26,8 +26,8 @@ func insertDocument(t *testing.T, db *DB, fixture Fixture, category, title strin
 func insertPatent(t *testing.T, db *DB, fixture Fixture) string {
 	t.Helper()
 	var id string
-	err := db.Pool.QueryRow(context.Background(), `INSERT INTO patent_records(number,title,responsible_id,deadline_source,reminder_days)
-		VALUES('CN-1','测试专利',$1::uuid,'年费',90) RETURNING id::text`, fixture.Reviewer).Scan(&id)
+	err := db.Pool.QueryRow(context.Background(), `INSERT INTO patent_records(number,title,responsible_id,reminder_days)
+		VALUES('CN-1','测试专利',$1::uuid,90) RETURNING id::text`, fixture.Reviewer).Scan(&id)
 	if err != nil {
 		t.Fatalf("插入专利失败: %v", err)
 	}

@@ -37,9 +37,9 @@ func withActor(request *http.Request, actor patentActor) *http.Request {
 // patentSeed 建立两个用户（负责人与外部人）与一个管理员。
 type patentSeed struct {
 	dbtest.Fixture
-	Owner     string
-	Outsider  string
-	Admin     string
+	Owner    string
+	Outsider string
+	Admin    string
 }
 
 func seedPatentUsers(t *testing.T, db *dbtest.DB) patentSeed {
@@ -88,10 +88,9 @@ func createPatent(t *testing.T, db *dbtest.DB, seed patentSeed, owner patentActo
 	t.Helper()
 	handler := Patents(db.Pool)
 	recorder := postJSON(t, handler, owner, http.MethodPost, "/api/patents", map[string]any{
-		"number":         "CN-2024-001",
-		"title":          "一种测试装置",
-		"deadlineSource": "年费通知",
-		"reminderDays":   90,
+		"number":       "CN-2024-001",
+		"title":        "一种测试装置",
+		"reminderDays": 90,
 	})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("建立专利失败: %d %s", recorder.Code, recorder.Body.String())
@@ -122,12 +121,11 @@ func TestPatentsCreateValidatesRequiredFields(t *testing.T) {
 		name string
 		body map[string]any
 	}{
-		{"缺少编号", map[string]any{"title": "标题", "deadlineSource": "依据", "reminderDays": 90}},
-		{"缺少名称", map[string]any{"number": "N-1", "deadlineSource": "依据", "reminderDays": 90}},
-		{"缺少期限依据", map[string]any{"number": "N-1", "title": "标题", "reminderDays": 90}},
-		{"提前量为零", map[string]any{"number": "N-1", "title": "标题", "deadlineSource": "依据", "reminderDays": 0}},
-		{"提前量超上限", map[string]any{"number": "N-1", "title": "标题", "deadlineSource": "依据", "reminderDays": 366}},
-		{"日期格式错误", map[string]any{"number": "N-1", "title": "标题", "deadlineSource": "依据", "reminderDays": 90, "feeDue": "2024/01/01"}},
+		{"缺少编号", map[string]any{"title": "标题", "reminderDays": 90}},
+		{"缺少名称", map[string]any{"number": "N-1", "reminderDays": 90}},
+		{"提前量为零", map[string]any{"number": "N-1", "title": "标题", "reminderDays": 0}},
+		{"提前量超上限", map[string]any{"number": "N-1", "title": "标题", "reminderDays": 366}},
+		{"日期格式错误", map[string]any{"number": "N-1", "title": "标题", "reminderDays": 90, "feeDue": "2024/01/01"}},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
@@ -153,7 +151,7 @@ func TestPatentsCreateRejectsDuplicateNumber(t *testing.T) {
 
 	handler := Patents(db.Pool)
 	recorder := postJSON(t, handler, owner, http.MethodPost, "/api/patents", map[string]any{
-		"number": "CN-2024-001", "title": "重复编号", "deadlineSource": "依据", "reminderDays": 90,
+		"number": "CN-2024-001", "title": "重复编号", "reminderDays": 90,
 	})
 	if recorder.Code == http.StatusOK {
 		t.Fatal("重复编号必须被拒绝")
@@ -169,7 +167,7 @@ func TestPatentsUpdateRequiresOwnershipOrAdmin(t *testing.T) {
 	handler := Patents(db.Pool)
 
 	update := map[string]any{
-		"number": "CN-2024-001", "title": "被改标题", "deadlineSource": "年费通知", "reminderDays": 90, "revision": 1,
+		"number": "CN-2024-001", "title": "被改标题", "reminderDays": 90, "revision": 1,
 	}
 	// 外部人必须被拒绝。
 	recorder := postJSON(t, handler, patentActor{ID: seed.Outsider}, http.MethodPut, "/api/patents/"+patent, update)
@@ -196,7 +194,7 @@ func TestPatentsUpdateOnlyAdminCanChangeOwner(t *testing.T) {
 	handler := Patents(db.Pool)
 
 	body := map[string]any{
-		"number": "CN-2024-001", "title": "标题", "deadlineSource": "年费通知", "reminderDays": 90,
+		"number": "CN-2024-001", "title": "标题", "reminderDays": 90,
 		"revision": 1, "responsibleId": seed.Outsider,
 	}
 	// 负责人自己也不能把负责人转给别人。
@@ -224,7 +222,7 @@ func TestPatentsUpdateRejectsMissingOwner(t *testing.T) {
 	handler := Patents(db.Pool)
 
 	body := map[string]any{
-		"number": "CN-2024-001", "title": "标题", "deadlineSource": "年费通知", "reminderDays": 90,
+		"number": "CN-2024-001", "title": "标题", "reminderDays": 90,
 		"revision": 1, "responsibleId": "00000000-0000-0000-0000-000000000000",
 	}
 	recorder := postJSON(t, handler, patentActor{ID: seed.Admin, Roles: []string{"admin"}}, http.MethodPut, "/api/patents/"+patent, body)
@@ -242,7 +240,7 @@ func TestPatentsUpdateRejectsStaleRevision(t *testing.T) {
 	handler := Patents(db.Pool)
 
 	body := map[string]any{
-		"number": "CN-2024-001", "title": "第一次修改", "deadlineSource": "年费通知", "reminderDays": 90, "revision": 1,
+		"number": "CN-2024-001", "title": "第一次修改", "reminderDays": 90, "revision": 1,
 	}
 	recorder := postJSON(t, handler, owner, http.MethodPut, "/api/patents/"+patent, body)
 	if recorder.Code != http.StatusOK {
@@ -299,7 +297,7 @@ func TestPatentEventsRecordBeforeAndAfter(t *testing.T) {
 	handler := Patents(db.Pool)
 
 	body := map[string]any{
-		"number": "CN-2024-001", "title": "修改后标题", "deadlineSource": "年费通知", "reminderDays": 60, "revision": 1,
+		"number": "CN-2024-001", "title": "修改后标题", "reminderDays": 60, "revision": 1,
 	}
 	if recorder := postJSON(t, handler, owner, http.MethodPut, "/api/patents/"+patent, body); recorder.Code != http.StatusOK {
 		t.Fatalf("修改失败: %s", recorder.Body.String())
@@ -322,18 +320,15 @@ func TestPatentPaymentValidation(t *testing.T) {
 	owner := patentActor{ID: seed.Owner}
 	patent := createPatent(t, db, seed, owner)
 	handler := Patents(db.Pool)
-	// 设置本期缴费期限，后续校验“下一期必须晚于本期”。
+	// 设置本期缴费基准日期，缴费后按周期顺延。
 	db.Exec(t, `UPDATE patent_records SET fee_due='2026-01-01' WHERE id=$1::uuid`, patent)
 
 	// 缴费同样受乐观锁保护，必须带上当前 revision。
 	revision := 1
 	fmt.Sscanf(db.ScanString(t, `SELECT revision::text FROM patent_records WHERE id=$1::uuid`, patent), "%d", &revision)
 	base := map[string]any{
-		"feeDue":         "2027-01-01",
-		"deadlineSource": "年费通知",
-		"paidOn":         "2025-12-01",
-		"amount":         "900.00 CNY",
-		"revision":       revision,
+		"paidOn":   "2025-12-01",
+		"revision": revision,
 	}
 	withExtra := func(extra map[string]any) map[string]any {
 		body := map[string]any{}
@@ -354,20 +349,12 @@ func TestPatentPaymentValidation(t *testing.T) {
 	if recorder := postJSON(t, handler, owner, http.MethodPost, "/api/patents/"+patent+"/payment", withExtra(map[string]any{"receiptId": "00000000-0000-0000-0000-000000000000"})); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("凭证不属于本专利应返回 400，实际 %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 金额格式错误。
+	// 上传凭证，后续校验复用同一份凭证。
 	receipt := uploadLifecycleDocument(t, db, seed, owner, "专利证书", "缴费凭证")
-	if recorder := postJSON(t, handler, owner, http.MethodPost, "/api/patents/"+patent+"/payment", withExtra(map[string]any{"receiptId": receipt, "amount": "900"})); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("金额缺少币种应返回 400，实际 %d %s", recorder.Code, recorder.Body.String())
-	}
 	// 实际缴费日期不能在未来。
-	future := withExtra(map[string]any{"receiptId": receipt, "amount": "900.00 CNY", "paidOn": "2099-01-01"})
+	future := withExtra(map[string]any{"receiptId": receipt, "paidOn": "2099-01-01"})
 	if recorder := postJSON(t, handler, owner, http.MethodPost, "/api/patents/"+patent+"/payment", future); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("未来缴费日期应返回 400，实际 %d %s", recorder.Code, recorder.Body.String())
-	}
-	// 下一缴费期限必须晚于本期。
-	earlier := withExtra(map[string]any{"receiptId": receipt, "feeDue": "2025-06-01"})
-	if recorder := postJSON(t, handler, owner, http.MethodPost, "/api/patents/"+patent+"/payment", earlier); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("下一期早于本期应返回 400，实际 %d %s", recorder.Code, recorder.Body.String())
 	}
 
 	// 合法缴费必须成功并推进期限。
@@ -394,6 +381,40 @@ func TestPatentPaymentValidation(t *testing.T) {
 	}
 }
 
+// TestPatentAutoFeeSchedule 起始日期与缴费周期决定本期缴费截止，缴费后自动顺延。
+func TestPatentAutoFeeSchedule(t *testing.T) {
+	db := dbtest.New(t)
+	seed := seedPatentUsers(t, db)
+	owner := patentActor{ID: seed.Owner}
+	handler := Patents(db.Pool)
+
+	recorder := postJSON(t, handler, owner, http.MethodPost, "/api/patents", map[string]any{
+		"number": "CN-2024-002", "title": "周期测试",
+		"reminderDays": 90, "startDate": "2025-03-01", "feeCycleMonths": 6,
+	})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("建立带周期的专利失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	patent := decodeData(t, recorder)["id"].(string)
+	feeDue := db.ScanString(t, `SELECT fee_due::text FROM patent_records WHERE id=$1::uuid`, patent)
+	if !strings.HasPrefix(feeDue, "2025-09-01") {
+		t.Fatalf("首期缴费截止应为申请日起 6 个月，实际 %s", feeDue)
+	}
+
+	// 缴费后按周期而非手动日期顺延。
+	receipt := uploadLifecycleDocument(t, db, seed, owner, "专利证书", "缴费凭证")
+	revision := 1
+	fmt.Sscanf(db.ScanString(t, `SELECT revision::text FROM patent_records WHERE id=$1::uuid`, patent), "%d", &revision)
+	body := map[string]any{"receiptId": receipt, "paidOn": "2025-08-01", "revision": revision}
+	if recorder := postJSON(t, handler, owner, http.MethodPost, "/api/patents/"+patent+"/payment", body); recorder.Code != http.StatusOK {
+		t.Fatalf("合法缴费应成功，实际 %d %s", recorder.Code, recorder.Body.String())
+	}
+	feeDue = db.ScanString(t, `SELECT fee_due::text FROM patent_records WHERE id=$1::uuid`, patent)
+	if !strings.HasPrefix(feeDue, "2026-03-01") {
+		t.Fatalf("缴费后应顺延到下一期，实际 %s", feeDue)
+	}
+}
+
 // TestPatentPaymentRequiresOwnership 非负责人不得登记缴费。
 func TestPatentPaymentRequiresOwnership(t *testing.T) {
 	db := dbtest.New(t)
@@ -407,7 +428,7 @@ func TestPatentPaymentRequiresOwnership(t *testing.T) {
 	// 缴费受乐观锁保护，必须传当前 revision；并发场景下传同一个 revision 才能形成真实竞争。
 	revision := 1
 	fmt.Sscanf(db.ScanString(t, `SELECT revision::text FROM patent_records WHERE id=$1::uuid`, patent), "%d", &revision)
-	body := map[string]any{"receiptId": receipt, "feeDue": "2027-01-01", "deadlineSource": "年费通知", "paidOn": "2025-12-01", "amount": "900.00 CNY", "revision": revision}
+	body := map[string]any{"receiptId": receipt, "paidOn": "2025-12-01", "revision": revision}
 	recorder := postJSON(t, handler, patentActor{ID: seed.Outsider}, http.MethodPost, "/api/patents/"+patent+"/payment", body)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("非负责人应返回 403，实际 %d %s", recorder.Code, recorder.Body.String())
@@ -429,7 +450,7 @@ func TestPatentPaymentConcurrentOnlyOneSucceeds(t *testing.T) {
 	// 缴费受乐观锁保护，必须传当前 revision；并发场景下传同一个 revision 才能形成真实竞争。
 	revision := 1
 	fmt.Sscanf(db.ScanString(t, `SELECT revision::text FROM patent_records WHERE id=$1::uuid`, patent), "%d", &revision)
-	body := map[string]any{"receiptId": receipt, "feeDue": "2027-01-01", "deadlineSource": "年费通知", "paidOn": "2025-12-01", "amount": "900.00 CNY", "revision": revision}
+	body := map[string]any{"receiptId": receipt, "paidOn": "2025-12-01", "revision": revision}
 	const workers = 4
 	var wg sync.WaitGroup
 	codes := make([]int, workers)

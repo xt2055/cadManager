@@ -48,8 +48,8 @@ export interface LifecycleTree {
 }
 export interface PatentRecord {
   id: string; number: string; title: string; patentType: string; jurisdiction: string; ownerName: string
-  responsibleId: string; responsibleName: string; drawingId: string | null; feeDue: string | null; expiresOn: string | null
-  deadlineSource: string; reminderDays: number; notes: string; revision: number; feeDays: number | null; expiryDays: number | null
+  responsibleId: string; responsibleName: string; drawingId: string | null; startDate: string | null; feeCycleMonths: number; feeDue: string | null; expiresOn: string | null
+  reminderDays: number; notes: string; revision: number; feeDays: number | null; expiryDays: number | null
 }
 export function patentAlerts(p: PatentRecord) {
   const alerts: string[] = []

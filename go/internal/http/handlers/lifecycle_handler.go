@@ -9,7 +9,6 @@ import (
 	"log"
 	"mime"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -203,15 +202,33 @@ type patentInput struct {
 	Jurisdiction   string `json:"jurisdiction"`
 	OwnerName      string `json:"ownerName"`
 	DrawingID      string `json:"drawingId"`
+	StartDate      string `json:"startDate"`
+	FeeCycleMonths int    `json:"feeCycleMonths"`
 	FeeDue         string `json:"feeDue"`
 	ExpiresOn      string `json:"expiresOn"`
-	DeadlineSource string `json:"deadlineSource"`
 	ReminderDays   int    `json:"reminderDays"`
 	Notes          string `json:"notes"`
 	Revision       int    `json:"revision"`
 	ReceiptID      string `json:"receiptId"`
 	PaidOn         string `json:"paidOn"`
-	Amount         string `json:"amount"`
+}
+
+// nextFeeDue 依据申请日（start_date）与缴费周期推算第 periods 期缴费截止日期。
+// 申请日缺失时回退到上期截止日加一个周期，保证历史数据仍可顺延。
+func nextFeeDue(start, current string, cycleMonths, periods int) string {
+	base := start
+	if base == "" {
+		if current == "" {
+			return ""
+		}
+		base = current
+		periods = 1
+	}
+	date, err := time.Parse("2006-01-02", base)
+	if err != nil {
+		return ""
+	}
+	return date.AddDate(0, cycleMonths*periods, 0).Format("2006-01-02")
 }
 
 func Patents(pool *pgxpool.Pool) http.Handler {
@@ -235,7 +252,7 @@ func Patents(pool *pgxpool.Pool) http.Handler {
 			if len(parts) == 2 && parts[1] == "events" {
 				rows, err = pool.Query(ctx, `SELECT jsonb_build_object('id',e.id,'action',e.action,'detail',e.detail,'createdAt',e.created_at,'actor',COALESCE(u.display_name,u.account,'系统提醒')) FROM patent_events e LEFT JOIN users u ON u.id=e.actor_id WHERE e.patent_id=$1::uuid ORDER BY e.created_at DESC`, id)
 			} else {
-				rows, err = pool.Query(ctx, `SELECT jsonb_build_object('id',p.id,'number',p.number,'title',p.title,'patentType',p.patent_type,'jurisdiction',p.jurisdiction,'ownerName',p.owner_name,'responsibleId',p.responsible_id,'responsibleName',COALESCE(u.display_name,u.account),'drawingId',p.drawing_id,'feeDue',p.fee_due,'expiresOn',p.expires_on,'deadlineSource',p.deadline_source,'reminderDays',p.reminder_days,'notes',p.notes,'revision',p.revision,'feeDays',p.fee_due-(now() AT TIME ZONE 'Asia/Shanghai')::date,'expiryDays',p.expires_on-(now() AT TIME ZONE 'Asia/Shanghai')::date) FROM patent_records p JOIN users u ON u.id=p.responsible_id WHERE ($1='' OR p.id=NULLIF($1,'')::uuid) ORDER BY LEAST(p.fee_due,p.expires_on) NULLS LAST,p.created_at DESC`, id)
+				rows, err = pool.Query(ctx, `SELECT jsonb_build_object('id',p.id,'number',p.number,'title',p.title,'patentType',p.patent_type,'jurisdiction',p.jurisdiction,'ownerName',p.owner_name,'responsibleId',p.responsible_id,'responsibleName',COALESCE(u.display_name,u.account),'drawingId',p.drawing_id,'startDate',p.start_date,'feeCycleMonths',p.fee_cycle_months,'feeDue',p.fee_due,'expiresOn',p.expires_on,'reminderDays',p.reminder_days,'notes',p.notes,'revision',p.revision,'feeDays',p.fee_due-(now() AT TIME ZONE 'Asia/Shanghai')::date,'expiryDays',p.expires_on-(now() AT TIME ZONE 'Asia/Shanghai')::date) FROM patent_records p JOIN users u ON u.id=p.responsible_id WHERE ($1='' OR p.id=NULLIF($1,'')::uuid) ORDER BY LEAST(p.fee_due,p.expires_on) NULLS LAST,p.created_at DESC`, id)
 			}
 			if err != nil {
 				fail(err)
@@ -268,7 +285,7 @@ func Patents(pool *pgxpool.Pool) http.Handler {
 			response.WriteError(w, 400, "请求格式不正确")
 			return
 		}
-		for _, date := range []string{input.FeeDue, input.ExpiresOn, input.PaidOn} {
+		for _, date := range []string{input.StartDate, input.FeeDue, input.ExpiresOn, input.PaidOn} {
 			if date != "" {
 				if _, err := time.Parse("2006-01-02", date); err != nil {
 					response.WriteError(w, 400, "日期格式应为 YYYY-MM-DD")
@@ -281,8 +298,8 @@ func Patents(pool *pgxpool.Pool) http.Handler {
 			response.WriteError(w, 404, "接口不存在")
 			return
 		}
-		if !payment && (strings.TrimSpace(input.Title) == "" || strings.TrimSpace(input.Number) == "" || strings.TrimSpace(input.DeadlineSource) == "" || input.ReminderDays < 1 || input.ReminderDays > 365) {
-			response.WriteError(w, 400, "请填写编号、名称、期限依据及 1～365 天提醒提前量")
+		if !payment && (strings.TrimSpace(input.Title) == "" || strings.TrimSpace(input.Number) == "" || input.ReminderDays < 1 || input.ReminderDays > 365) {
+			response.WriteError(w, 400, "请填写编号、名称及 1～365 天提醒提前量")
 			return
 		}
 		tx, err := pool.Begin(ctx)
@@ -300,10 +317,12 @@ func Patents(pool *pgxpool.Pool) http.Handler {
 		}
 		responsibleID := user.ID
 		var previous json.RawMessage
+		var currentStart, currentFeeDue string
+		var currentCycle int
 		if id != "" {
 			var owner string
 			var revision int
-			err = tx.QueryRow(ctx, `SELECT responsible_id::text,revision,to_jsonb(p) FROM patent_records p WHERE id=$1::uuid FOR UPDATE`, id).Scan(&owner, &revision, &previous)
+			err = tx.QueryRow(ctx, `SELECT responsible_id::text,revision,COALESCE(start_date::text,''),COALESCE(fee_due::text,''),fee_cycle_months,to_jsonb(p) FROM patent_records p WHERE id=$1::uuid FOR UPDATE`, id).Scan(&owner, &revision, &currentStart, &currentFeeDue, &currentCycle, &previous)
 			if err != nil {
 				response.WriteError(w, 404, "专利不存在")
 				return
@@ -341,28 +360,52 @@ func Patents(pool *pgxpool.Pool) http.Handler {
 			return
 		}
 		input.ResponsibleID = responsibleID
+		cycle := input.FeeCycleMonths
+		if cycle <= 0 {
+			cycle = currentCycle
+		}
+		if cycle < 1 || cycle > 120 {
+			cycle = 12
+		}
 		if payment {
-			if input.ReceiptID == "" || input.PaidOn == "" || strings.TrimSpace(input.Amount) == "" || input.FeeDue == "" || strings.TrimSpace(input.DeadlineSource) == "" {
-				response.WriteError(w, 400, "登记缴费需要凭证、缴费日期、金额、下一缴费期限及期限依据")
-				return
-			}
-			input.Amount = strings.Join(strings.Fields(strings.ToUpper(input.Amount)), " ")
-			if !regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})? [A-Z]{3}$`).MatchString(input.Amount) {
-				response.WriteError(w, 400, "金额格式为数字和币种，例如 900.00 CNY")
+			if input.ReceiptID == "" || input.PaidOn == "" {
+				response.WriteError(w, 400, "登记缴费需要缴费凭证和实际缴费日期")
 				return
 			}
 			var valid bool
-			err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_documents d JOIN patent_records p ON p.id=d.patent_id WHERE d.id=$1::uuid AND p.id=$2::uuid AND (p.fee_due IS NULL OR $3::date>p.fee_due) AND $4::date <= (now() AT TIME ZONE 'Asia/Shanghai')::date AND NOT EXISTS(SELECT 1 FROM patent_events e WHERE e.patent_id=p.id AND e.action='payment' AND e.detail->'submitted'->>'receiptId'=d.id::text))`, input.ReceiptID, id, input.FeeDue, input.PaidOn).Scan(&valid)
+			err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_documents d JOIN patent_records p ON p.id=d.patent_id WHERE d.id=$1::uuid AND p.id=$2::uuid AND $3::date <= (now() AT TIME ZONE 'Asia/Shanghai')::date AND NOT EXISTS(SELECT 1 FROM patent_events e WHERE e.patent_id=p.id AND e.action='payment' AND e.detail->'submitted'->>'receiptId'=d.id::text))`, input.ReceiptID, id, input.PaidOn).Scan(&valid)
 			if err != nil || !valid {
-				response.WriteError(w, 400, "凭证须属于当前专利且未重复登记，下一缴费日期须晚于本期，实际缴费日期不能在未来")
+				response.WriteError(w, 400, "凭证须属于当前专利且未重复登记，实际缴费日期不能在未来")
 				return
 			}
-			_, err = tx.Exec(ctx, `UPDATE patent_records SET fee_due=$2::date,deadline_source=$3,revision=revision+1,updated_at=now() WHERE id=$1::uuid`, id, input.FeeDue, input.DeadlineSource)
+			var paidCount int
+			if err = tx.QueryRow(ctx, `SELECT count(*) FROM patent_events WHERE patent_id=$1::uuid AND action='payment'`, id).Scan(&paidCount); err != nil {
+				fail(err)
+				return
+			}
+			nextDue := nextFeeDue(currentStart, currentFeeDue, cycle, paidCount+2)
+			input.FeeDue = nextDue
+			_, err = tx.Exec(ctx, `UPDATE patent_records SET fee_due=NULLIF($2,'')::date,revision=revision+1,updated_at=now() WHERE id=$1::uuid`, id, nextDue)
 			action = "payment"
 		} else if id == "" {
-			err = tx.QueryRow(ctx, `INSERT INTO patent_records(number,title,patent_type,jurisdiction,owner_name,responsible_id,drawing_id,fee_due,expires_on,deadline_source,reminder_days,notes) VALUES($1,$2,$3,$4,$5,$6::uuid,NULLIF($7,'')::uuid,NULLIF($8,'')::date,NULLIF($9,'')::date,$10,$11,$12) RETURNING id::text`, strings.TrimSpace(input.Number), strings.TrimSpace(input.Title), input.PatentType, input.Jurisdiction, input.OwnerName, responsibleID, input.DrawingID, input.FeeDue, input.ExpiresOn, input.DeadlineSource, input.ReminderDays, input.Notes).Scan(&id)
+			feeDue := ""
+			if input.StartDate != "" {
+				feeDue = nextFeeDue(input.StartDate, "", cycle, 1)
+			}
+			input.FeeDue = feeDue
+			err = tx.QueryRow(ctx, `INSERT INTO patent_records(number,title,patent_type,jurisdiction,owner_name,responsible_id,drawing_id,start_date,fee_cycle_months,fee_due,expires_on,reminder_days,notes) VALUES($1,$2,$3,$4,$5,$6::uuid,NULLIF($7,'')::uuid,NULLIF($8,'')::date,$9,NULLIF($10,'')::date,NULLIF($11,'')::date,$12,$13) RETURNING id::text`, strings.TrimSpace(input.Number), strings.TrimSpace(input.Title), input.PatentType, input.Jurisdiction, input.OwnerName, responsibleID, input.DrawingID, input.StartDate, cycle, feeDue, input.ExpiresOn, input.ReminderDays, input.Notes).Scan(&id)
 		} else {
-			_, err = tx.Exec(ctx, `UPDATE patent_records SET number=$2,title=$3,patent_type=$4,jurisdiction=$5,owner_name=$6,drawing_id=NULLIF($7,'')::uuid,fee_due=NULLIF($8,'')::date,expires_on=NULLIF($9,'')::date,deadline_source=$10,reminder_days=$11,notes=$12,responsible_id=$13::uuid,revision=revision+1,updated_at=now() WHERE id=$1::uuid`, id, strings.TrimSpace(input.Number), strings.TrimSpace(input.Title), input.PatentType, input.Jurisdiction, input.OwnerName, input.DrawingID, input.FeeDue, input.ExpiresOn, input.DeadlineSource, input.ReminderDays, input.Notes, responsibleID)
+			var paidCount int
+			if err = tx.QueryRow(ctx, `SELECT count(*) FROM patent_events WHERE patent_id=$1::uuid AND action='payment'`, id).Scan(&paidCount); err != nil {
+				fail(err)
+				return
+			}
+			feeDue := currentFeeDue
+			if input.StartDate != "" {
+				feeDue = nextFeeDue(input.StartDate, "", cycle, paidCount+1)
+			}
+			input.FeeDue = feeDue
+			_, err = tx.Exec(ctx, `UPDATE patent_records SET number=$2,title=$3,patent_type=$4,jurisdiction=$5,owner_name=$6,drawing_id=NULLIF($7,'')::uuid,start_date=NULLIF($8,'')::date,fee_cycle_months=$9,fee_due=NULLIF($10,'')::date,expires_on=NULLIF($11,'')::date,reminder_days=$12,notes=$13,responsible_id=$14::uuid,revision=revision+1,updated_at=now() WHERE id=$1::uuid`, id, strings.TrimSpace(input.Number), strings.TrimSpace(input.Title), input.PatentType, input.Jurisdiction, input.OwnerName, input.DrawingID, input.StartDate, cycle, feeDue, input.ExpiresOn, input.ReminderDays, input.Notes, responsibleID)
 		}
 		if err != nil {
 			fail(err)

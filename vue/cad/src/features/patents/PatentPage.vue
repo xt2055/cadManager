@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { lifecycleApi, patentAlerts, type PatentRecord, type EvidenceDocument } from '@/services/lifecycle.service'
-import EvidenceDocuments from '@/features/drawings/components/EvidenceDocuments.vue'
+import { downloadEvidence, lifecycleApi, patentAlerts, type PatentRecord, type EvidenceDocument } from '@/services/lifecycle.service'
+import PatentReceiptUpload from '@/features/patents/PatentReceiptUpload.vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
+import { useUiStore } from '@/stores/ui.store'
 import { changeRequestService, type ChangeUserOption } from '@/services/change-request.service'
 
 const auth = useAuthStore()
 const drawingStore = useDrawingStore()
+const uiStore = useUiStore()
 const users = ref<ChangeUserOption[]>([])
 const patents = ref<PatentRecord[]>([])
 const selected = ref<PatentRecord | null>(null)
@@ -22,29 +24,36 @@ const editing = ref(false)
 
 const empty = () => ({
   number: '', title: '', patentType: '发明', jurisdiction: '中国', ownerName: '',
-  responsibleId: auth.currentUser?.id || '', drawingId: '', feeDue: '', expiresOn: '',
-  deadlineSource: '', reminderDays: 90, notes: '', revision: 0,
+  responsibleId: auth.currentUser?.id || '', drawingId: '', startDate: '', feeCycleMonths: 12, expiresOn: '',
+  reminderDays: 90, notes: '', revision: 0,
 })
 const form = reactive(empty())
-const payment = reactive({ receiptId: '', paidOn: '', amount: '', feeDue: '', deadlineSource: '' })
 const receipts = ref<EvidenceDocument[]>([])
 const events = ref<{ id: string; action: string; actor: string; createdAt: string; detail: Record<string, unknown> }[]>([])
 const eventLabels: Record<string, string> = { create: '新增登记', update: '修改登记', payment: '缴费登记', reminder: '期限提醒' }
 const eventIcons: Record<string, string> = { create: 'plus', update: 'pencil', payment: 'check-circle-2', reminder: 'bell' }
 
+const activeTab = ref<'overview' | 'payment' | 'history'>('overview')
+const uploadOpen = ref(false)
+const tabs = [
+  { key: 'overview', label: '概览', icon: 'shield' },
+  { key: 'payment', label: '缴费管理', icon: 'save' },
+  { key: 'history', label: '办理历史', icon: 'history' },
+] as const
+const paymentReceipts = computed(() => receipts.value.filter(d => d.category === '缴费凭证'))
+
 function eventLines(event: (typeof events.value)[number]) {
-  if (event.action === 'reminder') return [`${event.detail.kind === 'fee' ? '缴费截止' : '权利到期'}：${event.detail.deadline}`, `触发时距登记期限 ${event.detail.days} 天`, `日期依据：${event.detail.source || '登记资料'}`]
+  if (event.action === 'reminder') return [`${event.detail.kind === 'fee' ? '缴费截止' : '权利到期'}：${event.detail.deadline}`, `触发时距登记期限 ${event.detail.days} 天`]
   const next = event.detail.submitted as Record<string, unknown> | undefined
   const before = event.detail.before as Record<string, unknown> | null | undefined
   if (!next) return ['原记录未包含详细字段。']
   if (event.action === 'payment') return [
     `本期缴费截止：${before?.fee_due || '原记录未登记'}`,
-    `实际缴费：${next.paidOn || ''}，金额 ${next.amount || ''}`,
+    `实际缴费：${next.paidOn || ''}`,
     `缴费凭证：${receipts.value.find(d => d.id === next.receiptId)?.title || '已归档原件'}`,
     `下一缴费截止：${next.feeDue || ''}`,
-    `期限依据：${next.deadlineSource || ''}`,
   ]
-  const fields = [['number', 'number', '专利编号'], ['title', 'title', '名称'], ['patentType', 'patent_type', '类型'], ['jurisdiction', 'jurisdiction', '国家 / 地区'], ['ownerName', 'owner_name', '权利人'], ['feeDue', 'fee_due', '缴费期限'], ['expiresOn', 'expires_on', '权利到期'], ['reminderDays', 'reminder_days', '提前提醒天数'], ['deadlineSource', 'deadline_source', '日期依据'], ['notes', 'notes', '备注']] as const
+  const fields = [['number', 'number', '专利编号'], ['title', 'title', '名称'], ['patentType', 'patent_type', '类型'], ['jurisdiction', 'jurisdiction', '国家 / 地区'], ['ownerName', 'owner_name', '权利人'], ['startDate', 'start_date', '申请日'], ['feeCycleMonths', 'fee_cycle_months', '缴费周期(月)'], ['feeDue', 'fee_due', '本期缴费截止'], ['expiresOn', 'expires_on', '权利到期'], ['reminderDays', 'reminder_days', '提前提醒天数'], ['notes', 'notes', '备注']] as const
   return fields.filter(([key, oldKey]) => event.action === 'create' || String(next[key] ?? '') !== String(before?.[oldKey] ?? '')).map(([key, oldKey, label]) => event.action === 'create' ? `${label}：${next[key] || '未登记'}` : `${label}：${before?.[oldKey] || '未登记'} → ${next[key] || '未登记'}`)
 }
 
@@ -105,11 +114,12 @@ let selectionGeneration = 0
 async function select(p: PatentRecord) {
   selected.value = p
   editing.value = false
+  activeTab.value = 'overview'
+  uploadOpen.value = false
   events.value = []
   receipts.value = []
   error.value = ''
   message.value = ''
-  Object.assign(payment, { receiptId: '', paidOn: '', amount: '', feeDue: '', deadlineSource: '' })
   const seq = ++selectionGeneration
   try {
     const [docs, history] = await Promise.all([
@@ -139,7 +149,7 @@ function edit() {
   Object.assign(form, {
     number: p.number, title: p.title, patentType: p.patentType, jurisdiction: p.jurisdiction,
     ownerName: p.ownerName, responsibleId: p.responsibleId, drawingId: p.drawingId || '',
-    feeDue: p.feeDue || '', expiresOn: p.expiresOn || '', deadlineSource: p.deadlineSource,
+    startDate: p.startDate || '', feeCycleMonths: p.feeCycleMonths || 12, expiresOn: p.expiresOn || '',
     reminderDays: p.reminderDays, notes: p.notes, revision: p.revision,
   })
   editing.value = true
@@ -168,19 +178,43 @@ async function refreshReceipts() {
     error.value = (e as Error).message
   }
 }
-async function recordPayment() {
+function todayDate() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+
+async function recordPayment(doc: EvidenceDocument) {
   if (!selected.value || busy.value) return
   busy.value = true
   error.value = ''
   try {
-    await lifecycleApi(`/patents/${selected.value.id}/payment`, { method: 'POST', body: JSON.stringify({ ...payment, revision: selected.value.revision }) })
+    await lifecycleApi(`/patents/${selected.value.id}/payment`, { method: 'POST', body: JSON.stringify({ receiptId: doc.id, paidOn: todayDate(), revision: selected.value.revision }) })
     await load()
     if (selected.value) await select(selected.value)
-    message.value = '缴费凭证及本期记录已保存，下一期缴费提醒已启用。'
+    activeTab.value = 'payment'
+    message.value = '已登记缴费，下一期缴费截止按周期自动顺延。'
   } catch (e) {
     error.value = (e as Error).message
   } finally {
     busy.value = false
+  }
+}
+
+function openReceiptUpload() {
+  uploadOpen.value = true
+}
+
+function onReceiptUploaded() {
+  uploadOpen.value = false
+  void refreshReceipts()
+}
+
+async function downloadReceipt(doc: EvidenceDocument) {
+  try {
+    await downloadEvidence(`/lifecycle-documents/${doc.id}`, doc.fileName)
+    uiStore.toast(`已开始下载：${doc.fileName}`, 'ok')
+  } catch (e) {
+    error.value = (e as Error).message
   }
 }
 
@@ -297,9 +331,9 @@ onMounted(() => {
             <section class="form-section">
               <h4>期限信息</h4>
               <div class="form-grid">
-                <label class="field"><span>本期缴费截止日期</span><input v-model="form.feeDue" type="date" /></label>
+                <label class="field"><span>申请日（起始日期）</span><input v-model="form.startDate" type="date" required /></label>
+                <label class="field"><span>缴费周期（月）</span><input v-model.number="form.feeCycleMonths" type="number" min="1" max="120" required /></label>
                 <label class="field"><span>权利到期日期</span><input v-model="form.expiresOn" type="date" /></label>
-                <label class="field wide"><span>日期依据</span><input v-model="form.deadlineSource" required placeholder="官方通知书、登记簿或代理机构确认文件及日期" /></label>
               </div>
             </section>
 
@@ -322,7 +356,7 @@ onMounted(() => {
               </div>
             </section>
 
-            <p class="form-note"><DemoIcon name="info" :size="14" />缴费日期和权利到期日分别登记，以所持官方资料为准。缺少日期会显示资料待完善提醒；缴费不会延长已登记的权利期限。</p>
+            <p class="form-note"><DemoIcon name="info" :size="14" />本期缴费截止日期由申请日与缴费周期自动推算，缴费后按周期顺延；权利到期日单独登记。缺少日期会显示资料待完善提醒。</p>
           </div>
           <div class="form-actions">
             <button class="btn primary" :disabled="busy" type="submit">{{ busy ? '正在保存…' : '保存专利' }}</button>
@@ -331,6 +365,27 @@ onMounted(() => {
         </form>
 
         <template v-else-if="selected">
+          <div class="patent-detail-head">
+            <nav class="patent-tabs" role="tablist" aria-label="专利详情分区">
+              <button
+                v-for="tab in tabs"
+                :key="tab.key"
+                class="pt-tab"
+                :class="{ active: activeTab === tab.key }"
+                type="button"
+                role="tab"
+                :aria-selected="activeTab === tab.key"
+                @click="activeTab = tab.key"
+              >
+                <DemoIcon :name="tab.icon" :size="14" />
+                {{ tab.label }}
+                <span v-if="tab.key === 'history'" class="pt-count">{{ events.length }}</span>
+              </button>
+            </nav>
+            <button v-if="canEdit" class="btn sm" type="button" :disabled="busy" @click="edit"><DemoIcon name="pencil" :size="13" />编辑登记</button>
+          </div>
+
+          <section v-show="activeTab === 'overview'" class="tab-panel">
           <article class="card patent-overview">
             <div class="ov-head">
               <div class="ov-tags">
@@ -338,12 +393,21 @@ onMounted(() => {
                 <span class="tag mute"><DemoIcon name="stamp" :size="11" />{{ selected.jurisdiction }}</span>
                 <span class="tag" :class="patentStatus(selected).key">{{ patentStatus(selected).label }}</span>
               </div>
-              <button v-if="canEdit" class="btn sm" type="button" :disabled="busy" @click="edit"><DemoIcon name="pencil" :size="13" />编辑登记</button>
             </div>
             <h3 class="ov-title">{{ selected.title }}</h3>
             <p class="ov-number"><DemoIcon name="hash" :size="13" />{{ selected.number }}</p>
 
             <div class="ov-grid">
+              <div class="ov-item">
+                <span class="ov-label"><DemoIcon name="calendar" :size="13" />申请日</span>
+                <b>{{ selected.startDate || '待完善' }}</b>
+                <small>起始日期</small>
+              </div>
+              <div class="ov-item">
+                <span class="ov-label"><DemoIcon name="refresh-cw" :size="13" />缴费周期</span>
+                <b>每 {{ selected.feeCycleMonths }} 个月</b>
+                <small>缴费后自动顺延</small>
+              </div>
               <div class="ov-item">
                 <span class="ov-label"><DemoIcon name="calendar" :size="13" />本期缴费截止</span>
                 <b :class="dueTone(selected.feeDays, selected.reminderDays)">{{ selected.feeDue || '待完善' }}</b>
@@ -364,10 +428,6 @@ onMounted(() => {
                 <b>{{ selected.ownerName || '未登记' }}</b>
                 <small>{{ selected.jurisdiction }}</small>
               </div>
-              <div class="ov-item wide">
-                <span class="ov-label"><DemoIcon name="file-text" :size="13" />日期依据</span>
-                <b class="ov-text">{{ selected.deadlineSource || '未登记' }}</b>
-              </div>
               <div v-if="linkedDrawing" class="ov-item wide">
                 <span class="ov-label"><DemoIcon name="layers" :size="13" />关联图号</span>
                 <b class="ov-text">{{ linkedDrawing }}</b>
@@ -382,54 +442,82 @@ onMounted(() => {
               <p>{{ selected.notes }}</p>
             </div>
           </article>
-
-          <EvidenceDocuments :key="selected.id" :patent-id="selected.id" :read-only="!canEdit" />
-
-          <details v-if="canEdit" class="card patent-payment">
-            <summary>
-              <span class="sum-main"><DemoIcon name="save" :size="15" />登记已缴费并安排下一期提醒</span>
-              <DemoIcon class="sum-chevron" name="chevron-down" :size="15" />
-            </summary>
-            <form class="payment-form" @submit.prevent="recordPayment">
-              <p class="form-note"><DemoIcon name="info" :size="14" />先在上方上传缴费凭证，再刷新凭证列表。这里登记办理结果，不会执行付款。</p>
-              <div class="form-grid">
-                <label class="field wide"><span>缴费凭证</span>
-                  <div class="field-inline">
-                    <select v-model="payment.receiptId" required>
-                      <option value="">请选择归档原件</option>
-                      <option v-for="d in receipts" :key="d.id" :value="d.id">{{ d.title }}</option>
-                    </select>
-                    <button class="btn sm" type="button" @click="refreshReceipts"><DemoIcon name="refresh-cw" :size="13" />刷新</button>
-                  </div>
-                </label>
-                <label class="field"><span>实际缴费日期</span><input v-model="payment.paidOn" type="date" required /></label>
-                <label class="field"><span>金额及币种</span><input v-model="payment.amount" required placeholder="例如：900.00 CNY" /></label>
-                <label class="field"><span>下一期缴费截止</span><input v-model="payment.feeDue" type="date" required /></label>
-                <label class="field"><span>下一期期限依据</span><input v-model="payment.deadlineSource" required /></label>
-              </div>
-              <div class="form-actions">
-                <button class="btn primary" :disabled="busy" type="submit">{{ busy ? '正在保存…' : '保存缴费记录' }}</button>
-              </div>
-            </form>
-          </details>
-
-          <section class="card patent-history">
-            <div class="card-title"><DemoIcon name="history" :size="16" />办理历史<span class="hint">共 {{ events.length }} 条</span></div>
-            <div v-if="!events.length" class="history-empty"><DemoIcon name="history" :size="26" />暂无办理记录</div>
-            <div v-else class="timeline">
-              <details v-for="event in events" :key="event.id" class="tl-item">
-                <summary>
-                  <span class="tl-dot" :class="event.action"></span>
-                  <span class="tl-icon"><DemoIcon :name="eventIcons[event.action] || 'activity'" :size="13" /></span>
-                  <span class="tl-title">{{ eventLabels[event.action] || event.action }}</span>
-                  <span class="tl-meta">{{ new Date(event.createdAt).toLocaleString() }} · {{ event.actor }}</span>
-                </summary>
-                <div class="tl-body">
-                  <p v-for="(line, index) in eventLines(event)" :key="index">{{ line }}</p>
-                </div>
-              </details>
-            </div>
           </section>
+
+          <section v-show="activeTab === 'payment'" class="tab-panel">
+            <article class="card pay-summary">
+              <div class="card-title"><DemoIcon name="save" :size="16" />缴费周期与状态</div>
+              <div class="ov-grid">
+                <div class="ov-item">
+                  <span class="ov-label"><DemoIcon name="calendar" :size="13" />申请日</span>
+                  <b>{{ selected.startDate || '待完善' }}</b>
+                  <small>起始日期</small>
+                </div>
+                <div class="ov-item">
+                  <span class="ov-label"><DemoIcon name="refresh-cw" :size="13" />缴费周期</span>
+                  <b>每 {{ selected.feeCycleMonths }} 个月</b>
+                  <small>缴费后自动顺延</small>
+                </div>
+                <div class="ov-item">
+                  <span class="ov-label"><DemoIcon name="calendar" :size="13" />本期缴费截止</span>
+                  <b :class="dueTone(selected.feeDays, selected.reminderDays)">{{ selected.feeDue || '待完善' }}</b>
+                  <small>{{ dueHint(selected.feeDays, !selected.feeDue) }}</small>
+                </div>
+                <div class="ov-item">
+                  <span class="ov-label"><DemoIcon name="clock" :size="13" />权利到期</span>
+                  <b :class="dueTone(selected.expiryDays, selected.reminderDays)">{{ selected.expiresOn || '待完善' }}</b>
+                  <small>{{ dueHint(selected.expiryDays, !selected.expiresOn) }}</small>
+                </div>
+              </div>
+            </article>
+
+            <article class="card pay-receipts">
+              <div class="card-title">
+                <DemoIcon name="file-up" :size="16" />缴费凭证
+                <span class="hint">共 {{ paymentReceipts.length }} 份</span>
+                <button v-if="canEdit" class="btn sm primary title-action" type="button" @click="openReceiptUpload"><DemoIcon name="upload" :size="13" />上传凭证</button>
+              </div>
+              <div v-if="!paymentReceipts.length" class="receipt-empty">
+                <DemoIcon name="file-text" :size="24" />
+                <span>上传缴费凭证后，即可一键登记缴费（默认使用今天日期）</span>
+              </div>
+              <ul v-else class="receipt-list">
+                <li v-for="doc in paymentReceipts" :key="doc.id" class="receipt-item">
+                  <span class="ri-icon"><DemoIcon name="file-text" :size="15" /></span>
+                  <div class="ri-main">
+                    <b>{{ doc.title }}</b>
+                    <small>{{ doc.fileName }} · {{ new Date(doc.createdAt).toLocaleDateString() }}</small>
+                  </div>
+                  <div class="ri-actions">
+                    <button class="btn sm" type="button" @click="downloadReceipt(doc)"><DemoIcon name="download" :size="12" />下载</button>
+                    <button v-if="canEdit" class="btn sm primary" type="button" :disabled="busy" @click="recordPayment(doc)"><DemoIcon name="check-circle-2" :size="12" />登记缴费</button>
+                  </div>
+                </li>
+              </ul>
+            </article>
+          </section>
+
+          <section v-show="activeTab === 'history'" class="tab-panel">
+            <section class="card patent-history">
+              <div class="card-title"><DemoIcon name="history" :size="16" />办理历史<span class="hint">共 {{ events.length }} 条</span></div>
+              <div v-if="!events.length" class="history-empty"><DemoIcon name="history" :size="26" />暂无办理记录</div>
+              <div v-else class="timeline">
+                <details v-for="event in events" :key="event.id" class="tl-item">
+                  <summary>
+                    <span class="tl-dot" :class="event.action"></span>
+                    <span class="tl-icon"><DemoIcon :name="eventIcons[event.action] || 'activity'" :size="13" /></span>
+                    <span class="tl-title">{{ eventLabels[event.action] || event.action }}</span>
+                    <span class="tl-meta">{{ new Date(event.createdAt).toLocaleString() }} · {{ event.actor }}</span>
+                  </summary>
+                  <div class="tl-body">
+                    <p v-for="(line, index) in eventLines(event)" :key="index">{{ line }}</p>
+                  </div>
+                </details>
+              </div>
+            </section>
+          </section>
+
+          <PatentReceiptUpload :patent-id="selected.id" :open="uploadOpen" @close="uploadOpen = false" @uploaded="onReceiptUploaded" />
         </template>
 
         <div v-else class="card detail-empty">
@@ -988,8 +1076,7 @@ onMounted(() => {
 
 .field input,
 .field select,
-.field textarea,
-.field-inline select {
+.field textarea {
   width: 100%;
   padding: 9px 11px;
   border: 1px solid var(--line);
@@ -1009,17 +1096,10 @@ onMounted(() => {
 
 .field input:focus,
 .field select:focus,
-.field textarea:focus,
-.field-inline select:focus {
+.field textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
   outline: none;
-}
-
-.field-inline {
-  display: flex;
-  align-items: center;
-  gap: 10px;
 }
 
 .form-note {
@@ -1045,50 +1125,6 @@ onMounted(() => {
   display: flex;
   gap: 10px;
   padding: 4px 22px 0;
-}
-
-/* 缴费 */
-.patent-payment summary {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 15px 20px;
-  cursor: pointer;
-  list-style: none;
-  font-family: var(--font-display);
-  font-size: 14px;
-  font-weight: 900;
-}
-
-.patent-payment summary::-webkit-details-marker {
-  display: none;
-}
-
-.sum-main {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.sum-main svg {
-  color: var(--accent);
-}
-
-.sum-chevron {
-  margin-left: auto;
-  color: var(--text-3);
-  transition: transform 0.25s;
-}
-
-.patent-payment[open] .sum-chevron {
-  transform: rotate(180deg);
-}
-
-.payment-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 4px 20px 20px;
 }
 
 /* 历史时间线 */
@@ -1257,6 +1293,169 @@ onMounted(() => {
   .result-count {
     margin-left: 0;
   }
+}
+
+/* 详情标签页 */
+.patent-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.patent-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  scrollbar-width: thin;
+}
+
+.pt-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+  transition: background 0.2s, color 0.2s;
+}
+
+.pt-tab:hover {
+  color: var(--text-1);
+}
+
+.pt-tab.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.pt-count {
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  place-items: center;
+  border-radius: 99px;
+  background: var(--panel-2);
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.pt-tab.active .pt-count {
+  background: rgb(255 255 255 / 26%);
+  color: var(--accent-ink);
+}
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* 缴费管理 */
+.pay-summary,
+.pay-receipts {
+  padding: 18px 22px;
+}
+
+.pay-summary .ov-grid {
+  margin-top: 12px;
+}
+
+.pay-receipts .card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.title-action {
+  margin-left: auto;
+}
+
+.receipt-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 22px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.receipt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.receipt-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-2);
+}
+
+.ri-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ri-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ri-main b {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ri-main small {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ri-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
