@@ -27,6 +27,7 @@ const fileId = computed(() => String(route.query.fileId ?? ''))
 // 不会误用当前最新文件，也不会把 EXB 版本直接丢给浏览器 CAD 引擎。
 const versionId = computed(() => String(route.query.versionId ?? ''))
 const versionKey = computed(() => String(route.query.versionKey ?? ''))
+const fromReview = computed(() => route.query.from === 'review')
 
 const currentDrawing = computed(() => drawingStore.getDrawing(drawingId.value) ?? drawingStore.getPart(drawingId.value))
 const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in currentDrawing.value))
@@ -248,6 +249,10 @@ function resetView() {
 // }
 
 function goBack() {
+  if (fromReview.value) {
+    router.push({ name: 'review-workspace', params: { drawingNo: drawingId.value } })
+    return
+  }
   router.push({ name: 'drawing-preview', params: { drawingId: drawingId.value } })
 }
 
@@ -271,9 +276,9 @@ watch([drawingId, fileId, versionId, versionKey], () => {
     <!-- 顶部导航与操作栏：与全局主题严格协同融合 -->
     <header class="viewer-header">
       <div class="header-left">
-        <button class="back-btn" type="button" title="返回图纸文件列表" @click="goBack">
+        <button class="back-btn" type="button" :title="fromReview ? '返回审核工作台' : '返回图纸文件列表'" @click="goBack">
           <DemoIcon name="arrow-left" :size="15" />
-          <span>返回图纸</span>
+          <span>{{ fromReview ? '返回审核' : '返回图纸' }}</span>
         </button>
         <div class="divider"></div>
         <div class="drawing-meta">
