@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
+import NotificationButton from './NotificationButton.vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useThemeStore } from '@/stores/theme.store'
@@ -14,7 +15,6 @@ defineOptions({
 const themeStore = useThemeStore()
 const windowStore = useWindowStore()
 const uiStore = useUiStore()
-const notificationsOpen = ref(false)
 
 async function runWindowAction(action: () => Promise<void>, message: string) {
   try {
@@ -78,18 +78,7 @@ onMounted(async () => {
         <DemoIcon :name="themeStore.mode === 'dark' ? 'sun' : 'moon'" :size="16" />
       </button>
 
-      <div class="notification-wrap">
-        <button class="icon-btn tb-bell" type="button" title="通知" @click="notificationsOpen = !notificationsOpen">
-          <DemoIcon name="bell" />
-        </button>
-        <div v-if="notificationsOpen" class="dropdown notification-dropdown">
-          <div class="notification-title">通知</div>
-          <div class="empty notification-empty">
-            <DemoIcon name="bell" :size="26" />
-            <div class="t">暂无新通知</div>
-          </div>
-        </div>
-      </div>
+      <NotificationButton />
 
       <div class="win-btns">
         <button class="win-btn" type="button" title="最小化" @click="minimize">

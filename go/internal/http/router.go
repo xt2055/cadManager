@@ -16,6 +16,7 @@ import (
 	"cadguanliq/internal/editing"
 	"cadguanliq/internal/http/handlers"
 	"cadguanliq/internal/http/middleware"
+	"cadguanliq/internal/notification"
 	"cadguanliq/internal/partindex"
 	"cadguanliq/internal/review"
 	"cadguanliq/internal/storage"
@@ -28,11 +29,18 @@ import (
 
 func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service) http.Handler {
 	mux := http.NewServeMux()
+	notificationHub := notification.NewHub()
+	if pool != nil {
+		go notificationHub.Run(context.Background(), pool)
+	}
+	mux.Handle("/api/notifications/ws", notificationHub.Handler(authService, cfg.AllowedOrigins))
 	mux.Handle("/api/health", handlers.Health(pool, cfg.Database))
 	mux.HandleFunc("/api/auth/login", handlers.Login(authService))
 	mux.HandleFunc("/api/auth/me", handlers.Me(authService))
 	mux.HandleFunc("/api/auth/logout", handlers.Logout(authService))
 	protectedUsers := middleware.RequireAuth(authService)
+	mux.Handle("/api/notifications", protectedUsers(handlers.Notifications(pool)))
+	mux.Handle("/api/notifications/", protectedUsers(handlers.Notifications(pool)))
 	mux.Handle("/api/users", protectedUsers(handlers.Users(authService)))
 	mux.Handle("/api/users/reviewers", protectedUsers(handlers.Reviewers(authService)))
 	mux.Handle("/api/users/", protectedUsers(handlers.UserResource(authService)))
@@ -127,6 +135,7 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 		return protectedUsers(middleware.RequireAdmin(next))
 	}
 	mux.Handle("/api/admin/audit-logs", adminGuard(handlers.AdminOperationLogs(auditRepository)))
+	mux.Handle("/api/admin/notifications", adminGuard(handlers.SendNotifications(pool)))
 	mux.Handle("/api/admin/audit-logs/options", adminGuard(handlers.AuditLogOptions(auditRepository, true)))
 	mux.Handle("/api/admin/upload-reconciliation", adminGuard(handlers.UploadReconciliation(uploadService)))
 	mux.Handle("/api/admin/drawings", adminGuard(handlers.AdminDrawings(pool)))

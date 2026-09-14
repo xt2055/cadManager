@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"bufio"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 )
@@ -18,6 +21,19 @@ func Logging(next http.Handler) http.Handler {
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+}
+
+// Preserve WebSocket upgrades through the response logging wrapper.
+func (recorder *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := recorder.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response does not support hijacking")
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err == nil {
+		recorder.status = http.StatusSwitchingProtocols
+	}
+	return conn, rw, err
 }
 
 func (recorder *statusRecorder) WriteHeader(status int) {

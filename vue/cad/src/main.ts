@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { i18n } from '@mlightcad/cad-viewer'
 import { AcApDocManager } from '@mlightcad/cad-simple-viewer'
+import { installCadLineRenderCallback } from './services/cad-line-render-callback'
 import App from './App.vue'
 import { router } from './router'
 import { getTimeBasedMode } from './stores/theme.store'
@@ -45,6 +46,7 @@ if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
 }
 
 // 完整版 MlCadViewer 暂未暴露 webworkerFileUrls，统一注入根路径资源，避免深层路由拼接出错误地址。
+installCadLineRenderCallback()
 const originalCreateInstance = AcApDocManager.createInstance.bind(AcApDocManager)
 const workerUrls = {
   dwgParser: new URL('/assets/libredwg-parser-worker.js', window.location.origin).href,

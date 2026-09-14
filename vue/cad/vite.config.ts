@@ -23,6 +23,7 @@ export default defineConfig({
     // when Vite starts; otherwise the first dynamic import can point to a
     // missing .vite/deps file after dependencies were installed or updated.
     include: [
+      'three/examples/jsm/lines/LineSegments2.js',
       '@mlightcad/cad-simple-viewer',
       '@mlightcad/cad-viewer',
       '@mlightcad/data-model',

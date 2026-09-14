@@ -123,7 +123,7 @@ function useMainThreadCadDraw() {
   return queryEnabled || storageEnabled
 }
 
-async function finishInitialRender(currentManager: any) {
+async function finishInitialRender(currentManager: any, isCurrent: () => boolean) {
   const view = currentManager?.curView
   if (!view) return
 
@@ -132,6 +132,7 @@ async function finishInitialRender(currentManager: any) {
   if (typeof view.waitUntilIdle === 'function') {
     await view.waitUntilIdle(60_000)
   }
+  if (!isCurrent()) return
 
   view.zoomToFitDrawing(60_000)
   if (typeof view.waitUntilIdle === 'function') {
@@ -140,6 +141,7 @@ async function finishInitialRender(currentManager: any) {
   // The SDK applies this fit in a 300ms condition waiter. Let it finish
   // before a comparison frames both drawings, including new outer geometry.
   await new Promise(resolve => setTimeout(resolve, 350))
+  if (!isCurrent()) return
   view.isDirty = true
   view.isHtmlDirty = true
 }
@@ -198,12 +200,14 @@ async function loadViewer(url: string) {
       throw new Error(`CAD Worker 不可访问：${JSON.stringify(workerUrls)}`)
     }
     await registerCadConverters(workerUrls.dwgParser)
+    const baseUrl = await resolveCadFontsBaseUrl()
+    if (generation !== openGeneration || disposed || !containerRef.value) return
     const mainThreadDraw = useMainThreadCadDraw()
     console.info('[CAD][字体诊断] 绘制线程', JSON.stringify({ mainThreadDraw }))
-    manager = AcApDocManager.createInstance({
+    const currentManager = AcApDocManager.createInstance({
       container: containerRef.value,
       autoResize: true,
-      baseUrl: await resolveCadFontsBaseUrl(),
+      baseUrl,
       // 与官方示例保持一致，使用 Worker 绘制复杂标注块。
       useMainThreadDraw: mainThreadDraw,
       webworkerFileUrls: {
@@ -219,21 +223,22 @@ async function loadViewer(url: string) {
         },
       },
     })
+    if (!currentManager) throw new Error('MLightCAD 初始化失败')
+    manager = currentManager
     managerGeneration = generation
+    const isCurrent = () => generation === openGeneration && !disposed && manager === currentManager
 
-    await installCadFontDiagnostics(manager)
+    await installCadFontDiagnostics(currentManager)
+    if (!isCurrent()) return
 
     // 先加载 GDT/SHX，再打开图纸，避免 TOLERANCE 首帧被普通字母字体替代。
-    await preloadCadSymbolFonts(manager)
+    await preloadCadSymbolFonts(currentManager)
 
-    if (generation !== openGeneration || disposed) {
-      await destroyViewer()
-      return
-    }
+    if (!isCurrent()) return
 
     // 按原始图纸名称交给 MLightCAD，让它依据 .dwg 后缀选择 DWG 解析器。
     const fileName = props.fileName || url.split('?')[0]?.split('/').pop() || 'drawing.dwg'
-    const opened = await manager.openDocument(fileName, buffer, {
+    const opened = await currentManager.openDocument(fileName, buffer, {
       minimumChunkSize: 1000,
       mode: AcEdOpenMode.Read,
       drawNoPlotLayers: false,
@@ -242,20 +247,22 @@ async function loadViewer(url: string) {
         lwdisplay: true,
       },
     })
+    if (!isCurrent()) return
     if (!opened) throw new Error(`MLightCAD 无法解析图纸（传入文件名: ${fileName}）`)
-    normalizeCadToleranceEntities(manager.curDocument.database)
-    const wipeoutMasks = findWipeoutMasks(manager.curDocument.database)
-    const layers = manager.curDocument.layerStore.getLayers().map((layer: any) => ({
+    normalizeCadToleranceEntities(currentManager.curDocument.database)
+    const wipeoutMasks = findWipeoutMasks(currentManager.curDocument.database)
+    const layers = currentManager.curDocument.layerStore.getLayers().map((layer: any) => ({
       name: layer.name,
       color: layer.cssColor || '#00f3ff',
       visible: layer.isOn && !layer.isFrozen,
     }))
     emit('layers-loaded', layers)
-    await finishInitialRender(manager)
+    await finishInitialRender(currentManager, isCurrent)
+    if (!isCurrent()) return
     if (wipeoutMasks.length > 0) {
-      manager.curView.removeEntity(wipeoutMasks)
-      manager.curView.isDirty = true
-      manager.curView.isHtmlDirty = true
+      currentManager.curView.removeEntity(wipeoutMasks)
+      currentManager.curView.isDirty = true
+      currentManager.curView.isHtmlDirty = true
     }
     emit('zoom-change', 1)
     await nextTick()
@@ -265,7 +272,7 @@ async function loadViewer(url: string) {
     }
   } catch (error: any) {
     if (managerGeneration === generation) await destroyViewer()
-    if (generation === openGeneration) {
+    if (generation === openGeneration && !disposed) {
       errorMessage.value = `MLightCAD 加载失败: ${error?.message || error}`
       emit('load-error', errorMessage.value)
     }
@@ -305,7 +312,11 @@ defineExpose({ setLayerVisibility, zoomIn, zoomOut, resetView, compareDrawing, f
 
 watch(() => props.dxfUrl, (url) => {
   if (url) void loadViewer(url)
-  else void destroyViewer()
+  else {
+    openGeneration++
+    loading.value = false
+    void destroyViewer()
+  }
 })
 
 onMounted(() => {

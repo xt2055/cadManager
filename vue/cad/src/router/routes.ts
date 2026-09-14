@@ -255,6 +255,11 @@ export const routes: RouteRecordRaw[] = [
         name: RouteName.AdminConversions,
         component: () => import('@/features/admin/pages/ConversionQueuePage.vue'),
       },
+      {
+        path: 'notifications',
+        name: RouteName.AdminNotifications,
+        component: () => import('@/features/admin/pages/NotificationManagementPage.vue'),
+      },
     ],
   },
 ]

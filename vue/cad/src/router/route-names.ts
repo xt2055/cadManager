@@ -45,6 +45,7 @@ export const RouteName = {
   AdminUpdates: 'admin-updates',
   AdminAttributes: 'admin-attributes',
   AdminConversions: 'admin-conversions',
+  AdminNotifications: 'admin-notifications',
 } as const
 
 export type RouteNameKey = (typeof RouteName)[keyof typeof RouteName]

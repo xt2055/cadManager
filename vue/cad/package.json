@@ -12,6 +12,7 @@
     "test:reviews": "node --experimental-strip-types --test scripts/review-workspace.test.mjs",
     "test:models": "node --experimental-strip-types --test scripts/model-files.test.mjs",
     "test:cad": "node --experimental-strip-types --test scripts/cad-custom-blocks.test.mjs scripts/cad-text-styles.test.mjs",
+    "test:cad-render": "node --experimental-strip-types --test scripts/cad-line-render-callback.test.mjs",
     "test:compare": "node --experimental-strip-types --test scripts/cad-compare.test.mjs",
     "preview": "vite preview",
     "build-only": "vite build",
