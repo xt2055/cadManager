@@ -73,6 +73,36 @@ test('CAD 源版本冲突不保存失败快照', async () => {
   assert.equal(writes.length, 0)
   assert.equal(record.payload, null)
 })
+test('EXB 转换中不请求 CAD 源，不写失败快照；转换后可继续提取', async () => {
+  const { io, record, writes } = fixture()
+  record.fileName = '空白.exb'
+  let parses = 0
+  const parse = io.parse
+  io.parse = async (...args) => { parses++; return parse(...args) }
+  await assert.rejects(extractTitleBlockRecord('a', false, io), /正在转换/)
+  assert.equal(parses, 0)
+  assert.equal(writes.length, 0)
+  record.fileName = '空白.dwg'
+  record.versionId = 'v2'
+  await extractTitleBlockRecord('a', false, io)
+  assert.equal(writes[0].version, 'v2')
+})
+test('源文件版本发生切换后重新读取并解析新版，不将旧结果写入新版', async () => {
+  const { io, record, writes } = fixture()
+  const versions = []
+  io.parse = async (id, version) => {
+    versions.push(version)
+    if (version === 'v1') {
+      record.versionId = 'v2'
+      throw Object.assign(new Error('版本变化'), { status: 409 })
+    }
+    return { spaces: [] }
+  }
+  await extractTitleBlockRecord('a', false, io)
+  assert.deepEqual(versions, ['v1', 'v2'])
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].version, 'v2')
+})
 test('保存后读回发现版本变化时必须报告冲突，不能当作成功', async () => {
   const { io } = fixture()
   let loads = 0

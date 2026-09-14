@@ -76,14 +76,32 @@ interface ExtractionIO {
   save(id: string, versionId: string, payload: TitlePayload): Promise<unknown>
 }
 export async function extractTitleBlockRecord(id: string, force: boolean, io: ExtractionIO): Promise<TitleSnapshot> {
-  const snapshot = normalizeTitleSnapshot(await io.load(id))
+  let snapshot = normalizeTitleSnapshot(await io.load(id))
   if (!force && snapshot.payload && !snapshot.payload.error) return snapshot
   if (!snapshot.canWrite) throw new Error('没有保存此文件标题栏信息的权限')
   let payload: TitlePayload
-  try { payload = normalizeTitlePayload(await io.parse(id, snapshot.versionId)) }
-  catch (error) {
-    if (typeof error === 'object' && error !== null && (error as StatusError).status === 409) throw error
-    payload = { spaces: [], error: (error instanceof Error ? error.message : '提取失败').slice(0, 1000) }
+  for (let attempt = 0; ; attempt++) {
+    // 当前版本还是 EXB 时没有可供浏览器解析的 DWG；等待后续自动补齐轮次。
+    // 不请求 CAD 源，也不把“转换中”保存为解析失败快照。
+    if (/\.exb$/i.test(snapshot.fileName || '')) {
+      throw Object.assign(new Error('图纸正在转换，完成后将自动提取标题栏'), { status: 409 })
+    }
+    try {
+      payload = normalizeTitlePayload(await io.parse(id, snapshot.versionId))
+      break
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && (error as StatusError).status === 409) {
+        if (attempt >= 1) throw error
+        const latest = normalizeTitleSnapshot(await io.load(id))
+        if (latest.versionId === snapshot.versionId) throw error
+        snapshot = latest
+        if (!force && snapshot.payload && !snapshot.payload.error) return snapshot
+        if (!snapshot.canWrite) throw new Error('没有保存此文件标题栏信息的权限')
+        continue
+      }
+      payload = { spaces: [], error: (error instanceof Error ? error.message : '提取失败').slice(0, 1000) }
+      break
+    }
   }
   await io.save(id, snapshot.versionId, payload)
   const result = normalizeTitleSnapshot(await io.load(id))
