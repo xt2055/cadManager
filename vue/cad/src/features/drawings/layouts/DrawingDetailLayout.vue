@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -17,6 +17,7 @@ const router = useRouter()
 const drawingStore = useDrawingStore()
 const workspaceStore = useWorkspaceStore()
 const isPreview = computed(() => route.name === 'drawing-preview')
+const navCollapsed = ref(false)
 const drawing = computed(() => {
   const id = String(route.params.drawingId ?? '')
   return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
@@ -56,10 +57,21 @@ watch(() => route.params.drawingId, () => {
   <div class="page detail-page">
     <template v-if="drawing">
       <DrawingDetailHeader />
-      <DrawingDetailSubnav />
-      <div class="tab-body" :class="{ 'no-scroll': isPreview }">
-        <div class="tab-anim" :class="{ 'tab-anim--preview': isPreview }">
-          <RouterView />
+      <div class="detail-split" :class="{ 'nav-collapsed': navCollapsed }">
+        <DrawingDetailSubnav />
+        <button
+          class="detail-nav-toggle"
+          type="button"
+          :aria-label="navCollapsed ? '展开导航' : '折叠导航'"
+          :aria-expanded="!navCollapsed"
+          @click="navCollapsed = !navCollapsed"
+        >
+          <DemoIcon :name="navCollapsed ? 'chevron-right' : 'chevron-left'" :size="14" />
+        </button>
+        <div class="tab-body" :class="{ 'no-scroll': isPreview }">
+          <div class="tab-anim" :class="{ 'tab-anim--preview': isPreview }">
+            <RouterView />
+          </div>
         </div>
       </div>
     </template>

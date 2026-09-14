@@ -3,4 +3,5 @@ export interface DrawingDetailTabItem {
   title: string
   icon: string
   routeName: string
+  group: string
 }

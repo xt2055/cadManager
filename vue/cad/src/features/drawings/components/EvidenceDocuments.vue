@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { lifecycleApi, downloadEvidence, type EvidenceDocument } from '@/services/lifecycle.service'
+import { lifecycleApi, lifecycleFetch, downloadEvidence, type EvidenceDocument } from '@/services/lifecycle.service'
 import { formatReadableDateTime } from '@/utils/date-time'
 import { useUiStore } from '@/stores/ui.store'
 
@@ -88,6 +88,171 @@ function getFileIcon(name: string): string {
   return 'file'
 }
 
+const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
+const TEXT_EXTS = ['.txt', '.md', '.markdown', '.log', '.csv', '.json', '.xml', '.yml', '.yaml', '.ini', '.conf', '.sql']
+const IMAGE_PREVIEW_LIMIT = 12 * 1024 * 1024
+const TEXT_PREVIEW_LIMIT = 2 * 1024 * 1024
+
+function fileExt(name: string): string {
+  const index = name.lastIndexOf('.')
+  return index >= 0 ? name.slice(index).toLowerCase() : ''
+}
+
+function isImageFile(name: string): boolean {
+  return IMAGE_EXTS.includes(fileExt(name))
+}
+
+function isTextFile(name: string): boolean {
+  return TEXT_EXTS.includes(fileExt(name))
+}
+
+const imageUrls = ref<Record<string, string>>({})
+const textContents = ref<Record<string, string>>({})
+const previewPending = ref<Record<string, boolean>>({})
+const requestedPreviews = new Set<string>()
+
+function revokeImages() {
+  Object.values(imageUrls.value).forEach((url) => URL.revokeObjectURL(url))
+  imageUrls.value = {}
+  textContents.value = {}
+  requestedPreviews.clear()
+}
+
+async function loadImagePreview(doc: EvidenceDocument) {
+  if (doc.size > IMAGE_PREVIEW_LIMIT) return
+  previewPending.value = { ...previewPending.value, [doc.id]: true }
+  try {
+    const blob = await (await lifecycleFetch(`/lifecycle-documents/${doc.id}`)).blob()
+    imageUrls.value = { ...imageUrls.value, [doc.id]: URL.createObjectURL(blob) }
+  } catch {
+    // 预览失败时保留文件图标，不影响下载
+  } finally {
+    const pending = { ...previewPending.value }
+    delete pending[doc.id]
+    previewPending.value = pending
+  }
+}
+
+async function loadTextPreview(doc: EvidenceDocument) {
+  if (doc.size > TEXT_PREVIEW_LIMIT) return
+  try {
+    const text = await (await lifecycleFetch(`/lifecycle-documents/${doc.id}`)).text()
+    textContents.value = { ...textContents.value, [doc.id]: text }
+  } catch {
+    // 文本不可读时保持占位
+  }
+}
+
+async function loadPreviews() {
+  for (const doc of visible.value) {
+    if (requestedPreviews.has(doc.id)) continue
+    if (isImageFile(doc.fileName)) {
+      requestedPreviews.add(doc.id)
+      await loadImagePreview(doc)
+    } else if (isTextFile(doc.fileName)) {
+      requestedPreviews.add(doc.id)
+      await loadTextPreview(doc)
+    }
+  }
+}
+
+function textExcerpt(id: string): string {
+  const text = textContents.value[id] || ''
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text
+}
+
+const lightbox = ref<{ url: string; name: string; title: string } | null>(null)
+const zoom = ref(1)
+const panX = ref(0)
+const panY = ref(0)
+const dragging = ref(false)
+let dragOrigin = { x: 0, y: 0, panX: 0, panY: 0 }
+
+function openLightbox(doc: EvidenceDocument) {
+  const url = imageUrls.value[doc.id]
+  if (!url) return
+  lightbox.value = { url, name: doc.fileName, title: doc.title }
+  resetZoom()
+}
+
+function closeLightbox() {
+  lightbox.value = null
+  dragging.value = false
+}
+
+function resetZoom() {
+  zoom.value = 1
+  panX.value = 0
+  panY.value = 0
+}
+
+function zoomIn() {
+  zoom.value = Math.min(6, zoom.value * 1.25)
+}
+
+function zoomOut() {
+  zoom.value = Math.max(0.2, zoom.value / 1.25)
+}
+
+function onLightboxWheel(event: WheelEvent) {
+  zoom.value = Math.min(6, Math.max(0.2, event.deltaY < 0 ? zoom.value * 1.1 : zoom.value / 1.1))
+}
+
+function startDrag(event: MouseEvent) {
+  if (zoom.value <= 1) return
+  dragging.value = true
+  dragOrigin = { x: event.clientX, y: event.clientY, panX: panX.value, panY: panY.value }
+}
+
+function onDrag(event: MouseEvent) {
+  if (!dragging.value) return
+  panX.value = dragOrigin.panX + (event.clientX - dragOrigin.x)
+  panY.value = dragOrigin.panY + (event.clientY - dragOrigin.y)
+}
+
+function endDrag() {
+  dragging.value = false
+}
+
+function toggleZoom(event: MouseEvent) {
+  if (zoom.value > 1) {
+    resetZoom()
+    return
+  }
+  zoom.value = 2
+  dragOrigin = { x: event.clientX, y: event.clientY, panX: 0, panY: 0 }
+}
+
+const textViewer = ref<{ title: string; name: string; content: string } | null>(null)
+
+function openText(doc: EvidenceDocument) {
+  const content = textContents.value[doc.id]
+  if (content === undefined) return
+  textViewer.value = { title: doc.title, name: doc.fileName, content }
+}
+
+function copyViewerText() {
+  if (!textViewer.value) return
+  void navigator.clipboard.writeText(textViewer.value.content)
+  uiStore.toast('已复制文本内容', 'ok')
+}
+
+function onGlobalKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  if (lightbox.value) closeLightbox()
+  if (textViewer.value) textViewer.value = null
+}
+
+onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
+  revokeImages()
+})
+
+watch(visible, () => {
+  void loadPreviews()
+})
+
 let generation = 0
 async function load() {
   const seq = ++generation
@@ -116,6 +281,7 @@ watch(
     description.value = ''
     file.value = null
     if (input.value) input.value.value = ''
+    revokeImages()
     void load()
   },
   { immediate: true },
@@ -386,6 +552,35 @@ defineExpose({ load, documents })
           </div>
         </div>
 
+        <!-- 图片缩略图 / 文本预览 -->
+        <div
+          v-if="isImageFile(doc.fileName)"
+          class="doc-thumb"
+          :class="{ 'is-clickable': Boolean(imageUrls[doc.id]) }"
+          @click="openLightbox(doc)"
+        >
+          <img v-if="imageUrls[doc.id]" :src="imageUrls[doc.id]" :alt="doc.title" loading="lazy" />
+          <div v-else class="doc-thumb-placeholder">
+            <DemoIcon name="image" :size="26" />
+            <span>
+              {{ previewPending[doc.id] ? '正在生成预览…' : doc.size > IMAGE_PREVIEW_LIMIT ? '图片较大，请下载查看' : '暂无预览' }}
+            </span>
+          </div>
+          <span v-if="imageUrls[doc.id]" class="doc-thumb-hint">
+            <DemoIcon name="maximize-2" :size="12" />点击放大
+          </span>
+        </div>
+
+        <div v-else-if="isTextFile(doc.fileName)" class="doc-text-preview">
+          <div class="doc-text-head">
+            <DemoIcon name="file-text" :size="13" />
+            文本预览
+            <button class="text-open-btn" type="button" @click="openText(doc)">阅读全文</button>
+          </div>
+          <pre v-if="textContents[doc.id]" class="doc-text-body">{{ textExcerpt(doc.id) }}</pre>
+          <p v-else class="doc-text-empty">正在读取文本内容…</p>
+        </div>
+
         <p v-if="doc.description" class="doc-desc" :title="doc.description">
           {{ doc.description }}
         </p>
@@ -500,6 +695,16 @@ defineExpose({ load, documents })
               <td>{{ doc.createdBy || '系统' }}</td>
               <td class="mono text-time">{{ formatReadableDateTime(doc.createdAt) }}</td>
               <td class="row-actions">
+                <button
+                  v-if="isImageFile(doc.fileName) || isTextFile(doc.fileName)"
+                  class="btn sm"
+                  type="button"
+                  title="预览"
+                  @click="isImageFile(doc.fileName) ? openLightbox(doc) : openText(doc)"
+                >
+                  <DemoIcon name="eye" :size="12" />
+                  查看
+                </button>
                 <button class="btn sm" type="button" title="下载原件" @click="download(doc)">
                   <DemoIcon name="download" :size="12" />
                   下载
@@ -651,6 +856,56 @@ defineExpose({ load, documents })
             </div>
           </footer>
         </form>
+      </div>
+    </div>
+
+    <!-- 图片放大灯箱 -->
+    <div v-if="lightbox" class="image-lightbox" @click.self="closeLightbox">
+      <div class="lightbox-toolbar">
+        <span class="lightbox-name">{{ lightbox.title }} · {{ lightbox.name }}</span>
+        <span class="lightbox-spacer"></span>
+        <button type="button" title="缩小" @click="zoomOut"><DemoIcon name="zoom-out" :size="14" /></button>
+        <span class="lightbox-zoom">{{ Math.round(zoom * 100) }}%</span>
+        <button type="button" title="放大" @click="zoomIn"><DemoIcon name="zoom-in" :size="14" /></button>
+        <button type="button" title="重置" @click="resetZoom">重置</button>
+        <button type="button" @click="closeLightbox"><DemoIcon name="x" :size="14" />关闭</button>
+      </div>
+      <div
+        class="lightbox-stage"
+        :class="{ 'is-zoomed': zoom > 1, 'is-dragging': dragging }"
+        @wheel.prevent="onLightboxWheel"
+        @mousedown="startDrag"
+        @mousemove="onDrag"
+        @mouseup="endDrag"
+        @mouseleave="endDrag"
+        @dblclick.prevent="toggleZoom"
+      >
+        <img
+          :src="lightbox.url"
+          :alt="lightbox.title"
+          draggable="false"
+          :style="{ transform: `translate(${panX}px, ${panY}px) scale(${zoom})` }"
+        />
+      </div>
+    </div>
+
+    <!-- 文本阅读 -->
+    <div v-if="textViewer" class="text-viewer-backdrop" @click.self="textViewer = null">
+      <div class="text-viewer-card">
+        <header class="text-viewer-head">
+          <DemoIcon name="file-text" :size="16" />
+          <div>
+            <div class="tv-title">{{ textViewer.title }}</div>
+            <div class="tv-name">{{ textViewer.name }}</div>
+          </div>
+          <div class="tv-actions">
+            <button class="btn sm" type="button" @click="copyViewerText">
+              <DemoIcon name="copy" :size="12" />复制
+            </button>
+            <button class="btn sm" type="button" @click="textViewer = null">关闭</button>
+          </div>
+        </header>
+        <pre class="text-viewer-body">{{ textViewer.content }}</pre>
       </div>
     </div>
   </div>
@@ -1461,5 +1716,266 @@ defineExpose({ load, documents })
     flex-direction: column;
     align-items: stretch;
   }
+}
+
+/* 卡片内图片缩略图 */
+.doc-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 168px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.doc-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.doc-thumb.is-clickable {
+  cursor: zoom-in;
+}
+
+.doc-thumb.is-clickable:hover img {
+  transform: scale(1.04);
+}
+
+.doc-thumb-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.doc-thumb-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 99px;
+  background: rgb(0 0 0 / 55%);
+  color: #fff;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+.doc-thumb.is-clickable:hover .doc-thumb-hint {
+  opacity: 1;
+}
+
+/* 卡片内文本预览 */
+.doc-text-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.doc-text-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.text-open-btn {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.doc-text-body {
+  margin: 0;
+  max-height: 96px;
+  overflow: hidden;
+  color: var(--text-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-mask-image: linear-gradient(180deg, #000 62%, transparent);
+  mask-image: linear-gradient(180deg, #000 62%, transparent);
+}
+
+.doc-text-empty {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+/* 图片放大灯箱 */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2300;
+  display: flex;
+  flex-direction: column;
+  background: rgb(0 0 0 / 88%);
+  backdrop-filter: blur(4px);
+  animation: modal-fade 0.18s ease;
+}
+
+.lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  background: rgb(0 0 0 / 35%);
+}
+
+.lightbox-name {
+  max-width: 44vw;
+  overflow: hidden;
+  color: rgb(255 255 255 / 85%);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lightbox-spacer {
+  flex: 1;
+}
+
+.lightbox-zoom {
+  min-width: 48px;
+  color: rgb(255 255 255 / 85%);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.lightbox-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgb(255 255 255 / 25%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 10%);
+  color: #fff;
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.lightbox-toolbar button:hover {
+  background: rgb(255 255 255 / 20%);
+}
+
+.lightbox-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 20px;
+}
+
+.lightbox-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  transform-origin: center center;
+  transition: transform 0.08s linear;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.lightbox-stage.is-zoomed {
+  cursor: grab;
+}
+
+.lightbox-stage.is-dragging {
+  cursor: grabbing;
+}
+
+.lightbox-stage.is-dragging img {
+  transition: none;
+}
+
+/* 文本阅读弹窗 */
+.text-viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2300;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgb(0 0 0 / 50%);
+  backdrop-filter: blur(4px);
+  animation: modal-fade 0.18s ease;
+}
+
+.text-viewer-card {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 820px);
+  max-height: 84vh;
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 35%);
+  overflow: hidden;
+}
+
+.text-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tv-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.tv-name {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.tv-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.text-viewer-body {
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  color: var(--text-1);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>
