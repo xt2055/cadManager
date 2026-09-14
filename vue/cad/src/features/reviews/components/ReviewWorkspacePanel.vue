@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import ChangeReviewEvidence from './ChangeReviewEvidence.vue'
 import {
   activeReviewNode,
   canSignReviewNode,
@@ -39,6 +40,7 @@ const uiStore = useUiStore()
 
 const opinionText = ref('')
 const submitting = ref(false)
+const changeEvidenceReady = ref(false)
 
 const drawingNo = computed(() => props.drawingNo.trim())
 const drawing = computed(() => drawingStore.getDrawing(drawingNo.value) ?? drawingStore.getPart(drawingNo.value))
@@ -46,7 +48,7 @@ const reviewCase = computed(() => reviewStore.getCase(drawingNo.value))
 const reviewing = computed(() => reviewCase.value ? reviewCase.value.status === 'reviewing' : drawing.value?.status === 'reviewing')
 const nodes = computed(() => toWorkspaceNodes(reviewCase.value))
 const currentNode = computed(() => activeReviewNode(nodes.value, reviewing.value))
-const canSign = computed(() => canSignReviewNode(currentNode.value, currentNode.value?.name, authStore.currentUser, reviewing.value))
+const canSign = computed(() => (!reviewCase.value?.changeSubmissionId || changeEvidenceReady.value) && canSignReviewNode(currentNode.value, currentNode.value?.name, authStore.currentUser, reviewing.value))
 const doneCount = computed(() => nodes.value.filter((node) => node.status === 'pass').length)
 const percent = computed(() => (nodes.value.length ? Math.round((doneCount.value / nodes.value.length) * 100) : 0))
 const isPart = computed(() => Boolean(drawing.value && 'parentNo' in drawing.value))
@@ -62,6 +64,7 @@ const canStartReview = computed(() => {
   const item = drawing.value
   const current = authStore.currentUser
   if (!item || !current) return false
+  if (item.status === 'archived') return false
   if (current.roles?.includes('admin')) return true
   return ('createdBy' in item && item.createdBy) === current.displayName
 })
@@ -168,6 +171,7 @@ async function handleDecision(action: 'pass' | 'rejected') {
     </div>
 
     <template v-else>
+      <ChangeReviewEvidence v-if="reviewCase?.changeSubmissionId" :key="reviewCase.changeSubmissionId" :drawing-no="drawingNo" :submission-id="reviewCase.changeSubmissionId" @ready="changeEvidenceReady = $event" />
       <div class="workspace-hero card">
         <div class="hero-main">
           <div class="hero-kicker">当前审核对象</div>

@@ -16,10 +16,12 @@ const icons = {
 </script>
 
 <template>
-  <div id="toastWrap">
+  <Teleport to="body">
+  <div id="toastWrap" role="status" aria-live="polite">
     <div v-for="toast in uiStore.toasts" :key="toast.id" class="toast" :class="toast.type">
       <DemoIcon :name="icons[toast.type]" :size="16" />
       <span>{{ toast.message }}</span>
     </div>
   </div>
+  </Teleport>
 </template>

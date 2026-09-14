@@ -16,7 +16,7 @@ export interface ReadonlyOpenPayload {
 
 export interface EditingApiGateway {
   listEditSessions(drawingNo?: string): Promise<ActiveEditSessionInfo[]>
-  openEditSession(storageKey: string): Promise<EditSessionOpenResult>
+  openEditSession(storageKey: string, attachmentId?: string): Promise<EditSessionOpenResult>
   heartbeatEditSession(sessionId: string): Promise<EditSessionControlResult>
   closeEditSession(sessionId: string): Promise<EditSessionControlResult>
 }
@@ -40,7 +40,7 @@ export class EditingService {
   ) {}
 
   listSessions(drawingNo?: string): Promise<ActiveEditSessionInfo[]> { return this.api.listEditSessions(drawingNo) }
-  openSession(storageKey: string): Promise<EditSessionOpenResult> { return this.api.openEditSession(storageKey) }
+  openSession(storageKey: string, attachmentId?: string): Promise<EditSessionOpenResult> { return this.api.openEditSession(storageKey, attachmentId) }
   heartbeat(sessionId: string): Promise<EditSessionControlResult> { return this.api.heartbeatEditSession(sessionId) }
   closeSession(sessionId: string): Promise<EditSessionControlResult> { return this.api.closeEditSession(sessionId) }
   openCad(payload: NativeEditOpenPayload): Promise<void> { return this.desktop.openCadEditSession(payload) }

@@ -414,10 +414,10 @@ export class ApiDataProvider {
     return payload as ActiveEditSessionInfo[]
   }
 
-  async openEditSession(storageKey: string): Promise<EditSessionOpenResult> {
+  async openEditSession(storageKey: string, attachmentId?: string): Promise<EditSessionOpenResult> {
     const body = await this.request<unknown>('/edit-sessions/open', {
       method: 'POST',
-      body: JSON.stringify({ storageKey }),
+      body: JSON.stringify({ storageKey, attachmentId }),
     })
     const payload = isRecord(body) && 'data' in body ? body.data : body
     if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.openUrl !== 'string' || typeof payload.uncPath !== 'string' || typeof payload.smbRoot !== 'string' || typeof payload.expiresAt !== 'string') {

@@ -62,7 +62,11 @@ export class AttachmentUploader {
 	        partNo: target.partNo || '',
 	        role: target.role,
 	        ...(target.fileCategory ? { fileCategory: target.fileCategory } : {}),
-		        ...(target.createPart ? { createPart: target.createPart } : {}),
+            ...(target.createPart ? { createPart: {
+              ...target.createPart,
+              // API 的 parentNo 只指上级零件；项目直属零件用空值表示。
+              parentNo: target.createPart.parentNo === drawingNo ? '' : target.createPart.parentNo,
+            } } : {}),
             ...(target.author ? { author: target.author } : {}),
 
 	      },
@@ -80,7 +84,7 @@ export class AttachmentUploader {
         ...(!isCAD(name) && hash.exists && hash.blobId ? { blobId: hash.blobId } : {}),
       })
       if (item.status !== 'ready') await this.gateway.uploadFile(session.id, item.id, content, { name, sha256: hash.sha256 })
-      return this.gateway.commitSession(session.id)
+      return await this.gateway.commitSession(session.id)
     } catch (error) {
       await this.gateway.cancelSession(session.id).catch(() => undefined)
       throw error

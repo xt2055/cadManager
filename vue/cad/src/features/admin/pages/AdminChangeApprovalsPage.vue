@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
-import { changeRequestService, CHANGE_STATUS_LABELS, type ChangeRequest } from '@/services/change-request.service'
+import { changeRequestService, CHANGE_STATUS_LABELS, type ChangeRequest, type ChangeUserOption } from '@/services/change-request.service'
+import EvidenceDocuments from '@/features/drawings/components/EvidenceDocuments.vue'
 import { useUiStore } from '@/stores/ui.store'
 
 defineOptions({ name: 'AdminChangeApprovalsPage' })
@@ -12,7 +13,9 @@ const busyId = ref('')
 const items = ref<ChangeRequest[]>([])
 const selectedId = ref('')
 const selected = computed(() => items.value.find((item) => item.id === selectedId.value) ?? null)
-const approveForm = reactive({ opinion: '', requireVerify: true, waiveReason: '' })
+const approveForm = reactive({ opinion: '', requireVerify: true, waiveReason: '', executorId: '' })
+const users = ref<ChangeUserOption[]>([])
+watch(selected, (item) => { approveForm.executorId = item?.executorId || ''; approveForm.opinion = ''; decision.opinion = '' })
 const decision = reactive({ opinion: '' })
 
 const pending = computed(() => items.value.filter((item) => item.status === 'pending_approval' || item.status === 'pending_verify'))
@@ -52,7 +55,8 @@ function approve(item: ChangeRequest) {
     uiStore.toast('关闭验收必须填写免验收原因', 'warn')
     return
   }
-  void run(item.id, () => changeRequestService.approve(item.id, approveForm.opinion.trim(), approveForm.requireVerify, approveForm.waiveReason.trim()), '已批准，图纸进入变更执行')
+  if (!approveForm.executorId) { uiStore.toast('请指定负责修改的设计员', 'warn'); return }
+  void run(item.id, () => changeRequestService.approve(item.id, approveForm.opinion.trim(), true, '', approveForm.executorId), '已批准并指定设计员，修改后将重新进行完整审核')
 }
 
 function reject(item: ChangeRequest) {
@@ -63,34 +67,14 @@ function reject(item: ChangeRequest) {
   void run(item.id, () => changeRequestService.reject(item.id, decision.opinion.trim()), '已驳回变更申请')
 }
 
-function verify(item: ChangeRequest) {
-  if (!decision.opinion.trim()) {
-    uiStore.toast('验收通过必须填写意见', 'warn')
-    return
-  }
-  if (!item.currentSubmissionId) {
-    uiStore.toast('请刷新并加载完整提交快照后再验收', 'warn')
-    return
-  }
-  void run(item.id, () => changeRequestService.verify(item.id, decision.opinion.trim(), item.currentSubmissionId), '验收通过，正式版本已发布')
-}
-
-function returnForEdit(item: ChangeRequest) {
-  if (!decision.opinion.trim()) {
-    uiStore.toast('退回修改必须填写意见', 'warn')
-    return
-  }
-  void run(item.id, () => changeRequestService.returnForEdit(item.id, decision.opinion.trim()), '已退回修改')
-}
-
-onMounted(() => { void load() })
+onMounted(() => { void load(); void changeRequestService.listUsers().then(result => { users.value = result }).catch(() => uiStore.toast('人员列表加载失败，请刷新', 'warn')) })
 </script>
 
 <template>
   <div class="page admin-page">
     <div class="section-head">
       <h3>变更审批</h3>
-      <span class="lib-count">批准待审工单，验收已提交的变更成果</span>
+      <span class="lib-count">审批变更申请并指定设计员；技术审核由完整流程负责</span>
       <button class="btn sm" type="button" :disabled="loading" @click="load">刷新</button>
     </div>
 
@@ -131,8 +115,8 @@ onMounted(() => { void load() })
 
         <div v-if="selected.status === 'pending_approval'" class="actions">
           <label>审批意见<input v-model="approveForm.opinion" type="text" /></label>
-          <label class="inline"><input v-model="approveForm.requireVerify" type="checkbox" /><span>修改完成后需要验收</span></label>
-          <label v-if="!approveForm.requireVerify">免验收原因<textarea v-model="approveForm.waiveReason" rows="2" /></label>
+          <label>指定设计员<select v-model="approveForm.executorId" required><option value="">请选择设计员</option><option v-for="user in users" :key="user.id" :value="user.id">{{ user.displayName }}</option></select></label>
+          <p>修改完成后必须重新经过全部审核节点，通过后系统自动发布新版。</p>
           <div class="btns">
             <button class="btn primary" type="button" :disabled="busyId === selected.id" @click="approve(selected)">批准</button>
             <input v-model="decision.opinion" type="text" placeholder="驳回意见" />
@@ -141,12 +125,10 @@ onMounted(() => { void load() })
         </div>
 
         <div v-else-if="selected.status === 'pending_verify'" class="actions">
-          <label>验收意见<input v-model="decision.opinion" type="text" /></label>
-          <div class="btns">
-            <button class="btn primary" type="button" :disabled="busyId === selected.id" @click="verify(selected)">验收并发布</button>
-            <button class="btn" type="button" :disabled="busyId === selected.id" @click="returnForEdit(selected)">退回修改</button>
-          </div>
+          <p>成果正在进行完整审核，由当前节点责任人签署。</p>
+          <RouterLink class="btn primary" :to="`/reviews/task/${encodeURIComponent(selected.drawingNo)}`">进入审核中心</RouterLink>
         </div>
+        <EvidenceDocuments :key="selected.id" :drawing-id="selected.drawingId" :change-request-id="selected.id" read-only />
       </section>
     </div>
   </div>

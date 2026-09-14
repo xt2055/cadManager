@@ -12,6 +12,7 @@ export interface ApiReviewCaseNode {
 }
 
 export interface ApiReviewCase {
+  changeSubmissionId?: string
   id: string
   drawingNo: string
   drawingName: string

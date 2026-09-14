@@ -425,7 +425,9 @@ fn open_cad_file(caxa_path: Option<&Path>, file_path: &Path, wait: bool) -> Resu
   for candidate in &candidates {
     println!("[CAD] 使用本机 CAXA 打开文件：{} -> {}", candidate.display(), file_path.display());
     let mut command = std::process::Command::new(candidate);
-    if let Some(parent) = file_path.parent() {
+    // 本地编辑实例不得消费服务端转图任务或自动取消用户的字体/恢复弹窗。
+    command.env("CADGUANLIQ_CAXA_INTERACTIVE", "1");
+    if let Some(parent) = candidate.parent() {
       command.current_dir(parent);
     }
     let result = if wait {

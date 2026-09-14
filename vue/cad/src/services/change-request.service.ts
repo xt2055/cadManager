@@ -147,8 +147,8 @@ export const changeRequestService = {
   create(input: CreateChangeInput): Promise<ChangeRequest> {
     return request('POST', '/change-requests', input)
   },
-  approve(id: string, opinion: string, requireVerify: boolean, waiveReason: string): Promise<ChangeRequest> {
-    return request('POST', `/change-requests/${encodeURIComponent(id)}/approve`, { opinion, requireVerify, waiveReason })
+  approve(id: string, opinion: string, requireVerify: boolean, waiveReason: string, executorId?: string): Promise<ChangeRequest> {
+    return request('POST', `/change-requests/${encodeURIComponent(id)}/approve`, { opinion, requireVerify: true, waiveReason: '', executorId })
   },
   reject(id: string, opinion: string): Promise<ChangeRequest> {
     return request('POST', `/change-requests/${encodeURIComponent(id)}/reject`, { opinion })
@@ -173,7 +173,7 @@ export const changeRequestService = {
 export const CHANGE_STATUS_LABELS: Record<ChangeStatus, string> = {
   pending_approval: '待审批',
   executing: '变更执行中',
-  pending_verify: '待验收',
+  pending_verify: '完整审核中',
   completed: '已完成',
   rejected: '已驳回',
   cancelled: '已终止',
