@@ -31,6 +31,10 @@ tools/exb2dxf/plugin/*.lib
 tools/exb2dxf/plugin/*.exp
 tools/exb2dxf/plugin/*.pch
 
+# Superseded drawing templates (new drawings use blank.exb)
+vue/cad/public/templates/blank.dwg
+vue/cad/public/templates/blank.dxf
+
 # Env
 .env
 .env.*.local

@@ -553,6 +553,12 @@ public:
     AcRx::AppRetCode On_kInitAppMsg(void* packet) override {
         const auto result = AcRxArxApp::On_kInitAppMsg(packet);
         report(L"Plugin initialized");
+        wchar_t interactive[8] = {};
+        if (GetEnvironmentVariableW(L"CADGUANLIQ_CAXA_INTERACTIVE", interactive, 8) > 0 &&
+            wcscmp(interactive, L"1") == 0) {
+            report(L"Interactive editing: conversion worker and dialog dismissal disabled");
+            return result;
+        }
         crxedRegCmds->addCommand(L"Exb2Dwg", L"GExb2Dwg", L"EXB2DWG", CRX_CMD_MODAL, &runExb2Dwg);
         
         if (g_timerId == 0) {
