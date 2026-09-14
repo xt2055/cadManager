@@ -32,7 +32,7 @@ export async function downloadEvidence(path: string, name: string) {
 export interface EvidenceDocument {
   folderPath: string
   id: string; title: string; category: string; description: string; fileName: string; size: number
-  sha256: string; changeRequestId?: string; createdAt: string; createdBy: string
+  sha256: string; changeRequestId?: string; source: string; createdAt: string; createdBy: string
 }
 export interface LifecycleNode { name: string; assignedName: string; status: string; opinion: string; reviewedAt?: string }
 export interface LifecycleSubmission {

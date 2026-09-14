@@ -47,7 +47,9 @@ func TestNotificationReviewResults(t *testing.T) {
 			fx := db.Seed(t)
 			id := db.ScanString(t, `INSERT INTO review_cases(drawing_id,initiator_id,status) VALUES($1::uuid,$2::uuid,'reviewing') RETURNING id::text`, fx.Drawing, fx.Author)
 			action := "reject"
-			if status == "published" { action = "pass" }
+			if status == "published" {
+				action = "pass"
+			}
 			db.Exec(t, `INSERT INTO review_actions(review_case_id,actor_id,action,opinion) VALUES($1::uuid,$2::uuid,$3,'尺寸需要复核')`, id, fx.Reviewer, action)
 			db.Exec(t, `UPDATE review_cases SET status=$2 WHERE id=$1::uuid`, id, status)
 			db.Exec(t, `UPDATE review_cases SET status=$2 WHERE id=$1::uuid`, id, status)
@@ -58,6 +60,25 @@ func TestNotificationReviewResults(t *testing.T) {
 				t.Fatalf("opinion missing: %s", content)
 			}
 		})
+	}
+}
+
+func TestNotificationChangeAssignment(t *testing.T) {
+	db := New(t)
+	fx := db.Seed(t)
+	var request string
+	err := db.Pool.QueryRow(context.Background(), `INSERT INTO change_requests(request_no,drawing_id,drawing_no,reason,scope,base_drawing_revision,applicant_id,executor_id,status)
+		VALUES('CR-ASSIGN',$1::uuid,'D-1','配合装配调整','part',1,$2::uuid,$3::uuid,'executing') RETURNING id::text`,
+		fx.Drawing, fx.Author, fx.Reviewer).Scan(&request)
+	if err != nil {
+		t.Fatalf("插入变更单失败: %v", err)
+	}
+	db.Exec(t, `INSERT INTO change_request_actions(request_id,actor_id,action,opinion) VALUES($1::uuid,$2::uuid,'approve','同意调整')`, request, fx.Author)
+	if got := db.ScanString(t, `SELECT count(*)::text FROM notifications WHERE recipient_id=$1::uuid AND title='你被指定为本次变更负责人'`, fx.Reviewer); got != "1" {
+		t.Fatalf("被指定人应收到专属通知，实际 %s", got)
+	}
+	if got := db.ScanString(t, `SELECT count(*)::text FROM notifications WHERE recipient_id=$1::uuid AND event_key LIKE 'change-assign:%'`, fx.Author); got != "0" {
+		t.Fatalf("申请人不应收到指定通知，实际 %s", got)
 	}
 }
 

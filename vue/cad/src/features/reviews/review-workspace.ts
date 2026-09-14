@@ -4,6 +4,16 @@ import type { ApiReviewCase, ApiReviewCaseNode } from '../../services/review-cas
 
 export type ReviewNodeStatus = ApiReviewCaseNode['status']
 
+// 变更工单存在或尚未确认时，创建者和管理员均不能走普通送审入口。
+export function canStartRegularReview(
+  drawing: { status: string; createdBy?: string } | null | undefined,
+  user: AuthUser | null | undefined,
+  changeBlocked: boolean,
+): boolean {
+  if (!drawing || !user || changeBlocked || drawing.status === 'archived') return false
+  return Boolean(user.roles?.includes('admin') || drawing.createdBy === user.displayName)
+}
+
 export interface ReviewWorkspaceNode {
   name: string
   assignedUserId?: string

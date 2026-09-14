@@ -3,11 +3,20 @@ import assert from 'node:assert/strict'
 import {
   activeReviewNode,
   canSignReviewNode,
+  canStartRegularReview,
   isAssignedReviewer,
   reviewNodeStatusLabel,
 } from '../src/features/reviews/review-workspace.ts'
 
 const user = { id: 'u1', account: 'checker', displayName: '校对员', roles: ['reviewer'], status: 'active' }
+
+test('存在变更工单时创建者、管理员及修改人均不能绕过工单走普通送审', () => {
+  const drawing = { status: 'draft', createdBy: user.displayName }
+  for (const current of [user, { ...user, roles: ['admin'] }, { ...user, displayName: '指定修改人' }]) {
+    assert.equal(canStartRegularReview(drawing, current, true), false)
+  }
+  assert.equal(canStartRegularReview(drawing, user, false), true)
+})
 const nodes = [
   { name: '设计自检', assignedUserId: 'd1', assignedName: '设计员', status: 'pass', opinion: '自检通过', required: true, order: 1 },
   { name: '校对复核', assignedUserId: 'u1', assignedName: '校对员', status: 'pending', opinion: '', required: true, order: 2 },

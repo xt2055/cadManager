@@ -12,10 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// 本文件验证 StartChangeCase：变更进入完整审核时冻结一份全新的节点快照。
-//
-// 关键风险是“签名复用”：若新一轮审核沿用上一轮已通过的节点，被驳回过的内容会
-// 带着旧签名直接通过。
+// 本文件验证 StartChangeCase：变更进入完整审核时冻结节点快照，并与首次审核一致，
+// 驳回后重新提交保留已通过节点、从驳回节点继续。
 
 // addFlowNode 向流程添加一个节点。
 func addFlowNode(t *testing.T, db *DB, flow, name, signerRole string, assignedUser string, required bool, order int) {
@@ -217,22 +215,25 @@ func TestStartChangeCaseRejectsNodeWithoutExecutable(t *testing.T) {
 	}
 }
 
-// TestStartChangeCaseDoesNotReusePreviousSignatures 新一轮审核不得复用上一轮的签名。
+// TestStartChangeCaseResumesFromRejectedNode 变更驳回后重新提交，保留已通过节点，
+// 从驳回节点继续，与首次审核流程保持一致。
 //
-// 这是完整审核的核心保障：被退回的内容再次提交时必须重新逐节点签署，
-// 否则旧签名会替新版本背书。
-func TestStartChangeCaseDoesNotReusePreviousSignatures(t *testing.T) {
+// 已通过节点的签署记录延续到新轮次；被驳回及其后的节点必须重新签署，
+// 旧轮次的记录原样保留作为历史证据。
+func TestStartChangeCaseResumesFromRejectedNode(t *testing.T) {
 	db := New(t)
 	fx := setupChangeCase(t, db)
 	addFlowNode(t, db, fx.Flow, "校对复核", "校对", fx.Reviewer, true, 1)
+	addFlowNode(t, db, fx.Flow, "专业审核", "审核", fx.Reviewer, true, 2)
 
-	// 第一轮：发起并签署通过。
+	// 第一轮：节点 1 通过，节点 2 驳回。
 	if err := startCase(t, db, fx.Drawing, fx.Submission, fx.Author, true); err != nil {
 		t.Fatalf("第一轮发起失败: %v", err)
 	}
 	firstCase := db.ScanString(t, `SELECT id::text FROM review_cases WHERE change_submission_id=$1::uuid`, fx.Submission)
-	db.Exec(t, `UPDATE review_case_nodes SET status='pass',opinion='第一轮同意',reviewed_at=now() WHERE review_case_id=$1::uuid`, firstCase)
-	db.Exec(t, `UPDATE review_cases SET status='published',completed_at=now() WHERE id=$1::uuid`, firstCase)
+	db.Exec(t, `UPDATE review_case_nodes SET status='pass',opinion='第一轮同意',reviewed_at=now() WHERE review_case_id=$1::uuid AND node_order=1`, firstCase)
+	db.Exec(t, `UPDATE review_case_nodes SET status='rejected',opinion='第一轮驳回',reviewed_at=now() WHERE review_case_id=$1::uuid AND node_order=2`, firstCase)
+	db.Exec(t, `UPDATE review_cases SET status='rejected',completed_at=now() WHERE id=$1::uuid`, firstCase)
 
 	// 第二轮：退回后重新提交，产生新的提交轮次与审核单。
 	second := insertSubmission(t, db, fx.Request, 2)
@@ -244,18 +245,23 @@ func TestStartChangeCaseDoesNotReusePreviousSignatures(t *testing.T) {
 	if secondCase == firstCase {
 		t.Fatal("第二轮必须建立新的审核单，不能复用旧审核单")
 	}
-	// 新审核单的节点必须全部为待签署，不能继承上一轮的 pass。
-	status := db.ScanString(t, `SELECT string_agg(status,',') FROM review_case_nodes WHERE review_case_id=$1::uuid`, secondCase)
-	if status != "pending" {
-		t.Fatalf("新轮次节点必须重新签署，实际 %s", status)
+	// 已通过节点保留签署记录。
+	passStatus := db.ScanString(t, `SELECT status FROM review_case_nodes WHERE review_case_id=$1::uuid AND node_order=1`, secondCase)
+	if passStatus != "pass" {
+		t.Fatalf("已通过节点必须延续，实际 %s", passStatus)
 	}
-	opinion := db.ScanString(t, `SELECT string_agg(opinion,',') FROM review_case_nodes WHERE review_case_id=$1::uuid`, secondCase)
-	if strings.Contains(opinion, "第一轮") {
-		t.Fatalf("新轮次不得继承旧意见，实际 %q", opinion)
+	passOpinion := db.ScanString(t, `SELECT opinion FROM review_case_nodes WHERE review_case_id=$1::uuid AND node_order=1`, secondCase)
+	if passOpinion != "第一轮同意" {
+		t.Fatalf("已通过节点应保留签署意见，实际 %q", passOpinion)
+	}
+	// 被驳回节点重新待签。
+	rejectedStatus := db.ScanString(t, `SELECT status FROM review_case_nodes WHERE review_case_id=$1::uuid AND node_order=2`, secondCase)
+	if rejectedStatus != "pending" {
+		t.Fatalf("驳回节点必须重新待签，实际 %s", rejectedStatus)
 	}
 	// 上一轮的签名记录必须原样保留，作为历史证据。
-	oldStatus := db.ScanString(t, `SELECT string_agg(status,',') FROM review_case_nodes WHERE review_case_id=$1::uuid`, firstCase)
-	if oldStatus != "pass" {
+	oldStatus := db.ScanString(t, `SELECT string_agg(status,',' ORDER BY node_order) FROM review_case_nodes WHERE review_case_id=$1::uuid`, firstCase)
+	if oldStatus != "pass,rejected" {
 		t.Fatalf("历史审核单签名不应被改写，实际 %s", oldStatus)
 	}
 }

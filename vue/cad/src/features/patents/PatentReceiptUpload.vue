@@ -68,6 +68,7 @@ async function upload() {
     form.set('category', '缴费凭证')
     form.set('description', description.value.trim())
     form.set('patentId', props.patentId)
+    form.set('source', '专利缴费')
     await lifecycleApi('/lifecycle-documents', { method: 'POST', body: form })
     uiStore.toast(`缴费凭证「${title.value.trim()}」已上传`, 'ok')
     emit('uploaded')

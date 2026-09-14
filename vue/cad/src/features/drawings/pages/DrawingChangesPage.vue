@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
+import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 import { lifecycleApi } from '@/services/lifecycle.service'
 import {
   changeRequestService,
   CHANGE_STATUS_LABELS,
   type ChangeRequest,
-  type ProposedAttributes,
 } from '@/services/change-request.service'
 import { buildChangeTargetGroups } from '../components/detail/change-targets'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import EvidenceDocuments from '../components/EvidenceDocuments.vue'
+import ChangeEvidenceList from '../components/ChangeEvidenceList.vue'
 import { formatReadableDateTime } from '@/utils/date-time'
 
 const route = useRoute()
@@ -29,7 +29,7 @@ const error = ref('')
 const loadFailed = ref(false)
 const search = ref('')
 const selected = ref<string[]>([])
-const expandedId = ref('')
+const activeHistoryId = ref('')
 const historyLoading = ref(false)
 const activeView = ref<'current' | 'history'>('current')
 const creating = ref(false)
@@ -37,7 +37,6 @@ const historySearch = ref('')
 const historyStatus = ref('')
 
 const form = reactive({ reason: '', scope: '' })
-const submission = reactive({ actualChanges: '', name: '', material: '', vendor: '' })
 
 const evidenceFiles = ref<{ id: string; file: File }[]>([])
 const evidenceDragging = ref(false)
@@ -98,10 +97,17 @@ const filteredHistory = computed(() =>
         .includes(historySearch.value.trim().toLowerCase()),
   ),
 )
+const activeHistory = computed(
+  () => requests.value.find((item) => item.id === activeHistoryId.value) || null,
+)
 
 const stepIndex = computed(() =>
   current.value?.status === 'pending_verify' ? 2 : current.value?.status === 'executing' ? 1 : 0,
 )
+// 变更申请通过后由被指定设计员完成修改，并由其在变更工单页直接提交发起完整审核。
+const canSubmitCurrent = computed(() => Boolean(
+  current.value && current.value.status === 'executing' && authStore.currentUser?.id === current.value.executorId,
+))
 
 const groups = computed(() =>
   buildChangeTargetGroups(drawing.value, drawing.value ? drawingStore.getStructure(drawing.value.no) : []),
@@ -126,9 +132,6 @@ const filteredTargets = computed(() => {
 const allIds = computed(() => [...new Set(drawingTargets.value.map((item) => item.id))])
 const allSelected = computed(() => allIds.value.length > 0 && allIds.value.every((id) => selected.value.includes(id)))
 const selectedIds = computed(() => selected.value.filter((id) => allIds.value.includes(id)))
-const canSubmit = computed(
-  () => current.value?.status === 'executing' && current.value.executorId === authStore.currentUser?.id,
-)
 const ready = computed(
   () => !busy.value && !loadFailed.value && form.reason.trim() && form.scope.trim() && selectedIds.value.length > 0,
 )
@@ -169,12 +172,8 @@ watch(
     search.value = ''
     form.reason = ''
     form.scope = ''
-    submission.actualChanges = ''
-    submission.name = ''
-    submission.material = ''
-    submission.vendor = ''
     clearEvidence()
-    expandedId.value = ''
+    activeHistoryId.value = ''
     activeView.value = 'current'
     creating.value = false
     historySearch.value = ''
@@ -201,17 +200,13 @@ async function run(action: () => Promise<ChangeRequest>, message: string): Promi
     form.scope = ''
     selected.value = []
     search.value = ''
-    submission.actualChanges = ''
-    submission.name = ''
-    submission.material = ''
-    submission.vendor = ''
     uiStore.toast(message, 'ok')
     creating.value = false
     if (['completed', 'cancelled', 'rejected'].includes(updated.status)) {
       activeView.value = 'history'
       historySearch.value = ''
       historyStatus.value = ''
-      expandedId.value = updated.id
+      activeHistoryId.value = updated.id
     }
     try {
       await drawingStore.refresh()
@@ -224,6 +219,28 @@ async function run(action: () => Promise<ChangeRequest>, message: string): Promi
       error.value = cause instanceof Error ? cause.message : '操作失败，请重试'
     }
     return undefined
+  } finally {
+    busy.value = false
+  }
+}
+
+async function submitChangeReview() {
+  const request = current.value
+  if (!request || busy.value) return
+  const last = request.submissions?.[request.submissions.length - 1]
+  busy.value = true
+  error.value = ''
+  try {
+    await changeRequestService.submit(
+      request.id,
+      last?.actualChanges?.trim() || '完成图纸修改，提交完整审核',
+      last?.proposedAttributes ?? {},
+    )
+    await refresh()
+    uiStore.toast('已提交修改成果并发起完整审核，请按节点顺序签署', 'ok')
+  } catch (e) {
+    error.value = (e as Error).message
+    uiStore.toast(error.value || '提交审核失败', 'warn')
   } finally {
     busy.value = false
   }
@@ -257,6 +274,7 @@ async function create() {
       body.set('description', '发起变更工单时随附')
       body.set('drawingId', created.drawingId)
       body.set('changeRequestId', created.id)
+      body.set('source', '变更工单')
       await lifecycleApi('/lifecycle-documents', { method: 'POST', body })
     } catch {
       failed += 1
@@ -272,25 +290,8 @@ async function create() {
   evidenceRef.value?.load()
 }
 
-function submit() {
-  const request = current.value
-  if (!request || !canSubmit.value || !submission.actualChanges.trim()) return
-  const proposed: ProposedAttributes = {}
-  for (const field of ['name', 'material', 'vendor'] as const) {
-    if (submission[field].trim()) proposed[field] = submission[field].trim()
-  }
-  void run(
-    () => changeRequestService.submit(request.id, submission.actualChanges.trim(), proposed),
-    '本轮文件与证明材料已冻结，已进入完整审核流程',
-  )
-}
-
-async function expand(item: ChangeRequest) {
-  if (expandedId.value === item.id) {
-    expandedId.value = ''
-    return
-  }
-  expandedId.value = item.id
+async function openHistory(item: ChangeRequest) {
+  activeHistoryId.value = item.id
   if (item.actions) return
   historyLoading.value = true
   try {
@@ -303,12 +304,44 @@ async function expand(item: ChangeRequest) {
   }
 }
 
+function closeHistoryDetail() {
+  activeHistoryId.value = ''
+}
+
+function switchView(view: 'current' | 'history') {
+  activeView.value = view
+  activeHistoryId.value = ''
+}
+
 function getStatusTagClass(status: string): string {
   if (status === 'completed') return 'ok'
   if (status === 'executing' || status === 'pending_verify') return 'plain'
   if (status === 'pending_approval') return 'warn'
   if (status === 'rejected' || status === 'cancelled') return 'danger'
   return 'mute'
+}
+
+const CHANGE_ACTION_LABELS: Record<string, string> = {
+  create: '发起变更',
+  approve: '审批通过',
+  reject: '驳回申请',
+  submit: '提交修改成果',
+  verify: '审核验收通过',
+  return: '退回修改',
+  cancel: '终止工单',
+  waive_verify: '免验收放行',
+}
+
+function actionLabel(action: string): string {
+  return CHANGE_ACTION_LABELS[action] || action
+}
+
+function actionTone(action: string): string {
+  if (action === 'approve' || action === 'verify') return 'ok'
+  if (action === 'reject' || action === 'cancel') return 'danger'
+  if (action === 'return') return 'warn'
+  if (action === 'waive_verify') return 'mute'
+  return 'plain'
 }
 </script>
 
@@ -338,7 +371,7 @@ function getStatusTagClass(status: string): string {
           class="btn sm primary"
           type="button"
           :disabled="loading || busy || loadFailed"
-          @click="creating = true; activeView = 'current'"
+          @click="creating = true; switchView('current')"
         >
           <DemoIcon name="plus" :size="13" />
           发起变更工单
@@ -357,7 +390,7 @@ function getStatusTagClass(status: string): string {
         class="tab-item-btn"
         :class="{ selected: activeView === 'current' }"
         :aria-pressed="activeView === 'current'"
-        @click="activeView = 'current'"
+        @click="switchView('current')"
       >
         <DemoIcon name="activity" :size="14" />
         <span>当前进行中工单</span>
@@ -368,7 +401,7 @@ function getStatusTagClass(status: string): string {
         class="tab-item-btn"
         :class="{ selected: activeView === 'history' }"
         :aria-pressed="activeView === 'history'"
-        @click="activeView = 'history'"
+        @click="switchView('history')"
       >
         <DemoIcon name="history" :size="14" />
         <span>历史变更存档</span>
@@ -667,74 +700,8 @@ function getStatusTagClass(status: string): string {
             />
           </div>
 
-          <!-- 执行人修改完成后提交完整审核区 -->
-          <div v-if="canSubmit" class="submit-action-card card card-pad">
-            <div class="card-section-head">
-              <div class="head-lead">
-                <div class="lead-icon"><DemoIcon name="clipboard-check" :size="18" /></div>
-                <div>
-                  <h4>提交本轮变更修改成果</h4>
-                  <p>保存本地编辑并补充修改依据后，提交进入严格的图纸全流程审核</p>
-                </div>
-              </div>
-            </div>
-
-            <form @submit.prevent="submit">
-              <fieldset :disabled="busy" class="form-fieldset">
-                <div class="form-field full-width">
-                  <label class="field-label">本次实际修改成果总结 <span class="req">*</span></label>
-                  <textarea
-                    v-model="submission.actualChanges"
-                    class="inp"
-                    required
-                    rows="3"
-                    placeholder="请详细列举本次实际修改内容，例如：已按要求加大装配孔距，更新了强度校核标准…"
-                  />
-                </div>
-
-                <details class="modern-details attribute-edit-details">
-                  <summary>
-                    <div class="details-summary-content">
-                      <DemoIcon name="sliders-horizontal" :size="13" />
-                      <span>同步调整总图基本属性（可选）</span>
-                    </div>
-                  </summary>
-                  <div class="attribute-input-grid">
-                    <div class="form-field">
-                      <label class="field-label">新图纸名称</label>
-                      <input v-model="submission.name" class="inp" placeholder="留空保持原值" />
-                    </div>
-                    <div class="form-field">
-                      <label class="field-label">新零件材料</label>
-                      <input v-model="submission.material" class="inp" placeholder="留空保持原值" />
-                    </div>
-                    <div class="form-field">
-                      <label class="field-label">新责任单位/供应商</label>
-                      <input v-model="submission.vendor" class="inp" placeholder="留空保持原值" />
-                    </div>
-                  </div>
-                </details>
-
-                <footer class="form-submit-bar">
-                  <div class="submit-note">
-                    <DemoIcon name="shield" :size="13" />
-                    <span>提交后本轮文件即刻冻结并创建新审核流程，所有责任节点签署通过后方可正式发布新版本。</span>
-                  </div>
-                  <button
-                    type="submit"
-                    class="btn primary"
-                    :disabled="busy || !submission.actualChanges.trim()"
-                  >
-                    <DemoIcon v-if="busy" name="rotate-cw" :size="13" class="spin-icon" />
-                    <span>{{ busy ? '正在提交…' : '提交完整审核流程' }}</span>
-                  </button>
-                </footer>
-              </fieldset>
-            </form>
-          </div>
-
-          <!-- 提示状态条（非提交状态下） -->
-          <div v-else class="card card-pad state-prompt-card">
+          <!-- 工单状态提示 -->
+          <div class="card card-pad state-prompt-card">
             <div class="prompt-icon">
               <DemoIcon
                 :name="current.status === 'pending_verify' ? 'clipboard-check' : 'clock'"
@@ -742,17 +709,19 @@ function getStatusTagClass(status: string): string {
               />
             </div>
             <div class="prompt-text">
-              <b>{{ current.status === 'pending_approval' ? '变更申请已就绪，等待管理员审批' : current.status === 'pending_verify' ? '修改成果已提交，正处于完整审核签署流程中' : `等待指定设计员「${current.executorName || '未指定'}」完成本地图纸编辑` }}</b>
-              <p>{{ current.status === 'pending_approval' ? '请确保在上方已上传充分的客户确认图或依据资料，管理员同意后即可开辟修改通道。' : current.status === 'pending_verify' ? '所有审核节点（校对、审核、工艺、批准等）签署完成后，系统将自动发布最新版本。' : '设计人员完成本地 CAD 文件修改并保存后，需在此页填写实际修改说明并提交审核。' }}</p>
+              <b>{{ current.status === 'pending_approval' ? '变更申请已就绪，等待管理员审批' : current.status === 'pending_verify' ? '修改成果已提交，正在审核中心进行完整审核' : `等待指定设计员「${current.executorName || '未指定'}」完成本地图纸编辑` }}</b>
+              <p>{{ current.status === 'pending_approval' ? '请确保在上方已上传充分的客户确认图或依据资料，管理员同意后即可开辟修改通道。' : current.status === 'pending_verify' ? '审核在「审核中心」进行，全部节点签署通过后系统将自动发布最新版本。' : '设计人员完成本地 CAD 文件修改后，可直接在此提交并发起完整审核。' }}</p>
             </div>
-            <RouterLink
-              v-if="current.status === 'pending_verify'"
-              class="btn sm primary review-link-btn"
-              :to="`/reviews/task/${encodeURIComponent(current.drawingNo)}`"
+            <button
+              v-if="canSubmitCurrent"
+              class="btn primary prompt-action"
+              type="button"
+              :disabled="busy"
+              @click="submitChangeReview"
             >
-              <DemoIcon name="stamp" :size="13" />
-              前往审核工作台
-            </RouterLink>
+              <DemoIcon name="check-circle-2" :size="14" />
+              提交并发起完整审核
+            </button>
           </div>
 
           <!-- 提交轮次与操作历史记录 -->
@@ -825,7 +794,7 @@ function getStatusTagClass(status: string): string {
               v-if="history.length"
               class="btn"
               type="button"
-              @click="activeView = 'history'"
+              @click="switchView('history')"
             >
               <DemoIcon name="history" :size="13" />
               查看已归档的 {{ history.length }} 条历史工单
@@ -875,8 +844,7 @@ function getStatusTagClass(status: string): string {
             <button
               type="button"
               class="history-card-header"
-              :aria-expanded="expandedId === item.id"
-              @click="expand(item)"
+              @click="openHistory(item)"
             >
               <div class="history-title-block">
                 <div class="row-top">
@@ -892,72 +860,10 @@ function getStatusTagClass(status: string): string {
                 <span class="meta-person">执行人: <b>{{ item.executorName || item.applicantName }}</b></span>
                 <time class="meta-date mono text-time">{{ formatReadableDateTime(item.completedAt || item.createdAt) }}</time>
                 <div class="expand-icon-box">
-                  <DemoIcon :name="expandedId === item.id ? 'chevron-up' : 'chevron-down'" :size="16" />
+                  <DemoIcon name="chevron-right" :size="16" />
                 </div>
               </div>
             </button>
-
-            <!-- 展开明细面板 -->
-            <div v-if="expandedId === item.id" class="history-expanded-body">
-              <div class="info-grid-card">
-                <div class="info-item">
-                  <span class="info-lbl">变更原因</span>
-                  <div class="info-val">{{ item.reason }}</div>
-                </div>
-                <div class="info-item">
-                  <span class="info-lbl">计划修改范围</span>
-                  <div class="info-val">{{ item.scope }}</div>
-                </div>
-                <div class="info-item">
-                  <span class="info-lbl">责任设计员</span>
-                  <div class="info-val">{{ item.executorName || '未指定' }}</div>
-                </div>
-              </div>
-
-              <!-- 涉及文件 -->
-              <div v-if="item.targets?.length" class="history-targets-block">
-                <span class="sub-lbl">涉及文件清单:</span>
-                <div class="authorized-targets-grid">
-                  <div v-for="target in item.targets" :key="target.attachmentId" class="target-file-pill">
-                    <span class="mono part-no">{{ target.partNo || target.drawingNo }}</span>
-                    <span class="file-name">{{ target.name }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div v-if="historyLoading" class="loading-hint">
-                <DemoIcon name="rotate-cw" :size="16" class="spin-icon" />
-                <span>正在获取完整历史日志…</span>
-              </div>
-
-              <!-- 提交记录 -->
-              <div v-if="item.submissions?.length" class="history-submissions-list">
-                <span class="sub-lbl">修改提交成果:</span>
-                <div
-                  v-for="sub in item.submissions"
-                  :key="sub.id"
-                  class="card card-pad submission-item-card"
-                >
-                  <span class="round-badge">{{ sub.legacyHistory ? '历史提交' : `第 ${sub.round} 轮提交` }}</span>
-                  <p class="changes-txt">{{ sub.actualChanges }}</p>
-                  <div v-if="sub.diffs?.length" class="diff-list">
-                    <span v-for="(diff, idx) in sub.diffs" :key="idx" class="diff-pill">
-                      {{ diff.field }}: <em>{{ diff.oldValue || '无' }}</em> → <strong>{{ diff.newValue || '无' }}</strong>
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- 操作日志 -->
-              <div v-if="item.actions?.length" class="history-actions-list">
-                <span class="sub-lbl">办理过程流转:</span>
-                <div v-for="act in item.actions" :key="act.id" class="action-row">
-                  <span class="mono act-time">{{ act.createdAt.slice(0, 16).replace('T', ' ') }}</span>
-                  <span class="act-actor">{{ act.actorName || '系统' }}</span>
-                  <span class="act-opinion">{{ act.opinion }}</span>
-                </div>
-              </div>
-            </div>
           </article>
 
           <div v-if="!filteredHistory.length" class="card empty-card">
@@ -968,6 +874,110 @@ function getStatusTagClass(status: string): string {
         </div>
       </section>
     </template>
+
+    <!-- 历史工单详情：层叠页面 -->
+    <div v-if="activeHistory" class="history-detail-layer">
+      <div class="history-detail-mask" @click="closeHistoryDetail"></div>
+      <aside class="history-detail-page" role="dialog" aria-modal="true" aria-label="历史变更工单详情">
+        <header class="hd-page-head">
+          <div class="hd-page-title">
+            <div class="hd-page-icon"><DemoIcon name="history" :size="18" /></div>
+            <div class="hd-page-title-text">
+              <div class="row-top">
+                <span class="mono req-no">{{ activeHistory.requestNo }}</span>
+                <span class="tag" :class="getStatusTagClass(activeHistory.status)">
+                  {{ CHANGE_STATUS_LABELS[activeHistory.status] }}
+                </span>
+              </div>
+              <h3>{{ activeHistory.title || activeHistory.reason }}</h3>
+            </div>
+          </div>
+          <button class="btn sm" type="button" @click="closeHistoryDetail">
+            <DemoIcon name="x" :size="13" />关闭
+          </button>
+        </header>
+
+        <div class="hd-page-body">
+          <div class="info-grid-card">
+            <div class="info-item">
+              <span class="info-lbl">变更原因</span>
+              <div class="info-val">{{ activeHistory.reason }}</div>
+            </div>
+            <div class="info-item">
+              <span class="info-lbl">计划修改范围</span>
+              <div class="info-val">{{ activeHistory.scope }}</div>
+            </div>
+            <div class="info-item">
+              <span class="info-lbl">责任设计员</span>
+              <div class="info-val">{{ activeHistory.executorName || '未指定' }}</div>
+            </div>
+          </div>
+
+          <div v-if="activeHistory.targets?.length" class="history-targets-block">
+            <span class="sub-lbl">涉及文件清单:</span>
+            <div class="authorized-targets-grid">
+              <div v-for="target in activeHistory.targets" :key="target.attachmentId" class="target-file-pill">
+                <span class="mono part-no">{{ target.partNo || target.drawingNo }}</span>
+                <span class="file-name">{{ target.name }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 变更依据材料：仅展示本次变更上传的凭证 -->
+          <div class="history-evidence-block">
+            <span class="sub-lbl">变更依据材料:</span>
+            <ChangeEvidenceList
+              :drawing-id="activeHistory.drawingId"
+              :change-request-id="activeHistory.id"
+              :submission-ids="activeHistory.submissions?.map((sub) => sub.id) || []"
+            />
+          </div>
+
+          <div v-if="historyLoading" class="loading-hint">
+            <DemoIcon name="rotate-cw" :size="16" class="spin-icon" />
+            <span>正在获取完整历史日志…</span>
+          </div>
+
+          <div v-if="activeHistory.submissions?.length" class="history-submissions-list">
+            <span class="sub-lbl">修改提交成果:</span>
+            <div
+              v-for="sub in activeHistory.submissions"
+              :key="sub.id"
+              class="card card-pad submission-item-card"
+            >
+              <div class="submission-head">
+                <span class="round-badge">{{ sub.legacyHistory ? '历史提交' : `第 ${sub.round} 轮提交` }}</span>
+                <span class="sub-actor"><DemoIcon name="users" :size="11" />{{ sub.actorName || '未知提交人' }}</span>
+                <time class="mono sub-time">{{ formatReadableDateTime(sub.createdAt) }}</time>
+              </div>
+              <p class="changes-txt">{{ sub.actualChanges }}</p>
+              <div v-if="sub.diffs?.length" class="diff-block">
+                <span class="diff-lbl">修改记录（{{ sub.diffs.length }} 项）:</span>
+                <div class="diff-list">
+                  <span v-for="(diff, idx) in sub.diffs" :key="idx" class="diff-pill">
+                    {{ diff.field }}: <em>{{ diff.oldValue || '无' }}</em> → <strong>{{ diff.newValue || '无' }}</strong>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="activeHistory.actions?.length" class="history-actions-list">
+            <span class="sub-lbl">办理过程流转:</span>
+            <div v-for="act in activeHistory.actions" :key="act.id" class="action-row">
+              <span class="tag act-badge" :class="actionTone(act.action)">{{ actionLabel(act.action) }}</span>
+              <div class="act-body">
+                <div class="act-head">
+                  <b class="act-actor">{{ act.actorName || '系统' }}</b>
+                  <time class="mono act-time">{{ act.createdAt.slice(0, 16).replace('T', ' ') }}</time>
+                </div>
+                <p v-if="act.opinion" class="act-opinion">{{ act.opinion }}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
   </main>
 </template>
 
@@ -1709,6 +1719,10 @@ function getStatusTagClass(status: string): string {
   font-size: 12px;
 }
 
+.prompt-action {
+  flex-shrink: 0;
+}
+
 .review-link-btn {
   flex-shrink: 0;
 }
@@ -1897,13 +1911,84 @@ function getStatusTagClass(status: string): string {
   color: var(--text-3);
 }
 
-.history-expanded-body {
-  padding: 16px 18px;
-  border-top: 1px solid var(--line);
-  background: var(--panel-2);
+/* 历史详情：层叠页面 */
+.history-detail-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.history-detail-mask {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 45%);
+  backdrop-filter: blur(3px);
+}
+
+.history-detail-page {
+  position: relative;
   display: flex;
   flex-direction: column;
+  width: min(100%, 760px);
+  height: 100%;
+  background: var(--panel);
+  box-shadow: -24px 0 60px rgb(0 0 0 / 25%);
+  animation: hd-slide-in 0.24s ease;
+}
+
+@keyframes hd-slide-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.hd-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-top);
+}
+
+.hd-page-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.hd-page-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.hd-page-title-text {
+  min-width: 0;
+}
+
+.hd-page-title-text h3 {
+  margin: 4px 0 0;
+  font-size: 14.5px;
+  color: var(--text-1);
+}
+
+.hd-page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 40px;
 }
 
 .sub-lbl {
@@ -1915,7 +2000,8 @@ function getStatusTagClass(status: string): string {
 }
 
 .history-submissions-list,
-.history-actions-list {
+.history-actions-list,
+.history-evidence-block {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1927,11 +2013,85 @@ function getStatusTagClass(status: string): string {
 
 .action-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   font-size: 12px;
   color: var(--text-3);
-  padding: 4px 0;
+  padding: 8px 0;
+  border-top: 1px dashed var(--line);
+}
+
+.action-row:first-of-type {
+  border-top: none;
+}
+
+.act-badge {
+  flex-shrink: 0;
+  min-width: 84px;
+  justify-content: center;
+}
+
+.act-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.act-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.act-actor {
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+
+.act-time {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.act-opinion {
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.submission-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.sub-actor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+.sub-time {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.diff-block {
+  margin-top: 8px;
+}
+
+.diff-lbl {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-3);
+  font-size: 11px;
 }
 
 .loading-hint {

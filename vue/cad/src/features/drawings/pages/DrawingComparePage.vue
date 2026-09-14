@@ -6,10 +6,13 @@ import type { DrawingDifference } from '@/features/drawings/detail-tabs/preview/
 import { useDrawingStore } from '@/stores/drawing.store'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import { versioningService } from '@/app/container'
-import { compareVersionOptions, compareSourcePath, type CompareVersion } from '@/features/drawings/detail-tabs/preview/cad-compare-sources'
+import { compareVersionOptions, compareSourcePath, submissionCompareVersion, type CompareVersion } from '@/features/drawings/detail-tabs/preview/cad-compare-sources'
+import { lifecycleApi, type LifecycleTree } from '@/services/lifecycle.service'
 
 const route = useRoute()
 const router = useRouter()
+const submissionId = computed(() => String(route.query.submissionId || ''))
+const isChangeReview = computed(() => !!submissionId.value)
 const store = useDrawingStore()
 const viewer = ref<InstanceType<typeof MlightCadViewer> | null>(null)
 const fileIds = ref<[string, string]>(['', ''])
@@ -210,6 +213,21 @@ onMounted(async () => {
     fileIds.value[1] = String(route.query.compareFileId || fileIds.value[0])
     mode.value = fileIds.value[0] === fileIds.value[1] ? 'versions' : 'drawings'
     planNos.value = fileIds.value.map(id => plans.value.find(plan => planFiles.value.get(plan.no)?.has(id))?.no || '')
+    if (isChangeReview.value) {
+      const tree = await lifecycleApi<LifecycleTree>(`/lifecycle-tree?drawingNo=${encodeURIComponent(current?.no || String(route.params.drawingId))}`)
+      if (disposed) return
+      const submission = tree.changes.flatMap(change => change.submissions).find(item => item.id === submissionId.value)
+      const file = submission?.files.find(item => item.attachmentId === fileIds.value[0])
+      if (!file?.baseVersionId || !file.submittedVersionId) throw new Error('未找到本次工单的变更前后版本，请返回审核页面重新打开')
+      fileIds.value[1] = file.attachmentId
+      versionOptions.value = [
+        [submissionCompareVersion(file.baseVersionId, file.name, '变更前版本')],
+        [submissionCompareVersion(file.submittedVersionId, file.name, `第 ${submission!.round} 轮提交版本`)],
+      ]
+      versionValues.value = versionOptions.value.map(options => options[0]!.value)
+      await start()
+      return
+    }
     await Promise.all([
       loadVersions(0, { id: String(route.query.versionId || ''), key: String(route.query.versionKey || '') }, mode.value === 'versions'),
       loadVersions(1, { id: String(route.query.compareVersionId || ''), key: String(route.query.compareVersionKey || '') }),
@@ -222,11 +240,11 @@ onUnmounted(() => { disposed = true; reset() })
 <template>
   <div class="compare-page">
     <header>
-      <button class="btn" @click="router.push({ name: 'drawing-preview', params: { drawingId: route.params.drawingId } })">返回图纸</button>
+      <button class="btn" @click="isChangeReview ? router.back() : router.push({ name: 'drawing-preview', params: { drawingId: route.params.drawingId } })">{{ isChangeReview ? '返回审核' : '返回图纸' }}</button>
       <strong>图纸对比</strong>
       <span class="hint">按原始坐标叠加 · 模型空间 · 精度 0.000001 图纸单位</span>
     </header>
-    <div class="mode-bar">
+    <div v-if="!isChangeReview" class="mode-bar">
       <label><input v-model="mode" type="radio" value="versions" :disabled="busy || versionLoading.some(Boolean)" @change="changeMode" />同一图纸版本对比</label>
       <label><input v-model="mode" type="radio" value="drawings" :disabled="busy || versionLoading.some(Boolean)" @change="changeMode" />不同图纸对比</label>
       <span class="hint">{{ mode === 'versions' ? '例如：选择 1.0 与 1.1，查看版本变化' : '两侧可选择任意图纸及各自版本' }}</span>
@@ -234,14 +252,14 @@ onUnmounted(() => { disposed = true; reset() })
     <div class="source-bar">
       <div v-for="side in ([0, 1] as const)" :key="side" class="source">
         <div class="source-heading"><b>{{ side === 0 ? '基准图纸（旧）' : '待对比图纸（新）' }}</b><small>{{ side === 0 ? '对比基线' : '检查变化' }}</small></div>
-        <label class="plan-field"><span>计划号 · 总图图号</span>
-          <select v-model="planNos[side]" :disabled="busy || (mode === 'versions' && side === 1)" @change="selectPlan(side)">
+        <label v-if="!isChangeReview" class="plan-field"><span>计划号 · 总图图号</span>
+          <select v-model="planNos[side]" :disabled="isChangeReview || busy || (mode === 'versions' && side === 1)" @change="selectPlan(side)">
             <option value="">全部计划</option>
             <option v-for="plan in plans" :key="plan.id" :value="plan.no">{{ plan.no }} · {{ plan.name }}</option>
           </select>
         </label>
-        <input v-model="searches[side]" class="file-search" :aria-label="side === 0 ? '搜索基准图纸' : '搜索待对比图纸'" placeholder="在当前计划内搜索图号或文件名" :disabled="busy || (mode === 'versions' && side === 1)" />
-        <select v-model="fileIds[side]" :aria-label="side === 0 ? '基准图纸' : '待对比图纸'" :disabled="busy || (mode === 'versions' && side === 1)" @change="selectStored(side)">
+        <input v-model="searches[side]" class="file-search" :aria-label="side === 0 ? '搜索基准图纸' : '搜索待对比图纸'" placeholder="在当前计划内搜索图号或文件名" :disabled="isChangeReview || busy || (mode === 'versions' && side === 1)" />
+        <select v-model="fileIds[side]" :aria-label="side === 0 ? '基准图纸' : '待对比图纸'" :disabled="isChangeReview || busy || (mode === 'versions' && side === 1)" @change="selectStored(side)">
           <option value="">{{ localFiles[side]?.name || '选择图纸库文件' }}</option>
           <option v-for="file in filteredFiles(side)" :key="file.id" :value="file.id">{{ file.partNo || file.drawingNo }} · {{ file.name }}</option>
         </select>
@@ -254,15 +272,16 @@ onUnmounted(() => { disposed = true; reset() })
           <label v-if="mode === 'drawings'" class="btn local-button">本地文件<input type="file" accept=".dwg,.dxf" :disabled="busy" @change="selectLocal($event, side)" /></label>
         </div>
         <p v-if="versionErrors[side]" class="version-error" role="alert">{{ versionErrors[side] }} <button class="btn" @click="reset(); loadVersions(side)">重试</button></p>
+          <small v-else-if="isChangeReview">按本次工单冻结的版本对比。</small>
           <small v-else-if="mode === 'versions' && side === 1">计划与图纸随左侧同步，版本独立选择。</small>
       </div>
       <div class="compare-actions">
-        <button class="btn" :disabled="busy || versionLoading.some(Boolean) || versionErrors.some(Boolean)" @click="swapSources">交换两侧</button>
+        <button v-if="!isChangeReview" class="btn" :disabled="busy || versionLoading.some(Boolean) || versionErrors.some(Boolean)" @click="swapSources">交换两侧</button>
         <button class="btn primary" :disabled="!canCompare" @click="start">{{ busy ? '对比中…' : '开始对比' }}</button>
         <button v-if="busy" class="btn" @click="reset">取消</button>
       </div>
     </div>
-    <p v-if="identical && !versionLoading.some(Boolean) && !versionErrors.some(Boolean)" class="selection-hint">两侧选择了同一图纸的相同版本，请选择不同版本或切换“不同图纸对比”。</p>
+    <p v-if="identical && !versionLoading.some(Boolean) && !versionErrors.some(Boolean)" class="selection-hint">{{ isChangeReview ? '本次提交与变更前为同一版本，该文件没有版本变化。' : '两侧选择了同一图纸的相同版本，请选择不同版本或切换“不同图纸对比”。' }}</p>
     <div v-if="baseUrl" class="comparison-caption"><span>基准：{{ sourceLabels[0] }}</span><span>对比：{{ sourceLabels[1] }}</span></div>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <div class="workspace">

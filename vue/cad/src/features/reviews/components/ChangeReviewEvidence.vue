@@ -63,7 +63,7 @@ function compare(file: LifecycleSubmission['files'][number]) {
   void router.push({
     name: RouteName.DrawingCompare,
     params: { drawingId: props.drawingNo },
-    query: { fileId: file.attachmentId, versionId: file.baseVersionId, compareVersionId: file.submittedVersionId },
+    query: { fileId: file.attachmentId, submissionId: props.submissionId, from: 'review' },
   })
 }
 </script>

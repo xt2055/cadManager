@@ -593,6 +593,7 @@ async function archiveCreatedEvidence(drawingId: string): Promise<string[]> {
       form.set('description', evidenceDescription.value.trim())
       form.set('folderPath', evidenceFolderPath.value.trim())
       form.set('drawingId', drawingId)
+      form.set('source', '图纸创建')
       await lifecycleApi('/lifecycle-documents', { method: 'POST', body: form })
     } catch (error) {
       failures.push(`${item.name}：${error instanceof Error ? error.message : '归档失败'}`)

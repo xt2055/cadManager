@@ -6,7 +6,7 @@ import CandidateInput from '@/features/operation-logs/components/CandidateInput.
 import { mergeSelectOptions, paginationPages, paginationRange, type SelectOption } from '@/features/operation-logs/operation-log.helpers'
 import { listOperationLogOptions, type OperationLogPage } from '@/services/drawing-operation-log.service'
 import { useAuditStore } from '@/stores/audit.store'
-import { ACTIVITY_LABELS, type ActivityType } from '@/types/domain.types'
+import { ACTIVITY_LABELS, type ActivityLog } from '@/types/domain.types'
 
 defineOptions({ name: 'OperationLogPage' })
 
@@ -15,7 +15,7 @@ type CandidateKind = 'drawing' | 'actor'
 const auditStore = useAuditStore()
 const page = ref(1)
 const pageSize = ref(20)
-const filterAct = ref<ActivityType | ''>('')
+const filterAct = ref<string>('')
 const filterDrawing = ref('')
 const filterUser = ref('')
 const keyword = ref('')
@@ -29,7 +29,75 @@ const optionTimers: Partial<Record<CandidateKind, ReturnType<typeof setTimeout>>
 let requestGeneration = 0
 let disposed = false
 
-const actionOptions = Object.entries(ACTIVITY_LABELS) as Array<[ActivityType, string]>
+// 变更/审核类动作不在通用 ActivityType 枚举内，单独补充中文标签与配色。
+const EXTRA_ACTION_LABELS: Record<string, string> = {
+  change_request_create: '发起变更申请',
+  change_request_approve: '审批通过变更',
+  change_request_reject: '驳回变更申请',
+  change_request_return: '退回修改',
+  change_request_cancel: '终止变更工单',
+  change_request_submit: '提交变更成果',
+  change_request_verify: '完整审核通过',
+  change_request_waive_verify: '免验收放行',
+}
+
+const ACTION_COLORS: Record<string, string> = {
+  view: 'info', create: 'ok', edit: 'warn', branch: 'info', upload: 'warn',
+  download: 'plain', delete: 'danger', check: 'info', parse: 'plain',
+  change_request_create: 'info', change_request_approve: 'ok', change_request_reject: 'danger',
+  change_request_return: 'warn', change_request_cancel: 'danger', change_request_submit: 'warn',
+  change_request_verify: 'ok', change_request_waive_verify: 'mute',
+}
+
+const DETAIL_LABELS: Record<string, string> = {
+  fileName: '文件', fileId: '文件ID', version: '版本', role: '角色', author: '作者',
+  changedFields: '修改字段', oldPartNo: '原零件号', newPartNo: '新零件号',
+  partCount: '零件数', fileCount: '文件数', sourceDrawingNo: '来源图号',
+  newDrawingNo: '新图号', sourcePartNo: '来源零件号', count: '数量',
+  importedCount: '导入条目', parentNo: '父件号', reason: '原因', operation: '操作',
+  uploadSessionId: '上传会话', targetType: '目标类型',
+}
+
+function actionLabel(code: string): string {
+  return (ACTIVITY_LABELS as Record<string, string>)[code] || EXTRA_ACTION_LABELS[code] || code
+}
+
+function actionTone(code: string): string {
+  return ACTION_COLORS[code] || 'mute'
+}
+
+function formatDetailValue(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (Array.isArray(value)) return value.map(formatDetailValue).filter(Boolean).join('、')
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, val]) => `${key}: ${formatDetailValue(val)}`)
+      .join('；')
+  }
+  return String(value)
+}
+
+function detailEntries(detail?: Record<string, unknown>): Array<{ label: string; value: string }> {
+  if (!detail) return []
+  return Object.entries(detail)
+    .filter(([, value]) => value !== null && value !== undefined && value !== '')
+    .map(([key, value]) => ({ label: DETAIL_LABELS[key] || key, value: formatDetailValue(value) }))
+}
+
+function canExpand(item: ActivityLog): boolean {
+  return detailEntries(item.detail).length > 0
+}
+
+const expandedId = ref('')
+
+function toggleDetail(id: string) {
+  expandedId.value = expandedId.value === id ? '' : id
+}
+
+const actionOptions: Array<[string, string]> = [
+  ...Object.entries(ACTIVITY_LABELS),
+  ...Object.entries(EXTRA_ACTION_LABELS),
+]
 const rows = computed(() => resultPage.value.list)
 const totalPages = computed(() => Math.max(1, Math.ceil(resultPage.value.total / pageSize.value)))
 const pageNumbers = computed(() => paginationPages(page.value, totalPages.value))
@@ -104,8 +172,6 @@ function changePageSize() {
   page.value = 1
   void loadLogs()
 }
-
-const colors: Record<string, string> = { 查看图纸: 'info', 新建图纸: 'ok', 修改图纸: 'warn', 创建分支: 'info', 上传文件: 'warn', 下载文件: 'plain', 删除文件: 'danger', 审核操作: 'info', '解析 EXB': 'plain' }
 
 onMounted(() => {
   void loadLogs()
@@ -203,29 +269,50 @@ onBeforeUnmount(() => {
       <table v-else-if="rows.length" class="tbl">
         <thead>
           <tr>
-            <th style="width: 170px;">时间</th>
-            <th style="width: 140px;">操作人</th>
-            <th style="width: 120px;">操作</th>
-            <th style="width: 200px;">图纸</th>
-            <th>结果</th>
+            <th style="width: 160px;">时间</th>
+            <th style="width: 120px;">操作人</th>
+            <th style="width: 130px;">操作</th>
+            <th>操作内容</th>
+            <th style="width: 150px;">图纸</th>
+            <th style="width: 80px;">结果</th>
+            <th style="width: 70px;"></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in rows" :key="item.id">
-            <td class="num updated">{{ item.time }}</td>
-            <td class="operator">{{ item.user }}</td>
-            <td>
-              <span class="tag" :class="colors[ACTIVITY_LABELS[item.act]] ?? 'mute'">
-                {{ ACTIVITY_LABELS[item.act] }}
-              </span>
-            </td>
-            <td class="num link">{{ item.drawingNo || '—' }}</td>
-            <td class="source">
-              <span class="tag" :class="item.result === 'success' ? 'ok' : 'danger'">
-                {{ item.result === 'success' ? '成功' : '失败' }}
-              </span>
-            </td>
-          </tr>
+          <template v-for="item in rows" :key="item.id">
+            <tr :class="{ 'row-expanded': expandedId === item.id }">
+              <td class="num updated">{{ item.time }}</td>
+              <td class="operator">{{ item.user }}</td>
+              <td>
+                <span class="tag" :class="actionTone(item.act)">
+                  {{ actionLabel(item.act) }}
+                </span>
+              </td>
+              <td class="log-summary">{{ item.txt || '—' }}</td>
+              <td class="num link">{{ item.drawingNo || '—' }}</td>
+              <td class="source">
+                <span class="tag" :class="item.result === 'success' ? 'ok' : 'danger'">
+                  {{ item.result === 'success' ? '成功' : '失败' }}
+                </span>
+              </td>
+              <td class="detail-cell">
+                <button v-if="canExpand(item)" class="btn sm" type="button" @click="toggleDetail(item.id)">
+                  {{ expandedId === item.id ? '收起' : '详情' }}
+                </button>
+                <span v-else class="empty-muted">—</span>
+              </td>
+            </tr>
+            <tr v-if="expandedId === item.id" class="detail-row">
+              <td colspan="7">
+                <dl class="log-detail">
+                  <div v-for="entry in detailEntries(item.detail)" :key="entry.label" class="detail-pair">
+                    <dt>{{ entry.label }}</dt>
+                    <dd>{{ entry.value }}</dd>
+                  </div>
+                </dl>
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
       <div v-else class="empty">
@@ -351,6 +438,45 @@ onBeforeUnmount(() => {
 }
 .source {
   color: var(--text-3);
+}
+.log-summary {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.detail-cell {
+  text-align: center;
+}
+.row-expanded {
+  background: var(--panel-2);
+}
+.detail-row > td {
+  padding: 0;
+  background: var(--panel-2);
+}
+.log-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px dashed var(--line);
+}
+.detail-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+}
+.detail-pair dt {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.detail-pair dd {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .pagination {

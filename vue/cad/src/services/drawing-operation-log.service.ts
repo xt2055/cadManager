@@ -30,7 +30,7 @@ export interface OperationLogOptionPage {
 export interface DrawingOperationLogQuery {
   page?: number
   pageSize?: number
-  action?: ActivityType
+  action?: string
   drawingNo?: string
   actor?: string
   keyword?: string

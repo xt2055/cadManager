@@ -240,6 +240,17 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 	if err != nil {
 		return ReviewCase{}, fmt.Errorf("读取待审核图纸失败: %w", err)
 	}
+	// 开放的变更工单只能由执行人通过变更提交接口送审，禁止普通入口绕过工单。
+	var hasOpenChange bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM change_requests WHERE drawing_id = $1::uuid
+		AND status IN ('pending_approval', 'executing', 'pending_verify')
+	)`, drawingID).Scan(&hasOpenChange); err != nil {
+		return ReviewCase{}, fmt.Errorf("检查变更工单失败: %w", err)
+	}
+	if hasOpenChange {
+		return ReviewCase{}, fmt.Errorf("存在未结束的变更工单，请由指定修改人通过变更工单发起审核: %w", ErrCaseForbidden)
+	}
 	if drawingStatus == "archived" {
 		return ReviewCase{}, fmt.Errorf("在用图纸必须通过变更工单提交新版本审核")
 	}

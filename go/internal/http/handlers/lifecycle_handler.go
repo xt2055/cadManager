@@ -55,7 +55,7 @@ func LifecycleDocuments(pool *pgxpool.Pool, store storage.ObjectStorage) http.Ha
 				response.WriteError(w, 400, "请选择图号或专利")
 				return
 			}
-			rows, err := pool.Query(ctx, `SELECT jsonb_build_object('id',d.id,'title',d.title,'category',d.category,'folderPath',d.folder_path,'description',d.description,'fileName',d.file_name,'size',d.size_bytes,'sha256',d.sha256,'changeRequestId',d.change_request_id,'createdAt',d.created_at,'createdBy',COALESCE(u.display_name,u.account)) FROM lifecycle_documents d JOIN users u ON u.id=d.created_by WHERE (($1<>'' AND d.drawing_id=NULLIF($1,'')::uuid) OR ($2<>'' AND d.patent_id=NULLIF($2,'')::uuid)) AND ($3='' OR EXISTS(SELECT 1 FROM change_submission_documents sd WHERE sd.document_id=d.id AND sd.submission_id=NULLIF($3,'')::uuid)) ORDER BY d.created_at DESC`, drawingID, patentID, r.URL.Query().Get("submissionId"))
+			rows, err := pool.Query(ctx, `SELECT jsonb_build_object('id',d.id,'title',d.title,'category',d.category,'folderPath',d.folder_path,'description',d.description,'fileName',d.file_name,'size',d.size_bytes,'sha256',d.sha256,'changeRequestId',d.change_request_id,'source',d.source,'createdAt',d.created_at,'createdBy',COALESCE(u.display_name,u.account)) FROM lifecycle_documents d JOIN users u ON u.id=d.created_by WHERE (($1<>'' AND d.drawing_id=NULLIF($1,'')::uuid) OR ($2<>'' AND d.patent_id=NULLIF($2,'')::uuid)) AND ($3='' OR EXISTS(SELECT 1 FROM change_submission_documents sd WHERE sd.document_id=d.id AND sd.submission_id=NULLIF($3,'')::uuid)) ORDER BY d.created_at DESC`, drawingID, patentID, r.URL.Query().Get("submissionId"))
 			if err != nil {
 				fail(err)
 				return
@@ -95,6 +95,11 @@ func LifecycleDocuments(pool *pgxpool.Pool, store storage.ObjectStorage) http.Ha
 		drawingID, patentID, changeID := r.FormValue("drawingId"), r.FormValue("patentId"), r.FormValue("changeRequestId")
 		category, title := strings.TrimSpace(r.FormValue("category")), strings.TrimSpace(r.FormValue("title"))
 		folder := strings.Trim(strings.TrimSpace(strings.ReplaceAll(r.FormValue("folderPath"), "\\", "/")), "/")
+		source := strings.TrimSpace(r.FormValue("source"))
+		if len(source) > 40 {
+			response.WriteError(w, 400, "来源标识过长")
+			return
+		}
 		if len(folder) > 500 || len(strings.Split(folder, "/")) > 10 {
 			response.WriteError(w, 400, "目录最多 10 层，路径不超过 500 字节")
 			return
@@ -178,7 +183,7 @@ func LifecycleDocuments(pool *pgxpool.Pool, store storage.ObjectStorage) http.Ha
 			return
 		}
 		var id string
-		err = tx.QueryRow(ctx, `INSERT INTO lifecycle_documents(drawing_id,patent_id,change_request_id,category,title,description,storage_key,file_name,mime_type,size_bytes,sha256,created_by,folder_path) VALUES(NULLIF($1,'')::uuid,NULLIF($2,'')::uuid,NULLIF($3,'')::uuid,$4,$5,$6,$7,$8,$9,$10,$11,$12::uuid,$13) RETURNING id::text`, drawingID, patentID, changeID, category, title, r.FormValue("description"), key, header.Filename, info.MimeType, info.Size, info.SHA256, user.ID, folder).Scan(&id)
+		err = tx.QueryRow(ctx, `INSERT INTO lifecycle_documents(drawing_id,patent_id,change_request_id,category,title,description,storage_key,file_name,mime_type,size_bytes,sha256,created_by,folder_path,source) VALUES(NULLIF($1,'')::uuid,NULLIF($2,'')::uuid,NULLIF($3,'')::uuid,$4,$5,$6,$7,$8,$9,$10,$11,$12::uuid,$13,$14) RETURNING id::text`, drawingID, patentID, changeID, category, title, r.FormValue("description"), key, header.Filename, info.MimeType, info.Size, info.SHA256, user.ID, folder, source).Scan(&id)
 		if err != nil {
 			_ = store.Delete(ctx, key)
 			fail(err)

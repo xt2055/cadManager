@@ -28,6 +28,17 @@ const categories = [
   '其他资料',
 ]
 
+function uploadSource(): string {
+  if (props.changeRequestId) return '变更工单'
+  if (props.submissionId) return '图纸提审'
+  if (props.patentId) return '专利资料'
+  return '资料档案'
+}
+
+function sourceLabel(doc: EvidenceDocument): string {
+  return doc.source || (doc.changeRequestId ? '变更工单' : '资料档案')
+}
+
 const category = ref('客户沟通')
 const title = ref('')
 const description = ref('')
@@ -342,6 +353,7 @@ async function upload() {
     if (props.patentId) form.set('patentId', props.patentId)
     else if (props.drawingId) form.set('drawingId', props.drawingId)
     if (props.changeRequestId) form.set('changeRequestId', props.changeRequestId)
+    form.set('source', uploadSource())
 
     await lifecycleApi('/lifecycle-documents', { method: 'POST', body: form })
     uiStore.toast(`资料「${title.value}」已成功归档入库`, 'ok')
@@ -544,6 +556,10 @@ defineExpose({ load, documents })
             <h4 class="doc-title" :title="doc.title">{{ doc.title }}</h4>
             <div class="doc-tags">
               <span class="tag plain cat-tag">{{ doc.category }}</span>
+              <span class="tag mute source-tag" :title="`来源：${sourceLabel(doc)}`">
+                <DemoIcon name="upload" :size="10" />
+                来自：{{ sourceLabel(doc) }}
+              </span>
               <span v-if="doc.folderPath" class="tag mute folder-tag" :title="doc.folderPath">
                 <DemoIcon name="folder" :size="10" />
                 {{ doc.folderPath }}
@@ -660,6 +676,7 @@ defineExpose({ load, documents })
             <tr>
               <th style="width: 220px;">资料标题</th>
               <th style="width: 110px;">分类</th>
+              <th style="width: 110px;">来源</th>
               <th style="width: 130px;">目录路径</th>
               <th>原始文件名</th>
               <th style="width: 90px;">文件大小</th>
@@ -684,6 +701,7 @@ defineExpose({ load, documents })
                 </div>
               </td>
               <td><span class="tag plain">{{ doc.category }}</span></td>
+              <td><span class="tag mute source-tag">{{ sourceLabel(doc) }}</span></td>
               <td>
                 <span v-if="doc.folderPath" class="folder-chip" :title="doc.folderPath">
                   📁 {{ doc.folderPath }}
@@ -1243,10 +1261,8 @@ defineExpose({ load, documents })
   flex-wrap: wrap;
 }
 
-.cat-tag {
-  font-size: 10.5px;
-}
-
+.cat-tag,
+.source-tag,
 .folder-tag {
   font-size: 10.5px;
 }

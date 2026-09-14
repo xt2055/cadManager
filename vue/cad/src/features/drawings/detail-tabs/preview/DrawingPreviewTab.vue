@@ -1499,7 +1499,7 @@ function closeReidentifyModal() {
           <DemoIcon name="plus" :size="14" />新建图纸
         </button>
         <button class="btn" type="button" @click="router.push({ name: 'drawing-models', params: { drawingId: route.params.drawingId } })"><DemoIcon name="box" :size="14" />3D 图纸</button>
-        <button class="btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId: route.params.drawingId } })">图纸对比</button>
+        <button v-if="currentItem && reviewStore.getCase(currentItem.no)?.changeSubmissionId" class="btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId: route.params.drawingId } })">图纸对比</button>
         <button class="btn" type="button" title="选择文件与格式（EXB / DWG / PDF），打包为 zip 下载" @click="openDownloadModal">
           <DemoIcon name="download" :size="14" />下载
         </button>

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createRequire } from 'node:module'
 import { canonicalDxf, compareEntities, snapshotDrawing as snapshot } from '../src/features/drawings/detail-tabs/preview/cad-compare.ts'
-import { compareVersionOptions, compareSourcePath } from '../src/features/drawings/detail-tabs/preview/cad-compare-sources.ts'
+import { compareVersionOptions, compareSourcePath, submissionCompareVersion } from '../src/features/drawings/detail-tabs/preview/cad-compare-sources.ts'
 const require = createRequire(import.meta.url)
 const { AcDbDatabase, AcDbDxfFiler, AcDbLine, AcDbCircle, AcDbBlockTableRecord, AcDbBlockReference, AcDbLayerTableRecord } = require('@mlightcad/data-model')
 const snapshotDrawing = database => snapshot(database, () => new AcDbDxfFiler({ database, precision: 10 }))
@@ -60,6 +60,14 @@ const versionRecords = [
   { id: 'a-1.0', version: '1.0', storageKey: 'a/v1.0.exb', createdAt: '2026-09-01' },
   { id: 'a-1.1', version: '1.1', storageKey: 'a/v1.1.exb', createdAt: '2026-09-08' },
 ]
+test('变更审核读取未发布的冻结版本，不依赖正式版本列表或当前文件指针', () => {
+  const submitted = submissionCompareVersion('frozen-submission', '总图.dwg', '本轮提交')
+  assert.equal(compareVersionOptions(versionFile, versionRecords).some(option => option.versionId === submitted.versionId), false)
+  assert.equal(compareSourcePath(versionFile.id, submitted), '/file-versions/frozen-submission/source')
+  const base = submissionCompareVersion('base-release', '总图.dwg', '变更前')
+  assert.equal(compareSourcePath(versionFile.id, base), '/file-versions/base-release/source')
+  assert.throws(() => submissionCompareVersion('', '总图.dwg', '缺失版本'), /缺少对比版本/)
+})
 test('同一图纸 1.0 与 1.1 按各自版本 ID 精确读取，当前版本去重', () => {
   const options = compareVersionOptions(versionFile, versionRecords)
   assert.equal(options.length, 2)

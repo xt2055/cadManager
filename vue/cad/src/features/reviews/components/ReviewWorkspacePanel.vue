@@ -7,11 +7,13 @@ import ChangeReviewEvidence from './ChangeReviewEvidence.vue'
 import {
   activeReviewNode,
   canSignReviewNode,
+  canStartRegularReview,
   reviewNodeStatusLabel,
   toWorkspaceNodes,
 } from '@/features/reviews/review-workspace'
 import { RouteName } from '@/router/route-names'
 import { drawingCommandService } from '@/app/container'
+import { changeRequestService, type ChangeRequest } from '@/services/change-request.service'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useReviewStore } from '@/stores/review.store'
@@ -44,7 +46,9 @@ const changeEvidenceReady = ref(false)
 
 const drawingNo = computed(() => props.drawingNo.trim())
 const drawing = computed(() => drawingStore.getDrawing(drawingNo.value) ?? drawingStore.getPart(drawingNo.value))
-const reviewCase = computed(() => reviewStore.getCase(drawingNo.value))
+// 进入工作台的图号可能是资源 ID（UUID）；审核案例始终以可读图号关联，命中后用真实图号查询。
+const effectiveNo = computed(() => drawing.value?.no || drawingNo.value)
+const reviewCase = computed(() => reviewStore.getCase(effectiveNo.value))
 const reviewing = computed(() => reviewCase.value ? reviewCase.value.status === 'reviewing' : drawing.value?.status === 'reviewing')
 const nodes = computed(() => toWorkspaceNodes(reviewCase.value))
 const currentNode = computed(() => activeReviewNode(nodes.value, reviewing.value))
@@ -63,14 +67,74 @@ const canArchive = computed(() => !isPart.value && drawing.value?.status === 'pu
 const canStartReview = computed(() => {
   const item = drawing.value
   const current = authStore.currentUser
-  if (!item || !current) return false
-  if (item.status === 'archived') return false
-  if (current.roles?.includes('admin')) return true
-  return ('createdBy' in item && item.createdBy) === current.displayName
+  return canStartRegularReview(item, current,
+    changeRequestLoading.value || changeRequestError.value || Boolean(changeRequest.value))
 })
 const missingCase = computed(() => reviewing.value && !reviewCase.value)
 const isRejected = computed(() => reviewCase.value?.status === 'rejected')
 const currentUserId = computed(() => authStore.currentUser?.id)
+
+const changeRequest = ref<ChangeRequest | null>(null)
+const changeRequestLoading = ref(false)
+const changeRequestError = ref(false)
+let changeRequestSequence = 0
+
+async function loadChangeRequest() {
+  const sequence = ++changeRequestSequence
+  changeRequest.value = null
+  changeRequestError.value = false
+  const item = drawing.value
+  changeRequestLoading.value = Boolean(item)
+  if (!item) return
+  try {
+    const userId = authStore.currentUser?.id
+    const list = await changeRequestService.listByDrawing(String(item.id))
+    const open = list.filter((request) => ['pending_approval', 'executing', 'pending_verify'].includes(request.status))
+    const request = open.find((request) => userId && request.executorId === userId) ?? open[0]
+    const detail = request ? await changeRequestService.get(request.id) : null
+    if (sequence !== changeRequestSequence) return
+    changeRequest.value = detail
+  } catch {
+    if (sequence === changeRequestSequence) changeRequestError.value = true
+  } finally {
+    if (sequence === changeRequestSequence) changeRequestLoading.value = false
+  }
+}
+
+watch(
+  [() => drawing.value?.id, () => authStore.currentUser?.id],
+  () => { void loadChangeRequest() },
+  { immediate: true },
+)
+
+// 变更申请通过、设计员改完图纸后，由执行人在审核工作台重新发起完整审核。
+const canRestartChangeReview = computed(() => {
+  const request = changeRequest.value
+  const current = authStore.currentUser
+  if (!request || !current || request.status !== 'executing') return false
+  return request.executorId === current.id
+})
+
+async function handleRestartChangeReview() {
+  const request = changeRequest.value
+  if (!request || !canRestartChangeReview.value || submitting.value) return
+  const last = request.submissions?.[request.submissions.length - 1]
+  submitting.value = true
+  try {
+    await changeRequestService.submit(
+      request.id,
+      last?.actualChanges?.trim() || '完成指定变更并提交完整审核',
+      last?.proposedAttributes ?? {},
+    )
+    drawingStore.invalidate()
+    await Promise.all([reviewStore.load(), drawingStore.load(), loadChangeRequest()])
+    uiStore.toast('已重新发起审核，请按节点顺序签署', 'ok')
+  } catch (error) {
+    uiStore.toast(error instanceof Error ? error.message : '重新发起审核失败', 'warn')
+  } finally {
+    submitting.value = false
+  }
+}
 
 watch(currentNode, (node) => {
   opinionText.value = node?.status === 'pending' ? '' : (node?.opinion || '')
@@ -81,8 +145,8 @@ onMounted(() => {
 })
 
 function openDrawingFiles() {
-  if (!drawingNo.value) return
-  void router.push({ name: RouteName.DrawingPreview, params: { drawingId: drawingNo.value } })
+  if (!effectiveNo.value) return
+  void router.push({ name: RouteName.DrawingPreview, params: { drawingId: effectiveNo.value } })
 }
 
 function nodeStatus(node: (typeof nodes.value)[number]) {
@@ -90,10 +154,10 @@ function nodeStatus(node: (typeof nodes.value)[number]) {
 }
 
 async function handleStartReview() {
-  if (!drawingNo.value) return
+  if (!effectiveNo.value || !canStartReview.value) return
   try {
-    await reviewStore.startCase(drawingNo.value)
-    uiStore.toast(`图纸「${drawingNo.value}」已发起审核，请按顺序完成各节点签署`, 'ok')
+    await reviewStore.startCase(effectiveNo.value)
+    uiStore.toast(`图纸「${effectiveNo.value}」已发起审核，请按顺序完成各节点签署`, 'ok')
   } catch (error) {
     console.error('发起审核失败', error)
     uiStore.toast(error instanceof Error ? error.message : '发起审核失败', 'warn')
@@ -171,13 +235,13 @@ async function handleDecision(action: 'pass' | 'rejected') {
     </div>
 
     <template v-else>
-      <ChangeReviewEvidence v-if="reviewCase?.changeSubmissionId" :key="reviewCase.changeSubmissionId" :drawing-no="drawingNo" :submission-id="reviewCase.changeSubmissionId" @ready="changeEvidenceReady = $event" />
+      <ChangeReviewEvidence v-if="reviewCase?.changeSubmissionId" :key="reviewCase.changeSubmissionId" :drawing-no="effectiveNo" :submission-id="reviewCase.changeSubmissionId" @ready="changeEvidenceReady = $event" />
       <div class="workspace-hero card">
         <div class="hero-main">
           <div class="hero-kicker">当前审核对象</div>
-          <h2>{{ drawing?.name || reviewCase?.drawingName || drawingNo }}</h2>
+          <h2>{{ drawing?.name || reviewCase?.drawingName || effectiveNo }}</h2>
           <p>
-            图号 {{ drawingNo }}
+            图号 {{ effectiveNo }}
             <template v-if="reviewCase"> · 发起人 {{ reviewCase.initiator }} · {{ reviewCase.startedAt }}</template>
           </p>
         </div>
@@ -220,11 +284,29 @@ async function handleDecision(action: 'pass' | 'rejected') {
             <button class="btn" type="button" @click="openDrawingFiles">先查阅图纸文件</button>
           </template>
 
+          <template v-else-if="changeRequestLoading || changeRequestError">
+            <div class="current-badge mute">{{ changeRequestLoading ? '正在加载' : '加载失败' }}</div>
+            <p class="current-meta">{{ changeRequestLoading ? '正在确认变更工单与送审权限。' : '变更工单加载失败，请重试后发起审核。' }}</p>
+            <button v-if="changeRequestError" class="btn" type="button" @click="loadChangeRequest">重试</button>
+          </template>
+
+          <template v-else-if="changeRequest?.status === 'executing'">
+            <div class="current-badge mute">变更待送审</div>
+            <h3>变更成果待发起完整审核</h3>
+            <p class="current-meta">{{ canRestartChangeReview ? '完成修改并结束编辑后，可直接发起完整审核；本工单上一轮已通过的节点会保留。' : `等待指定修改人「${changeRequest.executorName || '待定'}」完成修改并发起审核。` }}</p>
+            <button v-if="canRestartChangeReview" class="btn primary" type="button" :disabled="submitting" @click="handleRestartChangeReview">
+              <DemoIcon name="rotate-cw" :size="14" />{{ submitting ? '正在提交…' : '发起完整审核' }}
+            </button>
+          </template>
+
           <template v-else-if="isRejected || missingCase">
             <div class="current-badge danger">{{ missingCase ? '流程未初始化' : '流程已驳回' }}</div>
             <h3>{{ missingCase ? '需要重新初始化审核' : '等待发起人重新发起' }}</h3>
             <p class="current-meta">{{ missingCase ? '图纸处于审核中，但没有可签署的案例。' : '审核员不能重新发起。已通过节点会保留，发起后从驳回节点继续。' }}</p>
-            <button v-if="canStartReview" class="btn primary" type="button" @click="handleStartReview">
+            <button v-if="canRestartChangeReview" class="btn primary" type="button" :disabled="submitting" @click="handleRestartChangeReview">
+              <DemoIcon name="rotate-cw" :size="14" />重新发起审核
+            </button>
+            <button v-else-if="canStartReview" class="btn primary" type="button" @click="handleStartReview">
               {{ missingCase ? '重新初始化审核流程' : '重新发起审核' }}
             </button>
           </template>
@@ -239,10 +321,13 @@ async function handleDecision(action: 'pass' | 'rejected') {
           </template>
 
           <template v-else>
-            <div class="current-badge mute">尚未进入审核</div>
-            <h3>当前没有可签署节点</h3>
-            <p class="current-meta">图纸仍是草稿或尚未发起审核。请由图纸创建者发起流程后再回来处理。</p>
-            <button v-if="canStartReview" class="btn primary" type="button" @click="handleStartReview">开始发起审核流程</button>
+            <div class="current-badge mute">{{ canRestartChangeReview ? '变更待送审' : '尚未进入审核' }}</div>
+            <h3>{{ canRestartChangeReview ? '变更成果待发起完整审核' : '当前没有可签署节点' }}</h3>
+            <p class="current-meta">{{ canRestartChangeReview ? '变更申请已通过、图纸修改已完成。在此重新发起完整审核，已通过节点会保留。' : '图纸仍是草稿或尚未发起审核。请由图纸创建者发起流程后再回来处理。' }}</p>
+            <button v-if="canRestartChangeReview" class="btn primary" type="button" :disabled="submitting" @click="handleRestartChangeReview">
+              <DemoIcon name="rotate-cw" :size="14" />发起完整审核
+            </button>
+            <button v-else-if="canStartReview" class="btn primary" type="button" @click="handleStartReview">开始发起审核流程</button>
           </template>
         </section>
 

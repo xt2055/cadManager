@@ -31,6 +31,12 @@ export function compareVersionOptions(file: FileView, records: FileVersionInfo[]
   return options
 }
 
+// Frozen review submissions are intentionally absent from the public version list.
+export function submissionCompareVersion(versionId: string, name: string, label: string): CompareVersion {
+  if (!versionId) throw new Error('本次提交缺少对比版本')
+  return { value: `version:${versionId}`, versionId, name, label, current: false }
+}
+
 export function compareSourcePath(fileId: string, version: CompareVersion): string {
   if (version.versionId) return `/file-versions/${encodeURIComponent(version.versionId)}/source`
   if (!version.current) {

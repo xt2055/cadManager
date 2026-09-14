@@ -15,8 +15,14 @@ const expandedId = ref('')
 
 const rows = computed(() => {
   const q = keyword.value.trim().toLowerCase()
-  return items.value.filter((item) => !q || [item.requestNo, item.drawingNo, item.title, item.applicantName, item.scope].some((value) => value?.toLowerCase().includes(q)))
+  return items.value.filter((item) => !q || [item.requestNo, item.drawingNo, item.title, item.applicantName, item.executorName, item.scope].some((value) => value?.toLowerCase().includes(q)))
 })
+
+// 创建工单时会默认把执行人写成申请人，待审批阶段应视为尚未指派。
+function designated(item: ChangeRequest): string {
+  if (item.status === 'pending_approval' && (!item.executorId || item.executorId === item.applicantId)) return ''
+  return item.executorName || ''
+}
 
 async function load() {
   loading.value = true
@@ -66,6 +72,7 @@ onMounted(() => { void load() })
             <th>图号</th>
             <th>状态</th>
             <th>申请人</th>
+            <th>指定人</th>
             <th>范围</th>
             <th>时间</th>
           </tr>
@@ -77,11 +84,12 @@ onMounted(() => { void load() })
               <td>{{ item.drawingNo }}</td>
               <td><span class="tag">{{ CHANGE_STATUS_LABELS[item.status] }}</span></td>
               <td>{{ item.applicantName }}</td>
+              <td>{{ designated(item) || '—' }}</td>
               <td class="scope">{{ item.scope }}</td>
               <td class="num">{{ item.createdAt.slice(0, 16).replace('T', ' ') }}</td>
             </tr>
             <tr v-if="expandedId === item.id">
-              <td colspan="6">
+              <td colspan="7">
                 <div class="detail">
                   <p><b>原因</b> {{ item.reason }}</p>
                   <p v-for="act in item.actions" :key="act.id"><b>{{ act.actorName || '系统' }}</b> · {{ act.opinion }}</p>
