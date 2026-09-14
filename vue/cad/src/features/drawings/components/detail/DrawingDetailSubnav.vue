@@ -18,6 +18,8 @@ const tabs = computed(() => drawingDetailTabs.filter((tab) => tab.key !== 'chang
 
 <template>
   <nav class="subnav" aria-label="图纸详情导航">
+    <RouterLink class="subtab" :to="`/drawings/${drawingId}/documents`">资料档案</RouterLink>
+    <RouterLink class="subtab" :to="`/drawings/${drawingId}/lifecycle`">生命周期</RouterLink>
     <RouterLink
       v-for="tab in tabs"
       :key="tab.key"

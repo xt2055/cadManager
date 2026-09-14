@@ -30,6 +30,7 @@ export const routes: RouteRecordRaw[] = [
         path: '',
         redirect: '/dashboard',
       },
+      { path: 'patents', name: 'patents', component: () => import('@/features/patents/PatentPage.vue') },
       {
         path: 'dashboard',
         name: RouteName.Dashboard,
@@ -81,6 +82,8 @@ export const routes: RouteRecordRaw[] = [
         component: () =>
           import('@/features/drawings/layouts/DrawingDetailLayout.vue'),
         children: [
+          { path: 'documents', name: 'drawing-documents', component: () => import('@/features/drawings/pages/DrawingDocumentsPage.vue') },
+          { path: 'lifecycle', name: 'drawing-lifecycle', component: () => import('@/features/drawings/pages/DrawingLifecyclePage.vue') },
           {
             path: 'changes',
             name: RouteName.DrawingChanges,

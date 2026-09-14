@@ -24,6 +24,7 @@ const groups = [
       { id: 'dashboard', routeName: 'dashboard', icon: 'layout-dashboard', label: '工作台' },
       { id: 'library', routeName: 'drawing-library', icon: 'search', label: '图纸库', badge: 'library' },
       { id: 'parts', routeName: 'part-index-list', icon: 'boxes', label: '零件索引' },
+      { id: 'patents', routeName: 'patents', icon: 'shield', label: '专利管理' },
       { id: 'review', routeName: 'review-pending', icon: 'clipboard-check', label: '图纸审核', badge: 'review' },
     ],
   },
@@ -46,6 +47,7 @@ const visibleGroups = computed(() => groups.map((group) => ({
 })).filter((group) => group.items.length > 0))
 
 const activeId = computed(() => {
+  if (route.name === 'patents') return 'patents'
   if (route.name === 'drawing-library' || route.name === 'drawing-create' || route.name === 'drawing-detail') return 'library'
   if (route.name === 'part-index-list' || route.name === 'part-index-detail') return 'parts'
   if (route.name === 'review-pending' || route.name === 'review-completed' || route.name === 'review-center' || route.name === 'review-workspace') return 'review'

@@ -7,6 +7,7 @@ import { useAppStore } from '@/stores/app.store'
 import { useUiStore } from '@/stores/ui.store'
 import { useAuthStore } from '@/stores/auth.store'
 import SidebarNavigation from './SidebarNavigation.vue'
+import PatentReminder from '@/features/patents/PatentReminder.vue'
 
 defineOptions({
   name: 'DesktopSidebar',
@@ -39,6 +40,7 @@ function logout() {
 <template>
   <aside id="sidebar" :class="{ collapsed: appStore.sidebarCollapsed }">
     <SidebarNavigation />
+    <PatentReminder />
 
     <div class="side-foot">
       <div class="side-user">

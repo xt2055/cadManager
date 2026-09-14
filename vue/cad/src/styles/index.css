@@ -1186,7 +1186,7 @@ html[data-skin='tech'] input[type='radio']:checked { box-shadow: 0 0 9px var(--g
 
 #toastWrap {
   position: fixed;
-  z-index: 200;
+  z-index: 3000;
   top: 70px;
   right: 34px;
   display: flex;
