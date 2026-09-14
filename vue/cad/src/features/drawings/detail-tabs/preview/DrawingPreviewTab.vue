@@ -22,6 +22,7 @@ import { changeRequestService } from '@/services/change-request.service'
 import { editableChangeTargets } from '../../components/detail/change-edit-access'
 import { canDeleteDrawingFiles } from './drawing-file-delete'
 import { isModelFile } from '@/utils/model-formats'
+import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
 
 defineOptions({
   name: 'DrawingPreviewTab',
@@ -1621,7 +1622,7 @@ function closeReidentifyModal() {
                   </span>
                 </div>
               </td>
-              <td class="num"><span class="ver-badge">{{ file.version }}</span></td>
+              <td class="num"><span class="ver-badge" :title="file.version">{{ versionDisplayLabel(file.version) }}</span></td>
               <td>{{ file.uploadedBy }}</td>
               <td class="row-actions" style="text-align: right">
                 <button class="btn sm primary" type="button" title="在线 CAD 矢量浏览" @click="openBrowse(file)">
@@ -1842,7 +1843,7 @@ function closeReidentifyModal() {
             <div class="meta-row">
               <span class="lbl">原文件：</span>
               <span class="val mono bold">{{ targetReplaceFile?.name }}</span>
-              <span class="tag info">{{ targetReplaceFile?.version || 'v1.0' }}</span>
+              <span class="tag info">{{ targetReplaceFile ? versionDisplayLabel(targetReplaceFile.version) : 'v1.0' }}</span>
             </div>
             <div class="meta-row">
               <span class="lbl">新文件：</span>

@@ -111,7 +111,7 @@ function formatTime(iso: string): string {
 function kindLabel(version: FileVersionInfo): string {
   if (version.releaseNumber) return '正式版本'
   if (version.isOriginal) return '原始文件'
-  if (version.versionKind === 'working') return '工作版本'
+  if (version.versionKind === 'working') return version.version.startsWith('_converted_') ? '转换版本' : '工作版本'
   return version.versionKind || '版本'
 }
 

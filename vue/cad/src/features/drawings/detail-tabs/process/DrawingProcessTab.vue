@@ -10,6 +10,7 @@ import { useUiStore } from '@/stores/ui.store'
 import type { CraftFile } from '@/types/domain.types'
 import type { CraftFileView } from '@/modules/drawing'
 import { saveFilesAsZip } from '@/utils/download-file'
+import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
 import { selectAllFiles, selectedFiles, toggleFileSelection } from '../file-bulk-selection'
 
 defineOptions({ name: 'DrawingProcessTab' })
@@ -279,7 +280,7 @@ onMounted(async () => {
           <div class="craft-main-meta">
             <div class="craft-name-row">
               <b :title="file.name">{{ file.name }}</b>
-              <span class="tag plain">{{ file.ver }}</span>
+              <span class="tag plain">{{ versionDisplayLabel(file.ver) }}</span>
             </div>
             <div class="craft-op-tag">{{ file.op }}</div>
           </div>

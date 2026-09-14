@@ -11,6 +11,7 @@ import type { FileVersionInfo } from '@/types/application.types'
 import { acceptsModel, fileFormat, isModelFile } from '@/utils/model-formats'
 import { saveDownload } from '@/utils/download-file'
 import { formatReadableDateTime } from '@/utils/date-time'
+import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
 
 defineOptions({ name: 'DrawingModelsTab' })
 type Owner = DrawingSummaryView | PartView
@@ -249,7 +250,7 @@ async function downloadVersion(version: FileVersionInfo) {
             <tr v-for="file in filtered" :key="file.id">
               <td><strong>{{ file.name }}</strong><div><span class="tag plain">{{ fileFormat(file.name).toUpperCase() }}</span> <span v-if="file.isPrimaryModel" class="tag info">主模型</span></div></td>
               <td>{{ file.owner.no }}<small>{{ file.owner.name }}{{ 'parentNo' in file.owner && file.owner.borrowed ? ' · 借用件' : '' }}</small></td>
-              <td>{{ file.version }}<small>{{ file.size }} · {{ file.uploadedBy }}</small></td>
+              <td>{{ versionDisplayLabel(file.version) }}<small>{{ file.size }} · {{ file.uploadedBy }}</small></td>
               <td><span class="tag mute">原文件已保存</span><small>暂不支持在线预览</small></td>
               <td><div class="model-actions">
                 <button class="btn sm" :disabled="busy" @click="download(file)">下载原件</button>
@@ -272,7 +273,7 @@ async function downloadVersion(version: FileVersionInfo) {
         <p v-if="historyLoading">正在加载历史版本…</p>
         <p v-if="historyError" class="model-error" role="alert">{{ historyError }}</p>
         <table v-if="history.length" class="tbl"><thead><tr><th>版本</th><th>原文件名</th><th>上传时间</th><th></th></tr></thead><tbody>
-          <tr v-for="version in history" :key="version.id"><td>{{ version.version }} <span v-if="version.isCurrentRelease" class="tag info">当前</span></td><td>{{ version.originalName || historyFile.name }}</td><td>{{ formatReadableDateTime(version.createdAt) }}<small>{{ version.createdByName }}</small></td><td><button class="btn sm" :disabled="busy" @click="downloadVersion(version)">下载</button></td></tr>
+          <tr v-for="version in history" :key="version.id"><td>{{ versionDisplayLabel(version.version) }} <span v-if="version.isCurrentRelease" class="tag info">当前</span></td><td>{{ version.originalName || historyFile.name }}</td><td>{{ formatReadableDateTime(version.createdAt) }}<small>{{ version.createdByName }}</small></td><td><button class="btn sm" :disabled="busy" @click="downloadVersion(version)">下载</button></td></tr>
         </tbody></table>
         <p v-else-if="!historyLoading && !historyError">暂无版本记录</p>
       </section>

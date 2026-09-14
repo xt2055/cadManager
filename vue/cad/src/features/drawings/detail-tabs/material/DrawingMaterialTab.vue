@@ -12,6 +12,7 @@ import { useUiStore } from '@/stores/ui.store'
 import type { BomItem, MaterialFile } from '@/types/domain.types'
 import type { MaterialFileView } from '@/modules/drawing'
 import { formatReadableDateTime } from '@/utils/date-time'
+import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
 import { parseMaterialFileContent } from '@/utils/material-table-parser'
 import { hasGeneratedBomIds, originalMaterialWorkbook } from './material-print'
 import { saveFilesAsZip } from '@/utils/download-file'
@@ -540,7 +541,7 @@ onMounted(async () => {
            <div class="att-meta">
             <b>{{ f.name }}</b>
             <span>
-              {{ f.size }} · {{ f.version }} · 由 {{ f.uploadedBy }} 上传于 {{ formatReadableDateTime(f.uploadedAt, formatCurrentTime()) }}
+              {{ f.size }} · {{ versionDisplayLabel(f.version) }} · 由 {{ f.uploadedBy }} 上传于 {{ formatReadableDateTime(f.uploadedAt, formatCurrentTime()) }}
               <template v-if="f.author || materialAuthor"> · 编制：<b class="author-tag">{{ f.author || materialAuthor }}</b></template>
             </span>
            </div>
