@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
+import { lifecycleApi } from '@/services/lifecycle.service'
 import {
   changeRequestService,
   CHANGE_STATUS_LABELS,
   type ChangeRequest,
-  type ChangeUserOption,
   type ProposedAttributes,
 } from '@/services/change-request.service'
 import { buildChangeTargetGroups } from '../components/detail/change-targets'
@@ -22,9 +22,7 @@ const authStore = useAuthStore()
 const uiStore = useUiStore()
 
 const drawing = computed(() => drawingStore.getDrawing(String(route.params.drawingId ?? '')))
-const isAdmin = computed(() => authStore.currentUser?.roles?.includes('admin') ?? false)
 const requests = ref<ChangeRequest[]>([])
-const users = ref<ChangeUserOption[]>([])
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
@@ -38,8 +36,52 @@ const creating = ref(false)
 const historySearch = ref('')
 const historyStatus = ref('')
 
-const form = reactive({ reason: '', scope: '', executorId: '' })
+const form = reactive({ reason: '', scope: '' })
 const submission = reactive({ actualChanges: '', name: '', material: '', vendor: '' })
+
+const evidenceFiles = ref<{ id: string; file: File }[]>([])
+const evidenceDragging = ref(false)
+const evidenceInput = ref<HTMLInputElement | null>(null)
+const evidenceRef = ref<{ load: () => Promise<void> } | null>(null)
+let evidenceSeq = 0
+
+function formatEvidenceSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+function addEvidence(list: FileList | null | undefined) {
+  if (!list?.length) return
+  for (const item of Array.from(list)) {
+    if (item.size === 0) {
+      error.value = `「${item.name}」为空文件，已忽略`
+      continue
+    }
+    if (item.size > 100 * 1024 * 1024) {
+      error.value = `「${item.name}」超过单文件 100 MB 上限，已忽略`
+      continue
+    }
+    if (evidenceFiles.value.some((entry) => entry.file.name === item.name && entry.file.size === item.size)) continue
+    evidenceFiles.value.push({ id: `evidence-${++evidenceSeq}`, file: item })
+  }
+}
+function pickEvidence(event: Event) {
+  const target = event.target as HTMLInputElement
+  addEvidence(target.files)
+  target.value = ''
+}
+function onEvidenceDrop(event: DragEvent) {
+  evidenceDragging.value = false
+  addEvidence(event.dataTransfer?.files)
+}
+function removeEvidence(id: string) {
+  evidenceFiles.value = evidenceFiles.value.filter((entry) => entry.id !== id)
+}
+function clearEvidence() {
+  evidenceFiles.value = []
+  evidenceDragging.value = false
+  if (evidenceInput.value) evidenceInput.value.value = ''
+}
 
 const current = computed(() =>
   requests.value.find((item) => ['pending_approval', 'executing', 'pending_verify'].includes(item.status)),
@@ -65,18 +107,23 @@ const groups = computed(() =>
   buildChangeTargetGroups(drawing.value, drawing.value ? drawingStore.getStructure(drawing.value.no) : []),
 )
 
-const filteredGroups = computed(() =>
-  groups.value
-    .map((group) => ({
-      ...group,
-      files: group.files.filter((file) =>
-        `${group.no} ${group.name} ${file.name}`.toLowerCase().includes(search.value.trim().toLowerCase()),
-      ),
-    }))
-    .filter((group) => group.files.length),
+const drawingTargets = computed(() =>
+  groups.value.flatMap((group) =>
+    group.files
+      .filter((file) => file.category === 'drawing2d')
+      .map((file) => ({ id: file.id, name: file.name, no: group.no, ownerName: group.name, kind: group.kind })),
+  ),
 )
 
-const allIds = computed(() => [...new Set(groups.value.flatMap((group) => group.files.map((file) => file.id)))])
+const filteredTargets = computed(() => {
+  const keyword = search.value.trim().toLowerCase()
+  if (!keyword) return drawingTargets.value
+  return drawingTargets.value.filter((item) =>
+    `${item.no} ${item.ownerName} ${item.name}`.toLowerCase().includes(keyword),
+  )
+})
+
+const allIds = computed(() => [...new Set(drawingTargets.value.map((item) => item.id))])
 const allSelected = computed(() => allIds.value.length > 0 && allIds.value.every((id) => selected.value.includes(id)))
 const selectedIds = computed(() => selected.value.filter((id) => allIds.value.includes(id)))
 const canSubmit = computed(
@@ -122,11 +169,11 @@ watch(
     search.value = ''
     form.reason = ''
     form.scope = ''
-    form.executorId = ''
     submission.actualChanges = ''
     submission.name = ''
     submission.material = ''
     submission.vendor = ''
+    clearEvidence()
     expandedId.value = ''
     activeView.value = 'current'
     creating.value = false
@@ -137,38 +184,21 @@ watch(
   { immediate: true },
 )
 
-watch(
-  isAdmin,
-  async (admin) => {
-    if (!admin) {
-      users.value = []
-      return
-    }
-    try {
-      users.value = await changeRequestService.listUsers()
-    } catch {
-      users.value = []
-    }
-  },
-  { immediate: true },
-)
-
 function selectAll() {
   selected.value = allSelected.value ? [] : [...allIds.value]
 }
 
-async function run(action: () => Promise<ChangeRequest>, message: string) {
-  if (busy.value) return
+async function run(action: () => Promise<ChangeRequest>, message: string): Promise<ChangeRequest | undefined> {
+  if (busy.value) return undefined
   const drawingId = drawing.value?.id
   busy.value = true
   error.value = ''
   try {
     const updated = await action()
-    if (drawingId !== drawing.value?.id) return
+    if (drawingId !== drawing.value?.id) return undefined
     requests.value = [updated, ...requests.value.filter((item) => item.id !== updated.id)]
     form.reason = ''
     form.scope = ''
-    form.executorId = ''
     selected.value = []
     search.value = ''
     submission.actualChanges = ''
@@ -188,29 +218,58 @@ async function run(action: () => Promise<ChangeRequest>, message: string) {
     } catch {
       uiStore.toast('工单已保存，图纸信息暂未刷新，请稍后刷新页面', 'warn')
     }
+    return updated
   } catch (cause) {
     if (drawingId === drawing.value?.id) {
       error.value = cause instanceof Error ? cause.message : '操作失败，请重试'
     }
+    return undefined
   } finally {
     busy.value = false
   }
 }
 
-function create() {
+async function create() {
   if (!drawing.value || !ready.value) return
-  void run(
+  const pendingEvidence = [...evidenceFiles.value]
+  const created = await run(
     () =>
       changeRequestService.create({
         drawingId: drawing.value!.id,
         reason: form.reason.trim(),
         scope: form.scope.trim(),
         attachmentIds: selectedIds.value,
-        executorId: form.executorId || undefined,
         requireVerify: true,
       }),
-    '申请已提交，等待管理员审批',
+    pendingEvidence.length ? '申请已提交，正在归档变更佐证资料…' : '申请已提交，等待管理员审批',
   )
+  if (!created) return
+  clearEvidence()
+  if (!pendingEvidence.length) return
+  busy.value = true
+  let failed = 0
+  for (const entry of pendingEvidence) {
+    try {
+      const body = new FormData()
+      body.set('file', entry.file)
+      body.set('title', entry.file.name.replace(/\.[^/.]+$/, ''))
+      body.set('category', '变更依据')
+      body.set('description', '发起变更工单时随附')
+      body.set('drawingId', created.drawingId)
+      body.set('changeRequestId', created.id)
+      await lifecycleApi('/lifecycle-documents', { method: 'POST', body })
+    } catch {
+      failed += 1
+    }
+  }
+  busy.value = false
+  if (failed) {
+    error.value = `${failed} 份变更佐证资料上传失败，请在下方「变更证明依据与材料」区域重新上传`
+    return
+  }
+  uiStore.toast(`已随工单归档 ${pendingEvidence.length} 份变更佐证资料`, 'ok')
+  await nextTick()
+  evidenceRef.value?.load()
 }
 
 function submit() {
@@ -387,35 +446,28 @@ function getStatusTagClass(status: string): string {
               </div>
 
               <div class="target-list-scroll">
-                <section v-for="group in filteredGroups" :key="group.no" class="target-group-card">
-                  <div class="group-header">
-                    <DemoIcon :name="group.kind === '零件图' ? 'file' : 'layers'" :size="13" />
-                    <span class="group-no mono">{{ group.no }}</span>
-                    <span class="group-name">{{ group.name }}</span>
-                    <span class="group-kind-badge">{{ group.kind }}</span>
-                  </div>
-                  <div class="group-files-grid">
-                    <label
-                      v-for="f in group.files"
-                      :key="f.id"
-                      class="file-checkbox-card"
-                      :class="{ 'is-checked': selected.includes(f.id) }"
-                    >
-                      <input v-model="selected" type="checkbox" :value="f.id" class="hidden-chk" />
-                      <div class="chk-indicator">
-                        <DemoIcon v-if="selected.includes(f.id)" name="check" :size="12" />
-                      </div>
-                      <span class="file-category-badge" :data-cat="f.category">
-                        {{ f.category === 'model3d' ? '3D' : f.category === 'drawing2d' ? '2D' : '附件' }}
-                      </span>
-                      <span class="file-name-text" :title="f.name">{{ f.name }}</span>
-                    </label>
-                  </div>
-                </section>
+                <div class="drawing-target-list">
+                  <label
+                    v-for="item in filteredTargets"
+                    :key="item.id"
+                    class="file-checkbox-card flat-card"
+                    :class="{ 'is-checked': selected.includes(item.id) }"
+                  >
+                    <input v-model="selected" type="checkbox" :value="item.id" class="hidden-chk" />
+                    <div class="chk-indicator">
+                      <DemoIcon v-if="selected.includes(item.id)" name="check" :size="12" />
+                    </div>
+                    <span class="file-category-badge">2D</span>
+                    <span class="target-no mono">{{ item.no }}</span>
+                    <span class="target-owner" :title="item.ownerName">{{ item.ownerName }}</span>
+                    <span class="file-name-text" :title="item.name">{{ item.name }}</span>
+                    <span class="target-kind-badge">{{ item.kind }}</span>
+                  </label>
+                </div>
 
-                <div v-if="!filteredGroups.length" class="empty-target-msg">
+                <div v-if="!filteredTargets.length" class="empty-target-msg">
                   <DemoIcon name="search-x" :size="24" />
-                  <span>{{ allIds.length ? '没有匹配的文件，请调整搜索关键词' : '当前工程下没有可变更的文件' }}</span>
+                  <span>{{ allIds.length ? '没有匹配的 2D 图纸，请调整搜索关键词' : '当前工程下没有可变更的 2D 图纸' }}</span>
                 </div>
               </div>
             </div>
@@ -450,19 +502,56 @@ function getStatusTagClass(status: string): string {
                     placeholder="例如：需调整关键连接孔距由 45mm 至 48mm，并重新校核强度"
                   />
                 </div>
-
-                <div v-if="isAdmin" class="form-field full-width executor-field">
-                  <label class="field-label">
-                    指定设计执行人（管理员权限，默认申请人本人）
-                  </label>
-                  <select v-model="form.executorId" class="inp">
-                    <option value="">由我本人负责执行修改</option>
-                    <option v-for="user in users" :key="user.id" :value="user.id">
-                      {{ user.displayName }}
-                    </option>
-                  </select>
-                </div>
               </div>
+            </div>
+
+            <!-- 步骤 3：上传变更佐证资料 -->
+            <div class="sub-form-block">
+              <div class="block-title-row">
+                <h4>
+                  <span class="step-num">3</span>
+                  上传变更佐证资料
+                </h4>
+                <span class="selected-stat">
+                  已选 <b>{{ evidenceFiles.length }}</b> 份
+                </span>
+              </div>
+
+              <div
+                class="evidence-dropzone"
+                :class="{ dragging: evidenceDragging }"
+                role="button"
+                tabindex="0"
+                @click="evidenceInput?.click()"
+                @keydown.enter.prevent="evidenceInput?.click()"
+                @keydown.space.prevent="evidenceInput?.click()"
+                @dragover.prevent="evidenceDragging = true"
+                @dragleave.prevent="evidenceDragging = false"
+                @drop.prevent="onEvidenceDrop"
+              >
+                <DemoIcon name="upload" :size="22" />
+                <div class="dropzone-text">
+                  <b>点击选择或拖拽文件到此处</b>
+                  <span>支持客户确认图、变更依据、会议纪要、技术要求等，单文件不超过 100 MB</span>
+                </div>
+                <input ref="evidenceInput" type="file" multiple class="hidden-file" @change="pickEvidence" />
+              </div>
+
+              <ul v-if="evidenceFiles.length" class="evidence-file-list">
+                <li v-for="entry in evidenceFiles" :key="entry.id">
+                  <DemoIcon name="file-text" :size="14" />
+                  <span class="evidence-name" :title="entry.file.name">{{ entry.file.name }}</span>
+                  <span class="evidence-size">{{ formatEvidenceSize(entry.file.size) }}</span>
+                  <button class="evidence-remove" type="button" :aria-label="`移除 ${entry.file.name}`" @click="removeEvidence(entry.id)">
+                    <DemoIcon name="x" :size="13" />
+                  </button>
+                </li>
+              </ul>
+
+              <p class="evidence-hint">
+                <DemoIcon name="info" :size="13" />
+                <span>管理员审批前必须存在至少一份变更依据材料；提交工单后这些文件将自动归档，并可在工单内的「变更证明依据与材料」区域继续补充。</span>
+              </p>
             </div>
 
             <footer class="form-submit-bar">
@@ -570,6 +659,7 @@ function getStatusTagClass(status: string): string {
           <!-- 证明材料归档组件（内联） -->
           <div class="evidence-embed-wrap">
             <EvidenceDocuments
+              ref="evidenceRef"
               :key="current.id"
               :drawing-id="drawing.id"
               :change-request-id="current.id"
@@ -1190,45 +1280,54 @@ function getStatusTagClass(status: string): string {
   gap: 8px;
 }
 
-.target-group-card {
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--panel-2);
-}
-
-.group-header {
+.drawing-target-list {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
-  font-size: 12px;
-  padding-bottom: 6px;
-  border-bottom: 1px dashed var(--line);
 }
 
-.group-no {
+.file-checkbox-card.flat-card {
+  padding: 9px 12px;
+  gap: 10px;
+}
+
+.flat-card .file-category-badge {
+  flex: none;
+}
+
+.flat-card .target-no {
+  flex: none;
   color: var(--accent);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
   font-weight: 600;
 }
 
-.group-name {
-  font-weight: 600;
+.flat-card .target-owner {
+  flex: none;
+  max-width: 200px;
+  overflow: hidden;
   color: var(--text-1);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.group-kind-badge {
+.flat-card .file-name-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+}
+
+.flat-card .target-kind-badge {
+  flex: none;
   margin-left: auto;
-  font-size: 10.5px;
   padding: 1px 6px;
   border-radius: 4px;
-  background: var(--panel);
+  background: var(--panel-2);
   color: var(--text-3);
-}
-
-.group-files-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 6px;
-  margin-top: 8px;
+  font-size: 10.5px;
 }
 
 .file-checkbox-card {
@@ -1866,5 +1965,123 @@ function getStatusTagClass(status: string): string {
     width: 100%;
     justify-content: space-between;
   }
+}
+
+/* 变更佐证资料上传 */
+.evidence-dropzone {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: 12px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: border-color 0.25s, background 0.25s, color 0.25s;
+}
+
+.evidence-dropzone:hover,
+.evidence-dropzone.dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.evidence-dropzone > svg {
+  flex: none;
+}
+
+.dropzone-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dropzone-text b {
+  font-size: 13px;
+}
+
+.dropzone-text span {
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.hidden-file {
+  display: none;
+}
+
+.evidence-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidence-file-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  font-size: 12.5px;
+}
+
+.evidence-file-list li > svg {
+  flex: none;
+  color: var(--accent);
+}
+
+.evidence-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.evidence-size {
+  flex: none;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.evidence-remove {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--text-3);
+  transition: background 0.2s, color 0.2s;
+}
+
+.evidence-remove:hover {
+  background: rgb(248 113 113 / 12%);
+  color: var(--danger);
+}
+
+.evidence-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 10px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.evidence-hint svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
 }
 </style>
