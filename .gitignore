@@ -36,7 +36,9 @@ tools/exb2dxf/plugin/*.pch
 .env.*.local
 
 # Cache / Temp / Archive
+.tmp/
 .tmp-gocache/
+.zcode/
 *.zip
 log/
 new/
