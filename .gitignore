@@ -23,6 +23,7 @@ go/bin/
 
 # Storage / Temp
 go/storage/attachments/
+go/storage/attachments-documents/
 go/storage/cad-working/
 tools/exb2dxf/sample-output*
 tools/exb2dxf/test*

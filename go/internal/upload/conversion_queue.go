@@ -167,6 +167,19 @@ func (service *Service) convertQueuedCAD(ctx context.Context, job cadConversionJ
 	if err != nil {
 		return err
 	}
+	if err := service.commitCADConversion(ctx, job, processedBlobID, processedKey, convertedObject); err != nil {
+		return fmt.Errorf("保存 CAD 转换结果失败（文件已转换）: %w", err)
+	}
+	if convertedKey != processedKey {
+		if err := service.storage.Delete(ctx, convertedKey); err != nil {
+			service.scheduleCleanup(ctx, convertedKey, "cad-conversion-staging")
+		}
+	}
+	log.Printf("[CAD Converter] 异步转换完成并切换当前版本: %s", job.SourceName)
+	return nil
+}
+
+func (service *Service) commitCADConversion(ctx context.Context, job cadConversionJob, processedBlobID, processedKey string, convertedObject storage.ObjectInfo) error {
 	tx, err := service.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -182,10 +195,19 @@ func (service *Service) convertQueuedCAD(ctx context.Context, job cadConversionJ
 		}
 		return tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE attachment_versions SET blob_id=$2::uuid, original_name=$3, mime_type='application/acad', size_bytes=$4, previewable=true WHERE id=$1::uuid`, versionID, processedBlobID, processedCADName(job.SourceName), convertedObject.Size); err != nil {
+	// The source may already be the original, a release or a submitted snapshot.
+	// Keep it immutable and register the converted file as a separate working
+	// version. The attachment lock and source check above prevent stale jobs from
+	// replacing a newer upload; insertion and queue completion commit together.
+	var convertedVersionID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO attachment_versions (attachment_id, version, blob_id, original_name, mime_type, size_bytes, previewable, version_kind, created_by)
+		SELECT attachment_id, '_converted_' || $5::text, $2::uuid, $3, 'application/acad', $4, true, 'working', created_by
+		FROM attachment_versions WHERE id=$1::uuid
+		RETURNING id::text`, versionID, processedBlobID, processedCADName(job.SourceName), convertedObject.Size, job.ID).Scan(&convertedVersionID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE attachments SET revision=revision+1 WHERE id=$1::uuid`, job.AttachmentID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE attachments SET current_version_id=$2::uuid, revision=revision+1 WHERE id=$1::uuid`, job.AttachmentID, convertedVersionID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE upload_session_items SET processed_object_key = $2, processed_blob_id = $3::uuid, processed_size_bytes = $4, processed_sha256 = $5, processed_mime_type = $6, updated_at = now() WHERE id = $1::uuid`, job.ItemID, processedKey, processedBlobID, convertedObject.Size, convertedObject.SHA256, firstNonEmpty(convertedObject.MimeType, "application/acad")); err != nil {
@@ -194,24 +216,14 @@ func (service *Service) convertQueuedCAD(ctx context.Context, job cadConversionJ
 	if _, err := tx.Exec(ctx, `DELETE FROM cad_conversion_jobs WHERE id=$1::uuid`, job.ID); err != nil {
 		return err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	if convertedKey != processedKey {
-		if err := service.storage.Delete(ctx, convertedKey); err != nil {
-			service.scheduleCleanup(ctx, convertedKey, "cad-conversion-staging")
-		}
-	}
-	log.Printf("[CAD Converter] 异步转换完成并切换当前版本: %s", job.SourceName)
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (service *Service) retryCADConversion(ctx context.Context, job cadConversionJob, cause error) error {
 	status := "retry"
 	delay := time.Duration(job.Attempts) * 15 * time.Second
 	if job.Attempts >= conversionRetryLimit {
-		// 快速重试用尽后进入 backoff：任务不删除、不放弃，进入低频慢速重试，
-		// 等 CAXA 恢复正常（如被人工关闭后重启）后自动完成转换。
+		// 快速重试用尽后保留任务，等待修复后手动重试。
 		status = "failed"
 	}
 	_, err := service.pool.Exec(ctx, `UPDATE cad_conversion_jobs SET status = $2, next_attempt_at = now() + $3::interval, lease_until = NULL, last_error = $4, updated_at = now() WHERE id = $1::uuid`, job.ID, status, intervalText(delay), strings.TrimSpace(cause.Error()))

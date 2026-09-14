@@ -2,17 +2,36 @@ package change
 
 import (
 	"context"
-	"errors"
+	"strings"
 	"cadguanliq/internal/auth"
 	"regexp"
 	"testing"
 )
 
-func TestVerifyRequiresSubmissionBeforeDatabaseAccess(t *testing.T) {
+// TestVerifyAlwaysRequiresReviewCenter 变更不再支持管理员直接验收发布。
+//
+// 完成路径改为在图纸审核中心按完整流程签署，通过后由 CompleteReview 发布；
+// Verify 必须一律拒绝，否则会绕过节点签署直接发布本轮冻结版本。
+func TestVerifyAlwaysRequiresReviewCenter(t *testing.T) {
 	s := NewService(nil)
-	for _, id := range []string{"", "  "} {
-		_, err := s.Verify(context.Background(), auth.AuthUser{Roles: []string{"admin"}}, "request", DecisionInput{Opinion: "approve", SubmissionID: id})
-		if !errors.Is(err, ErrStaleSubmit) { t.Fatalf("missing submission: %v", err) }
+	cases := []struct {
+		name       string
+		submission string
+	}{
+		{"缺少提交轮次", ""},
+		{"空白提交轮次", "  "},
+		{"提供了提交轮次", "submission-1"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			_, err := s.Verify(context.Background(), auth.AuthUser{Roles: []string{"admin"}}, "request", DecisionInput{Opinion: "approve", SubmissionID: item.submission})
+			if err == nil {
+				t.Fatal("Verify 必须拒绝直接验收")
+			}
+			if !strings.Contains(err.Error(), "完整流程") {
+				t.Fatalf("错误信息应说明须走完整审核流程，实际 %v", err)
+			}
+		})
 	}
 }
 

@@ -11,6 +11,7 @@ import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { appContainer, drawingFileService } from '@/app/container'
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { lifecycleApi } from '@/services/lifecycle.service'
 import { extractCreationTitleBlocks } from '@/services/drawing-title-block.service'
 import { DRAWING_2D_ACCEPT, MODEL_FILE_ACCEPT, MODEL_EXTENSIONS, fileFormat, isDrawing2DFile } from '@/utils/model-formats'
 import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
@@ -43,6 +44,98 @@ let assemblyIdentifySequence = 0
 
 const createMode = ref<'blank' | 'fork'>('blank')
 const selectedForkSourceNo = ref('')
+
+// 分步向导状态控制
+const currentStep = ref(1)
+const steps = [
+  { step: 1, title: '2D 工程图纸', sub: '总图识别与零件图批量导入' },
+  { step: 2, title: '基础档案', sub: '项目名称、项目号与总图图号' },
+  { step: 3, title: '图纸属性', sub: '业务分类与自定义属性' },
+  { step: 4, title: '3D 模型与资料', sub: '三维模型装配包与归档凭证' },
+]
+
+/** 步骤 1：2D 工程图纸（支持上传总图以自动识别项目基本信息）。 */
+function validateDrawingStep(): boolean {
+  if (isIdentifyingAssembly.value) {
+    uiStore.toast('正在识别总图文件名，请稍候再进入下一步', 'warn')
+    return false
+  }
+  return true
+}
+
+/** 步骤 2：项目标识与创建模式。 */
+function validateBasicInfo(): boolean {
+  const projectName = formProject.value.trim()
+  if (!projectName) {
+    uiStore.toast('请填写项目名称', 'warn')
+    return false
+  }
+  const projectNo = formProjectNo.value.trim()
+  const drawingNo = formDrawingNo.value.trim()
+  if (!projectNo) {
+    uiStore.toast('请填写项目号；项目号只能来自总图文件名或用户手动输入', 'warn')
+    return false
+  }
+  if (isIdentifyingAssembly.value) {
+    uiStore.toast('正在识别总图文件名，请稍候再进入下一步', 'warn')
+    return false
+  }
+  if (!drawingNo) {
+    uiStore.toast('请填写总图图号；请以总图文件名识别结果或人工核对结果为准', 'warn')
+    return false
+  }
+  if (createMode.value === 'fork') {
+    if (!selectedForkSourceNo.value) {
+      uiStore.toast('请选择要分叉的源图纸', 'warn')
+      return false
+    }
+    if (selectedForkSourceNo.value === drawingNo) {
+      uiStore.toast('分叉新图号不能与源图号相同', 'warn')
+      return false
+    }
+  }
+  return true
+}
+
+/** 步骤 3：按后台配置校验必填业务属性。 */
+function validateAttributes(): boolean {
+  const attributeErrors = attributeStore.validate(formAttributeValues.value)
+  if (attributeErrors.length) {
+    uiStore.toast(attributeErrors[0] ?? '请完善图纸属性', 'warn')
+    return false
+  }
+  return true
+}
+
+/** 前进时逐个校验所有前置步骤，保证跳步不会绕过必填项。 */
+function validateUpTo(step: number): boolean {
+  if (step > 1 && !validateDrawingStep()) return false
+  if (step > 2 && !validateBasicInfo()) return false
+  if (step > 3 && !validateAttributes()) return false
+  return true
+}
+
+function nextStep() {
+  if (currentStep.value >= steps.length) return
+  if (!validateUpTo(currentStep.value)) return
+  currentStep.value += 1
+}
+
+function prevStep() {
+  if (currentStep.value > 1) {
+    currentStep.value -= 1
+  }
+}
+
+function goToStep(step: number) {
+  if (step === currentStep.value) return
+  if (step > currentStep.value) {
+    if (!validateUpTo(step - 1)) return
+    currentStep.value = step
+  } else {
+    currentStep.value = step
+  }
+}
 
 const existingDrawings = computed(() => drawingStore.drawings)
 
@@ -98,6 +191,31 @@ const canRetryUpload = computed(() => Boolean(drawingOperationsStore.pendingUplo
 const uploadSnapshot = ref<UploadSessionSnapshot | null>(null)
 const readyUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'ready' || item.status === 'committed').length ?? 0)
 const failedUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'failed').length ?? 0)
+const EVIDENCE_CATEGORIES = [
+  '客户沟通',
+  '确认图',
+  '技术要求',
+  '备料表',
+  '工艺资料',
+  '变更依据',
+  '验收证明',
+  '其他资料',
+]
+
+interface UploadedEvidence {
+  id: string
+  name: string
+  size: string
+  file: File
+  title: string
+}
+
+const evidenceCategory = ref(EVIDENCE_CATEGORIES[0] ?? '其他资料')
+const evidenceFolderPath = ref('')
+const evidenceDescription = ref('')
+const evidenceFiles = ref<UploadedEvidence[]>([])
+const isDraggingEvidence = ref(false)
+
 interface ConversionProgressItem { id: string; name: string; status: string; error?: string; attempts?: number }
 const conversionModalVisible = ref(false)
 const conversionBusy = ref(false)
@@ -263,6 +381,7 @@ const assemblyFileInput = ref<HTMLInputElement | null>(null)
 const partFilesInput = ref<HTMLInputElement | null>(null)
 const partFolderInput = ref<HTMLInputElement | null>(null)
 const modelFilesInput = ref<HTMLInputElement | null>(null)
+const evidenceFilesInput = ref<HTMLInputElement | null>(null)
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -403,6 +522,83 @@ function removeModel(id: string) {
 
 function clearAllModels() {
   modelFiles.value = []
+}
+
+function appendEvidenceFiles(fileList: FileList | null) {
+  if (!fileList?.length) return
+  const added: UploadedEvidence[] = []
+  for (const file of Array.from(fileList)) {
+    if (evidenceFiles.value.some((item) => item.name === file.name && item.file.size === file.size)) continue
+    added.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: file.name,
+      size: formatFileSize(file.size),
+      file,
+      title: file.name.replace(/\.[^/.]+$/, ''),
+    })
+  }
+  evidenceFiles.value.push(...added)
+  uiStore.toast(`已加入 ${added.length} 份相关资料`, 'ok')
+}
+
+function onEvidenceChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  appendEvidenceFiles(target.files)
+  target.value = ''
+}
+
+function onEvidenceDrop(event: DragEvent) {
+  isDraggingEvidence.value = false
+  appendEvidenceFiles(event.dataTransfer?.files ?? null)
+}
+
+function triggerEvidencePick() {
+  evidenceFilesInput.value?.click()
+}
+
+function removeEvidence(id: string) {
+  evidenceFiles.value = evidenceFiles.value.filter((item) => item.id !== id)
+}
+
+function clearAllEvidence() {
+  evidenceFiles.value = []
+}
+
+/**
+ * 资料档案以图号外键归属，创建前没有可关联的图纸记录；
+ * 因此在项目创建成功后再逐份归档，单份失败不影响已建成的项目。
+ */
+async function archiveEvidenceForDrawing(drawingNo: string): Promise<void> {
+  if (!evidenceFiles.value.length) return
+  const drawingId = drawingStore.getDrawing(drawingNo)?.id || ''
+  const failures = drawingId
+    ? await archiveCreatedEvidence(drawingId)
+    : ['未取得新图号的服务端身份，相关资料未归档，请在资料档案中重新上传']
+  if (failures.length) {
+    uiStore.toast(`${failures.length} 份相关资料未归档：${failures.join('；')}`, 'warn')
+  } else {
+    uiStore.toast(`${evidenceFiles.value.length} 份相关资料已归档到「${drawingNo}」的资料档案`, 'ok')
+  }
+}
+
+async function archiveCreatedEvidence(drawingId: string): Promise<string[]> {
+  const failures: string[] = []
+  for (const [index, item] of evidenceFiles.value.entries()) {
+    createStatus.value = `正在归档相关资料（${index + 1}/${evidenceFiles.value.length}）`
+    try {
+      const form = new FormData()
+      form.set('file', item.file)
+      form.set('title', item.title.trim() || item.name)
+      form.set('category', evidenceCategory.value)
+      form.set('description', evidenceDescription.value.trim())
+      form.set('folderPath', evidenceFolderPath.value.trim())
+      form.set('drawingId', drawingId)
+      await lifecycleApi('/lifecycle-documents', { method: 'POST', body: form })
+    } catch (error) {
+      failures.push(`${item.name}：${error instanceof Error ? error.message : '归档失败'}`)
+    }
+  }
+  return failures
 }
 
 function removeAssembly() {
@@ -547,6 +743,9 @@ async function performCreate() {
          formAttributeValues.value,
        )
       uiStore.toast(`已基于「${selectedForkSourceNo.value}」成功分叉项目「${projectNo}」，总图图号为「${drawingNo}」`, 'ok')
+      // 分叉命令只失效旧写模型，归档资料前需要取回新图号的服务端身份。
+      await drawingStore.refresh()
+      await archiveEvidenceForDrawing(drawingNo)
       router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
       return
     } catch (error) {
@@ -764,6 +963,8 @@ async function performCreate() {
      ? `；${unidentifiedPartNames.join('、')} 未识别出图号，已暂用文件名，可在零件详情页修改`
      : ''
    uiStore.toast(`项目「${projectNo}」已成功创建，总图图号为「${drawingNo}」${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}${fallbackMessage}`, unidentifiedPartNames.length ? 'warn' : 'ok')
+
+  await archiveEvidenceForDrawing(drawingNo)
   router.push({ name: modelFiles.value.length && !assemblyFile.value ? 'drawing-models' : 'drawing-preview', params: { drawingId: newProjectDrawing.no } })
 }
 
@@ -791,6 +992,7 @@ async function retryFailedUpload() {
 
 <template>
   <div class="page drawing-create-view">
+    <!-- 创建中遮罩 -->
     <div v-if="isCreating && !conversionModalVisible" class="create-loading-overlay" role="status" aria-live="polite">
       <div class="create-loading-card">
         <span class="create-spinner" aria-hidden="true"></span>
@@ -799,6 +1001,8 @@ async function retryFailedUpload() {
         <small>请勿关闭页面或重复点击</small>
       </div>
     </div>
+
+    <!-- 转换进度模态框 -->
     <div v-if="conversionModalVisible" class="create-loading-overlay conversion-progress-overlay" role="dialog" aria-modal="true">
       <div class="create-loading-card conversion-progress-card">
         <strong>图纸转换进度</strong>
@@ -815,6 +1019,8 @@ async function retryFailedUpload() {
         <button v-if="conversionFailedCount" class="btn primary" type="button" :disabled="conversionBusy" @click="retryFailedConversions">{{ conversionBusy ? '正在重新排队…' : '重试失败文件' }}</button>
       </div>
     </div>
+
+    <!-- 会话中断恢复卡片 -->
     <div v-if="canRetryUpload" class="create-upload-recovery" :role="createError ? 'alert' : undefined">
       <div>
         <strong>{{ failedUploadCount ? '部分文件尚未上传完成' : createError ? '文件已上传，项目尚未提交' : '上传会话进度' }}</strong>
@@ -837,6 +1043,8 @@ async function retryFailedUpload() {
         </div>
       </div>
     </div>
+
+    <!-- 顶部状态栏 -->
     <div class="create-topbar">
       <div class="topbar-left">
         <button class="btn icon-only" type="button" title="返回图纸库" @click="handleCancel">
@@ -844,7 +1052,7 @@ async function retryFailedUpload() {
         </button>
         <div>
           <h1 class="create-title">新建项目图纸</h1>
-          <p class="create-subtitle">创建项目基础信息与图纸档案，支持先立项后补传，或即时上传总图及零件图。</p>
+          <p class="create-subtitle">分步向导帮助您规范建立图纸档案；支持先立项后补传，或一步到位关联全套工程文件。</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -856,26 +1064,230 @@ async function retryFailedUpload() {
       </div>
     </div>
 
-    <div class="create-content-grid">
-      <div class="create-main-col">
-        <section class="card form-section">
+    <!-- 现代向导进度步骤指示器 (Stepper) -->
+    <div class="wizard-stepper card">
+      <div
+        v-for="s in steps"
+        :key="s.step"
+        class="stepper-item"
+        :class="{
+          active: currentStep === s.step,
+          completed: currentStep > s.step,
+          clickable: true,
+        }"
+        @click="goToStep(s.step)"
+      >
+        <div class="stepper-badge">
+          <DemoIcon v-if="currentStep > s.step" name="check" :size="14" />
+          <span v-else>{{ s.step }}</span>
+        </div>
+        <div class="stepper-content">
+          <div class="stepper-title-row">
+            <span class="stepper-title">{{ s.title }}</span>
+            <span v-if="s.step === 1 && (assemblyFile || partFiles.length)" class="stepper-count-tag">
+              {{ (assemblyFile ? 1 : 0) + partFiles.length }} 图
+            </span>
+            <span v-else-if="s.step === 4 && (modelFiles.length || evidenceFiles.length)" class="stepper-count-tag">
+              {{ modelFiles.length + evidenceFiles.length }} 份
+            </span>
+          </div>
+          <span class="stepper-sub">{{ s.sub }}</span>
+        </div>
+        <div v-if="s.step < steps.length" class="stepper-line" aria-hidden="true"></div>
+      </div>
+    </div>
+
+    <!-- 步骤 1: 2D 工程图纸（最前节点：上传总图自动识别基本信息） -->
+    <section v-if="currentStep === 1" class="wizard-step-panel">
+      <!-- 隐藏的文件选择器 -->
+      <input
+        ref="assemblyFileInput"
+        type="file"
+        :accept="DRAWING_2D_ACCEPT"
+        class="hidden-input"
+        @change="onAssemblyChange"
+      />
+      <input
+        ref="partFilesInput"
+        type="file"
+        :accept="DRAWING_2D_ACCEPT"
+        multiple
+        class="hidden-input"
+        @change="onPartsChange"
+      />
+      <input
+        ref="partFolderInput"
+        type="file"
+        :accept="DRAWING_2D_ACCEPT"
+        multiple
+        webkitdirectory
+        class="hidden-input"
+        @change="onFolderChange"
+      />
+
+      <div class="panel-grid">
+        <!-- 2D 总图卡片 -->
+        <div class="card panel-card">
           <div class="section-head">
+            <div class="head-icon-box">
+              <DemoIcon name="layers" :size="16" />
+            </div>
+            <div class="head-text">
+              <div class="title-badge-row">
+                <h2>2D 项目总图</h2>
+                <span class="badge" :class="assemblyFile ? 'ok-badge' : 'muted-badge'">
+                  {{ assemblyFile ? '已就绪' : '推荐先选' }}
+                </span>
+              </div>
+              <p class="head-tip">上传 EXB / DWG / DXF / PDF，自动提取图号与项目信息并带入下一步</p>
+            </div>
+          </div>
+
+          <div class="panel-card-body">
+            <div
+              class="upload-box modern-drop-card assembly-box"
+              :class="{ active: isDraggingAssembly, 'has-file': Boolean(assemblyFile) }"
+              @dragover.prevent="isDraggingAssembly = true"
+              @dragleave.prevent="isDraggingAssembly = false"
+              @drop.prevent="onAssemblyDrop"
+            >
+              <template v-if="!assemblyFile">
+                <div class="upload-icon-wrap">
+                  <DemoIcon name="file-up" :size="26" />
+                </div>
+                <div class="upload-texts">
+                  <b>拖拽总图文件至此处，或点击按钮选取</b>
+                  <p>支持 EXB、DWG、DXF 等标准 2D 格式，自动识别项目名、项目号与图号</p>
+                </div>
+                <div class="upload-actions">
+                  <button class="btn primary" type="button" @click="triggerAssemblyPick">
+                    <DemoIcon name="upload" :size="14" />选择总图文件
+                  </button>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="file-picked-card">
+                  <div class="picked-main">
+                    <div class="picked-icon">
+                      <DemoIcon name="file-check-2" :size="20" />
+                    </div>
+                    <div class="picked-meta">
+                      <div class="picked-name" :title="assemblyFile.name">{{ assemblyFile.name }}</div>
+                      <div class="picked-sub">
+                        <span class="tag plain">2D 总图</span>
+                        <span>{{ assemblyFile.size }}</span>
+                        <span class="text-ok">✓ 解析就绪</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="picked-ops">
+                    <button class="btn sm" type="button" @click="triggerAssemblyPick">重新选择</button>
+                    <button class="btn sm danger" type="button" @click="removeAssembly">移除</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2D 零件图批量上传卡片 -->
+        <div class="card panel-card">
+          <div class="section-head">
+            <div class="head-icon-box">
+              <DemoIcon name="boxes" :size="16" />
+            </div>
+            <div class="head-text">
+              <div class="title-badge-row">
+                <h2>2D 零件图批量导入</h2>
+                <span class="badge muted-badge">{{ partFiles.length }} 个零件</span>
+              </div>
+              <p class="head-tip">支持多文件选取或直接选择整套图纸文件夹，智能识别父子层级</p>
+            </div>
+          </div>
+
+          <div class="panel-card-body">
+            <div
+              class="upload-box modern-drop-card parts-box"
+              :class="{ active: isDraggingParts }"
+              @dragover.prevent="isDraggingParts = true"
+              @dragleave.prevent="isDraggingParts = false"
+              @drop.prevent="onPartsDrop($event)"
+            >
+              <div class="upload-icon-wrap">
+                <DemoIcon name="folder-up" :size="26" />
+              </div>
+              <div class="upload-texts">
+                <b>批量添加 2D 零件图</b>
+                <p>可直接将文件夹或多个零件图拖入框中进行批量导入</p>
+              </div>
+              <div class="upload-actions">
+                <button class="btn sm" type="button" @click="triggerPartsPick">
+                  <DemoIcon name="files" :size="13" />多选文件
+                </button>
+                <button class="btn sm" type="button" @click="triggerFolderPick">
+                  <DemoIcon name="folder-up" :size="13" />选择整文件夹
+                </button>
+              </div>
+            </div>
+
+            <div v-if="partFiles.length" class="parts-list-card modern-list">
+              <div class="parts-list-head">
+                <span>待入库零件列表 ({{ partFiles.length }})</span>
+                <button class="text-btn danger" type="button" @click="clearAllParts">清空列表</button>
+              </div>
+              <div class="parts-list-body panel-scroll">
+                <div v-for="part in partFiles" :key="part.id" class="part-item-row">
+                  <DemoIcon name="file" :size="14" />
+                  <span class="part-name" :title="part.name">{{ part.name }}</span>
+                  <span class="part-size">{{ part.size }}</span>
+                  <button class="icon-btn xs" type="button" title="移除" @click="removePart(part.id)">
+                    <DemoIcon name="x" :size="12" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="panel-actions card">
+        <span class="step-hint">选入总图后会自动读取项目名与总图图号；若无图纸也可直接进入下一步手动建档</span>
+        <div class="footer-actions">
+          <button class="btn" type="button" :disabled="isCreating" @click="handleSubmit">
+            <DemoIcon name="check" :size="13" />跳过后续，直接保存
+          </button>
+          <button class="btn primary" type="button" @click="nextStep">
+            下一步：基础档案 <DemoIcon name="arrow-right" :size="14" />
+          </button>
+        </div>
+      </footer>
+    </section>
+
+    <!-- 步骤 2: 基础档案 -->
+    <section v-else-if="currentStep === 2" class="wizard-step-panel">
+      <div class="card wizard-card">
+        <div class="section-head">
+          <div class="head-icon-box">
             <DemoIcon name="folder-plus" :size="16" />
-            <h2>项目基本信息与创建模式</h2>
-            <span class="section-tip">支持空白立项，或基于已有图纸完整分叉继承所有结构与元标签</span>
           </div>
-
-          <div class="create-mode-selector">
-            <label class="mode-option" :class="{ active: createMode === 'blank' }">
+          <div class="head-text">
+            <h2>项目基本信息</h2>
+            <p class="head-tip">已关联上一步图纸识别信息；可核对修改，或选择从已有图纸分叉继承</p>
+          </div>
+          <div class="segmented-control" role="radiogroup" aria-label="创建模式">
+            <label class="segment" :class="{ active: createMode === 'blank' }">
               <input v-model="createMode" type="radio" value="blank" />
-              <span>新建空白图纸</span>
+              <DemoIcon name="file-plus" :size="13" />新建空白
             </label>
-            <label class="mode-option" :class="{ active: createMode === 'fork' }">
+            <label class="segment" :class="{ active: createMode === 'fork' }">
               <input v-model="createMode" type="radio" value="fork" />
-              <span>从已有图纸分叉 (继承结构/零件/文件)</span>
+              <DemoIcon name="git-branch" :size="13" />分叉继承
             </label>
           </div>
+        </div>
 
+        <div class="wizard-card-body">
           <div v-if="createMode === 'fork'" class="fork-source-row">
             <label for="fork-source-select">选择要分叉的源图纸 *</label>
             <select id="fork-source-select" v-model="selectedForkSourceNo" class="inp" @change="onForkSourceChange">
@@ -884,7 +1296,10 @@ async function retryFailedUpload() {
                 {{ item.no }} · {{ item.name }} ({{ item.vendor || '内部项目部' }})
               </option>
             </select>
-            <p class="fork-tip">分叉将继承源图纸的项目信息、零件结构以及全部图纸、备料与工艺文件，以下表单已预填、均可修改；提交前请将总图图号改为新号。</p>
+            <p class="fork-tip">
+              <DemoIcon name="info" :size="12" />
+              分叉将完整继承源图纸的属性、零件层级与工艺备料文件；提交前请确认新的总图图号。
+            </p>
           </div>
 
           <div class="form-grid">
@@ -904,7 +1319,7 @@ async function retryFailedUpload() {
                 id="create-project-no"
                 v-model="formProjectNo"
                 class="inp"
-                placeholder="从总图文件名自动带入，也可手动修改"
+                placeholder="例如：PRJ-2026-081"
               />
               <small class="field-help">用于项目分类和文件夹目录，不是总图图号。</small>
             </div>
@@ -915,14 +1330,14 @@ async function retryFailedUpload() {
                 id="create-drawing-no"
                 v-model="formDrawingNo"
                 class="inp"
-                :placeholder="isIdentifyingAssembly ? '正在识别文件名…' : '从总图文件名自动识别，也可核对后修改'"
+                :placeholder="isIdentifyingAssembly ? '正在识别文件名…' : '例如：JG9055e-50/32-00'"
                 :disabled="isIdentifyingAssembly"
               />
               <small
                 class="field-help"
                 :class="{ error: (createMode === 'fork' && formDrawingNo === selectedForkSourceNo) || (assemblyIdentifyMessage && !formDrawingNo && !isIdentifyingAssembly) }"
               >
-                {{ createMode === 'fork' && formDrawingNo === selectedForkSourceNo ? '分叉需要新的总图图号，请修改后再提交。' : assemblyIdentifyMessage || '总图图号来自总图文件名，不使用项目号代替。' }}
+                {{ createMode === 'fork' && formDrawingNo === selectedForkSourceNo ? '分叉需要新的总图图号，请修改后再提交。' : assemblyIdentifyMessage || '图号规范唯一，已关联上一步总图文件名识别结果。' }}
               </small>
             </div>
 
@@ -936,198 +1351,241 @@ async function retryFailedUpload() {
               />
             </div>
           </div>
+        </div>
 
-          <DrawingAttributesForm
-            v-model="formAttributeValues"
-            :attributes="attributeStore.sortedAttributes"
-          />
-        </section>
+        <footer class="panel-actions">
+          <button class="btn" type="button" @click="prevStep">
+            <DemoIcon name="arrow-left" :size="14" />上一步：2D 工程图纸
+          </button>
+          <div class="footer-actions">
+            <button class="btn" type="button" :disabled="isCreating" @click="handleSubmit">
+              <DemoIcon name="check" :size="13" />先立项，稍后补传
+            </button>
+            <button class="btn primary" type="button" @click="nextStep">
+              下一步：图纸属性 <DemoIcon name="arrow-right" :size="14" />
+            </button>
+          </div>
+        </footer>
       </div>
+    </section>
 
-      <div class="create-side-col">
-        <section class="card form-section file-upload-section">
+    <!-- 步骤 3: 图纸业务属性 -->
+    <section v-else-if="currentStep === 3" class="wizard-step-panel">
+      <div class="card wizard-card">
+        <div class="section-head">
+          <div class="head-icon-box">
+            <DemoIcon name="sliders-horizontal" :size="16" />
+          </div>
+          <div class="head-text">
+            <h2>图纸业务属性</h2>
+            <p class="head-tip">按后台配置录入业务分类，带 * 的为必填项；未选或停用不影响历史数据</p>
+          </div>
+          <span class="badge muted-badge">{{ attributeStore.sortedAttributes.length }} 项配置</span>
+        </div>
+
+        <div class="wizard-card-body">
+          <div v-if="attributeStore.sortedAttributes.length" class="attributes-wrapper step-attributes-container">
+            <DrawingAttributesForm
+              v-model="formAttributeValues"
+              :attributes="attributeStore.sortedAttributes"
+              compact
+            />
+          </div>
+          <p v-else class="empty-tip">当前没有启用中的图纸属性，可直接进入下一步。</p>
+        </div>
+
+        <footer class="panel-actions">
+          <button class="btn" type="button" @click="prevStep">
+            <DemoIcon name="arrow-left" :size="14" />上一步：基础档案
+          </button>
+          <div class="footer-actions">
+            <button class="btn" type="button" :disabled="isCreating" @click="handleSubmit">
+              <DemoIcon name="check" :size="13" />先立项，稍后补传
+            </button>
+            <button class="btn primary" type="button" @click="nextStep">
+              下一步：3D 模型与资料 <DemoIcon name="arrow-right" :size="14" />
+            </button>
+          </div>
+        </footer>
+      </div>
+    </section>
+
+    <!-- 步骤 4: 3D 模型与相关资料 -->
+    <section v-else class="wizard-step-panel">
+      <!-- 隐藏的文件选择器 -->
+      <input
+        ref="modelFilesInput"
+        type="file"
+        :accept="MODEL_FILE_ACCEPT"
+        multiple
+        class="hidden-input"
+        @change="onModelsChange"
+      />
+      <input
+        ref="evidenceFilesInput"
+        type="file"
+        multiple
+        class="hidden-input"
+        @change="onEvidenceChange"
+      />
+
+      <div class="panel-grid">
+        <!-- 3D 模型上传卡片 -->
+        <div class="card panel-card">
           <div class="section-head">
-            <DemoIcon name="file-up" :size="16" />
-            <h2>图纸文件上传</h2>
-          </div>
-
-          <input
-            ref="assemblyFileInput"
-            type="file"
-            :accept="DRAWING_2D_ACCEPT"
-            class="hidden-input"
-            @change="onAssemblyChange"
-          />
-
-          <div
-            class="upload-box assembly-box"
-            :class="{ active: isDraggingAssembly, 'has-file': Boolean(assemblyFile) }"
-            @dragover.prevent="isDraggingAssembly = true"
-            @dragleave.prevent="isDraggingAssembly = false"
-            @drop.prevent="onAssemblyDrop"
-          >
-            <template v-if="!assemblyFile">
-              <div class="upload-icon-wrap">
-                <DemoIcon name="layers" :size="28" />
-              </div>
-              <div class="upload-texts">
-                <b>上传 2D 项目总图</b>
-              <p>支持 EXB / DWG / DXF / PDF 等工程图格式。3D 模型请在下方独立上传。</p>
-              </div>
-              <div class="upload-actions">
-                <button class="btn sm primary" type="button" @click="triggerAssemblyPick">
-                  <DemoIcon name="upload" :size="13" />选择总图文件
-                </button>
-              </div>
-              <span class="upload-hint">也可以先跳过，立项后再补传</span>
-            </template>
-
-            <template v-else>
-              <div class="file-picked-card">
-                <div class="picked-main">
-                  <div class="picked-icon">
-                    <DemoIcon name="file-check-2" :size="20" />
-                  </div>
-                  <div class="picked-meta">
-                    <div class="picked-name" :title="assemblyFile.name">{{ assemblyFile.name }}</div>
-                    <div class="picked-sub">总图 · {{ assemblyFile.size }} · 已就绪</div>
-                  </div>
-                </div>
-                <div class="picked-ops">
-                  <button class="btn sm" type="button" @click="triggerAssemblyPick">重新选择</button>
-                  <button class="btn sm danger" type="button" @click="removeAssembly">移除</button>
-                </div>
-              </div>
-            </template>
-          </div>
-
-          <div class="parts-upload-container">
-            <div class="parts-header">
-              <div class="parts-title-wrap">
-                <h3>2D 零件图文件上传</h3>
-                <span class="badge muted-badge">{{ partFiles.length }} 个</span>
-              </div>
-              <span class="parts-lock-tip">
-                <DemoIcon name="info" :size="12" />可先跳过，立项后随时补传
-              </span>
+            <div class="head-icon-box">
+              <DemoIcon name="box" :size="16" />
             </div>
+            <div class="head-text">
+              <div class="title-badge-row">
+                <h2>3D 模型文件</h2>
+                <span class="badge muted-badge">{{ modelFiles.length }} 个模型</span>
+              </div>
+              <p class="head-tip">支持 Z3PRT / Z3ASM / STEP / IGES 及主流 3D 装配体</p>
+            </div>
+          </div>
 
-            <input
-              ref="partFilesInput"
-              type="file"
-              :accept="DRAWING_2D_ACCEPT"
-              multiple
-              class="hidden-input"
-              @change="onPartsChange"
-            />
-            <input
-              ref="partFolderInput"
-              type="file"
-              :accept="DRAWING_2D_ACCEPT"
-              multiple
-              webkitdirectory
-              class="hidden-input"
-              @change="onFolderChange"
-            />
-
+          <div class="panel-card-body">
             <div
-              class="upload-box parts-box"
-              :class="{ active: isDraggingParts }"
-              @dragover.prevent="isDraggingParts = true"
-              @dragleave.prevent="isDraggingParts = false"
-              @drop.prevent="onPartsDrop($event)"
+              class="upload-box modern-drop-card model-box"
+              :class="{ active: isDraggingModels }"
+              @dragover.prevent="isDraggingModels = true"
+              @dragleave.prevent="isDraggingModels = false"
+              @drop.prevent="onModelsDrop($event)"
             >
-              <div class="upload-icon-wrap">
-                <DemoIcon name="boxes" :size="24" />
-              </div>
+              <div class="upload-icon-wrap"><DemoIcon name="box" :size="26" /></div>
               <div class="upload-texts">
-                <b>批量上传 2D 零件图（可选）</b>
-                <p>只接收 2D 工程图，可多选文件或直接选择整目录</p>
+                <b>上传 3D 模型或三维装配包（可选）</b>
+                <p>可指定该 3D 文件关联至总图或具体零件图</p>
               </div>
               <div class="upload-actions">
-                <button class="btn sm" type="button" @click="triggerPartsPick">
-                  <DemoIcon name="files" :size="13" />多选文件
-                </button>
-                <button class="btn sm" type="button" @click="triggerFolderPick">
-                  <DemoIcon name="folder-up" :size="13" />选择文件夹
+                <button class="btn sm" type="button" @click="triggerModelsPick">
+                  <DemoIcon name="files" :size="13" />选择 3D 文件
                 </button>
               </div>
             </div>
 
-            <div v-if="partFiles.length" class="parts-list-card">
+            <div v-if="modelFiles.length" class="parts-list-card modern-list">
               <div class="parts-list-head">
-                <span>待关联零件 ({{ partFiles.length }})</span>
-                <button class="text-btn danger" type="button" @click="clearAllParts">清空列表</button>
+                <span>待上传 3D 模型（{{ modelFiles.length }}）</span>
+                <button class="text-btn danger" type="button" @click="clearAllModels">清空列表</button>
               </div>
-              <div class="parts-list-body">
-                <div v-for="part in partFiles" :key="part.id" class="part-item-row">
-                  <DemoIcon name="file" :size="14" />
-                  <span class="part-name" :title="part.name">{{ part.name }}</span>
-                  <span class="part-size">{{ part.size }}</span>
-                  <button class="icon-btn xs" type="button" title="移除" @click="removePart(part.id)">
+              <div class="parts-list-body panel-scroll">
+                <div v-for="model in modelFiles" :key="model.id" class="part-item-row model-item-row">
+                  <DemoIcon name="box" :size="14" />
+                  <span class="part-name" :title="model.name">{{ model.name }}</span>
+                  <select v-model="model.linkTo" class="inp model-link-select" aria-label="选择关联的 2D 图纸">
+                    <option value="">不关联</option>
+                    <option v-for="target in modelLinkTargets" :key="target.value" :value="target.value">
+                      关联：{{ target.label }}
+                    </option>
+                  </select>
+                  <span class="part-size">{{ model.size }}</span>
+                  <button class="icon-btn xs" type="button" title="移除" @click="removeModel(model.id)">
                     <DemoIcon name="x" :size="12" />
                   </button>
                 </div>
               </div>
             </div>
           </div>
+        </div>
 
-          <div class="parts-upload-container model-upload-container">
-            <div class="parts-header">
-              <div class="parts-title-wrap">
-                <h3>3D 模型文件上传</h3>
-                <span class="badge muted-badge">{{ modelFiles.length }} 个</span>
+        <!-- 相关资料归档卡片 -->
+        <div class="card panel-card">
+          <div class="section-head">
+            <div class="head-icon-box">
+              <DemoIcon name="archive" :size="16" />
+            </div>
+            <div class="head-text">
+              <div class="title-badge-row">
+                <h2>相关资料归档</h2>
+                <span class="badge muted-badge">{{ evidenceFiles.length }} 份资料</span>
               </div>
-              <span class="parts-lock-tip"><DemoIcon name="link" :size="12" />关联为可选项</span>
+              <p class="head-tip">技术协议、客户确认图与设计依据；创建后自动入库并保留 SHA-256 指纹</p>
+            </div>
+          </div>
+
+          <div class="panel-card-body">
+            <div class="evidence-meta-grid">
+              <div class="form-item">
+                <label for="create-evidence-category">资料分类</label>
+                <select id="create-evidence-category" v-model="evidenceCategory" class="inp">
+                  <option v-for="item in EVIDENCE_CATEGORIES" :key="item" :value="item">{{ item }}</option>
+                </select>
+              </div>
+              <div class="form-item">
+                <label for="create-evidence-folder">存放目录</label>
+                <input
+                  id="create-evidence-folder"
+                  v-model="evidenceFolderPath"
+                  class="inp"
+                  placeholder="例如：技术方案/评审纪要"
+                />
+              </div>
+              <div class="form-item">
+                <label for="create-evidence-desc">说明 / 依据备忘</label>
+                <input
+                  id="create-evidence-desc"
+                  v-model="evidenceDescription"
+                  class="inp"
+                  placeholder="补充资料来源、关键结论或替代关系"
+                />
+              </div>
             </div>
 
-            <input
-              ref="modelFilesInput"
-              type="file"
-              :accept="MODEL_FILE_ACCEPT"
-              multiple
-              class="hidden-input"
-              @change="onModelsChange"
-            />
             <div
-              class="upload-box parts-box model-box"
-              :class="{ active: isDraggingModels }"
-              @dragover.prevent="isDraggingModels = true"
-              @dragleave.prevent="isDraggingModels = false"
-              @drop.prevent="onModelsDrop($event)"
+              class="upload-box modern-drop-card evidence-box"
+              :class="{ active: isDraggingEvidence }"
+              @dragover.prevent="isDraggingEvidence = true"
+              @dragleave.prevent="isDraggingEvidence = false"
+              @drop.prevent="onEvidenceDrop"
             >
-              <div class="upload-icon-wrap"><DemoIcon name="box" :size="24" /></div>
+              <div class="upload-icon-wrap"><DemoIcon name="archive" :size="26" /></div>
               <div class="upload-texts">
-                <b>批量上传 3D 模型（可选）</b>
-                <p>支持 Z3PRT / Z3ASM / STEP / IGES 及主流 3D 格式，可选择是否关联某张 2D 图。</p>
+                <b>上传相关材料文件（可选）</b>
+                <p>支持 PDF、Word、Excel、图纸、图片、压缩包等格式，单份不超过 100 MB</p>
               </div>
               <div class="upload-actions">
-                <button class="btn sm" type="button" @click="triggerModelsPick"><DemoIcon name="files" :size="13" />选择 3D 文件</button>
+                <button class="btn sm" type="button" @click="triggerEvidencePick">
+                  <DemoIcon name="files" :size="13" />选择资料文件
+                </button>
               </div>
             </div>
 
-            <div v-if="modelFiles.length" class="parts-list-card model-list-card">
+            <div v-if="evidenceFiles.length" class="parts-list-card modern-list">
               <div class="parts-list-head">
-                <span>待上传 3D 模型（{{ modelFiles.length }}）</span>
-                <button class="text-btn danger" type="button" @click="clearAllModels">清空列表</button>
+                <span>待归档资料（{{ evidenceFiles.length }}）</span>
+                <button class="text-btn danger" type="button" @click="clearAllEvidence">清空列表</button>
               </div>
-              <div class="parts-list-body">
-                <div v-for="model in modelFiles" :key="model.id" class="part-item-row model-item-row">
-                  <DemoIcon name="box" :size="14" />
-                  <span class="part-name" :title="model.name">{{ model.name }}</span>
-                  <select v-model="model.linkTo" class="inp model-link-select" aria-label="选择关联的 2D 图纸">
-                    <option value="">不关联</option>
-                    <option v-for="target in modelLinkTargets" :key="target.value" :value="target.value">关联：{{ target.label }}</option>
-                  </select>
-                  <span class="part-size">{{ model.size }}</span>
-                  <button class="icon-btn xs" type="button" title="移除" @click="removeModel(model.id)"><DemoIcon name="x" :size="12" /></button>
+              <div class="parts-list-body panel-scroll">
+                <div v-for="item in evidenceFiles" :key="item.id" class="part-item-row evidence-item-row">
+                  <DemoIcon name="file" :size="14" />
+                  <input v-model="item.title" class="inp evidence-title-input" aria-label="资料标题" placeholder="资料标题" />
+                  <span class="part-name" :title="item.name">{{ item.name }}</span>
+                  <span class="part-size">{{ item.size }}</span>
+                  <button class="icon-btn xs" type="button" title="移除" @click="removeEvidence(item.id)">
+                    <DemoIcon name="x" :size="12" />
+                  </button>
                 </div>
               </div>
             </div>
           </div>
-        </section>
+        </div>
       </div>
-    </div>
+
+      <footer class="panel-actions card">
+        <button class="btn" type="button" @click="prevStep">
+          <DemoIcon name="arrow-left" :size="14" />上一步：图纸属性
+        </button>
+        <div class="footer-actions">
+          <button class="btn" type="button" :disabled="isCreating" @click="handleCancel">取消</button>
+          <button class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
+            <span v-if="isCreating" class="button-spinner" aria-hidden="true"></span>
+            <DemoIcon v-else name="check" :size="15" />{{ isCreating ? '正在保存创建…' : '保存并创建项目图纸' }}
+          </button>
+        </div>
+      </footer>
+    </section>
   </div>
 </template>
 
@@ -1135,11 +1593,713 @@ async function retryFailedUpload() {
 .drawing-create-view {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  min-height: calc(100vh - 120px);
-  padding: 6px 4px 20px;
+  gap: 12px;
+  height: 100%;
+  max-width: 1360px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
 }
 
+/* 顶部栏 */
+.create-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.create-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.2px;
+}
+
+.create-subtitle {
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 现代分步向导 Stepper */
+.wizard-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-radius: 12px;
+  background: var(--panel);
+  gap: 8px;
+  flex-shrink: 0;
+  min-height: 52px;
+  box-sizing: border-box;
+}
+
+.stepper-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  position: relative;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  user-select: none;
+  min-width: 0;
+}
+
+.stepper-item:hover {
+  background: var(--panel-2);
+}
+
+.stepper-item.active {
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--panel));
+}
+
+.stepper-badge {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text-3);
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: all 0.25s ease;
+}
+
+.stepper-item.active .stepper-badge {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.stepper-item.completed .stepper-badge {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.stepper-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.stepper-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.25;
+}
+
+.stepper-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.stepper-item.active .stepper-title {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.stepper-item.completed .stepper-title {
+  color: var(--text-1);
+}
+
+.stepper-sub {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.25;
+}
+
+.stepper-count-tag {
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.stepper-line {
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
+
+@media (max-width: 860px) {
+  .wizard-stepper {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .stepper-line {
+    display: none;
+  }
+}
+
+/* 步骤容器与两栏网格自适应 */
+.wizard-step-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.wizard-card {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px;
+  border-radius: var(--radius);
+  flex: 1;
+  min-height: 0;
+}
+
+.wizard-card-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 4px;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.panel-card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  min-height: 0;
+}
+
+.panel-card-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 2px;
+}
+
+.panel-scroll {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+/* 统一底栏控制台 */
+.panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.panel-actions.card {
+  margin-top: 0;
+  border-radius: var(--radius);
+  border-top: 1px solid var(--line);
+}
+
+.step-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 头部设计 */
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.head-icon-box {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.title-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.head-tip {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+/* 紧凑型 Segmented Control 分段控制器 */
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-2);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.segment input {
+  display: none;
+}
+
+.segment.active {
+  background: var(--panel);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 10%);
+}
+
+/* 分叉源图纸提示卡片 */
+.fork-source-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--panel-2));
+}
+
+.fork-source-row label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.fork-tip {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.fork-tip svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* 表单布局 */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px 14px;
+}
+
+.form-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-item label {
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.form-item.required label::after {
+  content: ' *';
+  color: var(--danger);
+}
+
+.form-item:last-child {
+  grid-column: span 2;
+}
+
+.field-help {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+
+.field-help.error {
+  color: var(--danger);
+}
+
+.attributes-wrapper {
+  margin-top: 4px;
+}
+
+:deep(.step-attributes-container .attributes-form__header) {
+  display: none !important;
+}
+
+:deep(.step-attributes-container .attributes-form) {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.empty-tip {
+  margin: 16px 0;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* 现代化拖拽与卡片上传 */
+.hidden-input {
+  display: none;
+}
+
+.modern-drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px 20px;
+  border: 1.5px dashed var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+  transition: all 0.25s ease;
+  cursor: pointer;
+}
+
+.modern-drop-card:hover,
+.modern-drop-card.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--panel-2));
+}
+
+.modern-drop-card.has-file {
+  padding: 12px 14px;
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--panel);
+  cursor: default;
+}
+
+.upload-icon-wrap {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 10px;
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--accent);
+}
+
+.upload-texts b {
+  font-size: 13.5px;
+  color: var(--text-1);
+}
+
+.upload-texts p {
+  margin: 4px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.upload-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* 已选择总图卡片 */
+.file-picked-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.picked-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.picked-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.picked-meta {
+  min-width: 0;
+  text-align: left;
+}
+
+.picked-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.picked-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.text-ok {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.picked-ops {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+/* 列表展示 */
+.modern-list {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.parts-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.parts-list-body {
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.part-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.part-item-row:last-child {
+  border-bottom: none;
+}
+
+.part-item-row svg {
+  color: var(--text-3);
+  flex: none;
+}
+
+.part-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-1);
+}
+
+.part-size {
+  color: var(--text-3);
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  flex: none;
+}
+
+.model-item-row {
+  display: grid;
+  grid-template-columns: auto minmax(100px, 1fr) minmax(150px, 0.9fr) auto auto;
+}
+
+.model-link-select {
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.evidence-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.evidence-desc-item {
+  margin-top: -2px;
+}
+
+.evidence-item-row {
+  display: grid;
+  grid-template-columns: auto minmax(100px, 0.8fr) minmax(100px, 1.2fr) auto auto;
+}
+
+.evidence-title-input {
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 11.5px;
+}
+
+.text-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.text-btn.danger {
+  color: var(--danger);
+}
+
+.text-btn.danger:hover {
+  text-decoration: underline;
+}
+
+.icon-btn.xs {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+}
+
+/* 统一向导底栏控制台 */
+.wizard-footer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  gap: 16px;
+  box-shadow: var(--shadow);
+}
+
+.step-hint {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lg-btn {
+  padding: 8px 18px;
+  font-size: 13.5px;
+}
+
+/* 进度遮罩与断点续传卡片保持原逻辑 */
 .create-loading-overlay {
   position: fixed;
   z-index: 50;
@@ -1305,25 +2465,6 @@ async function retryFailedUpload() {
   gap: 8px;
 }
 
-@media (max-width: 680px) {
-  .create-upload-recovery {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .create-upload-recovery-actions {
-    flex-wrap: wrap;
-  }
-
-  .create-upload-recovery-item {
-    grid-template-columns: 1fr auto 42px;
-  }
-
-  .upload-progress-track {
-    grid-column: 1 / -1;
-  }
-}
-
 .create-spinner,
 .button-spinner {
   display: inline-block;
@@ -1348,451 +2489,6 @@ async function retryFailedUpload() {
 @keyframes create-spin {
   to {
     transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .create-spinner,
-  .button-spinner {
-    animation-duration: 1.5s;
-  }
-}
-
-.create-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 4px 0 12px;
-  border-bottom: 1px solid var(--line);
-}
-
-.topbar-left {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.create-title {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: 20px;
-  font-weight: 800;
-}
-
-.create-subtitle {
-  margin: 3px 0 0;
-  color: var(--text-3);
-  font-size: 12px;
-}
-
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.create-content-grid {
-  display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
-  gap: 16px;
-  align-items: start;
-}
-
-.create-main-col,
-.create-side-col {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.form-section {
-  padding: 20px;
-}
-
-.section-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.section-head svg {
-  color: var(--accent);
-}
-
-.section-head h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.section-tip {
-  margin-left: auto;
-  color: var(--text-3);
-  font-size: 11.5px;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
-}
-
-.form-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-item label {
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.form-item.required label::after {
-  content: ' *';
-  color: var(--danger);
-}
-
-.form-item:last-child {
-  grid-column: span 2;
-}
-
-.create-mode-selector {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.mode-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--panel-2);
-  cursor: pointer;
-  font-size: 12.5px;
-  color: var(--text-2);
-  transition: all 0.2s ease;
-}
-
-.mode-option.active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
-  font-weight: 600;
-}
-
-.fork-source-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 16px;
-  padding: 12px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
-  background: color-mix(in srgb, var(--accent-soft) 40%, var(--panel-2));
-}
-
-.fork-source-row label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-
-.fork-tip {
-  margin: 0;
-  font-size: 11px;
-  color: var(--text-3);
-  line-height: 1.5;
-}
-
-.hidden-input {
-  display: none;
-}
-
-.upload-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: 20px 16px;
-  border: 1.5px dashed var(--line);
-  border-radius: 12px;
-  background: var(--panel-2);
-  transition: all 0.25s;
-}
-
-.upload-box.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.upload-box.disabled {
-  opacity: 0.55;
-  filter: grayscale(0.2);
-  cursor: not-allowed;
-}
-
-.upload-box.has-file {
-  padding: 10px;
-  border-style: solid;
-  border-color: var(--accent);
-  background: var(--panel);
-}
-
-.upload-icon-wrap {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  margin-bottom: 8px;
-  border-radius: 50%;
-  background: var(--panel);
-  color: var(--accent);
-}
-
-.upload-texts b {
-  font-size: 13px;
-  color: var(--text-1);
-}
-
-.upload-texts p {
-  margin: 4px 0 0;
-  color: var(--text-3);
-  font-size: 11.5px;
-}
-
-.field-help {
-  display: block;
-  margin-top: 5px;
-  color: var(--text-3);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.field-help.error {
-  color: var(--danger);
-}
-
-.upload-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.upload-hint {
-  margin-top: 8px;
-  color: var(--text-3);
-  font-size: 11px;
-}
-
-.file-picked-card {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px;
-}
-
-.picked-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.picked-icon {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  flex: none;
-  border-radius: 8px;
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.picked-meta {
-  min-width: 0;
-  text-align: left;
-}
-
-.picked-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.picked-sub {
-  color: var(--text-3);
-  font-size: 11px;
-}
-
-.picked-ops {
-  display: flex;
-  gap: 6px;
-  flex: none;
-}
-
-.parts-upload-container {
-  margin-top: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.parts-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.parts-title-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.parts-title-wrap h3 {
-  margin: 0;
-  font-size: 13.5px;
-  font-weight: 700;
-}
-
-.parts-lock-tip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--warn);
-  font-size: 11px;
-}
-
-.model-upload-container {
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
-}
-
-.model-box {
-  background: color-mix(in srgb, var(--accent-soft) 26%, var(--panel-2));
-}
-
-.model-item-row {
-  display: grid;
-  grid-template-columns: auto minmax(120px, 1fr) minmax(170px, 0.8fr) auto auto;
-}
-
-.model-link-select {
-  min-width: 0;
-  padding: 5px 8px;
-  font-size: 11.5px;
-}
-
-.parts-list-card {
-  margin-top: 6px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel-2);
-  overflow: hidden;
-}
-
-.parts-list-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-
-.parts-list-body {
-  max-height: 180px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-
-.part-item-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--line);
-  font-size: 12px;
-}
-
-.part-item-row:last-child {
-  border-bottom: none;
-}
-
-.part-item-row svg {
-  color: var(--text-3);
-  flex: none;
-}
-
-.part-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--text-1);
-}
-
-.part-size {
-  color: var(--text-3);
-  font-size: 11px;
-  font-family: 'JetBrains Mono', monospace;
-  flex: none;
-}
-
-.text-btn {
-  border: none;
-  background: transparent;
-  padding: 0;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.text-btn.danger {
-  color: var(--danger);
-}
-
-.text-btn.danger:hover {
-  text-decoration: underline;
-}
-
-.icon-btn.xs {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-}
-
-@media (max-width: 1024px) {
-  .create-content-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 640px) {
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
-  .form-item:last-child {
-    grid-column: span 1;
   }
 }
 </style>
