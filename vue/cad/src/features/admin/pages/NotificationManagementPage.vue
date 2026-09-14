@@ -96,7 +96,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentPointe
 </script>
 
 <template>
-  <div class="notification-admin">
+  <div class="page notification-admin">
     <header class="page-head">
       <div>
         <h1>通知管理</h1>

@@ -11,6 +11,7 @@ import (
 	"cadguanliq/internal/http/middleware"
 	"cadguanliq/internal/response"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -232,10 +233,13 @@ func writeChangeError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, change.ErrActiveEditSession):
 		response.WriteError(writer, http.StatusConflict, err.Error())
 	default:
-		if message := err.Error(); strings.Contains(message, "不能为空") || strings.Contains(message, "必须") || strings.Contains(message, "无效") {
-			response.WriteError(writer, http.StatusBadRequest, message)
+		// 服务层的业务校验错误（errors.New）应把具体提示回传给前端；
+		// 仅当底层是数据库/上下文等系统故障时才返回通用 500。
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) || errors.Is(err, pgx.ErrNoRows) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			response.WriteError(writer, http.StatusInternalServerError, "变更工单操作失败")
 			return
 		}
-		response.WriteError(writer, http.StatusInternalServerError, "变更工单操作失败")
+		response.WriteError(writer, http.StatusBadRequest, err.Error())
 	}
 }

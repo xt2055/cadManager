@@ -2474,6 +2474,7 @@ function closeReidentifyModal() {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  padding-bottom: 16px;
 }
 
 .files-title-row .hint {
@@ -2948,8 +2949,8 @@ function closeReidentifyModal() {
 
 .files-table-card .tbl {
   width: 100%;
-  min-width: 1170px;
-  table-layout: fixed;
+  min-width: 0;
+  table-layout: auto;
 }
 
 .files-table-card .tbl th,
@@ -2960,8 +2961,20 @@ function closeReidentifyModal() {
 }
 
 .files-table-card .tbl td.row-actions {
+  padding-right: 18px;
   overflow: visible;
   text-overflow: clip;
+}
+
+.files-table-card .tbl thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding-top: 13px;
+  padding-bottom: 11px;
+  background: var(--panel-top);
+  background-clip: padding-box;
+  box-shadow: inset 0 -1px 0 var(--line);
 }
 
 @media (max-width: 1280px) {
@@ -2977,34 +2990,22 @@ function closeReidentifyModal() {
 }
 
 @media (max-width: 760px) {
-  .files-table-card .tbl {
-    min-width: 1130px;
-  }
-
   .files-table-card .tbl th:nth-child(2),
   .files-table-card .tbl td:nth-child(2) {
-    min-width: 220px;
-  }
-
-  .files-table-card .tbl th:nth-child(5),
-  .files-table-card .tbl td:nth-child(5) {
-    min-width: 560px;
+    min-width: 200px;
   }
 }
 
 .files-table-card .tbl th:nth-child(1),
-.files-table-card .tbl td:nth-child(1) { width: 110px; }
+.files-table-card .tbl td:nth-child(1) { width: 100px; }
 .files-table-card .tbl th:nth-child(2),
-.files-table-card .tbl td:nth-child(2) { min-width: 300px; }
+.files-table-card .tbl td:nth-child(2) { width: 100%; }
 .files-table-card .tbl th:nth-child(3),
-.files-table-card .tbl td:nth-child(3) { width: 90px; }
+.files-table-card .tbl td:nth-child(3) { width: 84px; }
 .files-table-card .tbl th:nth-child(4),
-.files-table-card .tbl td:nth-child(4) { width: 110px; }
+.files-table-card .tbl td:nth-child(4) { width: 120px; }
 .files-table-card .tbl th:nth-child(5),
-.files-table-card .tbl td:nth-child(5) {
-  width: 560px;
-  min-width: 560px;
-}
+.files-table-card .tbl td:nth-child(5) { width: 1%; white-space: nowrap; }
 
 .file-title-wrap {
   display: flex;
@@ -3298,10 +3299,25 @@ function closeReidentifyModal() {
 .table-pad {
   width: 100%;
   min-width: 0;
-  padding: 10px 14px;
-  max-height: none;
-  overflow-x: auto;
-  overflow-y: hidden;
+  max-height: max(280px, calc(100vh - 420px));
+  padding: 0 14px 10px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.table-pad::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.table-pad::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 8px;
+}
+
+.table-pad::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .actions-heading {

@@ -87,6 +87,7 @@ export interface ChangeUserOption {
   id: string
   displayName: string
   roles?: string[]
+  status?: string
 }
 
 export interface CreateChangeInput {
