@@ -126,6 +126,14 @@ func (repository *PGRepository) CreateSessionWithTicket(ctx context.Context, ses
 }
 
 func (repository *PGRepository) FindActiveByStorageKey(ctx context.Context, storageKey string, now time.Time) (Session, error) {
+	return repository.findActive(ctx, storageKey, "")
+}
+
+func (repository *PGRepository) FindActiveByAttachmentID(ctx context.Context, attachmentID string, now time.Time) (Session, error) {
+	return repository.findActive(ctx, "", attachmentID)
+}
+
+func (repository *PGRepository) findActive(ctx context.Context, storageKey, attachmentID string) (Session, error) {
 	var session Session
 	var userName string
 	var closedAt *time.Time
@@ -137,8 +145,8 @@ func (repository *PGRepository) FindActiveByStorageKey(ctx context.Context, stor
 		SELECT s.id::text, s.attachment_id::text, s.storage_key, s.work_storage_key, s.change_request_id, s.user_id::text,
 		       COALESCE(u.display_name, u.account, ''), s.status, s.started_at, s.last_seen_at, s.closed_at
 		FROM edit_sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.storage_key = $1 AND s.status = 'active'
-		ORDER BY s.started_at DESC LIMIT 1`, storageKey).Scan(
+		WHERE (($2 <> '' AND s.attachment_id::text = $2) OR ($2 = '' AND s.storage_key = $1)) AND s.status = 'active'
+		ORDER BY s.started_at DESC LIMIT 1`, storageKey, attachmentID).Scan(
 		&session.ID, &session.AttachmentID, &session.StorageKey, &workStorageKey, &changeRequestID, &session.UserID, &userName,
 		&session.Status, &session.StartedAt, &session.LastSeenAt, &closedAt)
 	if errors.Is(err, pgx.ErrNoRows) {

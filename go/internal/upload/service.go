@@ -1148,7 +1148,7 @@ func createPartForAttachmentTx(ctx context.Context, tx pgx.Tx, drawingNo string,
 	if strings.TrimSpace(input.No) == "" || strings.TrimSpace(input.Name) == "" {
 		return "", errors.New("零件图号和名称不能为空")
 	}
-	if strings.TrimSpace(input.ParentNo) != "" {
+	if strings.TrimSpace(input.ParentNo) != "" && drawing.NormalizePartNo(input.ParentNo) != drawing.NormalizePartNo(drawingNo) {
 		var parentExists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM drawing_part_relations r JOIN parts p ON p.id = r.part_id WHERE r.drawing_id = $1::uuid AND r.status = 'active' AND p.normalized_part_no = $2)`, drawingID, drawing.NormalizePartNo(input.ParentNo)).Scan(&parentExists); err != nil {
 			return "", fmt.Errorf("校验零件父级失败: %w", err)

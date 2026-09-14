@@ -38,6 +38,7 @@ type changeCreateRequest struct {
 }
 
 type changeApproveRequest struct {
+	ExecutorID    string `json:"executorId"`
 	Opinion       string `json:"opinion"`
 	RequireVerify *bool  `json:"requireVerify"`
 	WaiveReason   string `json:"waiveReason"`
@@ -153,7 +154,7 @@ func ChangeRequestResource(service change.Service) http.HandlerFunc {
 				response.WriteError(writer, http.StatusBadRequest, "审批参数格式无效")
 				return
 			}
-			input := change.ApproveInput{Opinion: payload.Opinion, RequireVerify: true, WaiveReason: payload.WaiveReason}
+			input := change.ApproveInput{ExecutorID: payload.ExecutorID, Opinion: payload.Opinion, RequireVerify: true, WaiveReason: payload.WaiveReason}
 			if payload.RequireVerify != nil {
 				input.RequireVerify = *payload.RequireVerify
 			}

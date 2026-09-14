@@ -14,12 +14,12 @@ import (
 
 // nodeNameToSignerRole 节点显示名 → 签署角色（与前端映射一致，用于回写图纸签署人员）。
 var nodeNameToSignerRole = map[string]string{
-	"设计自检": "设计",
-	"校对复核": "校对",
-	"专业审核": "审核",
-	"工艺会签": "工艺",
+	"设计自检":  "设计",
+	"校对复核":  "校对",
+	"专业审核":  "审核",
+	"工艺会签":  "工艺",
 	"标准化审查": "标准化",
-	"主管批准": "批准",
+	"主管批准":  "批准",
 }
 
 // pgTimeLayout PostgreSQL to_char 模板（纯数字会被 to_char 当字面量，不能用 Go 参考时间格式）。
@@ -29,7 +29,8 @@ const pgTimeLayout = "YYYY-MM-DD HH24:MI"
 const goTimeLayout = "2006-01-02 15:04"
 
 type PGRepository struct {
-	pool *pgxpool.Pool
+	pool             *pgxpool.Pool
+	changeCompletion ChangeCompletion
 }
 
 func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
@@ -239,6 +240,9 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 	if err != nil {
 		return ReviewCase{}, fmt.Errorf("读取待审核图纸失败: %w", err)
 	}
+	if drawingStatus == "archived" {
+		return ReviewCase{}, fmt.Errorf("在用图纸必须通过变更工单提交新版本审核")
+	}
 	// 进行中的案例唯一：无论图纸状态字段是否被污染，先查活动案例给出友好冲突提示。
 	var activeCaseID string
 	err = tx.QueryRow(ctx, `
@@ -266,7 +270,7 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 	}
 
 	var flowID, flowName string
-	err = tx.QueryRow(ctx, `SELECT id::text, name FROM review_flows WHERE enabled = true ORDER BY updated_at DESC LIMIT 1`).Scan(&flowID, &flowName)
+	err = tx.QueryRow(ctx, `SELECT id::text, name FROM review_flows WHERE enabled = true ORDER BY updated_at DESC LIMIT 1 FOR SHARE`).Scan(&flowID, &flowName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReviewCase{}, fmt.Errorf("未配置启用的审核流程，请联系管理员")
 	}
@@ -389,9 +393,9 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 
 	var caseID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO review_cases (drawing_id, flow_id, status, initiator_id)
-		VALUES ($1::uuid, $2::uuid, 'reviewing', $3::uuid)
-		RETURNING id::text`, drawingID, flowID, userID).Scan(&caseID)
+		INSERT INTO review_cases (drawing_id, flow_id, status, initiator_id,flow_name_snapshot)
+		VALUES ($1::uuid, $2::uuid, 'reviewing', $3::uuid,$4)
+		RETURNING id::text`, drawingID, flowID, userID, flowName).Scan(&caseID)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ReviewCase{}, ErrCaseConflict
@@ -425,6 +429,18 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 	if _, err := tx.Exec(ctx, `UPDATE drawings SET status = 'reviewing' WHERE id = $1::uuid`, drawingID); err != nil {
 		return ReviewCase{}, fmt.Errorf("更新图纸状态失败: %w", err)
 	}
+	var pendingCount int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM review_case_nodes WHERE review_case_id=$1::uuid AND status<>'pass'`, caseID).Scan(&pendingCount); err != nil {
+		return ReviewCase{}, err
+	}
+	if pendingCount == 0 {
+		if _, err := tx.Exec(ctx, `UPDATE review_cases SET status='published',completed_at=now() WHERE id=$1::uuid`, caseID); err != nil {
+			return ReviewCase{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE drawings SET status='archived',updated_by=$2::uuid WHERE id=$1::uuid`, drawingID, userID); err != nil {
+			return ReviewCase{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return ReviewCase{}, fmt.Errorf("提交发起审核事务失败: %w", err)
 	}
@@ -434,9 +450,9 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 // ListCases 返回全部审核案例（含节点），供前端工作台与详情页使用。
 func (repository *PGRepository) ListCases(ctx context.Context) ([]ReviewCase, error) {
 	rows, err := repository.pool.Query(ctx, `
-		SELECT c.id::text, d.drawing_no, d.name, COALESCE(f.name, ''), c.status,
+		SELECT c.id::text, d.drawing_no, d.name, COALESCE(NULLIF(c.flow_name_snapshot,''),f.name, ''), c.status,
 		       COALESCE(u.display_name, u.account, ''), to_char(c.started_at, $1),
-		       COALESCE(to_char(c.completed_at, $1), '')
+		       COALESCE(to_char(c.completed_at, $1), ''), COALESCE(c.change_submission_id::text,'')
 		FROM review_cases c
 		JOIN drawings d ON d.id = c.drawing_id
 		LEFT JOIN review_flows f ON f.id = c.flow_id
@@ -450,7 +466,7 @@ func (repository *PGRepository) ListCases(ctx context.Context) ([]ReviewCase, er
 	cases := make([]ReviewCase, 0)
 	for rows.Next() {
 		var item ReviewCase
-		if err := rows.Scan(&item.ID, &item.DrawingNo, &item.DrawingName, &item.FlowName, &item.Status, &item.Initiator, &item.StartedAt, &item.CompletedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.DrawingNo, &item.DrawingName, &item.FlowName, &item.Status, &item.Initiator, &item.StartedAt, &item.CompletedAt, &item.ChangeSubmissionID); err != nil {
 			return nil, fmt.Errorf("读取审核案例失败: %w", err)
 		}
 		cases = append(cases, item)
@@ -480,10 +496,14 @@ func (repository *PGRepository) SubmitNode(ctx context.Context, caseID string, i
 	}
 	defer tx.Rollback(ctx)
 
-	var caseStatus, drawingID string
+	// Lock the work order before its review, matching cancellation and resubmission.
+	if _, err := tx.Exec(ctx, `SELECT cr.id FROM change_requests cr JOIN change_request_submissions s ON s.request_id=cr.id JOIN review_cases c ON c.change_submission_id=s.id WHERE c.id=$1::uuid FOR UPDATE OF cr`, caseID); err != nil {
+		return ReviewCase{}, err
+	}
+	var caseStatus, drawingID, changeSubmissionID string
 	err = tx.QueryRow(ctx, `
-		SELECT c.status, COALESCE(c.drawing_id::text, '')
-		FROM review_cases c WHERE c.id = $1::uuid FOR UPDATE`, caseID).Scan(&caseStatus, &drawingID)
+		SELECT c.status, COALESCE(c.drawing_id::text, ''), COALESCE(c.change_submission_id::text,'')
+		FROM review_cases c WHERE c.id = $1::uuid FOR UPDATE`, caseID).Scan(&caseStatus, &drawingID, &changeSubmissionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReviewCase{}, ErrCaseNotFound
 	}
@@ -551,7 +571,14 @@ func (repository *PGRepository) SubmitNode(ctx context.Context, caseID string, i
 		if _, err := tx.Exec(ctx, `UPDATE review_cases SET status = 'rejected', completed_at = now() WHERE id = $1::uuid`, caseID); err != nil {
 			return ReviewCase{}, fmt.Errorf("更新审核案例状态失败: %w", err)
 		}
-		if drawingID != "" {
+		if changeSubmissionID != "" {
+			if repository.changeCompletion == nil {
+				return ReviewCase{}, fmt.Errorf("变更审核发布服务未配置")
+			}
+			if err := repository.changeCompletion(ctx, tx, changeSubmissionID, userID, false, opinion); err != nil {
+				return ReviewCase{}, err
+			}
+		} else if drawingID != "" {
 			if _, err := tx.Exec(ctx, `UPDATE drawings SET status = 'draft' WHERE id = $1::uuid`, drawingID); err != nil {
 				return ReviewCase{}, fmt.Errorf("更新图纸状态失败: %w", err)
 			}
@@ -560,15 +587,22 @@ func (repository *PGRepository) SubmitNode(ctx context.Context, caseID string, i
 		var requiredPending int
 		if err := tx.QueryRow(ctx, `
 			SELECT COUNT(*) FROM review_case_nodes
-			WHERE review_case_id = $1::uuid AND required = true AND status <> 'pass'`, caseID).Scan(&requiredPending); err != nil {
+			WHERE review_case_id = $1::uuid AND status <> 'pass'`, caseID).Scan(&requiredPending); err != nil {
 			return ReviewCase{}, fmt.Errorf("检查审核进度失败: %w", err)
 		}
 		if requiredPending == 0 {
 			if _, err := tx.Exec(ctx, `UPDATE review_cases SET status = 'published', completed_at = now() WHERE id = $1::uuid`, caseID); err != nil {
 				return ReviewCase{}, fmt.Errorf("更新审核案例状态失败: %w", err)
 			}
-			if drawingID != "" {
-				if _, err := tx.Exec(ctx, `UPDATE drawings SET status = 'published' WHERE id = $1::uuid`, drawingID); err != nil {
+			if changeSubmissionID != "" {
+				if repository.changeCompletion == nil {
+					return ReviewCase{}, fmt.Errorf("变更审核发布服务未配置")
+				}
+				if err := repository.changeCompletion(ctx, tx, changeSubmissionID, userID, true, opinion); err != nil {
+					return ReviewCase{}, err
+				}
+			} else if drawingID != "" {
+				if _, err := tx.Exec(ctx, `UPDATE drawings SET status = 'archived',updated_by=$2::uuid WHERE id = $1::uuid`, drawingID, userID); err != nil {
 					return ReviewCase{}, fmt.Errorf("更新图纸状态失败: %w", err)
 				}
 			}
@@ -637,15 +671,15 @@ func (repository *PGRepository) CompletedActions(ctx context.Context) ([]Complet
 func (repository *PGRepository) caseByID(ctx context.Context, caseID string) (ReviewCase, error) {
 	var item ReviewCase
 	err := repository.pool.QueryRow(ctx, `
-		SELECT c.id::text, d.drawing_no, d.name, COALESCE(f.name, ''), c.status,
+		SELECT c.id::text, d.drawing_no, d.name, COALESCE(NULLIF(c.flow_name_snapshot,''),f.name, ''), c.status,
 		       COALESCE(u.display_name, u.account, ''), to_char(c.started_at, $1),
-		       COALESCE(to_char(c.completed_at, $1), '')
+		       COALESCE(to_char(c.completed_at, $1), ''), COALESCE(c.change_submission_id::text,'')
 		FROM review_cases c
 		JOIN drawings d ON d.id = c.drawing_id
 		LEFT JOIN review_flows f ON f.id = c.flow_id
 		LEFT JOIN users u ON u.id = c.initiator_id
 		WHERE c.id = $2::uuid`, pgTimeLayout, caseID).
-		Scan(&item.ID, &item.DrawingNo, &item.DrawingName, &item.FlowName, &item.Status, &item.Initiator, &item.StartedAt, &item.CompletedAt)
+		Scan(&item.ID, &item.DrawingNo, &item.DrawingName, &item.FlowName, &item.Status, &item.Initiator, &item.StartedAt, &item.CompletedAt, &item.ChangeSubmissionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReviewCase{}, ErrCaseNotFound
 	}

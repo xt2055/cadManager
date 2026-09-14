@@ -120,19 +120,19 @@ func (service *Service) EnsureInitialVersion(ctx context.Context, sourceKey, use
 		return fmt.Errorf("关闭初始版本内容失败: %w", closeErr)
 	}
 
-		_, err = service.versions.CreateWithPromotion(ctx, CreateInput{
-			AttachmentID:     attachmentItem.ID,
-			SourceStorageKey: attachmentItem.StorageKey,
-			Version:          "v1.0",
-			VersionKind:      "working",
-			Size:             info.Size,
-			MimeType:         info.MimeType,
-			SHA256:           sourceHash,
-			CreatedBy:        userID,
-			CurrentName:      filepath.Base(initialKey),
-		}, initialKey)
-		return err
-	}
+	_, err = service.versions.CreateWithPromotion(ctx, CreateInput{
+		AttachmentID:     attachmentItem.ID,
+		SourceStorageKey: attachmentItem.StorageKey,
+		Version:          "v1.0",
+		VersionKind:      "working",
+		Size:             info.Size,
+		MimeType:         info.MimeType,
+		SHA256:           sourceHash,
+		CreatedBy:        userID,
+		CurrentName:      filepath.Base(initialKey),
+	}, initialKey)
+	return err
+}
 
 // OpenVersionContent 读取版本文件内容，用于下载。
 func (service *Service) OpenVersionContent(ctx context.Context, versionID string) (io.ReadCloser, Version, error) {
@@ -248,16 +248,45 @@ func (service *Service) CaptureWorking(ctx context.Context, sourceKey, sourcePat
 	return service.captureVersion(ctx, sourceKey, sourcePath, userID, false, baselineSHA)
 }
 
-func (service *Service) captureVersion(ctx context.Context, sourceKey, sourcePath, userID string, promote bool, baselineSHA string) (Version, bool, error) {
-	// 同一附件的捕获全程互斥：版本号计算、对象写入、事务登记必须串行，
-	// 否则并发方会生成相同版本号并在失败清理时误删对方的版本对象。
-	unlock := service.lockAttachment(sourceKey)
-	defer unlock()
+func (service *Service) CaptureAttachment(ctx context.Context, attachmentID, sourcePath, userID string, promote bool, baselineSHA string) (Version, bool, error) {
+	return service.captureVersion(ctx, "", sourcePath, userID, promote, baselineSHA, attachmentID)
+}
 
-	attachmentItem, err := service.attachments.Find(ctx, sourceKey)
+func (service *Service) captureVersion(ctx context.Context, sourceKey, sourcePath, userID string, promote bool, baselineSHA string, attachmentIDs ...string) (Version, bool, error) {
+	var attachmentItem attachment.Attachment
+	var err error
+	if len(attachmentIDs) > 0 && attachmentIDs[0] != "" {
+		finder, ok := service.attachments.(interface {
+			FindByID(context.Context, string) (attachment.Attachment, error)
+		})
+		if !ok {
+			return Version{}, false, errors.New("附件身份查询未配置")
+		}
+		attachmentItem, err = finder.FindByID(ctx, attachmentIDs[0])
+	} else {
+		attachmentItem, err = service.attachments.Find(ctx, sourceKey)
+	}
 	if err != nil {
 		return Version{}, false, err
 	}
+	sourceKey = attachmentItem.StorageKey
+	// 同一附件的捕获全程互斥：版本号计算、对象写入、事务登记必须串行，
+	// 否则并发方会生成相同版本号并在失败清理时误删对方的版本对象。
+	unlock := service.lockAttachment(attachmentItem.ID)
+	defer unlock()
+	// 锁内重新读取当前指针，避免等待另一保存完成后仍拿旧哈希比较。
+	if finder, ok := service.attachments.(interface {
+		FindByID(context.Context, string) (attachment.Attachment, error)
+	}); ok {
+		attachmentItem, err = finder.FindByID(ctx, attachmentItem.ID)
+	} else {
+		attachmentItem, err = service.attachments.Find(ctx, sourceKey)
+	}
+	if err != nil {
+		return Version{}, false, err
+	}
+	sourceKey = attachmentItem.StorageKey
+
 	reader, err := os.Open(sourcePath)
 	if err != nil {
 		return Version{}, false, fmt.Errorf("打开 SMB 工作文件失败: %w", err)

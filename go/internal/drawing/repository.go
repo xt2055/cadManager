@@ -199,6 +199,9 @@ func (repository *PGRepository) Update(ctx context.Context, id string, input Upd
 	if currentStatus == StatusArchived {
 		return Drawing{}, ErrArchivedLocked
 	}
+	if input.Status != nil && *input.Status != currentStatus && (*input.Status == StatusPublished || *input.Status == StatusArchived) {
+		return Drawing{}, ErrInvalidTransition
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE drawings
 		SET name = COALESCE($2, name), kind = COALESCE($3, kind), project = COALESCE($4, project), material = COALESCE($5, material),
@@ -402,9 +405,9 @@ func (repository *PGRepository) CreatePart(ctx context.Context, drawingID string
 	} else if err != nil {
 		return Part{}, fmt.Errorf("校验图纸状态失败: %w", err)
 	}
-		if drawingStatus == string(StatusArchived) {
-			return Part{}, ErrArchivedLocked
-		}
+	if drawingStatus == string(StatusArchived) {
+		return Part{}, ErrArchivedLocked
+	}
 	var parentID *string
 	if strings.TrimSpace(input.ParentNo) != "" {
 		var value string

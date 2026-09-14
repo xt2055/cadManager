@@ -160,6 +160,15 @@ func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, 
 		log.Printf("[编辑会话] 当前 DWG 对象不存在: %s，继续处理原始文件", item.CurrentStorageKey)
 	}
 	if strings.EqualFold(ext, ".exb") && service.converter != nil {
+		// 持久化上传队列拥有转换、归档和指针切换。EnsureDwg 返回的是
+		// 随后会被队列清理的临时路径，不能直接作为 SMB 编辑源。
+		if finder, ok := service.attachments.(interface {
+			FindByID(context.Context, string) (attachment.Attachment, error)
+		}); ok {
+			readyCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			return service.waitForCurrentDWG(readyCtx, item.ID, finder.FindByID)
+		}
 		dwgKey, convErr := service.converter.EnsureDwg(ctx, item)
 		if convErr != nil {
 			return "", fmt.Errorf("将 EXB 转换为本地 DWG 失败: %w", convErr)
@@ -192,6 +201,32 @@ func (service *Service) resolveWorkKey(ctx context.Context, user auth.AuthUser, 
 	return item.StorageKey, nil
 }
 
+// 仅接受附件当前指针指向且实际存在的 DWG；不消费临时转换产物。
+func (service *Service) waitForCurrentDWG(ctx context.Context, attachmentID string, find func(context.Context, string) (attachment.Attachment, error)) (string, error) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		item, err := find(ctx, attachmentID)
+		if err != nil {
+			return "", fmt.Errorf("读取图纸转换状态失败: %w", err)
+		}
+		if strings.EqualFold(filepath.Ext(item.CurrentName), ".dwg") && item.CurrentStorageKey != "" {
+			reader, info, openErr := service.storage.Open(ctx, item.CurrentStorageKey)
+			if openErr == nil {
+				_ = reader.Close()
+				if info.Size > 0 {
+					return item.CurrentStorageKey, nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("图纸转换尚未就绪，请稍后从文件列表重试本地编辑（无需重新创建图纸）: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 // editWorkStorageKey 是 SMB 工作副本的逻辑文件名，不是内容对象键。
 // file_blobs 使用 blobs/<hash> 存储时没有扩展名，不能直接交给 CAXA；
 // 工作副本必须保留 CAD 文件扩展名，供 CAXA 按 DWG/EXB/DXF 正确识别。
@@ -220,7 +255,7 @@ func editWorkStorageKey(sessionID, sourceStorageKey string, item attachment.Atta
 	return "work/" + sessionID + "/" + name, nil
 }
 
-func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey string) (OpenResult, error) {
+func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey string, attachmentIDs ...string) (OpenResult, error) {
 	// 用户名和密码为空时由 Windows 当前登录凭据访问本机 SMB 共享，
 	// 避免将 Windows 密码写入项目配置。
 	if !service.cfg.Enabled || strings.TrimSpace(service.cfg.Host) == "" || strings.TrimSpace(service.cfg.Share) == "" || strings.TrimSpace(service.cfg.LocalRoot) == "" {
@@ -232,7 +267,19 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	if service.repository == nil {
 		return OpenResult{}, errors.New("编辑会话数据库未配置")
 	}
-	item, err := service.attachments.Find(ctx, storageKey)
+	var item attachment.Attachment
+	var err error
+	if len(attachmentIDs) > 0 && attachmentIDs[0] != "" {
+		finder, ok := service.attachments.(interface {
+			FindByID(context.Context, string) (attachment.Attachment, error)
+		})
+		if !ok {
+			return OpenResult{}, errors.New("附件身份查询未配置")
+		}
+		item, err = finder.FindByID(ctx, attachmentIDs[0])
+	} else {
+		item, err = service.attachments.Find(ctx, storageKey)
+	}
 	if err != nil {
 		return OpenResult{}, err
 	}
@@ -251,12 +298,32 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	if err != nil {
 		return OpenResult{}, err
 	}
+	// 转换等待期间附件的当前键和文件名会改变，工作副本必须使用刷新后的元数据。
+	if finder, ok := service.attachments.(interface {
+		FindByID(context.Context, string) (attachment.Attachment, error)
+	}); ok {
+		item, err = finder.FindByID(ctx, item.ID)
+		if err != nil {
+			return OpenResult{}, err
+		}
+	}
 
 	now := time.Now().UTC()
 	if err := service.repository.ExpireStale(ctx, now); err != nil {
 		return OpenResult{}, err
 	}
-	existing, findErr := service.repository.FindActiveByStorageKey(ctx, item.StorageKey, now)
+	var existing Session
+	var findErr error
+	if finder, ok := service.repository.(interface {
+		FindActiveByAttachmentID(context.Context, string, time.Time) (Session, error)
+	}); ok {
+		existing, findErr = finder.FindActiveByAttachmentID(ctx, item.ID, now)
+	} else {
+		existing, findErr = service.repository.FindActiveByStorageKey(ctx, item.StorageKey, now)
+		if findErr == nil && existing.AttachmentID != item.ID {
+			findErr = ErrSessionNotFound
+		}
+	}
 	if findErr != nil && !errors.Is(findErr, ErrSessionNotFound) {
 		return OpenResult{}, findErr
 	}
@@ -759,7 +826,7 @@ func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID
 				}
 				log.Printf("[编辑关闭] 等待工作文件稳定失败 key=%s err=%v", workKey, waitErr)
 			}
-			if version, changed, capErr := service.captureWithRetry(ctx, session.StorageKey, path, user.ID, working, baselineSHA); capErr != nil {
+			if version, changed, capErr := service.captureWithRetry(ctx, session.StorageKey, path, user.ID, working, baselineSHA, session.AttachmentID); capErr != nil {
 				if forceByAdmin && !working {
 					// 管理员强制关闭他人会话：尽力归档但不阻塞锁释放，避免死锁文件。
 					log.Printf("[编辑关闭] 管理员强制关闭，捕获版本失败仍将关闭会话 key=%s err=%v", session.StorageKey, capErr)
@@ -818,7 +885,7 @@ func (service *Service) Close(ctx context.Context, user auth.AuthUser, sessionID
 // 工作文件已不存在（被并发关闭清理等）属于永久性错误，直接失败不重试。
 // working=true 时走不切换正式指针的工作版本捕获（存档变更工单），
 // baselineSHA 为该工单上一次成果（或基线）的哈希，用于正确判断相对工单成果的变化。
-func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourcePath, userID string, working bool, baselineSHA string) (versioning.Version, bool, error) {
+func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourcePath, userID string, working bool, baselineSHA string, attachmentIDs ...string) (versioning.Version, bool, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -831,7 +898,11 @@ func (service *Service) captureWithRetry(ctx context.Context, sourceKey, sourceP
 		var version versioning.Version
 		var created bool
 		var err error
-		if working {
+		if capture, ok := service.versions.(interface {
+			CaptureAttachment(context.Context, string, string, string, bool, string) (versioning.Version, bool, error)
+		}); ok && len(attachmentIDs) > 0 && attachmentIDs[0] != "" {
+			version, created, err = capture.CaptureAttachment(ctx, attachmentIDs[0], sourcePath, userID, !working, baselineSHA)
+		} else if working {
 			version, created, err = service.versions.CaptureWorking(ctx, sourceKey, sourcePath, userID, baselineSHA)
 		} else {
 			version, created, err = service.versions.CapturePath(ctx, sourceKey, sourcePath, userID)

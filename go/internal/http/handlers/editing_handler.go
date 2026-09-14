@@ -31,13 +31,14 @@ func EditSession(service *editing.Service) http.HandlerFunc {
 			response.WriteData(writer, http.StatusOK, list)
 		case http.MethodPost:
 			var input struct {
-				StorageKey string `json:"storageKey"`
+				StorageKey   string `json:"storageKey"`
+				AttachmentID string `json:"attachmentId"`
 			}
-			if err := json.NewDecoder(request.Body).Decode(&input); err != nil || strings.TrimSpace(input.StorageKey) == "" {
+			if err := json.NewDecoder(request.Body).Decode(&input); err != nil || (strings.TrimSpace(input.StorageKey) == "" && strings.TrimSpace(input.AttachmentID) == "") {
 				response.WriteError(writer, http.StatusBadRequest, "缺少 CAD 文件存储键")
 				return
 			}
-			result, err := service.Open(request.Context(), user, strings.TrimSpace(input.StorageKey))
+			result, err := service.Open(request.Context(), user, strings.TrimSpace(input.StorageKey), strings.TrimSpace(input.AttachmentID))
 			if err != nil {
 				log.Printf("[编辑会话] 创建失败 user=%s storageKey=%q err=%v", user.ID, strings.TrimSpace(input.StorageKey), err)
 				writeEditingError(writer, err)

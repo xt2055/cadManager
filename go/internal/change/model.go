@@ -146,6 +146,7 @@ type CreateInput struct {
 
 // ApproveInput 管理员审批通过。
 type ApproveInput struct {
+	ExecutorID    string
 	Opinion       string
 	RequireVerify bool
 	WaiveReason   string

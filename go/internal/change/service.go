@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"cadguanliq/internal/auth"
+	"cadguanliq/internal/review"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -76,6 +77,11 @@ func generateRequestNo() (string, error) {
 }
 
 func (s *PGService) Create(ctx context.Context, user auth.AuthUser, drawingID string, input CreateInput) (Request, error) {
+	if input.AutoApprove {
+		return Request{}, errors.New("请先创建变更工单并上传依据，再由管理员审批指定设计员")
+	}
+	mandatoryReview := true
+	input.RequireVerify = &mandatoryReview
 	reason := strings.TrimSpace(input.Reason)
 	scope := strings.TrimSpace(input.Scope)
 	if reason == "" || scope == "" {
@@ -126,12 +132,12 @@ func (s *PGService) Create(ctx context.Context, user auth.AuthUser, drawingID st
 	var targetCount int
 	if err := tx.QueryRow(ctx, `SELECT count(DISTINCT a.id) FROM attachments a
 		LEFT JOIN parts p ON p.id = a.part_id
-		LEFT JOIN drawing_part_relations r ON r.part_id = p.id AND r.drawing_id = $1::uuid AND r.status = 'active'
+		LEFT JOIN drawing_part_relations r ON r.part_id = p.id AND r.drawing_id = $1::uuid AND r.status = 'active' AND r.relation_type = 'owned'
 		WHERE a.id = ANY($2::uuid[]) AND a.deleted_at IS NULL AND (a.drawing_id = $1::uuid OR r.id IS NOT NULL)`, drawingID, attachmentIDs).Scan(&targetCount); err != nil {
 		return Request{}, fmt.Errorf("校验变更对象失败: %w", err)
 	}
 	if targetCount != len(attachmentIDs) {
-		return Request{}, errors.New("所选变更对象不存在或不属于当前项目")
+		return Request{}, errors.New("所选文件必须属于当前总图或自有零件；借用零件请在源图号发起变更")
 	}
 
 	var baseVersionID *string
@@ -240,6 +246,7 @@ func waivedReason(autoApprove, requireVerify bool, opinion string) string {
 }
 
 func (s *PGService) Approve(ctx context.Context, user auth.AuthUser, id string, input ApproveInput) (Request, error) {
+	input.RequireVerify = true
 	if !isAdmin(user) {
 		return Request{}, ErrForbidden
 	}
@@ -266,6 +273,28 @@ func (s *PGService) Approve(ctx context.Context, user auth.AuthUser, id string, 
 		return Request{}, ErrState
 	}
 	direct := applicant == user.ID
+	var hasEvidence bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_documents WHERE change_request_id=$1::uuid)`, id).Scan(&hasEvidence); err != nil {
+		return Request{}, err
+	}
+	if !hasEvidence {
+		return Request{}, errors.New("请先在变更工单上传变更依据或客户要求等证明材料")
+	}
+	if strings.TrimSpace(input.ExecutorID) == "" {
+		return Request{}, errors.New("审批时必须明确指定负责修改的设计员")
+	}
+	if strings.TrimSpace(input.ExecutorID) != "" {
+		var validDesigner bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users u JOIN user_roles r ON r.user_id=u.id WHERE u.id=$1::uuid AND u.status='active' AND r.role IN('designer','admin'))`, strings.TrimSpace(input.ExecutorID)).Scan(&validDesigner); err != nil {
+			return Request{}, err
+		}
+		if !validDesigner {
+			return Request{}, errors.New("请指定在职且具有设计权限的人员")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE change_requests SET executor_id=$2::uuid WHERE id=$1::uuid`, id, strings.TrimSpace(input.ExecutorID)); err != nil {
+			return Request{}, fmt.Errorf("指定设计员失败: %w", err)
+		}
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE change_requests
 		SET status = 'executing', approver_id = $2::uuid, approved_at = now(), require_verify = $3,
@@ -330,6 +359,13 @@ func (s *PGService) ReturnForEdit(ctx context.Context, user auth.AuthUser, id st
 	}
 	if status != string(StatusPendingVerify) {
 		return Request{}, ErrState
+	}
+	var hasReview bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_cases WHERE change_submission_id=NULLIF($1,'')::uuid)`, currentSubmission).Scan(&hasReview); err != nil {
+		return Request{}, err
+	}
+	if hasReview {
+		return Request{}, errors.New("请由当前审核节点责任人在审核中心退回修改")
 	}
 	tag, err := tx.Exec(ctx, `UPDATE change_requests SET status = 'executing' WHERE id = $1::uuid AND status = 'pending_verify'`, id)
 	if err != nil {
@@ -399,23 +435,21 @@ func (s *PGService) Cancel(ctx context.Context, user auth.AuthUser, id string, i
 		return Request{}, fmt.Errorf("关闭编辑会话失败: %w", err)
 	}
 	// 已提交但被终止的轮次标记为历史，不再作为待验收快照发布。
+	if _, err := tx.Exec(ctx, `UPDATE review_cases SET status='rejected',completed_at=now() WHERE change_submission_id IN(SELECT id FROM change_request_submissions WHERE request_id=$1::uuid) AND status IN('pending','reviewing')`, id); err != nil {
+		return Request{}, err
+	}
 	var currentSubmission string
 	_ = tx.QueryRow(ctx, `SELECT COALESCE(current_submission_id::text, '') FROM change_requests WHERE id = $1::uuid`, id).Scan(&currentSubmission)
 	if err := s.markSubmission(ctx, tx, currentSubmission, "returned"); err != nil {
 		return Request{}, err
 	}
-		if err := s.logAction(ctx, tx, id, user.ID, ActionCancel, "终止工单："+opinion); err != nil {
-			return Request{}, err
-		}
-		if err := s.audit(ctx, tx, id, drawingNo, user.ID, "change_request_cancel", "终止变更工单"); err != nil {
-			return Request{}, err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE change_request_targets SET work_attachment_version_id = NULL, updated_at = now() WHERE request_id = $1::uuid`, id); err != nil {
-			return Request{}, fmt.Errorf("断开工单工作版本失败: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `SELECT prune_attachment_work(attachment_id) FROM change_request_targets WHERE request_id = $1::uuid ORDER BY attachment_id`, id); err != nil {
-			return Request{}, fmt.Errorf("清理中间工作版本失败: %w", err)
-		}
+	if err := s.logAction(ctx, tx, id, user.ID, ActionCancel, "终止工单："+opinion); err != nil {
+		return Request{}, err
+	}
+	if err := s.audit(ctx, tx, id, drawingNo, user.ID, "change_request_cancel", "终止变更工单"); err != nil {
+		return Request{}, err
+	}
+	// 工单状态关闭编辑权限，已保存的工作版本继续归属原工单供追溯。
 	if err := tx.Commit(ctx); err != nil {
 		return Request{}, err
 	}
@@ -466,12 +500,11 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 	defer tx.Rollback(ctx)
 
 	var drawingID, drawingNo, executor, status string
-	var requireVerify bool
 	var baseVersionID *string
 	err = tx.QueryRow(ctx, `
-		SELECT drawing_id::text, drawing_no, executor_id::text, status, require_verify, base_attachment_version_id::text
+		SELECT drawing_id::text, drawing_no, executor_id::text, status, base_attachment_version_id::text
 		FROM change_requests WHERE id = $1::uuid FOR UPDATE`, id).
-		Scan(&drawingID, &drawingNo, &executor, &status, &requireVerify, &baseVersionID)
+		Scan(&drawingID, &drawingNo, &executor, &status, &baseVersionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Request{}, ErrNotFound
 	} else if err != nil {
@@ -480,8 +513,15 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 	if status != string(StatusExecuting) {
 		return Request{}, ErrState
 	}
-	if user.ID != executor && !isAdmin(user) {
+	if user.ID != executor {
 		return Request{}, ErrForbidden
+	}
+	var hasEvidence bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_documents WHERE change_request_id=$1::uuid)`, id).Scan(&hasEvidence); err != nil {
+		return Request{}, err
+	}
+	if !hasEvidence {
+		return Request{}, errors.New("请先上传本次变更的证明材料，再提交完整审核")
 	}
 	// 冻结：仍有未关闭的编辑会话时不允许提交，避免提交/验收后继续写入。
 	var active bool
@@ -529,22 +569,22 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 	if err := s.snapshotAttributeDiffs(ctx, tx, id, submissionID, input.Proposed, curName, curMaterial, curVendor, curVersion); err != nil {
 		return Request{}, err
 	}
+	if _, err := tx.Exec(ctx, `INSERT INTO change_submission_documents(submission_id,document_id) SELECT $1::uuid,id FROM lifecycle_documents WHERE change_request_id=$2::uuid`, submissionID, id); err != nil {
+		return Request{}, err
+	}
 	if err := s.snapshotFileDiffs(ctx, tx, id, submissionID); err != nil {
 		return Request{}, err
 	}
 
-	nextStatus := StatusPendingVerify
-	if !requireVerify {
-		nextStatus = StatusCompleted
+	if err := review.StartChangeCase(ctx, tx, drawingID, submissionID, executor); err != nil {
+		return Request{}, err
 	}
-	// 完成时间使用独立布尔参数，避免状态参数在 varchar 赋值和 text 比较中产生类型冲突。
 	tag, err := tx.Exec(ctx, `
 		UPDATE change_requests
 		SET status = $2, proposed_attributes = $3::jsonb, actual_changes = $4, submitted_at = now(),
-		    current_submission_id = $5::uuid,
-		    completed_at = CASE WHEN $6::boolean THEN now() ELSE completed_at END
+		    current_submission_id = $5::uuid,require_verify=true,completed_at=NULL
 		WHERE id = $1::uuid AND status = 'executing'`,
-		id, string(nextStatus), string(proposedJSON), actualChanges, submissionID, !requireVerify)
+		id, string(StatusPendingVerify), string(proposedJSON), actualChanges, submissionID)
 	if err != nil {
 		return Request{}, fmt.Errorf("更新工单提交状态失败: %w", err)
 	}
@@ -553,14 +593,6 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 	}
 	if err := s.logAction(ctx, tx, id, user.ID, ActionSubmit, fmt.Sprintf("第 %d 轮提交完成：%s", round, actualChanges)); err != nil {
 		return Request{}, err
-	}
-	if !requireVerify {
-		if err := s.applyCompletion(ctx, tx, id, drawingID, user.ID); err != nil {
-			return Request{}, err
-		}
-		if err := s.markSubmission(ctx, tx, submissionID, "accepted"); err != nil {
-			return Request{}, err
-		}
 	}
 	if err := s.audit(ctx, tx, id, drawingNo, user.ID, "change_request_submit", "提交变更完成"); err != nil {
 		return Request{}, err
@@ -582,13 +614,13 @@ func (s *PGService) snapshotAttributeDiffs(ctx context.Context, tx pgx.Tx, id, s
 			return err
 		}
 	}
-		if proposed.Vendor != nil && strings.TrimSpace(*proposed.Vendor) != curVendor {
-			if err := s.addDiff(ctx, tx, id, submissionID, "attribute", "供应商", curVendor, strings.TrimSpace(*proposed.Vendor)); err != nil {
-				return err
-			}
+	if proposed.Vendor != nil && strings.TrimSpace(*proposed.Vendor) != curVendor {
+		if err := s.addDiff(ctx, tx, id, submissionID, "attribute", "供应商", curVendor, strings.TrimSpace(*proposed.Vendor)); err != nil {
+			return err
 		}
-		return nil
 	}
+	return nil
+}
 
 // snapshotFileDiffs 记录本轮每个目标文件成果相对创建工单时基线的差异。
 func (s *PGService) snapshotFileDiffs(ctx context.Context, tx pgx.Tx, id, submissionID string) error {
@@ -633,76 +665,26 @@ func (s *PGService) snapshotFileDiffs(ctx context.Context, tx pgx.Tx, id, submis
 }
 
 func (s *PGService) Verify(ctx context.Context, user auth.AuthUser, id string, input DecisionInput) (Request, error) {
-	if !isAdmin(user) {
-		return Request{}, ErrForbidden
-	}
-	if strings.TrimSpace(input.SubmissionID) == "" {
-		return Request{}, ErrStaleSubmit
-	}
-	opinion := strings.TrimSpace(input.Opinion)
-	if opinion == "" {
-		return Request{}, errors.New("验收通过必须填写意见")
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return Request{}, err
-	}
-	defer tx.Rollback(ctx)
-	var drawingID, drawingNo, status string
-	var currentSubmission string
-	err = tx.QueryRow(ctx, `
-		SELECT drawing_id::text, drawing_no, status, COALESCE(current_submission_id::text, '')
-		FROM change_requests WHERE id = $1::uuid FOR UPDATE`, id).Scan(&drawingID, &drawingNo, &status, &currentSubmission)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Request{}, ErrNotFound
-	} else if err != nil {
-		return Request{}, err
-	}
-	if status != string(StatusPendingVerify) {
-		return Request{}, ErrState
-	}
-	// 旧页面防护：验收请求携带的提交轮次必须仍是当前待验收轮次，
-	// 否则说明工单已被退回并重新提交，需刷新后重新核对再验收。
-	if strings.TrimSpace(input.SubmissionID) == "" || input.SubmissionID != currentSubmission {
-		return Request{}, ErrStaleSubmit
-	}
-	var validSnapshot bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM change_request_submissions WHERE id=$1::uuid AND request_id=$2::uuid AND status='pending' AND NOT legacy_history)`, currentSubmission, id).Scan(&validSnapshot); err != nil {
-		return Request{}, err
-	}
-	if !validSnapshot {
-		return Request{}, ErrStaleSubmit
-	}
-	tag, err := tx.Exec(ctx, `UPDATE change_requests SET status = 'completed', verifier_id = $2::uuid, verified_at = now(), completed_at = now() WHERE id = $1::uuid AND status = 'pending_verify'`, id, user.ID)
-	if err != nil {
-		return Request{}, err
-	}
-	if tag.RowsAffected() == 0 {
-		return Request{}, ErrState
-	}
-	if err := s.applyCompletion(ctx, tx, id, drawingID, user.ID); err != nil {
-		return Request{}, err
-	}
-	if err := s.markSubmission(ctx, tx, currentSubmission, "accepted"); err != nil {
-		return Request{}, err
-	}
-	note := "验收通过：" + opinion
-	if err := s.logAction(ctx, tx, id, user.ID, ActionVerify, note); err != nil {
-		return Request{}, err
-	}
-	if err := s.audit(ctx, tx, id, drawingNo, user.ID, "change_request_verify", "验收通过并发布变更"); err != nil {
-		return Request{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Request{}, err
-	}
-	return s.Get(ctx, id)
+	return Request{}, errors.New("变更必须在图纸审核中心按完整流程签署，最终通过后自动发布，管理员不能直接验收发布")
 }
 
 // applyCompletion 在工单完成时把当前提交快照中的属性和全部文件工作版本正式发布。
 // 发布内容以 current_submission 为准，与验收员看到的本轮差异一致。
 // 必须在事务内、状态已置 completed 之后调用。
 func (s *PGService) applyCompletion(ctx context.Context, tx pgx.Tx, id, drawingID, actorID string) error {
+	if _, err := tx.Exec(ctx, `SELECT a.id FROM attachments a JOIN change_request_submission_targets t ON t.attachment_id=a.id JOIN change_requests cr ON cr.current_submission_id=t.submission_id WHERE cr.id=$1::uuid ORDER BY a.id FOR UPDATE OF a`, id); err != nil {
+		return err
+	}
+	var stale bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM change_request_submission_targets t JOIN attachments a ON a.id=t.attachment_id JOIN change_requests cr ON cr.current_submission_id=t.submission_id WHERE cr.id=$1::uuid AND a.current_version_id IS DISTINCT FROM t.base_attachment_version_id)`, id).Scan(&stale); err != nil {
+		return err
+	}
+	if stale {
+		return errors.New("在用版本与本轮基线不同，请退回并重新核对变更")
+	}
+	if _, err := tx.Exec(ctx, `SELECT capture_drawing_release($1::uuid,'变更前基线')`, drawingID); err != nil {
+		return err
+	}
 	var proposedRaw []byte
 	if err := tx.QueryRow(ctx, `
 		SELECT sub.proposed_attributes
@@ -728,6 +710,12 @@ func (s *PGService) applyCompletion(ctx context.Context, tx pgx.Tx, id, drawingI
 		newVendor = strings.TrimSpace(*proposed.Vendor)
 	}
 	// 正式版本号由发布规则分配，不接受手工填写的版本号。
+	if _, err := tx.Exec(ctx, `DELETE FROM drawing_signers WHERE drawing_id=$1::uuid`, drawingID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO drawing_signers(drawing_id,role,user_id,signer_name) SELECT DISTINCT ON(n.signer_role) $1::uuid,n.signer_role,n.assigned_user_id,n.assigned_name FROM review_case_nodes n JOIN review_cases c ON c.id=n.review_case_id JOIN change_requests cr ON cr.current_submission_id=c.change_submission_id WHERE cr.id=$2::uuid AND n.signer_role IN('设计','校对','审核','工艺','标准化','批准') ORDER BY n.signer_role,n.node_order DESC`, drawingID, id); err != nil {
+		return err
+	}
 	if newName != nil || newMaterial != nil || newVendor != nil || newVersion != nil {
 		if _, err := tx.Exec(ctx, `
 			UPDATE drawings
@@ -745,8 +733,11 @@ func (s *PGService) applyCompletion(ctx context.Context, tx pgx.Tx, id, drawingI
 		ORDER BY target.attachment_id`, id); err != nil {
 		return fmt.Errorf("发布文件版本失败: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `SELECT publish_changed_part_revisions($1::uuid,$2::uuid)`, id, actorID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE drawings SET version = 'V' || (1 + (SELECT count(*) FROM change_requests WHERE drawing_id = $1::uuid AND status = 'completed'))::text,
+		UPDATE drawings SET version = 'V' || (1 + GREATEST(CASE WHEN version ~ '^V[0-9]+$' THEN substring(version FROM 2)::bigint ELSE 1 END, (SELECT count(*) FROM change_requests WHERE drawing_id = $1::uuid AND status = 'completed')))::text,
 		updated_by = $2::uuid, revision = revision + 1 WHERE id = $1::uuid`, drawingID, actorID); err != nil {
 		return fmt.Errorf("更新图纸正式版本号失败: %w", err)
 	}

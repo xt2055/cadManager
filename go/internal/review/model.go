@@ -33,19 +33,21 @@ type SaveFlowInput struct {
 
 // ReviewCase 一次图纸审核流转实例（含顺序节点）。
 type ReviewCase struct {
-	ID          string     `json:"id"`
-	DrawingNo   string     `json:"drawingNo"`
-	DrawingName string     `json:"drawingName"`
-	FlowName    string     `json:"flow"`
-	Status      string     `json:"status"`
-	Initiator   string     `json:"initiator"`
-	StartedAt   string     `json:"startedAt"`
-	CompletedAt string     `json:"completedAt,omitempty"`
-	Nodes       []CaseNode `json:"nodes"`
+	ChangeSubmissionID string     `json:"changeSubmissionId,omitempty"`
+	ID                 string     `json:"id"`
+	DrawingNo          string     `json:"drawingNo"`
+	DrawingName        string     `json:"drawingName"`
+	FlowName           string     `json:"flow"`
+	Status             string     `json:"status"`
+	Initiator          string     `json:"initiator"`
+	StartedAt          string     `json:"startedAt"`
+	CompletedAt        string     `json:"completedAt,omitempty"`
+	Nodes              []CaseNode `json:"nodes"`
 }
 
 // CaseNode 审核案例中的单个签署节点。
 type CaseNode struct {
+	SignerRole     string `json:"signerRole,omitempty"`
 	Name           string `json:"name"`
 	AssignedUserID string `json:"assignedUserId,omitempty"`
 	AssignedName   string `json:"assignedName"`
