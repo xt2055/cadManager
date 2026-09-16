@@ -6,6 +6,7 @@ import { installCadFontDiagnostics, normalizeCadToleranceEntities, preloadCadSym
 import { registerCadConverters } from '@/services/cad-converters.service'
 import { compareEntities, snapshotDrawing, type DrawingDifference, type CompareBounds } from './cad-compare'
 import { collectTitleSpaces } from './cad-title-block'
+import { panViewBox, zoomViewBox } from './cad-viewport-gestures'
 import type { AnnotationViewport, Point } from '@/features/reviews/annotation-model'
 
 interface Props {
@@ -286,12 +287,76 @@ function setLayerVisibility(layerName: string, visible: boolean) {
   manager?.curDocument.layerStore.setLayerOn(layerName, visible)
 }
 
+// 批注覆盖层会挡住画布上的原生滚轮缩放与中键平移，这里改为直接调整视图相机。
+// 旧的 sendStringToExecute('zoom\n2x\n') 走 ZOOM 命令的关键字流程，不接受 "2x" 这类
+// 比例输入，最终什么都不做，所以使用批注工具时滚轮缩放完全没有反应。
+const ZOOM_NOTCH = 1.15
+let dataModelPromise: Promise<typeof import('@mlightcad/data-model')> | null = null
+let viewActionQueue: Promise<unknown> = Promise.resolve()
+
+function loadDataModel() {
+  dataModelPromise ??= import('@mlightcad/data-model')
+  return dataModelPromise
+}
+
+/** 串行执行视图手势，避免连续滚轮事件都基于同一份旧视图状态计算而互相覆盖。 */
+function queueViewAction(action: () => Promise<void>) {
+  viewActionQueue = viewActionQueue.then(action, action).catch(() => undefined)
+}
+
+/** 当前可见的图纸世界坐标范围，用于把缩放/平移换算成目标视框。 */
+function visibleWorldBox(view: any) {
+  const topLeft = view.screenToWorld({ x: 0, y: 0 })
+  const bottomRight = view.screenToWorld({ x: view.width, y: view.height })
+  return {
+    minX: Math.min(topLeft.x, bottomRight.x), minY: Math.min(topLeft.y, bottomRight.y),
+    maxX: Math.max(topLeft.x, bottomRight.x), maxY: Math.max(topLeft.y, bottomRight.y),
+  }
+}
+
+/** 缩放：factor > 1 放大；anchor 为屏幕坐标锚点，缺省围绕视图中心缩放。 */
+function zoomBy(factor: number, anchor?: Point) {
+  if (!Number.isFinite(factor) || factor <= 0) return
+  const view = manager?.curView
+  if (!view || loading.value) return
+  queueViewAction(async () => {
+    if (manager?.curView !== view) return
+    const { AcGeBox2d } = await loadDataModel()
+    if (manager?.curView !== view) return
+    const next = zoomViewBox(visibleWorldBox(view), factor, anchor ? view.screenToWorld({ x: anchor.x, y: anchor.y }) : undefined)
+    if (!next) return
+    view.zoomTo(new AcGeBox2d({ x: next.minX, y: next.minY }, { x: next.maxX, y: next.maxY }), 1)
+  })
+}
+
+/** 平移：dx/dy 为屏幕像素位移，图纸内容跟随手势移动。 */
+function panBy(dx: number, dy: number) {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) return
+  const view = manager?.curView
+  if (!view || loading.value) return
+  queueViewAction(async () => {
+    if (manager?.curView !== view) return
+    const { AcGeBox2d } = await loadDataModel()
+    if (manager?.curView !== view) return
+    // 用相邻像素的图纸坐标差推出单位向量，避免依赖 y 轴方向假设。
+    const origin = view.screenToWorld({ x: 0, y: 0 })
+    const unit = (point: Point) => ({ x: point.x - origin.x, y: point.y - origin.y })
+    const next = panViewBox(
+      visibleWorldBox(view), dx, dy,
+      unit(view.screenToWorld({ x: 1, y: 0 })),
+      unit(view.screenToWorld({ x: 0, y: 1 })),
+    )
+    if (!next) return
+    view.zoomTo(new AcGeBox2d({ x: next.minX, y: next.minY }, { x: next.maxX, y: next.maxY }), 1)
+  })
+}
+
 function zoomIn() {
-  manager?.sendStringToExecute('zoom\n2x\n')
+  zoomBy(2)
 }
 
 function zoomOut() {
-  manager?.sendStringToExecute('zoom\n0.5x\n')
+  zoomBy(0.5)
 }
 
 async function resetView() {
@@ -329,7 +394,9 @@ function annotationViewport(): AnnotationViewport {
         if (manager?.curView === view) view.zoomTo(new AcGeBox2d({ x: x - padding, y: y - padding }, { x: x + width + padding, y: y + height + padding }))
       })
     },
-    zoom(direction) { if (direction > 0) zoomIn(); else zoomOut() },
+    // direction 为滚轮档数（>0 放大），anchor 为屏幕坐标锚点，缩放围绕鼠标位置进行。
+    zoom(direction, anchor) { if (!Number.isFinite(direction) || !direction) return; zoomBy(Math.pow(ZOOM_NOTCH, direction), anchor) },
+    pan(dx, dy) { panBy(dx, dy) },
   }
 }
 

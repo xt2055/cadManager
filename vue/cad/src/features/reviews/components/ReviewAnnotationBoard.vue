@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { MousePointer2, Hand, Pencil, ArrowUpRight, Square, Circle, Type, Check, X, Undo2, Redo2, Trash2, Eye, EyeOff, PanelRightClose, PanelRightOpen, Save } from 'lucide-vue-next'
 import DrawingAnnotationLayer from './DrawingAnnotationLayer.vue'
-import { AnnotationHistory, AnnotationSaveQueue, type AnnotationMark, type AnnotationTemplate, type AnnotationTool, type AnnotationViewport, type AnnotationWorkspace } from '../annotation-model'
+import { AnnotationHistory, AnnotationSaveQueue, planTemplateText, type AnnotationMark, type AnnotationTemplate, type AnnotationTool, type AnnotationViewport, type AnnotationWorkspace } from '../annotation-model'
 import { reviewAnnotationService as api } from '@/services/review-annotation.service'
 import { useAuthStore } from '@/stores/auth.store'
 import { annotationDraftKey, readAnnotationDraft, writeAnnotationDraft, type AnnotationDraft } from '../annotation-draft'
@@ -62,7 +62,7 @@ const filteredTemplates = computed(() => templates.value.filter(t => (templateCa
 const templateCategories = computed(() => ['全部', '我的', ...new Set(templates.value.map(t => t.category))])
 const selectedInfo = computed(() => allMarks.value.find(m => m.id === selected.value))
 const markLabels = { pen: '手绘标记', rect: '矩形圈框', ellipse: '椭圆圈框', arrow: '箭头', check: '已核对标记', cross: '叉号标记', text: '文字意见' }
-const toolHint = computed(() => ({ browse: '浏览图纸；选择画笔或话术开始批注', select: '点击标记可编辑，拖动可移动位置', pen: '按住左键画线，松开自动保存', arrow: '按住左键拖出箭头', rect: '拖动圈出问题区域，再点话术添加说明', ellipse: '拖动圈出问题区域，再点话术添加说明', text: text.value.trim() ? `点击放置：${text.value.trim()}` : '先点击右侧话术，或填写文字', check: '点击图纸放置核对标记', cross: '点击图纸放置叉号' })[activeTool.value])
+const toolHint = computed(() => ({ browse: '滚轮缩放、中键拖动平移图纸；选择画笔或话术开始批注', select: '点击标记可编辑，拖动可移动位置；滚轮可继续缩放', pen: '按住左键画线，松开自动保存；滚轮缩放、中键拖动平移', arrow: '按住左键拖出箭头；滚轮缩放、中键拖动平移', rect: '拖动圈出问题区域，再点话术添加说明', ellipse: '拖动圈出问题区域，再点话术添加说明', text: text.value.trim() ? `点击放置：${text.value.trim()}` : '先点击右侧话术，或填写文字', check: '点击图纸放置核对标记', cross: '点击图纸放置叉号' })[activeTool.value])
 const isAdmin = computed(() => auth.currentUser?.roles.includes('admin'))
 const tools = [
   { id: 'browse', label: '浏览', icon: Hand }, { id: 'select', label: '选择', icon: MousePointer2 },
@@ -144,11 +144,15 @@ function replace(mark: AnnotationMark) { commit(marks.value.map(m => m.id === ma
 function removeSelected() { if (selectedMark.value) { commit(marks.value.filter(m => m.id !== selected.value)); selected.value = ''; hint.value = '已删除，可按 Ctrl+Z 撤销' } }
 function undo() { if (!editable.value || !canUndo.value) return; marks.value = history.value.undo(marks.value); historyTick.value++; selected.value = ''; changed() }
 function redo() { if (!editable.value || !canRedo.value) return; marks.value = history.value.redo(marks.value); historyTick.value++; selected.value = ''; changed() }
-function useText(value: string) {
+function useText(value: string, forceAttach = false) {
   if (!editable.value) return
   text.value = value
-  if (selectedMark.value && tool.value === 'select') { replace({ ...selectedMark.value, text: value }); hint.value = '话术已附加到选中的标记' }
-  else { selected.value = ''; tool.value = 'text'; hint.value = '在图纸上点击放置这条意见' }
+  const target = selectedMark.value
+  // 刚圈出、还没写说明的标记直接把话术写上去；已经有说明的标记保持原样，
+  // 否则连续点话术时新批注放不下，图上留下的还是上一条话术的文字。
+  const plan = planTemplateText(tool.value, target ? target.text : null, value, forceAttach)
+  if (plan.mode === 'attach' && target) { replace({ ...target, text: plan.text }); hint.value = '话术已附加到选中的标记'; return }
+  selected.value = ''; tool.value = 'text'; hint.value = '在图纸上点击放置这条意见'
 }
 function pickTool(value: AnnotationTool) { tool.value = value; selected.value = ''; hint.value = ''; visible.value = true }
 function updateSelectedText() { if (!selectedMark.value) return; if (selectedMark.value.kind === 'text' && !selectedText.value.trim()) { hint.value = '文字批注不能为空；如不需要，可删除该批注'; return }; replace({ ...selectedMark.value, text: selectedText.value.trim() }); hint.value = '意见已更新' }
@@ -268,7 +272,7 @@ onBeforeUnmount(() => { clearTimeout(timer); window.removeEventListener('keydown
           </div>
           <label class="text-label" for="annotation-text">批注文字</label>
           <textarea id="annotation-text" v-model="text" class="field" maxlength="500" rows="3" placeholder="点击话术后在图纸上放置，也可自行填写" />
-          <div class="actions"><button class="btn sm primary" :disabled="!editable || !text.trim()" @click="useText(text)">{{ selectedMark && tool === 'select' ? '附加到所选标记' : '放到图纸上' }}</button></div>
+          <div class="actions"><button class="btn sm primary" :disabled="!editable || !text.trim()" @click="useText(text, true)">{{ selectedMark && tool === 'select' ? '附加到所选标记' : '放到图纸上' }}</button></div>
           <label class="repeat-check"><input v-model="repeatPlacement" type="checkbox" />连续放置，适合多处使用同一标记</label>
           <button v-if="!templateEditorOpen" class="text-button template-settings" @click="templateEditorOpen = true">存为常用话术</button>
           <div v-else class="template-settings"><strong>{{ editingTemplate ? '编辑话术' : '保存为常用话术' }}</strong><label>分类<input v-model="category" class="field" maxlength="40" /></label><label v-if="isAdmin && !editingTemplate" class="public-check"><input v-model="publicTemplate" type="checkbox" />设为公共话术</label><div class="actions"><button class="btn sm" :disabled="templateBusy || !text.trim() || !category.trim()" @click="saveTemplate">{{ templateBusy ? '保存中…' : '保存话术' }}</button><button class="text-button" @click="cancelTemplateEdit">取消</button></div></div>
@@ -280,7 +284,7 @@ onBeforeUnmount(() => { clearTimeout(timer); window.removeEventListener('keydown
           <p v-if="!allMarks.length" class="note">{{ editable ? '暂无批注。选择画笔圈出问题，或点击话术直接贴到图上。' : '本轮审核暂未留下图上批注。' }}</p>
           <button v-for="(mark, index) in filteredMarks" :key="mark.id" class="mark-row" :class="{ selected: selected === mark.id }" @click="focus(mark)"><span class="mark-number">{{ index + 1 }}</span><span class="mark-description">{{ mark.text || markLabels[mark.kind] }}<small>{{ describeMark(mark) }}</small></span></button>
         </section>
-        <details class="keyboard-note"><summary>快捷键与操作帮助</summary><p>空格：临时浏览 · Esc：结束当前工具<br />P：画笔 · R：圈框 · A：箭头 · T：文字<br />V：选择 · H：浏览 · O：椭圆<br />Ctrl+Z：撤销 · Ctrl+Shift+Z：重做<br />Ctrl+S：保存 · Delete：删除所选批注</p><p>圈框后点击话术，直接附加说明。图上的勾号仅为标记，正式结论请返回审核工作台签署。</p></details>
+        <details class="keyboard-note"><summary>快捷键与操作帮助</summary><p>滚轮：缩放图纸 · 中键拖动：平移图纸（任意工具下都可用）<br />空格：临时浏览 · Esc：结束当前工具<br />P：画笔 · R：圈框 · A：箭头 · T：文字<br />V：选择 · H：浏览 · O：椭圆<br />Ctrl+Z：撤销 · Ctrl+Shift+Z：重做<br />Ctrl+S：保存 · Delete：删除所选批注</p><p>点话术再点图纸＝放一条新批注；圈框、勾选这类刚放出、还没写说明的标记，点话术会直接附加说明。已有说明的标记不会被后续话术改掉，需要改文字时先选中它，再用上面的"这处的意见"或"附加到所选标记"。图上的勾号仅为标记，正式结论请返回审核工作台签署。</p></details>
       </aside>
     </div>
   </div>
