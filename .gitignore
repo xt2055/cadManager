@@ -50,6 +50,14 @@ new/
 new2/
 任务.txt
 
+# AI 代理工具的本地配置与产物（本机使用，不入库）。
+# 如需与团队共享其中的配置，用 git add -f 显式提交，不要直接放开整段忽略。
+.claude/
+.codex/
+.cursor/
+.grok/
+.pi/
+
 # Third-party reference projects
 test/
 deploy/pack/
