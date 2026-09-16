@@ -2,6 +2,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import NotificationAlertDialog from '@/components/feedback/NotificationAlertDialog.vue'
+import { createNotificationAlertTracker } from '@/features/notifications/notification-alert-tracker'
 import { notificationService, type NotificationItem } from '@/services/notification.service'
 import { connectNotifications, type NotificationConnectionState } from '@/services/notification-socket'
 import { useAuthStore } from '@/stores/auth.store'
@@ -25,7 +27,12 @@ let alive = true
 let listVersion = 0
 let syncing = false
 let syncAgain = false
-let newestID: string | undefined
+const ALERT_QUEUE_LIMIT = 20
+const alerts = ref<NotificationItem[]>([])
+const summaryUnread = ref<number | null>(null)
+const alertHandled = ref(0)
+const alertBusy = ref(false)
+const tracker = createNotificationAlertTracker()
 let disconnectSocket: (() => void) | undefined
 const connection = ref<NotificationConnectionState>('connecting')
 const connectionLabel = computed(() => ({ connecting: '正在连接实时通知…', connected: '实时通知已连接', disconnected: '连接中断，正在重连…', unauthorized: '登录已失效，请重新登录' })[connection.value])
@@ -61,9 +68,12 @@ async function sync() {
   try {
     const result = await notificationService.list(token)
     if (!sameSession(token)) return
-    const latest = result.items[0]
-    if (newestID !== undefined && latest && latest.id !== newestID && !latest.readAt) ui.toast(`新通知：${latest.title}`, 'info')
-    newestID = latest?.id || ''
+    const batch = tracker.collect(result.items)
+    if (batch.seeded) {
+      if (result.unread > 0) summaryUnread.value = result.unread
+    } else if (batch.alerts.length) {
+      enqueueAlerts(batch.alerts)
+    }
     unread.value = result.unread
     error.value = ''
     if (open.value) await load()
@@ -93,6 +103,56 @@ async function viewRelated(item: NotificationItem) {
   await router.push(`/drawings/${encodeURIComponent(item.drawingId)}/${item.kind === 'change' ? 'changes' : 'review'}`)
 }
 
+function enqueueAlerts(incoming: NotificationItem[]) {
+  const queued = new Set(alerts.value.map(item => item.id))
+  for (const item of incoming) {
+    if (alerts.value.length >= ALERT_QUEUE_LIMIT) break
+    if (queued.has(item.id)) continue
+    queued.add(item.id)
+    alerts.value.push(item)
+  }
+}
+
+function dropAlert(id: string) {
+  const index = alerts.value.findIndex(item => item.id === id)
+  if (index < 0) return
+  alerts.value.splice(index, 1)
+  alertHandled.value += 1
+  if (!alerts.value.length) alertHandled.value = 0
+}
+
+/** 弹窗必须确认：单条「知道了」= 标记该条已读并出队；汇总模式只关闭，不批量已读。 */
+async function acknowledgeAlert() {
+  if (alertBusy.value) return
+  if (summaryUnread.value !== null) { summaryUnread.value = null; return }
+  const item = alerts.value[0]
+  if (!item) return
+  alertBusy.value = true
+  try {
+    // 标记已读失败也会关闭弹窗（角标保持未读、可在通知中心重试），避免强制弹窗把用户卡住。
+    await markRead(item)
+  } finally {
+    alertBusy.value = false
+    dropAlert(item.id)
+  }
+}
+
+async function viewRelatedAlert(item: NotificationItem) {
+  if (alertBusy.value) return
+  alertBusy.value = true
+  dropAlert(item.id)
+  try {
+    await viewRelated(item)
+  } finally {
+    alertBusy.value = false
+  }
+}
+
+function openCenterFromAlert() {
+  summaryUnread.value = null
+  open.value = true
+}
+
 function startSocket() {
   disconnectSocket?.()
   if (!auth.token) return
@@ -108,7 +168,9 @@ watch(unreadOnly, () => { if (page.value !== 1) page.value = 1; else void load()
 watch(page, () => void load())
 watch(() => auth.token, () => {
   ++listVersion
-  items.value = []; unread.value = 0; total.value = 0; error.value = ''; newestID = undefined
+  items.value = []; unread.value = 0; total.value = 0; error.value = ''
+  tracker.reset()
+  alerts.value = []; summaryUnread.value = null; alertHandled.value = 0; alertBusy.value = false
   open.value = false
   loading.value = false; updating.value = false
   startSocket()
@@ -167,6 +229,17 @@ onUnmounted(() => {
         </aside>
       </div>
     </Transition>
+      <NotificationAlertDialog
+        :item="alerts[0] || null"
+        :summary-unread="summaryUnread"
+        :remaining="alerts.length"
+        :position="alertHandled + 1"
+        :total="alertHandled + alerts.length"
+        :busy="alertBusy"
+        @acknowledge="acknowledgeAlert"
+        @view-related="viewRelatedAlert"
+        @open-center="openCenterFromAlert"
+      />
   </Teleport>
 </template>
 
