@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { windowService } from '@/services/tauri/window.service'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -19,6 +19,14 @@ import type { Drawing, DrawingFile, StructurePart } from '@/types/domain.types'
 import type { DrawingFileIdentity } from '@/modules/drawing'
 import type { UploadSessionSnapshot } from '@/types/application.types'
 import { directParentDrawingNo, isEquivalentAssemblyNo, isSameDrawingFamily, parseDrawingNumber, parseStandaloneDrawingFileName } from '@/utils/drawing-number-parser'
+import {
+  CREATE_MODE_OPTIONS,
+  NEW_DRAWING_MATERIAL_ACCEPT,
+  createModeTitle,
+  materialFileKind,
+  resolveCreateMode,
+  type DrawingCreateMode,
+} from '@/features/drawings/create/drawing-create-modes'
 
 defineOptions({
   name: 'DrawingCreatePage',
@@ -38,22 +46,42 @@ const formProject = ref('')
 const formProjectNo = ref('')
 const formDrawingNo = ref('')
 const formRemark = ref('')
+const formNewName = ref('')
 const formAttributeValues = ref<Record<string, string>>({})
 const isIdentifyingAssembly = ref(false)
 const assemblyIdentifyMessage = ref('')
 let assemblyIdentifySequence = 0
 
-const createMode = ref<'blank' | 'fork'>('blank')
+const route = useRoute()
+/** 三种创建方式由入口 query 决定；切换后写回地址栏，刷新仍停留在同一方式。 */
+const mode = ref<DrawingCreateMode>(resolveCreateMode(route.query.mode))
+const createModeOptions = CREATE_MODE_OPTIONS
 const selectedForkSourceNo = ref('')
 
-// 分步向导状态控制
-const currentStep = ref(1)
-const steps = [
+// 分步向导状态控制：创建新图纸是单屏建档，不需要分步。
+const LEGACY_STEPS = [
   { step: 1, title: '2D 工程图纸', sub: '总图识别与零件图批量导入' },
   { step: 2, title: '基础档案', sub: '项目名称、项目号与总图图号' },
   { step: 3, title: '图纸属性', sub: '业务分类与自定义属性' },
   { step: 4, title: '3D 模型与资料', sub: '三维模型装配包与归档凭证' },
 ]
+const FORK_STEPS = [
+  { step: 1, title: '源图纸', sub: '选择要继承的老图纸' },
+  { step: 2, title: '基础档案', sub: '新项目名称、项目号与新图号' },
+  { step: 3, title: '图纸属性', sub: '业务分类与自定义属性' },
+  { step: 4, title: '相关资料', sub: '技术协议与设计依据（可选）' },
+]
+const NEW_STEPS = [
+  { step: 1, title: '新图纸信息', sub: '图纸名称、图号与可选图纸材料' },
+]
+const currentStep = ref(1)
+const steps = computed(() => (mode.value === 'new' ? NEW_STEPS : mode.value === 'fork' ? FORK_STEPS : LEGACY_STEPS))
+const createTitle = computed(() => (mode.value === 'new' ? '创建新图纸' : mode.value === 'fork' ? '从老图纸分叉' : '新建项目图纸'))
+const createSubtitle = computed(() => {
+  if (mode.value === 'new') return '只需图纸名称与图号即可建档；图纸材料可以在此上传，也可以稍后在图纸详情中补传。'
+  if (mode.value === 'fork') return '选择一张老图纸作为源，完整继承其属性、零件层级与工艺备料文件，生成全新的项目档案。'
+  return '分步向导帮助您规范建立图纸档案；支持先立项后补传，或一步到位关联全套工程文件。'
+})
 const validationErrors = ref<Record<string, string>>({})
 const attributeFieldErrors = computed(() => Object.fromEntries(Object.entries(validationErrors.value)
   .filter(([key]) => key.startsWith('drawing-attr-')).map(([key, value]) => [key.slice('drawing-attr-'.length), value])))
@@ -68,9 +96,39 @@ function invalidField(step: number, field: string, message: string): false {
   })
   return false
 }
-watch([formProject, formProjectNo, formDrawingNo, selectedForkSourceNo, formAttributeValues], () => {
+watch([formProject, formProjectNo, formDrawingNo, formNewName, selectedForkSourceNo, formAttributeValues], () => {
   validationErrors.value = {}
 }, { deep: true })
+
+/** 地址栏回写当前创建方式，刷新或分享链接后仍停留在同一方式。 */
+function syncModeQuery() {
+  if (typeof router.replace !== 'function') return
+  void router.replace({ query: { ...route.query, mode: mode.value } }).catch(() => undefined)
+}
+
+/** 切换创建方式：重置步骤与校验，并清掉不属于该方式的已选文件，避免提交时被静默丢弃。 */
+function setMode(next: DrawingCreateMode) {
+  if (mode.value === next) return
+  mode.value = next
+  currentStep.value = 1
+  validationErrors.value = {}
+  createError.value = ''
+  if (next === 'new') {
+    const discarded = (assemblyFile.value ? 1 : 0) + partFiles.value.length + modelFiles.value.length
+    if (discarded) {
+      assemblyFile.value = null
+      partFiles.value = []
+      modelFiles.value = []
+      uiStore.toast('创建新图纸不区分总图与零件图，已选的 2D 图纸与 3D 模型已清空；可在「图纸材料」中重新选择。', 'warn')
+    }
+    // 新建档案与老图纸导入的项目名称同名，切换时沿用已填写内容，减少重复输入。
+    if (!formNewName.value && formProject.value.trim()) formNewName.value = formProject.value.trim()
+  } else if (newMaterialFiles.value.length) {
+    newMaterialFiles.value = []
+    uiStore.toast(`已切换到「${createModeTitle(next)}」，新图纸材料的选择已清空。`, 'warn')
+  }
+  syncModeQuery()
+}
 
 /** 步骤 1：2D 工程图纸（支持上传总图以自动识别项目基本信息）。 */
 function validateDrawingStep(): boolean {
@@ -80,7 +138,18 @@ function validateDrawingStep(): boolean {
   return true
 }
 
-/** 步骤 2：项目标识与创建模式。 */
+/** 步骤 1（分叉）：必须选定一张仍然存在的源图纸。 */
+function validateForkSource(): boolean {
+  if (!selectedForkSourceNo.value) {
+    return invalidField(1, 'fork-source-select', '请选择源图纸')
+  }
+  if (!drawingStore.drawings.some((item) => item.no === selectedForkSourceNo.value)) {
+    return invalidField(1, 'fork-source-select', '源图纸已不存在，请重新选择')
+  }
+  return true
+}
+
+/** 步骤 2：项目标识；分叉模式额外要求新图号与源图纸不同。 */
 function validateBasicInfo(): boolean {
   const projectName = formProject.value.trim()
   if (!projectName) {
@@ -97,7 +166,7 @@ function validateBasicInfo(): boolean {
   if (!drawingNo) {
     return invalidField(2, 'create-drawing-no', '请填写总图图号')
   }
-  if (createMode.value === 'fork') {
+  if (mode.value === 'fork') {
     if (!selectedForkSourceNo.value) {
       return invalidField(2, 'fork-source-select', '请选择源图纸')
     }
@@ -124,17 +193,32 @@ function validateAttributes(): boolean {
   return true
 }
 
+/** 创建新图纸：只校验图纸名称与图号，图纸材料可以一份都不传。 */
+function validateNewDrawing(): boolean {
+  if (!formNewName.value.trim()) {
+    return invalidField(1, 'create-new-name', '请填写图纸名称')
+  }
+  const drawingNo = formDrawingNo.value.trim()
+  if (!drawingNo) {
+    return invalidField(1, 'create-new-no', '请填写图号')
+  }
+  if (drawingStore.drawings.some((item) => item.no === drawingNo)) {
+    return invalidField(1, 'create-new-no', `图号「${drawingNo}」已存在，请更换图号`)
+  }
+  return true
+}
+
 /** 前进时逐个校验所有前置步骤，保证跳步不会绕过必填项。 */
 function validateUpTo(step: number): boolean {
   validationErrors.value = {}
-  if (step > 1 && !validateDrawingStep()) return false
+  if (step > 1 && !(mode.value === 'fork' ? validateForkSource() : validateDrawingStep())) return false
   if (step > 2 && !validateBasicInfo()) return false
   if (step > 3 && !validateAttributes()) return false
   return true
 }
 
 function nextStep() {
-  if (currentStep.value >= steps.length) return
+  if (currentStep.value >= steps.value.length) return
   if (!validateUpTo(currentStep.value + 1)) return
   currentStep.value += 1
 }
@@ -245,9 +329,10 @@ let leavingAfterSave = false
 let discardApproved = false
 let pendingLeave: Promise<boolean> | null = null
 const hasUnsavedChanges = computed(() => savedDrawingNo.value ? evidenceFiles.value.length > 0 : Boolean(
-  formProject.value || formProjectNo.value || formDrawingNo.value || formRemark.value ||
+  formProject.value || formProjectNo.value || formDrawingNo.value || formRemark.value || formNewName.value ||
   Object.values(formAttributeValues.value).some(Boolean) || selectedForkSourceNo.value ||
   assemblyFile.value || partFiles.value.length || modelFiles.value.length || evidenceFiles.value.length ||
+  newMaterialFiles.value.length ||
   evidenceFolderPath.value || evidenceDescription.value || drawingOperationsStore.pendingUploadSessionId,
 ))
 
@@ -421,7 +506,7 @@ async function completeSavedDrawing() {
       createError.value = '图纸已创建，部分相关资料尚未归档。请重试资料归档，或进入详情后补传。'
       return
     }
-    if (createMode.value === 'fork' || await waitForDrawingConversions(savedDrawingNo.value)) await openSavedDrawing()
+    if (mode.value === 'fork' || await waitForDrawingConversions(savedDrawingNo.value)) await openSavedDrawing()
   } catch (error) {
     createError.value = `图纸已创建，后续处理未完成：${error instanceof Error ? error.message : '请重试'}`
   }
@@ -493,9 +578,11 @@ async function retryUploadItem(itemId: string) {
 }
 
 onMounted(() => {
-  void Promise.all([drawingStore.load(), attributeStore.load(), refreshUploadSnapshot()]).catch(() => {
-    uiStore.toast('部分创建数据加载失败，请重试后继续。', 'warn')
-  })
+  void Promise.all([drawingStore.load(), attributeStore.load(), refreshUploadSnapshot()])
+    .then(() => { applyModeFromRoute() })
+    .catch(() => {
+      uiStore.toast('部分创建数据加载失败，请重试后继续。', 'warn')
+    })
 })
 watch(() => drawingOperationsStore.pendingUploadSessionId, () => { void refreshUploadSnapshot() })
 
@@ -504,6 +591,7 @@ const partFilesInput = ref<HTMLInputElement | null>(null)
 const partFolderInput = ref<HTMLInputElement | null>(null)
 const modelFilesInput = ref<HTMLInputElement | null>(null)
 const evidenceFilesInput = ref<HTMLInputElement | null>(null)
+const newMaterialFilesInput = ref<HTMLInputElement | null>(null)
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -686,6 +774,89 @@ function clearAllEvidence() {
   evidenceFiles.value = []
 }
 
+/** 创建新图纸时选择的图纸材料；label 由扩展名自动判定，供列表展示。 */
+interface UploadedMaterial {
+  id: string
+  name: string
+  size: string
+  file: File
+  label: string
+}
+
+// ---------- 创建新图纸：图纸材料（业务上可选，允许一份都不传） ----------
+
+const newMaterialFiles = ref<UploadedMaterial[]>([])
+const isDraggingNewMaterials = ref(false)
+const newMaterialSummary = computed(() => {
+  if (!newMaterialFiles.value.length) return '未选择图纸材料（可跳过）'
+  const counts = new Map<string, number>()
+  for (const item of newMaterialFiles.value) counts.set(item.label, (counts.get(item.label) ?? 0) + 1)
+  return [...counts.entries()].map(([label, count]) => `${count} 份${label}`).join(' · ')
+})
+
+/** 入口可指定源图纸（例如从图纸详情发起分叉），数据加载完成后立即预填。 */
+function applyModeFromRoute() {
+  if (mode.value !== 'fork') return
+  const querySource = Array.isArray(route.query.source) ? route.query.source[0] : route.query.source
+  if (typeof querySource !== 'string' || !querySource) return
+  if (!drawingStore.drawings.some((item) => item.no === querySource)) {
+    uiStore.toast(`源图纸「${querySource}」不存在或已删除，请重新选择。`, 'warn')
+    return
+  }
+  selectedForkSourceNo.value = querySource
+  onForkSourceChange()
+}
+
+function appendNewMaterialFiles(fileList: FileList | null) {
+  if (!fileList?.length) return
+  const added: UploadedMaterial[] = []
+  let skipped = 0
+  for (const file of Array.from(fileList)) {
+    if (!file.size) {
+      skipped += 1
+      continue
+    }
+    if (newMaterialFiles.value.some((item) => item.name === file.name && item.file.size === file.size)) {
+      skipped += 1
+      continue
+    }
+    const kind = materialFileKind(file.name)
+    added.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: file.name,
+      size: formatFileSize(file.size),
+      file,
+      label: kind.label,
+    })
+  }
+  newMaterialFiles.value.push(...added)
+  if (added.length) uiStore.toast(`已加入 ${added.length} 份图纸材料`, 'ok')
+  if (skipped) uiStore.toast(`${skipped} 份材料已跳过（空文件或重复选择）`, 'warn')
+}
+
+function onNewMaterialsChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  appendNewMaterialFiles(target.files)
+  target.value = ''
+}
+
+function onNewMaterialsDrop(event: DragEvent) {
+  isDraggingNewMaterials.value = false
+  appendNewMaterialFiles(event.dataTransfer?.files ?? null)
+}
+
+function triggerNewMaterialsPick() {
+  newMaterialFilesInput.value?.click()
+}
+
+function removeNewMaterial(id: string) {
+  newMaterialFiles.value = newMaterialFiles.value.filter((item) => item.id !== id)
+}
+
+function clearAllNewMaterials() {
+  newMaterialFiles.value = []
+}
+
 /**
  * 资料档案以图号外键归属，创建前没有可关联的图纸记录；
  * 因此在项目创建成功后再逐份归档，单份失败不影响已建成的项目。
@@ -808,7 +979,7 @@ function handleCancel() {
 
 function handleSubmit() {
   if (isCreating.value) return
-  if (!savedDrawingNo.value && !validateUpTo(4)) return
+  if (!savedDrawingNo.value && !(mode.value === 'new' ? validateNewDrawing() : validateUpTo(4))) return
   isCreating.value = true
   createError.value = ''
   createStatus.value = '正在准备创建'
@@ -822,11 +993,16 @@ function handleSubmit() {
 }
 
 async function performCreate() {
+  if (mode.value === 'new') {
+    await performCreateNew()
+    return
+  }
+
   const projectName = formProject.value.trim()
   const projectNo = formProjectNo.value.trim()
   const drawingNo = formDrawingNo.value.trim()
 
-  if (createMode.value === 'fork') {
+  if (mode.value === 'fork') {
     try {
       createStatus.value = '正在继承源图纸结构与文件'
       await drawingOperationsStore.forkDrawing(
@@ -1060,6 +1236,78 @@ async function performCreate() {
   await completeSavedDrawing()
 }
 
+/**
+ * 创建新图纸：只要求图纸名称与图号；项目号留空时与图号相同（后端要求项目字段非空），
+ * 图纸材料按扩展名分别落到图纸文件与其他文件，也可以一份都不传。
+ */
+async function performCreateNew() {
+  const name = formNewName.value.trim()
+  const drawingNo = formDrawingNo.value.trim()
+  const projectNo = formProjectNo.value.trim() || drawingNo
+  const remark = formRemark.value.trim()
+  const files: DrawingFile[] = []
+  const otherFiles: DrawingFile[] = []
+  const attachments: Array<{ id: string; content: File }> = []
+
+  newMaterialFiles.value.forEach((item, index) => {
+    const kind = materialFileKind(item.name)
+    const file: DrawingFile = {
+      id: `${Date.now()}-newmaterial-${index}`,
+      name: item.name,
+      size: item.size,
+      role: kind.role,
+      drawingNo,
+      version: 'v1.0',
+      uploadedBy: operatorName,
+      uploadedAt: '刚刚',
+      fileCategory: kind.fileCategory,
+      previewable: kind.previewable,
+    }
+    if (kind.role === 'assembly') files.push(file)
+    else otherFiles.push(file)
+    attachments.push({ id: file.id, content: item.file })
+  })
+
+  const drawing: Drawing = {
+    no: drawingNo,
+    name,
+    kind: '总图',
+    project: projectNo,
+    material: '—',
+    vendor: '内部项目部',
+    status: 'draft',
+    ver: 'v1.0',
+    updated: '刚刚',
+    by: operatorName,
+    createdBy: operatorName,
+    borrow: 0,
+    hasFile: files.length > 0,
+    signers: {},
+    files,
+    otherFiles,
+    ...(remark ? { remark } : {}),
+  }
+
+  try {
+    createStatus.value = attachments.length ? '正在保存图纸档案并上传图纸材料' : '正在保存图纸档案'
+    await drawingOperationsStore.addDrawing(drawing, [], attachments)
+    savedDrawingNo.value = drawingNo
+  } catch (error) {
+    console.error('创建新图纸失败', error)
+    createError.value = error instanceof Error ? error.message : '图纸创建失败，数据未能保存'
+    // 会话 ID 在文件项创建前就会写入；失败时主动刷新，避免界面继续显示旧快照。
+    await refreshUploadSnapshot()
+    uiStore.toast(createError.value, 'warn')
+    return
+  }
+
+  uiStore.toast(
+    `图纸「${drawingNo}」已创建${attachments.length ? `，${attachments.length} 份图纸材料已归档` : '（未上传图纸材料，可稍后补传）'}`,
+    'ok',
+  )
+  await completeSavedDrawing()
+}
+
 async function retryFailedUpload() {
   if (isCreating.value || !canRetryUpload.value) return
   isCreating.value = true
@@ -1160,19 +1408,179 @@ async function retryFailedUpload() {
           <DemoIcon name="arrow-left" :size="16" />
         </button>
         <div>
-          <h1 class="create-title">新建项目图纸</h1>
-          <p class="create-subtitle">分步向导帮助您规范建立图纸档案；支持先立项后补传，或一步到位关联全套工程文件。</p>
+          <h1 class="create-title">{{ createTitle }}</h1>
+          <p class="create-subtitle">{{ createSubtitle }}</p>
         </div>
+      </div>
+      <div class="segmented-control mode-switch" role="radiogroup" aria-label="创建方式">
+        <label
+          v-for="option in createModeOptions"
+          :key="option.value"
+          class="segment"
+          :class="{ active: mode === option.value }"
+          :title="option.sub"
+        >
+          <input
+            type="radio"
+            name="drawing-create-mode"
+            :value="option.value"
+            :checked="mode === option.value"
+            @change="setMode(option.value)"
+          />
+          <DemoIcon :name="option.icon" :size="13" />{{ option.title }}
+        </label>
       </div>
       <div class="topbar-actions">
         <button class="btn" type="button" :disabled="isCreating" @click="handleCancel">取消</button>
-        <button v-if="currentStep >= 3" class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
+        <button v-if="mode === 'new' || currentStep >= 3" class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
           <span v-if="isCreating" class="button-spinner" aria-hidden="true"></span>
-          <DemoIcon v-else name="check" :size="14" />{{ isCreating ? '创建中…' : '创建草稿' }}
+          <DemoIcon v-else name="check" :size="14" />{{ isCreating ? '创建中…' : mode === 'new' ? '创建图纸' : '创建草稿' }}
         </button>
       </div>
     </div>
 
+    <!-- 创建新图纸：单屏最小建档，图纸材料可选 -->
+    <section v-if="mode === 'new'" class="wizard-step-panel">
+      <input
+        ref="newMaterialFilesInput"
+        type="file"
+        :accept="NEW_DRAWING_MATERIAL_ACCEPT"
+        multiple
+        class="hidden-input"
+        @change="onNewMaterialsChange"
+      />
+
+      <div class="card wizard-card">
+        <div class="section-head">
+          <div class="head-icon-box">
+            <DemoIcon name="file-plus" :size="16" />
+          </div>
+          <div class="head-text">
+            <div class="title-badge-row">
+              <h2>新图纸信息</h2>
+              <span class="badge muted-badge">{{ newMaterialFiles.length ? `${newMaterialFiles.length} 份材料` : '图纸材料可选' }}</span>
+            </div>
+            <p class="head-tip">只输入图纸名称与图号即可建档；图纸材料可以上传，也可以完全不上传，之后在图纸详情中补传</p>
+          </div>
+        </div>
+
+        <div class="wizard-card-body">
+          <div class="form-grid new-form-grid">
+            <div class="form-item required">
+              <label for="create-new-name">图纸名称</label>
+              <input
+                id="create-new-name"
+                :aria-invalid="Boolean(validationErrors['create-new-name'])"
+                :aria-describedby="validationErrors['create-new-name'] ? 'create-new-name-error' : undefined"
+                v-model="formNewName"
+                class="inp"
+                placeholder="例如：主轴回转机构装配图"
+              />
+              <small class="field-help">用于图纸库列表与详情标题</small>
+              <small v-if="validationErrors['create-new-name']" id="create-new-name-error" class="field-error">{{ validationErrors['create-new-name'] }}</small>
+            </div>
+
+            <div class="form-item required">
+              <label for="create-new-no">图号</label>
+              <input
+                id="create-new-no"
+                :aria-invalid="Boolean(validationErrors['create-new-no'])"
+                :aria-describedby="validationErrors['create-new-no'] ? 'create-new-no-error' : undefined"
+                v-model="formDrawingNo"
+                class="inp"
+                placeholder="例如：JG9055e-50/32-00"
+              />
+              <small class="field-help">图号在系统内唯一；留空的项目号会自动取该图号</small>
+              <small v-if="validationErrors['create-new-no']" id="create-new-no-error" class="field-error">{{ validationErrors['create-new-no'] }}</small>
+            </div>
+          </div>
+
+          <details class="new-optional-block">
+            <summary>
+              <DemoIcon name="sliders-horizontal" :size="13" />更多信息（可选）
+            </summary>
+            <div class="form-grid new-form-grid">
+              <div class="form-item">
+                <label for="create-new-project-no">项目号</label>
+                <input id="create-new-project-no" v-model="formProjectNo" class="inp" placeholder="留空则与图号相同" />
+                <small class="field-help">用于项目分组与目录归类，不是总图图号。</small>
+              </div>
+              <div class="form-item">
+                <label for="create-new-remark">备注</label>
+                <input id="create-new-remark" v-model="formRemark" class="inp" placeholder="用途、交付要求或技术交底说明" />
+              </div>
+            </div>
+          </details>
+
+          <div class="card panel-card new-material-card">
+            <div class="section-head">
+              <div class="head-icon-box">
+                <DemoIcon name="archive" :size="16" />
+              </div>
+              <div class="head-text">
+                <div class="title-badge-row">
+                  <h2>图纸材料（可选）</h2>
+                  <span class="badge muted-badge">{{ newMaterialSummary }}</span>
+                </div>
+                <p class="head-tip">支持 2D 图纸、3D 模型与常见资料，按扩展名自动归入图纸文件、3D 模型或其他文件</p>
+              </div>
+            </div>
+
+            <div class="panel-card-body">
+              <div
+                class="upload-box modern-drop-card material-box"
+                :class="{ active: isDraggingNewMaterials }"
+                @dragover.prevent="isDraggingNewMaterials = true"
+                @dragleave.prevent="isDraggingNewMaterials = false"
+                @drop.prevent="onNewMaterialsDrop"
+              >
+                <div class="upload-icon-wrap"><DemoIcon name="file-up" :size="26" /></div>
+                <div class="upload-texts">
+                  <b>拖拽图纸材料至此处，或点击按钮选取</b>
+                  <p>可以不上传；上传后创建时一并归档，无需再次选择</p>
+                </div>
+                <div class="upload-actions">
+                  <button class="btn sm" type="button" @click="triggerNewMaterialsPick">
+                    <DemoIcon name="files" :size="13" />选择图纸材料
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="newMaterialFiles.length" class="parts-list-card modern-list">
+                <div class="parts-list-head">
+                  <span>待归档图纸材料（{{ newMaterialFiles.length }}）</span>
+                  <button class="text-btn danger" type="button" @click="clearAllNewMaterials">清空列表</button>
+                </div>
+                <div class="parts-list-body panel-scroll">
+                  <div v-for="item in newMaterialFiles" :key="item.id" class="part-item-row">
+                    <DemoIcon name="file" :size="14" />
+                    <span class="part-name" :title="item.name">{{ item.name }}</span>
+                    <span class="tag plain">{{ item.label }}</span>
+                    <span class="part-size">{{ item.size }}</span>
+                    <button class="icon-btn xs" type="button" title="移除" @click="removeNewMaterial(item.id)">
+                      <DemoIcon name="x" :size="12" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="panel-actions">
+          <span class="step-hint">图纸材料可以不选；创建后还能在图纸详情中继续上传图纸文件与资料</span>
+          <div class="footer-actions">
+            <button class="btn" type="button" :disabled="isCreating" @click="handleCancel">取消</button>
+            <button class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
+              <span v-if="isCreating" class="button-spinner" aria-hidden="true"></span>
+              <DemoIcon v-else name="check" :size="15" />{{ isCreating ? '创建中…' : '创建图纸' }}
+            </button>
+          </div>
+        </footer>
+      </div>
+    </section>
+
+    <template v-else>
     <!-- 现代向导进度步骤指示器 (Stepper) -->
     <div class="wizard-stepper card">
       <div
@@ -1197,11 +1605,14 @@ async function retryFailedUpload() {
         <div class="stepper-content">
           <div class="stepper-title-row">
             <span class="stepper-title">{{ s.title }}</span>
-            <span v-if="s.step === 1 && (assemblyFile || partFiles.length)" class="stepper-count-tag">
+            <span v-if="s.step === 1 && mode === 'legacy' && (assemblyFile || partFiles.length)" class="stepper-count-tag">
               {{ (assemblyFile ? 1 : 0) + partFiles.length }} 图
             </span>
-            <span v-else-if="s.step === 4 && (modelFiles.length || evidenceFiles.length)" class="stepper-count-tag">
-              {{ modelFiles.length + evidenceFiles.length }} 份
+            <span v-else-if="s.step === 1 && mode === 'fork' && selectedForkSourceNo" class="stepper-count-tag">
+              已选源图
+            </span>
+            <span v-else-if="s.step === 4 && (evidenceFiles.length || (mode === 'legacy' && modelFiles.length))" class="stepper-count-tag">
+              {{ evidenceFiles.length + (mode === 'legacy' ? modelFiles.length : 0) }} 份
             </span>
           </div>
           <span class="stepper-sub">{{ s.sub }}</span>
@@ -1210,8 +1621,54 @@ async function retryFailedUpload() {
       </div>
     </div>
 
+    <!-- 分叉模式步骤 1：选择要继承的源图纸 -->
+    <section v-if="currentStep === 1 && mode === 'fork'" class="wizard-step-panel">
+      <div class="card wizard-card">
+        <div class="section-head">
+          <div class="head-icon-box">
+            <DemoIcon name="git-branch" :size="16" />
+          </div>
+          <div class="head-text">
+            <h2>选择要分叉的老图纸</h2>
+            <p class="head-tip">分叉会完整继承源图纸的属性、零件层级与工艺备料文件，生成一个全新的项目档案</p>
+          </div>
+          <span class="badge muted-badge">{{ existingDrawings.length }} 张可选</span>
+        </div>
+
+        <div class="wizard-card-body">
+          <div class="fork-source-row">
+            <label for="fork-source-select">源图纸 *</label>
+            <select id="fork-source-select" v-model="selectedForkSourceNo" class="inp" @change="onForkSourceChange">
+              <option value="">请选择已有图纸作为模板…</option>
+              <option v-for="item in existingDrawings" :key="item.no" :value="item.no">
+                {{ item.no }} · {{ item.name }} ({{ item.vendor || '内部项目部' }})
+              </option>
+            </select>
+            <small v-if="validationErrors['fork-source-select']" class="field-error">{{ validationErrors['fork-source-select'] }}</small>
+            <p v-if="existingDrawings.length" class="fork-tip">
+              <DemoIcon name="info" :size="12" />
+              选中后自动带入源图纸的项目信息与属性，下一步可逐项修改；新图号必须与原图号不同。
+            </p>
+            <p v-else class="fork-tip">
+              <DemoIcon name="info" :size="12" />
+              图纸库中还没有可分叉的图纸；请先用「上传老图纸」或「创建新图纸」建立第一份档案。
+            </p>
+          </div>
+        </div>
+
+        <footer class="panel-actions">
+          <span class="step-hint">分叉不会修改源图纸，源图与衍生图各自独立维护</span>
+          <div class="footer-actions">
+            <button class="btn primary" type="button" @click="nextStep">
+              下一步：基础档案 <DemoIcon name="arrow-right" :size="14" />
+            </button>
+          </div>
+        </footer>
+      </div>
+    </section>
+
     <!-- 步骤 1: 2D 工程图纸（最前节点：上传总图自动识别基本信息） -->
-    <section v-if="currentStep === 1" class="wizard-step-panel">
+    <section v-else-if="currentStep === 1" class="wizard-step-panel">
       <!-- 隐藏的文件选择器 -->
       <input
         ref="assemblyFileInput"
@@ -1382,37 +1839,25 @@ async function retryFailedUpload() {
             <DemoIcon name="folder-plus" :size="16" />
           </div>
           <div class="head-text">
-            <h2>项目基本信息</h2>
-            <p class="head-tip">已关联上一步图纸识别信息；可核对修改，或选择从已有图纸分叉继承</p>
-          </div>
-          <div class="segmented-control" role="radiogroup" aria-label="创建模式">
-            <label class="segment" :class="{ active: createMode === 'blank' }">
-              <input v-model="createMode" type="radio" value="blank" />
-              <DemoIcon name="file-plus" :size="13" />新建空白
-            </label>
-            <label class="segment" :class="{ active: createMode === 'fork' }">
-              <input v-model="createMode" type="radio" value="fork" />
-              <DemoIcon name="git-branch" :size="13" />分叉继承
-            </label>
+            <h2>{{ mode === 'fork' ? '新项目基本信息' : '项目基本信息' }}</h2>
+            <p class="head-tip">{{ mode === 'fork'
+              ? '已带入源图纸识别信息；请确认新的总图图号与项目号后再提交'
+              : '已关联上一步图纸识别信息；可核对修改后再提交' }}</p>
           </div>
         </div>
 
         <div class="wizard-card-body">
-          <div v-if="createMode === 'fork'" class="fork-source-row">
-            <label for="fork-source-select">选择要分叉的源图纸 *</label>
-            <select id="fork-source-select" v-model="selectedForkSourceNo" class="inp" @change="onForkSourceChange">
-              <option value="">请选择已有图纸作为模板…</option>
-              <option v-for="item in existingDrawings" :key="item.no" :value="item.no">
-                {{ item.no }} · {{ item.name }} ({{ item.vendor || '内部项目部' }})
-              </option>
-            </select>
-            <small v-if="validationErrors['fork-source-select']" class="field-error">{{ validationErrors['fork-source-select'] }}</small>
+          <div v-if="mode === 'fork'" class="fork-source-row">
+            <label>继承来源 *</label>
+            <div class="fork-source-readonly">
+              <span class="mono">{{ selectedForkSourceNo }}</span>
+              <button class="btn sm" type="button" @click="goToStep(1)">重新选择源图纸</button>
+            </div>
             <p class="fork-tip">
               <DemoIcon name="info" :size="12" />
-              分叉将完整继承源图纸的属性、零件层级与工艺备料文件；提交前请确认新的总图图号。
+              新项目将继承源图纸的零件层级与工艺备料文件；提交前请确认新图号与原图号不同。
             </p>
           </div>
-
           <div class="form-grid">
             <div class="form-item required">
               <label for="create-project-name">项目名称</label>
@@ -1454,9 +1899,9 @@ async function retryFailedUpload() {
               />
               <small
                 class="field-help"
-                :class="{ error: (createMode === 'fork' && formDrawingNo === selectedForkSourceNo) || (assemblyIdentifyMessage && !formDrawingNo && !isIdentifyingAssembly) }"
+                :class="{ error: (mode === 'fork' && formDrawingNo === selectedForkSourceNo) || (assemblyIdentifyMessage && !formDrawingNo && !isIdentifyingAssembly) }"
               >
-                {{ createMode === 'fork' && formDrawingNo === selectedForkSourceNo ? '分叉需要新的总图图号，请修改后再提交。' : assemblyIdentifyMessage || '图号规范唯一，已关联上一步总图文件名识别结果。' }}
+                {{ mode === 'fork' && formDrawingNo === selectedForkSourceNo ? '分叉需要新的总图图号，请修改后再提交。' : assemblyIdentifyMessage || '图号规范唯一，已关联上一步总图文件名识别结果。' }}
               </small>
               <small v-if="validationErrors['create-drawing-no']" id="create-drawing-no-error" class="field-error">{{ validationErrors['create-drawing-no'] }}</small>
             </div>
@@ -1475,7 +1920,7 @@ async function retryFailedUpload() {
 
         <footer class="panel-actions">
           <button class="btn" type="button" @click="prevStep">
-            <DemoIcon name="arrow-left" :size="14" />上一步：2D 工程图纸
+            <DemoIcon name="arrow-left" :size="14" />上一步：{{ mode === 'fork' ? '源图纸' : '2D 工程图纸' }}
           </button>
           <div class="footer-actions">
             <button class="btn primary" type="button" @click="nextStep">
@@ -1521,7 +1966,7 @@ async function retryFailedUpload() {
               <DemoIcon name="check" :size="13" />创建草稿
             </button>
             <button class="btn primary" type="button" @click="nextStep">
-              下一步：3D 模型与资料 <DemoIcon name="arrow-right" :size="14" />
+              下一步：{{ mode === 'fork' ? '相关资料' : '3D 模型与资料' }} <DemoIcon name="arrow-right" :size="14" />
             </button>
           </div>
         </footer>
@@ -1532,6 +1977,7 @@ async function retryFailedUpload() {
     <section v-else class="wizard-step-panel">
       <!-- 隐藏的文件选择器 -->
       <input
+        v-if="mode === 'legacy'"
         ref="modelFilesInput"
         type="file"
         :accept="MODEL_FILE_ACCEPT"
@@ -1547,9 +1993,9 @@ async function retryFailedUpload() {
         @change="onEvidenceChange"
       />
 
-      <div class="panel-grid">
-        <!-- 3D 模型上传卡片 -->
-        <div class="card panel-card">
+      <div class="panel-grid" :class="{ 'single-column': mode === 'fork' }">
+        <!-- 3D 模型上传卡片；分叉模式不支持新增模型，直接隐藏避免选择后被静默丢弃 -->
+        <div v-if="mode === 'legacy'" class="card panel-card">
           <div class="section-head">
             <div class="head-icon-box">
               <DemoIcon name="box" :size="16" />
@@ -1704,6 +2150,7 @@ async function retryFailedUpload() {
         </div>
       </footer>
     </section>
+    </template>
     </template>
   </div>
 </template>
@@ -2615,6 +3062,96 @@ async function retryFailedUpload() {
 @keyframes create-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* 顶部创建方式切换（创建新图纸 / 上传老图纸 / 从老图纸分叉） */
+.mode-switch {
+  margin-left: 0;
+  flex-shrink: 0;
+}
+
+/* 创建新图纸：可选信息折叠区与图纸材料卡片 */
+.new-form-grid .form-item:last-child {
+  grid-column: auto;
+}
+
+.new-optional-block {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 8px 12px;
+}
+
+.new-optional-block > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.new-optional-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.new-optional-block > summary::after {
+  content: '展开';
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.new-optional-block[open] > summary::after {
+  content: '收起';
+}
+
+.new-optional-block .form-grid {
+  margin-top: 10px;
+}
+
+.new-material-card {
+  flex: none;
+}
+
+.new-material-card .part-item-row .tag.plain {
+  flex: none;
+}
+
+/* 分叉模式：步骤 2 的只读继承来源 */
+.fork-source-readonly {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.fork-source-readonly .mono {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* 分叉模式没有 3D 模型卡片，资料卡片占满整行 */
+.panel-grid.single-column {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 900px) {
+  .create-topbar {
+    flex-wrap: wrap;
+  }
+  .mode-switch {
+    order: 3;
+    width: 100%;
+    justify-content: space-between;
   }
 }
 </style>

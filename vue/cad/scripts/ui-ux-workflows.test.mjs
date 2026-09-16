@@ -13,6 +13,7 @@ import { useDrawingLibraryUiStore } from '../src/stores/drawing-library-ui.store
 import * as drafts from '../src/features/reviews/review-opinion-draft.ts'
 import * as reviewRules from '../src/features/reviews/review-workspace.ts'
 import { STATUS } from '../src/constants/drawing-status.ts'
+import * as createModes from '../src/features/drawings/create/drawing-create-modes.ts'
 
 // Run the real SFC setup functions with Vue reactivity and lifecycle hooks.
 // All network/writes are replaced here; these tests never create or sign real drawings.
@@ -36,18 +37,21 @@ function fixture() {
   const drawing = { id: 'd1', no: 'D1', name: '测试图纸', status: 'draft', project: 'P1', vendor: '', files: [{ id: 'f1', name: 'D1.dwg' }], otherFiles: [] }
   const f = {
     user, drawing, route: Vue.reactive({ path: '/drawings/D1/preview', params: { drawingId: 'D1' }, query: {}, name: 'drawing-preview' }),
-    pushes: [], toasts: [], errors: [], leave: null, focused: '', fetch: async () => ({ ok: true, json: async () => ({ data: { status: 'ready' } }) }),
+    pushes: [], replaced: [], created: [], toasts: [], errors: [], leave: null, focused: '', fetch: async () => ({ ok: true, json: async () => ({ data: { status: 'ready' } }) }),
     ui: useUiStore(), library: useDrawingLibraryUiStore(),
     drawings: Vue.reactive({ drawings: [drawing], parts: [], loading: false, error: null,
       load: async () => {}, refresh: async () => {}, refreshDesigner: async () => {}, invalidate() {},
       getDrawing: no => no === 'D1' ? drawing : null, getPart: () => null, getStructure: () => [],
     }),
     attributes: Vue.reactive({ sortedAttributes: [], loading: false, error: null, load: async () => {}, validate: () => [], fieldName: () => '' }),
-    operations: Vue.reactive({ pendingUploadSessionId: '', uploadProgress: {}, cancelPendingUploadSession: async () => {}, addDrawing: async () => { throw new Error('Unexpected real creation path') } }),
+    operations: Vue.reactive({ pendingUploadSessionId: '', uploadProgress: {}, cancelPendingUploadSession: async () => {}, addDrawing: async (drawing, parts, attachments) => { f.created.push({ drawing, parts, attachments }) } }),
     review: Vue.reactive({ current: null, getCase() { return this.current }, load: async () => {}, myPendingReviews: () => [] }),
   }
   f.ui.toast = (message, type) => f.toasts.push({ message, type })
-  f.router = { push: async target => { if (!f.leave || await f.leave()) f.pushes.push(target) } }
+  f.router = {
+    push: async target => { if (!f.leave || await f.leave()) f.pushes.push(target) },
+    replace: async target => { f.replaced.push(target) },
+  }
   return f
 }
 
@@ -73,6 +77,7 @@ function mountFile(relative, f, props = {}) {
     '@/services/drawing-title-block.service': { extractCreationTitleBlocks: async () => [] },
     '@/services/change-request.service': { changeRequestService: { listByDrawing: async () => [] } },
     '@/utils/model-formats': { drawingMediaLabel: () => '2D' },
+    '@/features/drawings/create/drawing-create-modes': createModes,
     '@/utils/drawing-number-parser': {},
     '@/utils/date-time': { formatReadableDateTime: () => '' },
     '@/constants/drawing-status': { STATUS },
@@ -81,7 +86,10 @@ function mountFile(relative, f, props = {}) {
     '../review-opinion-draft': drafts,
   }
   const context = { exports: {}, console: { ...console, error: (...args) => f.errors.push(args) }, Error, AbortSignal, FormData,
-    window: browserWindow, document: { getElementById: id => ({ scrollIntoView() {}, focus() { f.focused = id } }) },
+    window: browserWindow, document: {
+      getElementById: id => ({ scrollIntoView() {}, focus() { f.focused = id } }),
+      addEventListener() {}, removeEventListener() {},
+    },
     fetch: (...args) => f.fetch(...args),
     require: id => {
       if (id.endsWith('.vue')) return { default: { render: () => null } }
@@ -236,5 +244,108 @@ test('空状态模板：网络失败提供重试，真实无结果提供清空�
   s.loadError.value = ''; f.drawings.drawings = []; s.query.value = '无结果'; await flush()
   html = await renderState(path, s); assert.match(html, /没有找到符合条件的图纸/); assert.match(html, /清空全部筛选/)
   s.clearFilters(); await flush(); html = await renderState(path, s); assert.match(html, /图纸库还没有图纸/); assert.match(html, /创建第一份图纸/)
+  app.unmount()
+})
+
+test('创建新图纸：只输入图纸名称与图号，材料不上传也能建档且项目号取图号', async () => {
+  const f = fixture(); f.route.query.mode = 'new'
+  const app = mountFile(createPage, f); const s = app.state; await flush()
+  assert.equal(s.mode.value, 'new')
+  assert.equal(s.createTitle.value, '创建新图纸')
+  assert.equal(s.steps.value.length, 1)
+
+  s.handleSubmit(); await flush()
+  assert.equal(f.focused, 'create-new-name'); assert.equal(f.created.length, 0)
+  s.formNewName.value = '主轴回转机构装配图'
+  s.handleSubmit(); await flush()
+  assert.equal(f.focused, 'create-new-no'); assert.equal(f.created.length, 0)
+
+  s.formDrawingNo.value = 'JG-2026-01-00'
+  s.handleSubmit(); await flush()
+  assert.equal(f.created.length, 1, '一次提交只创建一条图纸')
+  const [call] = f.created
+  assert.equal(call.drawing.no, 'JG-2026-01-00')
+  assert.equal(call.drawing.name, '主轴回转机构装配图')
+  assert.equal(call.drawing.project, 'JG-2026-01-00', '项目号留空时取图号')
+  assert.equal(call.drawing.kind, '总图')
+  assert.equal(call.drawing.hasFile, false)
+  assert.equal(call.parts.length, 0)
+  assert.equal(call.attachments.length, 0)
+  assert.equal(call.drawing.files.length, 0)
+  assert.equal(call.drawing.otherFiles.length, 0)
+  assert.equal(s.savedDrawingNo.value, 'JG-2026-01-00')
+  app.unmount()
+})
+
+test('创建新图纸：图号重复拦截，图纸材料按扩展名归入图纸文件、3D 模型与其他文件', async () => {
+  const f = fixture(); f.route.query.mode = 'new'
+  const app = mountFile(createPage, f); const s = app.state; await flush()
+
+  s.formNewName.value = '重复图号图纸'; s.formDrawingNo.value = 'D1'
+  s.handleSubmit()
+  assert.match(Object.values(s.validationErrors.value)[0], /已存在/, '库中已有该图号时先本地拦截')
+  await flush()
+  assert.equal(f.created.length, 0); assert.equal(f.focused, 'create-new-no')
+
+  s.formDrawingNo.value = 'JG-2026-02-00'
+  s.formProjectNo.value = 'PRJ-2026-002'
+  const material = (id, name, label, size) => ({ id, name, size: `${size} KB`, file: { name, size: size * 1024 }, label })
+  s.newMaterialFiles.value = [
+    material('m1', 'JG-2026-02-00.dwg', '图纸文件', 1),
+    material('m2', '回转装配体.step', '3D 模型', 2),
+    material('m3', '技术要求.pdf', '图纸文件', 3),
+    material('m4', '评审纪要.docx', '其他文件', 4),
+  ]
+  await s.performCreateNew()
+  assert.equal(f.created.length, 1)
+  const [call] = f.created
+  assert.equal(call.drawing.files.map(file => file.name).join('|'), 'JG-2026-02-00.dwg|技术要求.pdf')
+  assert.equal(call.drawing.files.every(file => file.role === 'assembly' && file.fileCategory === 'drawing2d'), true)
+  assert.equal(call.drawing.otherFiles.map(file => file.name).join('|'), '回转装配体.step|评审纪要.docx')
+  assert.equal(call.drawing.otherFiles.map(file => file.fileCategory).join('|'), 'model3d|other')
+  assert.equal(call.drawing.project, 'PRJ-2026-002', '填写的项目号优先于图号')
+  assert.equal(call.drawing.hasFile, true)
+  assert.equal(call.attachments.length, 4, '四份材料的文件内容都要随会话提交')
+  app.unmount()
+})
+
+test('从老图纸分叉：先在第一步选源图纸，新图号必须与源图号不同', async () => {
+  const f = fixture(); f.route.query.mode = 'fork'
+  const app = mountFile(createPage, f); const s = app.state; await flush()
+  assert.equal(s.mode.value, 'fork')
+  assert.equal(s.createTitle.value, '从老图纸分叉')
+  assert.equal(s.steps.value.map(step => step.title).join(','), '源图纸,基础档案,图纸属性,相关资料')
+
+  s.nextStep(); await flush()
+  assert.equal(s.currentStep.value, 1); assert.equal(f.focused, 'fork-source-select')
+
+  s.selectedForkSourceNo.value = 'D1'; s.onForkSourceChange()
+  assert.equal(s.formProject.value, '测试图纸 (改进版)')
+  assert.equal(s.formDrawingNo.value, 'D1')
+  s.nextStep(); await flush()
+  assert.equal(s.currentStep.value, 2)
+
+  s.nextStep(); await flush()
+  assert.equal(s.currentStep.value, 2); assert.equal(f.focused, 'create-drawing-no')
+  s.formDrawingNo.value = 'D1-2'; await flush()
+  s.nextStep(); assert.equal(s.currentStep.value, 3)
+  app.unmount()
+})
+
+test('创建方式可切换：切到创建新图纸会清空 2D 已选文件并同步地址栏', async () => {
+  const f = fixture(); const app = mountFile(createPage, f); const s = app.state; await flush()
+  assert.equal(s.mode.value, 'legacy', '无 mode 参数时保持上传老图纸向导')
+  assert.equal(s.createTitle.value, '新建项目图纸')
+  assert.equal(s.currentStep.value, 1)
+
+  s.formProject.value = '待建项目'
+  s.assemblyFile.value = { name: 'A.dwg', size: '1.0 KB' }
+  s.currentStep.value = 4
+  s.setMode('new')
+  assert.equal(s.mode.value, 'new')
+  assert.equal(s.currentStep.value, 1, '切换创建方式后回到第一步')
+  assert.equal(s.assemblyFile.value, null)
+  assert.equal(s.formNewName.value, '待建项目', '沿用已填写的名称作为图纸名称')
+  assert.equal(f.replaced.at(-1).query.mode, 'new', '地址栏同步创建方式')
   app.unmount()
 })
