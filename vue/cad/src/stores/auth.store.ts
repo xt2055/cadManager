@@ -7,10 +7,17 @@ import type { AuthUser, LoginRequest, StoredAuthSession } from '@/features/auth/
 
 const SESSION_STORAGE_KEY = 'cad:auth-session:v1'
 
+/**
+ * 角色权限表。
+ * 建档权（drawing.create）只在计划员与管理员手里：创建图纸的职责已从设计人员
+ * 移交给计划员，设计人员通过「任务管理台」被指派为负责人后编制图纸，
+ * 其权限来自图纸负责人身份（isDrawingDecider），不再来自角色。
+ */
 const rolePermissions: Record<UserRole, string[]> = {
   admin: ['*'],
-  designer: ['dashboard.read', 'drawing.read', 'drawing.create', 'drawing.edit'],
-  reviewer: ['dashboard.read', 'drawing.read', 'review.read', 'review.process'],
+  planner: ['dashboard.read', 'drawing.read', 'drawing.create', 'drawing.edit', 'task.read', 'task.assign'],
+  designer: ['dashboard.read', 'drawing.read', 'drawing.edit', 'task.read'],
+  reviewer: ['dashboard.read', 'drawing.read', 'review.read', 'review.process', 'task.read'],
 }
 
 function readStoredSession(): StoredAuthSession | null {
@@ -115,6 +122,12 @@ export const useAuthStore = defineStore('auth', () => {
     return roles.some((role) => hasRole(role))
   }
 
+  /** 建档权：只有计划员与管理员可以创建图纸（创建新图纸 / 上传老图纸 / 从老图纸分叉）。 */
+  const canCreateDrawing = computed(() => hasPermission('drawing.create'))
+
+  /** 任务管理台：只有计划员与管理员可以指派、改派负责人。 */
+  const canAssignTasks = computed(() => hasPermission('task.assign'))
+
   function hasPermission(permission: string): boolean {
     if (!currentUser.value) return false
     return currentUser.value.roles.some((role) => {
@@ -140,6 +153,8 @@ export const useAuthStore = defineStore('auth', () => {
     hasRole,
     hasAnyRole,
     hasPermission,
+    canCreateDrawing,
+    canAssignTasks,
     defaultPath,
   }
 })

@@ -21,6 +21,7 @@ import (
 	"cadguanliq/internal/partindex"
 	"cadguanliq/internal/review"
 	"cadguanliq/internal/storage"
+	"cadguanliq/internal/task"
 	"cadguanliq/internal/titleblock"
 	"cadguanliq/internal/update"
 	"cadguanliq/internal/upload"
@@ -81,6 +82,12 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	if documentStorageErr != nil {
 		panic(documentStorageErr)
 	}
+	// 图纸任务：计划员把图纸指派给负责人；负责人由此获得原创建人的控制权。
+	// candidates 必须显式注册，否则会被 /api/drawing-tasks/ 前缀路由吞掉。
+	taskService := task.NewService(pool)
+	mux.Handle("/api/drawing-tasks", protectedUsers(handlers.DrawingTasks(taskService)))
+	mux.Handle("/api/drawing-tasks/candidates", protectedUsers(handlers.DrawingTaskCandidates(taskService)))
+	mux.Handle("/api/drawing-tasks/", protectedUsers(handlers.DrawingTaskResource(taskService)))
 	mux.Handle("/api/lifecycle-documents", protectedUsers(handlers.LifecycleDocuments(pool, documentStorage)))
 	mux.Handle("/api/lifecycle-documents/", protectedUsers(handlers.LifecycleDocuments(pool, documentStorage)))
 	mux.Handle("/api/patents", protectedUsers(handlers.Patents(pool)))

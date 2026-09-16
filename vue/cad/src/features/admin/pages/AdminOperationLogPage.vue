@@ -48,11 +48,11 @@ const visibleRange = computed(() => paginationRange(page.value, pageSize.value, 
 const rows = computed(() => resultPage.value.list)
 
 const feedIcons: Record<ActivityType, string> = {
-  view: 'eye', create: 'plus', edit: 'pencil', branch: 'git-branch', upload: 'upload',
+  view: 'eye', create: 'plus', edit: 'pencil', assign: 'user-check', branch: 'git-branch', upload: 'upload',
   download: 'download', delete: 'trash-2', check: 'check-circle-2', parse: 'file-search',
 }
 const colors: Record<ActivityType, string> = {
-  view: 'info', create: 'ok', edit: 'warn', branch: 'info', upload: 'warn',
+  view: 'info', create: 'ok', edit: 'warn', assign: 'info', branch: 'info', upload: 'warn',
   download: 'plain', delete: 'danger', check: 'info', parse: 'plain',
 }
 

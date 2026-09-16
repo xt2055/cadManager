@@ -1,6 +1,6 @@
 export type DrawingStatus = 'published' | 'reviewing' | 'draft' | 'disabled' | 'archived'
 
-export type ActivityType = 'view' | 'create' | 'edit' | 'branch' | 'upload' | 'download' | 'delete' | 'check' | 'parse'
+export type ActivityType = 'view' | 'create' | 'edit' | 'assign' | 'branch' | 'upload' | 'download' | 'delete' | 'check' | 'parse'
 
 export type ActivityTargetType = 'drawing' | 'part' | 'file' | 'review' | 'branch'
 
@@ -10,6 +10,7 @@ export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   view: '查看图纸',
   create: '新建图纸',
   edit: '修改图纸',
+  assign: '指派负责人',
   branch: '创建分支',
   upload: '上传文件',
   download: '下载文件',
@@ -118,6 +119,11 @@ export interface DrawingAttribute {
   createdAt?: string
 }
 
+export interface DrawingAssignee {
+  userId: string
+  name: string
+}
+
 export interface Drawing {
 	/** 服务端资源 ID；旧的调试数据可不提供。 */
 	id?: string
@@ -138,6 +144,12 @@ export interface Drawing {
   updatedBy?: string
   updatedAt?: string
   designer?: string
+  /**
+   * 当前负责人（来自服务端 drawing_tasks 的有效任务，最多一名）。
+   * 负责人拥有原创建人的权限：图纸未存档时对其拥有决定控制权。
+   * 是否拥有控制权一律用 isDrawingDecider 判定，不要在这里自己比较 createdBy。
+   */
+  assignees?: DrawingAssignee[]
   borrow: number
   hasFile: boolean
   borrowFrom?: string
@@ -309,7 +321,11 @@ export interface CompletedReview {
   ver: string
 }
 
-export type UserRole = 'admin' | 'designer' | 'reviewer'
+/**
+ * 账号职责：计划员负责建档并把图纸指派给负责人；设计人员在被指派后编制图纸；
+ * 审核人员处理待审任务；管理员拥有全部权限。
+ */
+export type UserRole = 'admin' | 'planner' | 'designer' | 'reviewer'
 
 export type UserStatus = 'active' | 'disabled'
 

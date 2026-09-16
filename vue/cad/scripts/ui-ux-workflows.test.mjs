@@ -12,6 +12,7 @@ import { useUiStore } from '../src/stores/ui.store.ts'
 import { useDrawingLibraryUiStore } from '../src/stores/drawing-library-ui.store.ts'
 import * as drafts from '../src/features/reviews/review-opinion-draft.ts'
 import * as reviewRules from '../src/features/reviews/review-workspace.ts'
+import * as drawingAuthority from '../src/modules/drawing/drawing-authority.ts'
 import { STATUS } from '../src/constants/drawing-status.ts'
 import * as createModes from '../src/features/drawings/create/drawing-create-modes.ts'
 
@@ -83,6 +84,8 @@ function mountFile(relative, f, props = {}) {
     '@/constants/drawing-status': { STATUS },
     '@/router/route-names': { RouteName: { DrawingPreview: 'drawing-preview', ReviewPending: 'review-pending' } },
     '@/features/reviews/review-workspace': reviewRules,
+    // 控制权判定用真实实现，避免测试里再写一份「谁算负责人」的假规则。
+    '@/modules/drawing/drawing-authority': drawingAuthority,
     '../review-opinion-draft': drafts,
   }
   const context = { exports: {}, console: { ...console, error: (...args) => f.errors.push(args) }, Error, AbortSignal, FormData,

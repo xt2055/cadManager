@@ -95,6 +95,8 @@ export interface DrawingSummaryView {
   version: string
   updatedAt: string
   createdBy?: string
+  /** 当前负责人；为空表示未指派，控制权回落创建人。 */
+  assignees?: Array<{ userId: string; name: string }>
   forkedFrom?: string
   designer?: string
   signers?: Partial<DrawingSigners>
@@ -307,6 +309,7 @@ export class DrawingReadModelMapper {
       version: drawing.ver,
       updatedAt: drawing.updatedAt ?? drawing.updated,
       ...(drawing.createdBy ? { createdBy: drawing.createdBy } : {}),
+      ...(drawing.assignees?.length ? { assignees: drawing.assignees.map((assignee) => ({ ...assignee })) } : {}),
       ...(drawing.forkedFrom ? { forkedFrom: drawing.forkedFrom } : {}),
       ...(drawing.designer ? { designer: drawing.designer } : {}),
       ...(drawing.signers ? { signers: { ...drawing.signers } } : {}),

@@ -113,12 +113,17 @@ func (r *characterizationDrawingRepository) ReplaceBOM(_ context.Context, _ stri
 }
 
 func authenticatedRequest(method, target, body string) *http.Request {
+	return authenticatedRequestAs(method, target, body, []string{"user"})
+}
+
+// authenticatedRequestAs 允许指定角色，用于验证「谁能创建图纸」这类职责差异。
+func authenticatedRequestAs(method, target, body string, roles []string) *http.Request {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	return request.WithContext(context.WithValue(request.Context(), middleware.AuthUserContextKey, auth.AuthUser{
 		ID:          "user-1",
 		Account:     "tester",
 		DisplayName: "测试用户",
-		Roles:       []string{"user"},
+		Roles:       roles,
 	}))
 }
 
@@ -145,7 +150,7 @@ func TestDrawingCharacterizationRequiresAuthentication(t *testing.T) {
 
 func TestDrawingCharacterizationCreatesDrawing(t *testing.T) {
 	repository := &characterizationDrawingRepository{}
-	request := authenticatedRequest(http.MethodPost, "/api/drawings", `{"no":"JG001","name":"总图","project":"P001"}`)
+	request := authenticatedRequestAs(http.MethodPost, "/api/drawings", `{"no":"JG001","name":"总图","project":"P001"}`, []string{"planner"})
 	recorder := httptest.NewRecorder()
 
 	Drawings(repository).ServeHTTP(recorder, request)
@@ -162,6 +167,36 @@ func TestDrawingCharacterizationCreatesDrawing(t *testing.T) {
 	}
 }
 
+// 创建图纸的职责已经移交给计划员：设计人员即使拿到接口也必须被拒绝，
+// 并且绝不能触达仓储层（否则「建档权」只是界面上的装饰）。
+func TestDrawingCreateRequiresPlannerOrAdmin(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		roles      []string
+		wantStatus int
+		wantCalled bool
+	}{
+		{name: "设计人员被拒绝", roles: []string{"designer"}, wantStatus: http.StatusForbidden},
+		{name: "审核人员被拒绝", roles: []string{"reviewer"}, wantStatus: http.StatusForbidden},
+		{name: "计划员允许建档", roles: []string{"planner"}, wantStatus: http.StatusCreated, wantCalled: true},
+		{name: "管理员允许建档", roles: []string{"admin"}, wantStatus: http.StatusCreated, wantCalled: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			repository := &characterizationDrawingRepository{}
+			request := authenticatedRequestAs(http.MethodPost, "/api/drawings", `{"no":"JG002","name":"总图","project":"P002"}`, scenario.roles)
+			recorder := httptest.NewRecorder()
+
+			Drawings(repository).ServeHTTP(recorder, request)
+
+			if recorder.Code != scenario.wantStatus {
+				t.Fatalf("status = %d, expected %d", recorder.Code, scenario.wantStatus)
+			}
+			if repository.createCalled != scenario.wantCalled {
+				t.Fatalf("createCalled = %v, expected %v", repository.createCalled, scenario.wantCalled)
+			}
+		})
+	}
+}
 func TestDrawingCharacterizationPatchRequiresRevision(t *testing.T) {
 	repository := &characterizationDrawingRepository{}
 	request := authenticatedRequest(http.MethodPatch, "/api/drawings/drawing-1", `{"name":"新名称"}`)

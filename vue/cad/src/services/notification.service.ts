@@ -2,7 +2,8 @@ import { getApiBaseUrl } from '@/services/api-base.service'
 
 export interface NotificationItem {
   id: string
-  kind: 'change' | 'review' | 'announcement'
+  /** 通知类型：task 为图纸任务指派/改派/取消。 */
+  kind: 'change' | 'review' | 'task' | 'announcement'
   title: string
   content: string
   senderName: string

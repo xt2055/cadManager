@@ -288,7 +288,7 @@ func (service *Service) Open(ctx context.Context, user auth.AuthUser, storageKey
 	}
 	// 图纸生命周期 × 身份统一授权：角色门禁并入状态矩阵——
 	// 审核中当前节点责任人可编辑（即使无 designer 角色）；存档仅管理员经解除存档后编辑；
-	// 草稿/生产仅创建者或管理员可编辑。其他用户一律走「本地查看（只读）」。
+	// 草稿/生产仅负责人、创建者或管理员可编辑。其他用户一律走「本地查看（只读）」。
 	changeRequestID, err := service.authorizeEdit(ctx, user, item.DrawingNo, item.ID)
 	if err != nil {
 		return OpenResult{}, err
@@ -465,7 +465,9 @@ func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, d
 		return "", fmt.Errorf("读取图纸状态失败: %w", err)
 	}
 
-	if item.Status != drawing.StatusArchived && (admin || item.CreatedByID == user.ID) {
+	// 负责人 = 原创建人权限：存在有效负责人时控制权归负责人与管理员，
+	// 无有效负责人时回落创建人，未指派图纸的行为与旧版完全一致。
+	if item.Status != drawing.StatusArchived && item.Decides(user.ID, admin) {
 		return "", nil
 	}
 	switch item.Status {
@@ -504,11 +506,11 @@ func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, d
 		if admin {
 			return "", nil
 		}
-		if item.CreatedByID == user.ID {
+		if item.Decides(user.ID, admin) {
 			return "", nil
 		}
 		if designer {
-			return "", errors.New("仅创建者或管理员可以编辑图纸，其他用户请使用「本地查看（只读）」")
+			return "", errors.New("仅图纸负责人、创建人或管理员可以编辑图纸，其他用户请使用「本地查看（只读）」")
 		}
 		return "", errors.New("当前账号没有 CAD 编辑权限")
 	}

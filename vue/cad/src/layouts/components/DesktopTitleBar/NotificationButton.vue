@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import NotificationAlertDialog from '@/components/feedback/NotificationAlertDialog.vue'
 import { createNotificationAlertTracker } from '@/features/notifications/notification-alert-tracker'
-import { notificationActionLabel, opensReviewWorkspace } from '@/features/notifications/notification-targets'
+import { notificationActionLabel, opensReviewWorkspace, opensTaskDrawing } from '@/features/notifications/notification-targets'
 import { RouteName } from '@/router/route-names'
 import { notificationService, type NotificationItem } from '@/services/notification.service'
 import { connectNotifications, type NotificationConnectionState } from '@/services/notification-socket'
@@ -111,7 +111,10 @@ async function viewRelated(item: NotificationItem) {
     await router.push({ name: RouteName.ReviewWorkspace, params: { drawingNo: item.drawingNo } })
     return
   }
-  await router.push(`/drawings/${encodeURIComponent(item.drawingId)}/${item.kind === 'change' ? 'changes' : 'review'}`)
+  // 任务通知（被指派/改派/取消）说的是「这张图归你了」，直达图纸预览；
+  // 跳去审核或变更页签会让人以为下一步是去做审核。
+  const tab = opensTaskDrawing(item) ? 'preview' : item.kind === 'change' ? 'changes' : 'review'
+  await router.push(`/drawings/${encodeURIComponent(item.drawingId)}/${tab}`)
 }
 
 function enqueueAlerts(incoming: NotificationItem[]) {

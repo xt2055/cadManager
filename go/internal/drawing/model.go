@@ -36,6 +36,39 @@ type Drawing struct {
 
 	// CreatedByID 创建者用户 ID（仅用于服务端权限判断，不下发前端）。
 	CreatedByID string `json:"-"`
+
+	// Assignees 当前负责人（来自 drawing_tasks 的有效任务，最多一名）。
+	// 前端据此判定控制权与「我负责的图纸」，服务端判定一律以 Decides 为准。
+	Assignees []Assignee `json:"assignees,omitempty"`
+}
+
+// Assignee 是图纸当前负责人。负责人拥有原创建人的权限：
+// 图纸未存档时，负责人对其拥有决定控制权。
+type Assignee struct {
+	UserID string `json:"userId"`
+	Name   string `json:"name"`
+}
+
+// Decides 判断账号是否对图纸拥有决定控制权（编辑、存档、送审、文件与模型管理）。
+// 规则与数据库函数 drawing_decision_owner 一致，两者由 internal/dbtest 断言同构：
+// 管理员始终拥有；图纸存在有效负责人时只归负责人，创建人不再拥有；
+// 没有有效负责人时回落给创建人，保证未指派图纸的行为与旧版完全一致。
+func (drawing Drawing) Decides(userID string, admin bool) bool {
+	if admin {
+		return true
+	}
+	if userID == "" {
+		return false
+	}
+	if len(drawing.Assignees) > 0 {
+		for _, assignee := range drawing.Assignees {
+			if assignee.UserID == userID {
+				return true
+			}
+		}
+		return false
+	}
+	return drawing.CreatedByID == userID
 }
 
 type Signers map[string]string

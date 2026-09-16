@@ -146,7 +146,7 @@ func normalizeRoles(roles []string) []string {
 	seen := make(map[string]struct{}, len(roles))
 	result := make([]string, 0, len(roles))
 	for _, role := range roles {
-		if role != "admin" && role != "designer" && role != "reviewer" {
+		if role != "admin" && role != "designer" && role != "reviewer" && role != "planner" {
 			continue
 		}
 		if _, ok := seen[role]; ok {

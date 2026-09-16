@@ -11,6 +11,7 @@ import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
 import { CAXA_NOT_FOUND_PREFIX } from '@/modules/editing'
+import { isDrawingDecider } from '@/modules/drawing/drawing-authority'
 import type { DrawingFile } from '@/types/domain.types'
 import type { DrawingSummaryView, FileView, PartView, StructureNodeView } from '@/modules/drawing'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
@@ -171,11 +172,12 @@ const drawingCreationProgress = computed(() => ({
   converting: { step: 3, title: '正在同步新建图纸', detail: '正在读取刚创建的零件和附件信息…' },
   opening: { step: 4, title: '正在准备并打开 CAXA', detail: '正在等待 DWG 就绪并启动本地编辑，首次可能需要几十秒…' },
 })[drawingCreationStage.value])
+// 新建图纸（追加零件图）属于编制动作：负责人 = 原创建人权限。
 const canCreateDrawing = computed(() => {
   const project = drawingStore.getDrawing(rootDrawingNo.value)
   const user = authStore.currentUser
-  return Boolean(project && user && ['draft', 'published'].includes(project.status)
-    && (user.roles?.includes('admin') || project.createdBy === user.displayName))
+  if (!project || !user || !['draft', 'published'].includes(project.status)) return false
+  return isDrawingDecider(project, user)
 })
 
 function openCreateDrawing() {
@@ -769,27 +771,37 @@ function canEditFile(file: DrawingFile): boolean {
   if (!item || !current) return false
   const admin = current.roles?.includes('admin') ?? false
   if (archivedProject.value) return changeTargetIds.value.has(file.id)
-  const project = drawingStore.getDrawing(rootDrawingNo.value)
-  const creator = (project?.createdBy || (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : ''))) === current.displayName
-  if (creator || admin) return true
+  // 控制权判定统一走 isDrawingDecider：有负责人时归负责人，无负责人时回落创建人。
+  const authority = drawingAuthorityTarget(item)
+  if (isDrawingDecider(authority, current)) return true
   if (item.status === 'reviewing') {
     if (admin) return true
     return reviewStore.myPendingReviews().some((reviewCase) => reviewCase.no === item.no)
   }
-  return creator || admin
+  return admin
+}
+
+/**
+ * 图纸及零件项的创建人回退值。
+ * 总图以图纸库记录为准；零件项自身可能只带创建人与更新人，因此逐个回退，
+ * 避免「文件属于零件」时控制权判定拿不到创建人而误判为无权限。
+ */
+function drawingAuthorityTarget(item: DrawingSummaryView | PartView | StructureNodeView | FileView) {
+  const project = drawingStore.getDrawing(rootDrawingNo.value)
+  if (project) return project
+  const rawCreator = (item as { createdBy?: unknown }).createdBy
+  const createdBy = typeof rawCreator === 'string' ? rawCreator : ('by' in item && typeof item.by === 'string' ? item.by : '')
+  return { createdBy }
 }
 
 const canDeleteFiles = computed(() => {
   const item = currentItem.value
   const current = authStore.currentUser
   if (!item || !current) return false
-  const rawCreator = (item as { createdBy?: unknown }).createdBy
-  const creator = typeof rawCreator === 'string' ? rawCreator : ('by' in item && typeof item.by === 'string' ? item.by : '')
+  // 删除权与编辑权共用同一判定，避免出现「能编辑却不能删文件」的矛盾提示。
   return canDeleteDrawingFiles({
     status: archivedProject.value ? 'archived' : item.status,
-    creator: drawingStore.getDrawing(rootDrawingNo.value)?.createdBy || creator,
-    userName: current.displayName,
-    admin: current.roles?.includes('admin') ?? false,
+    decides: isDrawingDecider(drawingAuthorityTarget(item), current),
   })
 })
 // 心跳新鲜度：30s 一次心跳，90s 内有成功记录视为保护生效中。

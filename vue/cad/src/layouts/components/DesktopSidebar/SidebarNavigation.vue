@@ -24,6 +24,7 @@ const groups = [
       { id: 'dashboard', routeName: 'dashboard', icon: 'layout-dashboard', label: '工作台' },
       { id: 'library', routeName: 'drawing-library', icon: 'search', label: '图纸库', badge: 'library' },
       { id: 'parts', routeName: 'part-index-list', icon: 'boxes', label: '零件索引' },
+      { id: 'tasks', routeName: 'task-board', icon: 'clipboard-list', label: '任务管理台' },
       { id: 'patents', routeName: 'patents', icon: 'shield', label: '专利管理' },
       { id: 'review', routeName: 'review-pending', icon: 'clipboard-check', label: '图纸审核', badge: 'review' },
     ],
@@ -41,15 +42,23 @@ const groups = [
   },
 ]
 
+// 入口可见性按职责收敛：任务管理台只对能指派负责人的账号显示，
+// 后台管理与专利管理沿用只对管理员显示。
+const adminOnlyIds = ['admin', 'patents']
 const visibleGroups = computed(() => groups.map((group) => ({
   ...group,
-  items: group.items.filter((item) => (item.id !== 'admin' && item.id !== 'patents') || authStore.hasRole('admin')),
+  items: group.items.filter((item) => {
+    if (adminOnlyIds.includes(item.id)) return authStore.hasRole('admin')
+    if (item.id === 'tasks') return authStore.canAssignTasks
+    return true
+  }),
 })).filter((group) => group.items.length > 0))
 
 const activeId = computed(() => {
   if (route.name === 'patents') return 'patents'
   if (route.path === '/drawings' || route.path.startsWith('/drawings/')) return 'library'
   if (route.name === 'part-index-list' || route.name === 'part-index-detail') return 'parts'
+  if (route.name === 'task-board') return 'tasks'
   if (route.name === 'review-pending' || route.name === 'review-completed' || route.name === 'review-center' || route.name === 'review-workspace') return 'review'
   if (String(route.name || '').startsWith('admin-')) return 'admin'
   if (route.name === 'operation-logs') return 'history'

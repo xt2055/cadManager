@@ -37,6 +37,7 @@ const emit = defineEmits<{
 const alertIcons = {
   change: 'arrow-right-left',
   review: 'clipboard-check',
+  task: 'user-check',
   announcement: 'bell',
 } as const
 

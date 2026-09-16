@@ -50,7 +50,8 @@ function id(prefix: string, value: string): string {
 }
 
 function normalizeRole(value: unknown): UserRole[] {
-  const roles = array<unknown>(value).filter((item): item is UserRole => item === 'admin' || item === 'designer' || item === 'reviewer')
+  const roles = array<unknown>(value).filter((item): item is UserRole =>
+    item === 'admin' || item === 'planner' || item === 'designer' || item === 'reviewer')
   return roles.length ? [...new Set(roles)] : ['designer']
 }
 
@@ -194,6 +195,11 @@ export function normalizeDrawings(value: unknown): Drawing[] {
     const no = text(source.no, id('drawing', text(source.name, '未命名图纸')))
     const files = array<unknown>(source.files).map((file) => normalizeDrawingFile(file, no, 'assembly'))
     const otherFiles = array<unknown>(source.otherFiles).map((file) => normalizeDrawingFile(file, no, 'other'))
+    const assignees = array<unknown>(source.assignees).flatMap((raw) => {
+      const assignee = record(raw)
+      const userId = text(assignee.userId)
+      return userId ? [{ userId, name: text(assignee.name, '未命名账号') }] : []
+    })
 		return {
 		      ...(text(source.id) ? { id: text(source.id) } : {}),
 		      ...(text(source.drawingId) ? { drawingId: text(source.drawingId) } : {}),
@@ -212,6 +218,7 @@ export function normalizeDrawings(value: unknown): Drawing[] {
       updated: text(source.updated, '历史记录'),
       by: text(source.by, '未知用户'),
       ...(text(source.createdBy) ? { createdBy: text(source.createdBy) } : {}),
+      ...(assignees.length ? { assignees } : {}),
       borrow: number(source.borrow),
       hasFile: files.length > 0 || boolean(source.hasFile),
       ...(text(source.borrowFrom) ? { borrowFrom: text(source.borrowFrom) } : {}),

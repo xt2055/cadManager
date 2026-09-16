@@ -105,6 +105,70 @@ GET /api/drawings?page=1&page_size=20&keyword=关键词&status=draft&vendor=研�
 
 结构接口使用数据库 UUID 作为资源路径，使用图号作为业务字段。零件的 `parentNo` 必须属于当前总图的结构树，支持多级父子关系。
 
+## 角色与建档权
+
+角色枚举为 `admin` / `planner` / `designer` / `reviewer`，一人可兼多角色。判断集中定义在 `internal/auth/roles.go`，不要在 handler 里散写角色字符串。
+
+```text
+计划员 planner   创建图纸（三种方式）、指派与改派负责人、查看任务总表
+设计人员 designer 在被指派后编制图纸、上传文件、发起审核
+审核人员 reviewer 处理待审任务并签署
+管理员 admin      全部权限
+```
+
+**只有计划员与管理员可以创建图纸。** 这一限制有两个入口必须同时生效，缺一个就等于没做：
+
+```text
+POST /api/drawings                              直接建档
+POST /api/upload-sessions kind=drawing-create   （创建页三种方式的真实写入口）
+```
+
+两者的拒绝口径一致，返回 `403 创建图纸需要计划员或管理员权限；设计人员请在任务管理台等待接受指派`。
+
+## 图纸任务接口
+
+```text
+GET    /api/drawing-tasks?scope=mine                         我的任务（任意登录用户）
+GET    /api/drawing-tasks?scope=board&page=1&page_size=20     任务总表（计划员/管理员）
+       &keyword=&status=&assigned=assigned|unassigned&assignee_id=
+POST   /api/drawing-tasks                                     指派负责人
+GET    /api/drawing-tasks/candidates                          可被指派人员（含在办数量）
+GET    /api/drawing-tasks/{drawingId}/history                 指派历史
+PUT    /api/drawing-tasks/{taskId}                            改派或改任务说明
+DELETE /api/drawing-tasks/{taskId}?reason=                     取消指派
+```
+
+指派请求体：
+
+```json
+{ "drawingId": "<drawings.id>", "assigneeId": "<users.id>", "note": "先出总图", "dueDate": "2026-10-01" }
+```
+
+改派请求体（`assigneeId` 与当前负责人一致时只更新说明与截止日期，不产生历史行）：
+
+```json
+{ "assigneeId": "<users.id>", "note": "", "dueDate": "", "reason": "原负责人休假" }
+```
+
+约定：
+
+- 一张图纸同时只有一名有效负责人；重复指派返回 `409 该图纸已有负责人，请使用改派`。
+- 被指派人必须在职且具备 `designer` / `planner` / `admin` 身份，否则 `400`（纯审核账号不能被指派，与「变更工单指定修改人」口径一致）。
+- 已存档图纸返回 `409`：存档后负责人不再生效，修改须走变更工单指定执行人。
+- 任务进度由图纸生命周期推导，不接受人工填写状态：草稿无文件 0%、草稿有文件 30%、审核中 60–90%（按节点完成比例）、生产中与已存档 100%、已停用 0%。
+- 指派、改派、取消指派各自写入 `audit_logs`（`action='assign'`）并在同一事务内向当事人写入 `notifications`（`kind='task'`）；回滚不发送。
+
+## 负责人 = 原创建人权限
+
+图纸存在有效负责人时，原创建人的决定控制权归负责人与管理员，创建人不再拥有；没有有效负责人时回落创建人。规则单一实现在两处同构实现，其余代码一律复用：
+
+```text
+Go     internal/drawing  →  drawing.Drawing.Decides
+SQL    drawing_decision_owner(drawing_uuid, user_uuid)   （事务内路径复用）
+```
+
+覆盖的判定点：编辑会话授权（`internal/editing`）、存档、删除图纸文件、3D 模型写入、发起普通送审。**新增涉及创建人权限的代码不要自己比较 `created_by`。**
+
 ## 附件接口
 
 当前附件使用本地文件存储，后端已经通过 `ObjectStorage` 接口隔离存储实现，后续可以替换为 MinIO、S3 或其他对象存储。

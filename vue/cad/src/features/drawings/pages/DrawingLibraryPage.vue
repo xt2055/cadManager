@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useAttributeStore } from '@/stores/attribute.store'
 import { useDrawingLibraryUiStore } from '@/stores/drawing-library-ui.store'
+import { useUiStore } from '@/stores/ui.store'
 import { formatReadableDateTime } from '@/utils/date-time'
 import { drawingMediaLabel } from '@/utils/model-formats'
 import { CREATE_MODE_OPTIONS, type DrawingCreateMode } from '@/features/drawings/create/drawing-create-modes'
@@ -29,6 +30,12 @@ let disposed = false
 const hasFilters = computed(() => Boolean(query.value.trim() || status.value || media.value || (mode.value === 'drawing' && activeFilterCount.value)))
 const availableStatuses = Object.entries(STATUS).filter(([key]) => key !== 'disabled')
 const isAdmin = computed(() => authStore.hasRole('admin'))
+const uiStore = useUiStore()
+
+// 建档权只对计划员与管理员开放；其他账号看到的是「原因 + 解决入口」，而不是一个点了没反应的按钮。
+const canCreateDrawing = computed(() => authStore.canCreateDrawing)
+const canAssignTasks = computed(() => authStore.canAssignTasks)
+const createDeniedHint = computed(() => '创建图纸需要计划员或管理员权限；设计人员请等待计划员在任务管理台指派图纸，指派后会出现在工作台的「我的任务」中。')
 
 const activeFilterCount = computed(() => Object.values(attributeFilters.value).filter(Boolean).length)
 
@@ -219,7 +226,24 @@ watch([query, status, media, mode, attributeFilters], () => {
         <button v-if="isAdmin" class="btn" type="button" @click="router.push({ name: 'admin-attributes' })">
           <DemoIcon name="sliders-horizontal" :size="14" />属性管理
         </button>
-        <div ref="createMenuElement" class="create-menu">
+        <button
+          v-if="canAssignTasks"
+          class="btn"
+          type="button"
+          @click="router.push({ name: 'task-board' })"
+        >
+          <DemoIcon name="clipboard-list" :size="14" />任务管理台
+        </button>
+        <button
+          v-else
+          class="btn"
+          type="button"
+          :title="createDeniedHint"
+          @click="uiStore.toast(createDeniedHint, 'warn')"
+        >
+          <DemoIcon name="info" :size="14" />创建图纸需计划员权限
+        </button>
+        <div v-if="canCreateDrawing" ref="createMenuElement" class="create-menu">
           <button
             class="btn primary"
             type="button"
@@ -426,9 +450,13 @@ watch([query, status, media, mode, attributeFilters], () => {
                   <strong>{{ hasFilters ? '没有找到符合条件的图纸' : '图纸库还没有图纸' }}</strong>
                   <span>{{ hasFilters ? '调整关键词，或清空筛选后重新查找。' : '创建第一份图纸，开始建立项目档案。' }}</span>
                   <button v-if="hasFilters" class="btn" type="button" @click="clearFilters">清空全部筛选</button>
-                  <template v-else>
+                  <template v-else-if="canCreateDrawing">
                     <button class="btn primary" type="button" @click="openCreate('legacy')">上传老图纸</button>
                     <button class="btn" type="button" @click="openCreate('new')">创建新图纸</button>
+                  </template>
+                  <template v-else>
+                    <span class="empty-state-hint">{{ createDeniedHint }}</span>
+                    <button class="btn" type="button" @click="router.push({ name: 'dashboard' })">回到工作台查看我的任务</button>
                   </template>
                 </div>
               </td>
@@ -483,9 +511,13 @@ watch([query, status, media, mode, attributeFilters], () => {
                   <strong>{{ hasFilters ? '没有找到符合条件的零件' : '还没有零件图纸' }}</strong>
                   <span>{{ hasFilters ? '调整关键词，或清空筛选后重新查找。' : '创建项目并导入零件图后，会显示在这里。' }}</span>
                   <button v-if="hasFilters" class="btn" type="button" @click="clearFilters">清空全部筛选</button>
-                  <template v-else>
+                  <template v-else-if="canCreateDrawing">
                     <button class="btn primary" type="button" @click="openCreate('legacy')">上传老图纸</button>
                     <button class="btn" type="button" @click="openCreate('new')">创建新图纸</button>
+                  </template>
+                  <template v-else>
+                    <span class="empty-state-hint">{{ createDeniedHint }}</span>
+                    <button class="btn" type="button" @click="router.push({ name: 'dashboard' })">回到工作台查看我的任务</button>
                   </template>
                 </div>
               </td>
@@ -1030,6 +1062,13 @@ watch([query, status, media, mode, attributeFilters], () => {
 
 .empty-state-view span {
   font-size: 11.5px;
+}
+
+/* 无建档权时的说明文字：读起来是解释而不是报错，但必须比普通提示更容易被看到。 */
+.empty-state-hint {
+  max-width: 460px;
+  line-height: 1.6;
+  color: var(--text-2);
 }
 
 @media (max-width: 768px) {

@@ -46,6 +46,11 @@ func Drawings(repository drawing.Repository) http.HandlerFunc {
 			}
 			response.WriteData(writer, http.StatusOK, page)
 		case http.MethodPost:
+			// 建档权限只归计划员与管理员：管理员建号，计划员立项后到任务管理台指派负责人。
+			if !canCreateDrawing(user) {
+				response.WriteError(writer, http.StatusForbidden, "创建图纸需要计划员或管理员权限；设计人员请在任务管理台等待接受指派")
+				return
+			}
 			var input drawing.CreateDrawingInput
 			if err := decodeJSON(request, &input); err != nil {
 				response.WriteError(writer, http.StatusBadRequest, "图纸创建参数格式无效")
@@ -468,7 +473,7 @@ func validStatus(status drawing.Status) bool {
 	}
 }
 
-// transitionDrawingStatus 存档（生产→存档，创建者/管理员）与解除存档（存档→生产，仅管理员）。
+// transitionDrawingStatus 存档（生产→存档，负责人/创建者/管理员）与解除存档（存档→生产，仅管理员）。
 func transitionDrawingStatus(ctx context.Context, repository drawing.Repository, user auth.AuthUser, key, action string) (drawing.Drawing, error) {
 	// key 可能是 uuid 或图纸号；Find 按 uuid 查询，非 uuid 输入会报 22P02 而非
 	// ErrNotFound，因此任何错误都回退到按图纸号查询，两者都未命中才算不存在。
@@ -480,8 +485,9 @@ func transitionDrawingStatus(ctx context.Context, repository drawing.Repository,
 		return drawing.Drawing{}, err
 	}
 	if action == "archive" {
-		if target.CreatedByID != user.ID && !hasAdminRole(user.Roles) {
-			return drawing.Drawing{}, fmt.Errorf("仅创建者或管理员可以存档图纸")
+		// 存档是创建人级决定：有负责人时归负责人，无负责人时回落创建人。
+		if !drawingDecides(target, user) {
+			return drawing.Drawing{}, fmt.Errorf("仅图纸负责人、创建人或管理员可以存档图纸；如需接手，请让计划员在任务管理台指派负责人")
 		}
 		item, err := repository.SetStatusByNo(ctx, target.No, drawing.StatusPublished, drawing.StatusArchived, user.ID)
 		if errors.Is(err, drawing.ErrInvalidTransition) {

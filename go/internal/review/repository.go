@@ -233,12 +233,20 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 	defer tx.Rollback(ctx)
 
 	var drawingID, drawingName, drawingStatus string
-	err = tx.QueryRow(ctx, `SELECT id::text, name, status FROM drawings WHERE drawing_no = $1`, drawingNo).Scan(&drawingID, &drawingName, &drawingStatus)
+	// 控制权判定与编辑、存档共用数据库函数 drawing_decision_owner：
+	// 有负责人时归负责人，无负责人时回落创建人，管理员始终可以。
+	// 先判权限再报冲突，避免把变更工单之类的事实泄露给无权操作的人。
+	var decides bool
+	err = tx.QueryRow(ctx, `SELECT id::text, name, status, drawing_decision_owner(id, $2::uuid) FROM drawings WHERE drawing_no = $1`, drawingNo, userID).
+		Scan(&drawingID, &drawingName, &drawingStatus, &decides)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReviewCase{}, fmt.Errorf("未找到待审核对象：%s", drawingNo)
 	}
 	if err != nil {
 		return ReviewCase{}, fmt.Errorf("读取待审核图纸失败: %w", err)
+	}
+	if !decides {
+		return ReviewCase{}, fmt.Errorf("仅图纸负责人、创建人或管理员可以发起审核；如需接手，请让计划员在任务管理台指派负责人: %w", ErrCaseForbidden)
 	}
 	// 开放的变更工单只能由执行人通过变更提交接口送审，禁止普通入口绕过工单。
 	var hasOpenChange bool

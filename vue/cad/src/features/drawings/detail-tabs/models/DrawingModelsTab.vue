@@ -7,6 +7,7 @@ import { useDrawingStore } from '@/stores/drawing.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingSummaryView, FileView, PartView, StructureNodeView } from '@/modules/drawing'
+import { isDrawingDecider } from '@/modules/drawing/drawing-authority'
 import type { FileVersionInfo } from '@/types/application.types'
 import { acceptsModel, fileFormat, isModelFile } from '@/utils/model-formats'
 import { saveDownload } from '@/utils/download-file'
@@ -59,7 +60,8 @@ function canManage(owner: Owner): boolean {
   const user = auth.currentUser
   if (!root || !user || ['archived', 'reviewing', 'disabled'].includes(root.status)) return false
   if ('parentNo' in owner && (owner.borrowed || owner.relationType === 'borrowed')) return false
-  return auth.hasRole('admin') || root.createdBy === user.displayName
+  // 负责人 = 原创建人权限：指派生效后 3D 文件也随之交给负责人。
+  return isDrawingDecider(root, user)
 }
 const uploadOwner = computed(() => owners.value.find((owner) => owner.id === selectedOwner.value) ?? current.value)
 const rows = computed<ModelRow[]>(() => {
@@ -232,7 +234,7 @@ async function downloadVersion(version: FileVersionInfo) {
       <strong>格式与预览</strong>
       <p>支持 ZW3D（Z3PRT / Z3）、STEP / IGES、STL / OBJ / GLB、SolidWorks、Creo / NX、CATIA、Inventor、Parasolid、JT 等主流模型格式。</p>
       <p>装配模型请将入口、零件和依赖文件打成 ZIP 后上传；ZIP 完整保存，不自动解包。当前版本暂不支持在线预览，请下载后使用对应 CAD 软件打开。</p>
-      <p v-if="uploadOwner && !canManage(uploadOwner)">当前对象仅供查看和下载。模型修改需要所属图纸创建者或管理员操作；审核中、已存档及借用件不能直接修改。</p>
+      <p v-if="uploadOwner && !canManage(uploadOwner)">当前对象仅供查看和下载。模型修改需要图纸负责人、创建者或管理员操作；审核中、已存档及借用件不能直接修改。</p>
     </div>
     <p v-if="busy" role="status">{{ progress || '正在处理…' }}</p>
     <p v-if="error" class="model-error" role="alert">{{ error }}</p>

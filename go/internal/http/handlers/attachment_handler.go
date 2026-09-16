@@ -360,12 +360,12 @@ func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, ob
 				response.WriteError(writer, http.StatusNotFound, "附件不存在")
 				return
 			}
-			ownerID, archived, permissionErr := attachmentDeletionPermission(request.Context(), pool, attachmentID)
+			allowed, archived, permissionErr := attachmentDeletionPermission(request.Context(), pool, attachmentID, user.ID, hasAdminRole(user.Roles))
 			if permissionErr != nil {
 				response.WriteError(writer, http.StatusInternalServerError, "图纸文件删除权限读取失败")
 				return
 			}
-			if statusCode, message := attachmentDeletionDecision(ownerID, archived, user.ID, hasAdminRole(user.Roles)); statusCode != http.StatusOK {
+			if statusCode, message := attachmentDeletionDecision(allowed, archived); statusCode != http.StatusOK {
 				response.WriteError(writer, statusCode, message)
 				return
 			}
@@ -412,23 +412,26 @@ func AttachmentResource(pool *pgxpool.Pool, repository attachment.Repository, ob
 	}
 }
 
-func attachmentDeletionDecision(ownerID string, archived bool, userID string, admin bool) (int, string) {
+func attachmentDeletionDecision(allowed bool, archived bool) (int, string) {
 	if archived {
 		return http.StatusConflict, "图纸已存档，不能删除图纸文件"
 	}
-	if !admin && ownerID != userID {
-		return http.StatusForbidden, "只有图纸创建者或管理员可以删除图纸文件"
+	if !allowed {
+		return http.StatusForbidden, "只有图纸负责人、创建人或管理员可以删除图纸文件；如需接手，请让计划员在任务管理台指派负责人"
 	}
 	return http.StatusOK, ""
 }
 
-func attachmentDeletionPermission(ctx context.Context, pool *pgxpool.Pool, attachmentID string) (string, bool, error) {
+// attachmentDeletionPermission 判定账号能否删除该图纸文件，并返回所属图纸是否已存档。
+// 控制权判定复用数据库函数 drawing_decision_owner，与编辑、存档、送审保持同一规则：
+// 有负责人时归负责人，无负责人时回落创建人，管理员始终可以。
+func attachmentDeletionPermission(ctx context.Context, pool *pgxpool.Pool, attachmentID, userID string, admin bool) (bool, bool, error) {
 	if pool == nil {
-		return "", false, errors.New("数据库连接未配置")
+		return false, false, errors.New("数据库连接未配置")
 	}
-	var ownerID, status string
+	var drawingID, status string
 	err := pool.QueryRow(ctx, `
-		SELECT COALESCE(d.created_by::text, parent.created_by::text, ''), COALESCE(d.status::text, parent.status::text, '')
+		SELECT COALESCE(d.id::text, parent.id::text, ''), COALESCE(d.status::text, parent.status::text, '')
 		FROM attachments a
 		LEFT JOIN drawings d ON d.id = a.drawing_id
 		LEFT JOIN parts p ON p.id = a.part_id
@@ -436,11 +439,19 @@ func attachmentDeletionPermission(ctx context.Context, pool *pgxpool.Pool, attac
 		LEFT JOIN drawings parent ON parent.id = owner_relation.drawing_id
 		WHERE a.id = $1::uuid AND a.deleted_at IS NULL
 		ORDER BY owner_relation.created_at NULLS FIRST
-		LIMIT 1`, attachmentID).Scan(&ownerID, &status)
+		LIMIT 1`, attachmentID).Scan(&drawingID, &status)
 	if err != nil {
-		return "", false, err
+		return false, false, err
 	}
-	return ownerID, status == "archived", nil
+	if drawingID == "" {
+		// 没有所属图纸的文件（归属数据不完整）：只有管理员可以删除。
+		return admin, false, nil
+	}
+	var allowed bool
+	if err := pool.QueryRow(ctx, `SELECT drawing_decision_owner($1::uuid, $2::uuid)`, drawingID, userID).Scan(&allowed); err != nil {
+		return false, false, err
+	}
+	return allowed, status == "archived", nil
 }
 
 func validAttachmentRole(role attachment.Role) bool {

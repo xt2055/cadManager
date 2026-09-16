@@ -235,12 +235,12 @@ function toggleRole(role: UserRole) {
            <div class="note"><DemoIcon name="user-plus" :size="14" /><div>系统不开放自行注册，账号仅能由管理员在此分配。</div></div>
            <div class="modal-form-grid"><div class="field"><label for="user-account">登录账号 *</label><input id="user-account" v-model="userAccount" class="inp" placeholder="如 zhang" autocomplete="off" /></div><div class="field"><label for="user-name">姓名 *</label><input id="user-name" v-model="userName" class="inp" placeholder="如 张工" autocomplete="off" /></div></div>
            <div class="field"><label for="user-password">初始密码 *</label><input id="user-password" v-model="userPassword" class="inp" type="password" placeholder="请输入初始密码" autocomplete="new-password" /></div>
-           <div class="field field-last"><label>角色 *</label><div class="role-checks"><label v-for="role in USER_ROLE_OPTIONS" :key="role.value" class="role-check"><input type="checkbox" :checked="userRoles.includes(role.value)" @change="toggleRole(role.value)" /><span>{{ role.label }}</span></label></div></div>
+           <div class="field field-last"><label>角色 *</label><div class="role-checks"><label v-for="role in USER_ROLE_OPTIONS" :key="role.value" class="role-check" :title="role.description"><input type="checkbox" :checked="userRoles.includes(role.value)" @change="toggleRole(role.value)" /><span>{{ role.label }}</span></label></div></div>
          </template>
 
          <template v-else-if="modal.type === 'edit-user-role'">
            <div class="note"><DemoIcon name="users" :size="14" /><div>正在修改账号「{{ modal.payload?.account || '未知账号' }}」的身份。一个账号可同时拥有多个身份。</div></div>
-           <div class="field field-last"><label>身份 *</label><div class="role-checks"><label v-for="role in USER_ROLE_OPTIONS" :key="role.value" class="role-check"><input type="checkbox" :checked="userRoles.includes(role.value)" @change="toggleRole(role.value)" /><span>{{ role.label }}</span></label></div></div>
+           <div class="field field-last"><label>身份 *</label><div class="role-checks"><label v-for="role in USER_ROLE_OPTIONS" :key="role.value" class="role-check" :title="role.description"><input type="checkbox" :checked="userRoles.includes(role.value)" @change="toggleRole(role.value)" /><span>{{ role.label }}</span></label></div></div>
          </template>
 
          <template v-else-if="modal.type === 'reset-user'">

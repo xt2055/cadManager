@@ -52,7 +52,7 @@ func loadEnv() {
 }
 
 // migratedVersion 是迁移文件中必须已应用的最小版本，用于在 schema 搭建后自检。
-const migratedVersion = "migrations/000049_review_annotations.sql"
+const migratedVersion = "migrations/000050_planner_role_and_drawing_tasks.sql"
 
 // DB 是绑定到独立 schema 的测试数据库。
 type DB struct {
@@ -262,10 +262,25 @@ func migrationNames() ([]string, error) {
 type Fixture struct {
 	Author     string
 	Reviewer   string
+	Planner    string
 	Drawing    string
 	Part       string
 	Attachment string
 	Blob       string
+}
+
+// AssignDrawingTask 直接写入一条有效指派，用于验证「负责人 = 原创建人权限」的规则。
+// 走 SQL 而不是服务层，是为了让约束类断言不依赖上层实现。
+func (d *DB) AssignDrawingTask(t *testing.T, drawingID, assigneeID, assignedBy string) string {
+	t.Helper()
+	var id string
+	if err := d.Pool.QueryRow(context.Background(), `
+		INSERT INTO drawing_tasks(drawing_id, assignee_id, assigned_by, note)
+		VALUES ($1::uuid, $2::uuid, NULLIF($3,'')::uuid, '测试指派')
+		RETURNING id::text`, drawingID, assigneeID, assignedBy).Scan(&id); err != nil {
+		t.Fatalf("插入图纸任务失败: %v", err)
+	}
+	return id
 }
 
 // Seed 插入满足外键约束的最小数据集，返回各自 UUID。
@@ -288,6 +303,7 @@ func (d *DB) Seed(t *testing.T) Fixture {
 	}{
 		{&f.Author, `INSERT INTO users(account,display_name,password_hash,status) VALUES('author','设计员','x','active') RETURNING id::text`, nil},
 		{&f.Reviewer, `INSERT INTO users(account,display_name,password_hash,status) VALUES('reviewer','审核员','x','active') RETURNING id::text`, nil},
+		{&f.Planner, `INSERT INTO users(account,display_name,password_hash,status) VALUES('planner','计划员','x','active') RETURNING id::text`, nil},
 		{&f.Part, `INSERT INTO parts(part_no,normalized_part_no,created_by) VALUES('P-1','P-1',(SELECT id FROM users WHERE account='author')) RETURNING id::text`, nil},
 		{&f.Blob, `INSERT INTO file_blobs(storage_key,mime_type,size_bytes,sha256) VALUES('blobs/seed','application/octet-stream',8,repeat('a',64)) RETURNING id::text`, nil},
 	} {

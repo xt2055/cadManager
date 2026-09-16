@@ -17,6 +17,7 @@ import { drawingCommandService } from '@/app/container'
 import { changeRequestService, type ChangeRequest } from '@/services/change-request.service'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
+import { isDrawingDecider } from '@/modules/drawing/drawing-authority'
 import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
 import { reviewAnnotationService, type ReviewAnnotationFile } from '@/services/review-annotation.service'
@@ -78,14 +79,9 @@ const canSign = computed(() => (!reviewCase.value?.changeSubmissionId || changeE
 const doneCount = computed(() => nodes.value.filter((node) => node.status === 'pass').length)
 const percent = computed(() => (nodes.value.length ? Math.round((doneCount.value / nodes.value.length) * 100) : 0))
 const isPart = computed(() => Boolean(drawing.value && 'parentNo' in drawing.value))
-const isAdmin = computed(() => authStore.currentUser?.roles?.includes('admin') ?? false)
-const isCreator = computed(() => {
-  const item = drawing.value
-  const current = authStore.currentUser
-  if (!item || !current) return false
-  return ('createdBy' in item && item.createdBy) === current.displayName
-})
-const canArchive = computed(() => !isPart.value && drawing.value?.status === 'published' && (isCreator.value || isAdmin.value))
+// 存档是创建人级决定：有负责人时归负责人，无负责人时回落创建人，管理员始终可以。
+const isDecider = computed(() => isDrawingDecider(drawing.value, authStore.currentUser))
+const canArchive = computed(() => !isPart.value && drawing.value?.status === 'published' && isDecider.value)
 const canStartReview = computed(() => {
   const item = drawing.value
   const current = authStore.currentUser

@@ -9,7 +9,9 @@ const user = {
 }
 
 test('账号身份支持设计、审核和管理员多选', () => {
-  assert.deepEqual(USER_ROLE_OPTIONS.map((item) => item.value), ['designer', 'reviewer', 'admin'])
+  assert.deepEqual(USER_ROLE_OPTIONS.map((item) => item.value), ['planner', 'designer', 'reviewer', 'admin'])
+  // 每个身份都要有一句说明：管理员在分配角色时需要知道它能做什么。
+  assert.ok(USER_ROLE_OPTIONS.every((item) => item.label && item.description))
   assert.deepEqual(buildUserRoleUpdate(user, ['designer', 'reviewer']), {
     account: 'zhang',
     displayName: '张工',

@@ -2,6 +2,8 @@
 import { onMounted } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { USER_ROLE_OPTIONS } from '../account-role-editor'
+import type { UserRole } from '@/types/domain.types'
 import { useAdminStore } from '@/stores/admin.store'
 import { useUiStore } from '@/stores/ui.store'
 
@@ -27,8 +29,9 @@ async function toggleUser(index: number) {
   }
 }
 
-function roleLabel(role: 'admin' | 'designer' | 'reviewer'): string {
-  return role === 'admin' ? '管理员' : role === 'reviewer' ? '审核人员' : '设计人员'
+// 角色标签从角色选项表取，新增职责（如计划员）时不会漏改这里而产生空白标签。
+function roleLabel(role: UserRole): string {
+  return USER_ROLE_OPTIONS.find((option) => option.value === role)?.label ?? role
 }
 
 function openResetPassword(user: { id: string; account: string }) {

@@ -1,17 +1,19 @@
 import { matchesUser } from '../dashboard/dashboard.helpers.ts'
+import { isDrawingDecider } from '../../modules/drawing/drawing-authority.ts'
 import type { AuthUser } from '../auth/types/auth.types.ts'
 import type { ApiReviewCase, ApiReviewCaseNode } from '../../services/review-case.service.ts'
 
 export type ReviewNodeStatus = ApiReviewCaseNode['status']
 
-// 变更工单存在或尚未确认时，创建者和管理员均不能走普通送审入口。
+// 变更工单存在或尚未确认时，负责人、创建者和管理员均不能走普通送审入口。
+// 控制权判定统一走 isDrawingDecider：指派生效后送审权随负责人转移。
 export function canStartRegularReview(
-  drawing: { status: string; createdBy?: string } | null | undefined,
+  drawing: { status: string; createdBy?: string; assignees?: Array<{ userId: string; name: string }> } | null | undefined,
   user: AuthUser | null | undefined,
   changeBlocked: boolean,
 ): boolean {
   if (!drawing || !user || changeBlocked || drawing.status === 'archived') return false
-  return Boolean(user.roles?.includes('admin') || drawing.createdBy === user.displayName)
+  return isDrawingDecider(drawing, user)
 }
 
 export interface ReviewWorkspaceNode {

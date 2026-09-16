@@ -30,6 +30,8 @@ export const RouteName = {
   ReviewWorkspace: 'review-workspace',
   ReviewCompleted: 'review-completed',
 
+  TaskBoard: 'task-board',
+
   OperationLogs: 'operation-logs',
 
   Settings: 'settings',

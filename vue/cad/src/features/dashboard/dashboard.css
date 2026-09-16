@@ -146,3 +146,10 @@
 .cad-workbench .wb-spinning { animation: wb-spin 1s linear infinite; }
 @keyframes wb-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .cad-workbench .wb-spinning { animation: none; } }
+/* 计划工作台：进度与逾期只做视觉区分，数值与文案一律来自任务推导，页面不再自己算。 */
+.cad-workbench .wb-task-progress { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text-2); }
+.cad-workbench .wb-task-progress b { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.cad-workbench .wb-task-progress.positive { color: var(--ok, #408b70); }
+.cad-workbench .wb-task-progress.attention { color: var(--warn, #c98a2e); }
+.cad-workbench .wb-task-progress.muted { color: var(--text-3); }
+.cad-workbench .wb-overdue { color: var(--danger, #c0392b); font-weight: 600; }

@@ -90,6 +90,12 @@ func UploadSessions(service *upload.Service) http.Handler {
 			response.WriteError(writer, http.StatusBadRequest, "上传会话参数格式无效")
 			return
 		}
+		// drawing-create 会话是创建页三种方式（创建新图纸 / 上传老图纸 / 从老图纸分叉）
+		// 的真实写入口，必须与 POST /api/drawings 使用同一建档权限，否则前端入口限制可被绕过。
+		if input.Kind == "drawing-create" && !canCreateDrawing(user) {
+			response.WriteError(writer, http.StatusForbidden, "创建图纸需要计划员或管理员权限；设计人员请在任务管理台等待接受指派")
+			return
+		}
 		session, err := service.CreateSession(request.Context(), user.ID, upload.CreateSessionInput{
 			Kind: input.Kind, IdempotencyKey: input.IdempotencyKey, Metadata: input.Metadata,
 		})

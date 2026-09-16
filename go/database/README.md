@@ -96,6 +96,8 @@ Remove-Item Env:PGPASSWORD
 文件与物料：attachments、attachment_versions、file_blobs、part_revision_attachments、drawing_boms、bom_items
 审核流程：review_flows、review_flow_nodes、review_cases、review_case_nodes、review_actions
 借用：由 drawing_part_relations.relation_type = 'borrowed' 表示；日志：audit_logs
+通知：notifications
+图纸任务：drawing_tasks（000050 新增）
 更新服务：update_manifests
 ```
 
@@ -109,6 +111,31 @@ Remove-Item Env:PGPASSWORD
 - 迁移文件使用递增编号，已执行的迁移不应直接修改；有变更时新增下一个迁移文件。
 - 当前只写入数据库结构，不自动创建管理员业务用户。
 
+## 图纸任务与控制权判定（000050）
+
+计划员把图纸指派给负责人；负责人获得原创建人的权限。两条规则由数据库保证，不依赖应用层自觉：
+
+**同一图纸同一时刻只有一名有效负责人**，由部分唯一索引保证：
+
+```sql
+CREATE UNIQUE INDEX drawing_tasks_one_active
+    ON drawing_tasks(drawing_id) WHERE status = 'active';
+```
+
+改派与取消指派不删行，而是把旧行置为 `replaced` / `cancelled` 并写入 `ended_at`、`ended_by`、`end_reason`，因此「谁在什么时候把这张图换给了谁、为什么」可追溯。**不要用 `DELETE` 清理任务**，那会丢掉改派原因。
+
+**控制权判定必须走 `drawing_decision_owner(drawing_uuid, user_uuid)`**：
+
+```text
+管理员                          → true
+存在有效负责人                  → 只有该负责人为 true（创建人不再拥有）
+无有效负责人                    → created_by = user_uuid
+```
+
+这个函数供事务内需要 `FOR UPDATE` 的路径复用（例如 3D 模型写入授权 `AuthorizeModelWrite`），Go 侧的非事务路径用 `drawing.Drawing.Decides`，两者同构，一致性由 `internal/dbtest/drawing_task_test.go` 断言。**新增涉及「创建人级权限」的代码时不要自己比较 `created_by`**：直接调用该函数或 `Decides`，否则指派生效后会出现「页面说能改、保存时报 403」。
+
+角色枚举（`user_roles.role`）现为 `admin` / `planner` / `designer` / `reviewer`；可选值由 CHECK 约束限定，新增职责必须同时改约束与 `internal/auth/roles.go`。
+
 ## 当前迁移状态
 
 本机开发数据库曾经执行：
@@ -121,3 +148,18 @@ Remove-Item Env:PGPASSWORD
 ```
 
 当前开发环境允许通过 000022 重建最终模型。重建后，新的迁移仍只新增递增编号文件；生产环境不得执行开发库重建迁移。
+
+最新增量迁移：
+
+```text
+000049_review_annotations.sql
+000050_planner_role_and_drawing_tasks.sql   计划员身份、图纸任务、控制权判定函数
+```
+
+手工执行 000050 时，除了建表建函数，还要写入迁移记录，否则服务端启动迁移器会重复执行并因表已存在而失败：
+
+```sql
+INSERT INTO schema_migrations (version)
+VALUES ('000050_planner_role_and_drawing_tasks')
+ON CONFLICT DO NOTHING;
+```

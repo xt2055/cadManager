@@ -158,7 +158,7 @@ func AdminOperationLogs(repository audit.AdminRepository) http.HandlerFunc {
 
 func validAuditAction(action string) bool {
 	switch action {
-	case "view", "create", "edit", "branch", "upload", "download", "delete", "check", "parse":
+	case "view", "create", "edit", "assign", "branch", "upload", "download", "delete", "check", "parse":
 		return true
 	default:
 		return false

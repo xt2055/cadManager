@@ -74,7 +74,60 @@ func (repository *PGRepository) List(ctx context.Context, filter ListFilter) (Pa
 	if err := rows.Err(); err != nil {
 		return Page[Drawing]{}, fmt.Errorf("读取图纸失败: %w", err)
 	}
+	if err := repository.attachAssignees(ctx, items); err != nil {
+		return Page[Drawing]{}, err
+	}
 	return Page[Drawing]{List: items, Total: total, Page: filter.Page, PageSize: filter.PageSize}, nil
+}
+
+// attachAssignees 为一批图纸补上当前负责人（一次查询，避免逐行往返）。
+func (repository *PGRepository) attachAssignees(ctx context.Context, items []Drawing) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.ID != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	assignees, err := repository.loadAssignees(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for index := range items {
+		if list, ok := assignees[items[index].ID]; ok {
+			items[index].Assignees = list
+		}
+	}
+	return nil
+}
+
+// loadAssignees 按图纸 ID 批量读取有效负责人（含姓名）。
+func (repository *PGRepository) loadAssignees(ctx context.Context, drawingIDs []string) (map[string][]Assignee, error) {
+	rows, err := repository.pool.Query(ctx, `
+		SELECT t.drawing_id::text, t.assignee_id::text, COALESCE(u.display_name, u.account, '未命名账号')
+		FROM drawing_tasks t
+		LEFT JOIN users u ON u.id = t.assignee_id
+		WHERE t.status = 'active' AND t.drawing_id = ANY($1::uuid[])
+		ORDER BY t.created_at`, drawingIDs)
+	if err != nil {
+		return nil, fmt.Errorf("读取图纸负责人失败: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string][]Assignee, len(drawingIDs))
+	for rows.Next() {
+		var drawingID string
+		var assignee Assignee
+		if err := rows.Scan(&drawingID, &assignee.UserID, &assignee.Name); err != nil {
+			return nil, fmt.Errorf("解析图纸负责人失败: %w", err)
+		}
+		result[drawingID] = append(result[drawingID], assignee)
+	}
+	return result, rows.Err()
 }
 
 func (repository *PGRepository) Find(ctx context.Context, id string) (Drawing, error) {
@@ -110,6 +163,11 @@ func (repository *PGRepository) find(ctx context.Context, condition string, argu
 	if err != nil {
 		return Drawing{}, err
 	}
+	assignees, err := repository.loadAssignees(ctx, []string{item.ID})
+	if err != nil {
+		return Drawing{}, err
+	}
+	item.Assignees = assignees[item.ID]
 	return item, nil
 }
 

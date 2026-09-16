@@ -55,10 +55,19 @@ export const routes: RouteRecordRaw[] = [
           import('@/features/part-index/pages/PartIndexDetailPage.vue'),
       },
       {
+        // 建档权只在计划员与管理员手里：设计人员直接访问创建页会被守卫送回工作台。
         path: 'drawings/create',
         name: RouteName.DrawingCreate,
         component: () =>
           import('@/features/drawings/pages/DrawingCreatePage.vue'),
+        meta: { roles: ['planner', 'admin'] satisfies UserRole[] },
+      },
+      {
+        // 任务管理台：计划员在此把图纸指派给负责人，并跟踪每张图纸的编制进度。
+        path: 'tasks',
+        name: RouteName.TaskBoard,
+        component: () => import('@/features/tasks/pages/TaskBoardPage.vue'),
+        meta: { roles: ['planner', 'admin'] satisfies UserRole[], permission: 'task.assign' },
       },
       {
         path: 'drawings/:drawingId/compare',

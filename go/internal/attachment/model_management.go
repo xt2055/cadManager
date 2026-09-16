@@ -7,13 +7,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var ErrModelPermission = errors.New("只有所属图纸创建者或管理员可以管理 3D 文件；审核中、存档和借用件不能直接修改")
+var ErrModelPermission = errors.New("只有图纸负责人、创建人或管理员可以管理 3D 文件；审核中、存档和借用件不能直接修改")
 
 // Lock the owning drawing to serialize model writes and primary selection.
+// 控制权判定走 drawing_decision_owner：图省事在这里再写一遍 created_by 判断，
+// 就会让「负责人拥有创建人权限」在 3D 文件这一处悄悄失效。
 func AuthorizeModelWrite(ctx context.Context, tx pgx.Tx, drawingNo, partNo, userID string) error {
 	var allowed bool
 	err := tx.QueryRow(ctx, `SELECT d.status NOT IN ('archived', 'reviewing', 'disabled')
-		AND (d.created_by = $3::uuid OR EXISTS (SELECT 1 FROM user_roles WHERE user_id = $3::uuid AND role = 'admin'))
+		AND drawing_decision_owner(d.id, $3::uuid)
 		AND ($2 = '' OR EXISTS (SELECT 1 FROM drawing_part_relations r JOIN parts p ON p.id = r.part_id
 			WHERE r.drawing_id = d.id AND r.status = 'active' AND r.relation_type = 'owned' AND p.normalized_part_no = $2))
 		FROM drawings d WHERE d.drawing_no = $1 FOR UPDATE OF d`, drawingNo, normalizePartNo(partNo), userID).Scan(&allowed)

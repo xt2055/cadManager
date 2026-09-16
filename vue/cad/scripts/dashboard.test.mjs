@@ -11,13 +11,33 @@ test('只能切换账号实际分配的工作角色，管理员不会自动混�
   assert.deepEqual(availableWorkspaces(['reviewer']), ['reviewer'])
   assert.deepEqual(availableWorkspaces(['admin']), ['admin'])
   assert.deepEqual(availableWorkspaces(['reviewer', 'admin', 'designer', 'reviewer']), ['admin', 'designer', 'reviewer'])
+  assert.deepEqual(availableWorkspaces(['planner']), ['planner'])
+  assert.deepEqual(availableWorkspaces(['planner', 'designer']), ['planner', 'designer'])
   assert.deepEqual(availableWorkspaces([]), [])
 })
 test('普通工作台不请求管理日志与系统状态，设计工作台不请求无关审核数据', () => {
-  assert.deepEqual(workspaceDataSources('designer'), { drawings: true, reviews: false, system: false, audit: false })
-  assert.deepEqual(workspaceDataSources('reviewer'), { drawings: false, reviews: true, system: false, audit: false })
-  assert.deepEqual(workspaceDataSources('admin'), { drawings: true, reviews: false, system: true, audit: true })
-  assert.deepEqual(workspaceDataSources(null), { drawings: false, reviews: false, system: false, audit: false })
+  assert.deepEqual(workspaceDataSources('designer'), { drawings: true, reviews: false, tasks: false, system: false, audit: false })
+  assert.deepEqual(workspaceDataSources('reviewer'), { drawings: false, reviews: true, tasks: false, system: false, audit: false })
+  assert.deepEqual(workspaceDataSources('admin'), { drawings: true, reviews: false, tasks: true, system: true, audit: true })
+  assert.deepEqual(workspaceDataSources(null), { drawings: false, reviews: false, tasks: false, system: false, audit: false })
+})
+
+// 计划工作台的主列表是「谁在负责哪张图」，因此需要任务总表而不是整个图纸库：
+// 拉整个图纸库既拿不到负责人，也把首页变成第二次全量加载。
+test('计划工作台只请求任务总表，不重复加载图纸库', () => {
+  assert.deepEqual(workspaceDataSources('planner'), { drawings: false, reviews: false, tasks: true, system: false, audit: false })
+})
+
+// 指派生效后控制权归负责人：设计工作台的「我的图纸」必须跟着换人，
+// 否则被指派的设计人员在自己的首页看不到刚接手的图。
+test('设计工作台按负责人（而不是创建人）认定我的图纸', () => {
+  const rows = [
+    drawing('assignee', { createdBy: 'u2', assignees: [{ userId: 'u1', name: '张工' }] }),
+    drawing('other-assignee', { createdBy: 'u1', assignees: [{ userId: 'u2', name: '李工' }] }),
+    drawing('unassigned-mine', { createdBy: 'u1' }),
+  ]
+  const mine = workspaceDrawings(rows, { ...user, roles: ['designer'] }, 'designer').map(item => item.id)
+  assert.deepEqual(mine.sort(), ['assignee', 'unassigned-mine'])
 })
 test('设计图纸限定本人创建或负责，按项目身份去重并按更新时间排序', () => {
   const rows = [drawing('a'), drawing('a'), drawing('b', { createdBy: 'u2', designer: '张工', updatedAt: '2026-09-11T08:00:00Z' }), drawing('c', { createdBy: 'u2', designer: '李工' }), drawing('d', { createdBy: 'u2', signers: { 设计: 'engineer' } })]
