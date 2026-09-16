@@ -70,7 +70,7 @@ test('备料附件响应保留编制人和当前版本标识', () => {
   assert.equal(file.currentVersionId, 'version-id')
 })
 
-test('打印优先选择原始 xlsx 附件而不是重新生成工作簿', () => {
+test('打印选择原始 xlsx 附件作为保留格式的模板', () => {
   const source = originalMaterialWorkbook([
     { name: '备料.csv', storageKey: 'csv-key' },
     { name: '原始下料明细表.xlsx', storageKey: 'xlsx-key' },

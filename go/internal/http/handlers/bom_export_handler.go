@@ -34,13 +34,17 @@ type ExportBomRequest struct {
 }
 
 type bomColumnMap struct {
-	headerRow int
-	idCol     int
-	nameCol   int
-	specCol   int
-	qtyCol    int
-	weightCol int
-	remarkCol int
+	headerRow    int
+	noCol        int
+	totalCol     int
+	idCol        int
+	nameCol      int
+	specCol      int
+	materialCol  int
+	dimensionCol int
+	qtyCol       int
+	weightCol    int
+	remarkCol    int
 }
 
 func isBottomSignatureRow(row []string) bool {
@@ -93,7 +97,20 @@ func findBomColumns(rows [][]string) *bomColumnMap {
 				clean = strings.ReplaceAll(clean, "\r", "")
 				clean = strings.ReplaceAll(clean, "\t", "")
 				colNum := cIdx + 1
-				if cm.specCol == 0 && (strings.Contains(clean, "规格") || strings.Contains(clean, "材质")) {
+				if clean == "序号" {
+					cm.noCol = colNum
+				}
+				if strings.Contains(clean, "总重") || strings.Contains(clean, "合重") {
+					cm.totalCol = colNum
+					continue
+				}
+				if strings.Contains(clean, "下料尺寸") {
+					cm.dimensionCol = colNum
+				}
+				if cm.materialCol == 0 && (clean == "材质" || clean == "材料") {
+					cm.materialCol = colNum
+				}
+				if cm.specCol == 0 && strings.Contains(clean, "规格") {
 					cm.specCol = colNum
 				}
 				if cm.qtyCol == 0 && (strings.Contains(clean, "单支数量") || strings.Contains(clean, "数量")) {
@@ -105,6 +122,10 @@ func findBomColumns(rows [][]string) *bomColumnMap {
 				if cm.remarkCol == 0 && (strings.Contains(clean, "备注") || strings.Contains(clean, "说明")) {
 					cm.remarkCol = colNum
 				}
+			}
+			if cm.specCol == 0 {
+				cm.specCol = cm.materialCol
+				cm.materialCol = 0
 			}
 			return cm
 		}
@@ -125,7 +146,7 @@ func ExportBOM(attachmentRepo attachment.Repository, objectStorage storage.Objec
 			return
 		}
 
-		if len(req.Items) == 0 {
+		if req.Items == nil {
 			response.WriteError(writer, http.StatusBadRequest, "物料明细不能为空")
 			return
 		}
@@ -133,7 +154,7 @@ func ExportBOM(attachmentRepo attachment.Repository, objectStorage storage.Objec
 		var f *excelize.File
 		var hasOriginal bool
 
-		if req.StorageKey != "" && strings.HasSuffix(strings.ToLower(req.StorageKey), ".xlsx") {
+		if req.StorageKey != "" {
 			rc, _, readErr := objectStorage.Open(request.Context(), req.StorageKey)
 			if readErr == nil && rc != nil {
 				data, readAllErr := io.ReadAll(rc)
@@ -146,6 +167,10 @@ func ExportBOM(attachmentRepo attachment.Repository, objectStorage storage.Objec
 					}
 				}
 			}
+		}
+		if req.StorageKey != "" && !hasOriginal {
+			response.WriteError(writer, http.StatusUnprocessableEntity, "无法读取原始 Excel 模板，请检查附件后重试")
+			return
 		}
 
 		if !hasOriginal || f == nil {
@@ -209,72 +234,9 @@ func ExportBOM(attachmentRepo attachment.Repository, objectStorage storage.Objec
 			_ = f.SetColWidth(sheet, "G", "G", 18)
 		} else {
 			defer f.Close()
-			sheet := f.GetSheetList()[0]
-			rows, _ := f.GetRows(sheet)
-			colMap := findBomColumns(rows)
-
-			if colMap != nil {
-				// Find start of bottom signature footer
-				firstFooterRow := len(rows) + 1
-				for rIdx := colMap.headerRow; rIdx < len(rows); rIdx++ {
-					if isBottomSignatureRow(rows[rIdx]) {
-						firstFooterRow = rIdx + 1
-						break
-					}
-				}
-
-				idToRow := make(map[string]int)
-				var availableDataRows []int
-				for rIdx := colMap.headerRow; rIdx < len(rows) && (rIdx+1) < firstFooterRow; rIdx++ {
-					rowNum := rIdx + 1
-					row := rows[rIdx]
-					var idVal string
-					if colMap.idCol-1 < len(row) {
-						idVal = strings.TrimSpace(row[colMap.idCol-1])
-					}
-					if idVal != "" {
-						idToRow[idVal] = rowNum
-					}
-					availableDataRows = append(availableDataRows, rowNum)
-				}
-
-				for idx, item := range req.Items {
-					var targetRow int
-					if rowNum, ok := idToRow[item.ID]; ok {
-						targetRow = rowNum
-					} else if idx < len(availableDataRows) {
-						targetRow = availableDataRows[idx]
-					} else {
-						// Need new row before footer
-						targetRow = firstFooterRow
-						_ = f.InsertRows(sheet, targetRow, 1)
-						firstFooterRow++
-					}
-
-					setColVal := func(colNum int, val any) {
-						if colNum > 0 {
-							axis, axisErr := excelize.CoordinatesToCellName(colNum, targetRow)
-							if axisErr == nil {
-								_ = f.SetCellValue(sheet, axis, val)
-							}
-						}
-					}
-
-					setColVal(colMap.idCol, item.ID)
-					setColVal(colMap.nameCol, item.Name)
-					if colMap.specCol > 0 {
-						setColVal(colMap.specCol, item.Spec)
-					}
-					if colMap.qtyCol > 0 {
-						setColVal(colMap.qtyCol, item.Qty)
-					}
-					if colMap.weightCol > 0 {
-						setColVal(colMap.weightCol, item.Weight)
-					}
-					if colMap.remarkCol > 0 {
-						setColVal(colMap.remarkCol, item.Remark)
-					}
-				}
+			if err := updateBomTemplate(f, req.Items); err != nil {
+				response.WriteError(writer, http.StatusUnprocessableEntity, err.Error())
+				return
 			}
 		}
 
@@ -297,4 +259,191 @@ func ExportBOM(attachmentRepo attachment.Repository, objectStorage storage.Objec
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write(buf.Bytes())
 	}
+}
+
+// Update values in the source workbook so widths, styles, merges and print settings survive.
+func bomTemplateSpecValues(cm *bomColumnMap, original []string, spec string) (map[int]any, error) {
+	values := map[int]any{}
+	if cm.materialCol == 0 && cm.dimensionCol == 0 {
+		values[cm.specCol] = spec
+		return values, nil
+	}
+	get := func(col int) string {
+		if col <= 0 || col > len(original) {
+			return ""
+		}
+		return strings.TrimSpace(strings.ReplaceAll(original[col-1], "\n", " "))
+	}
+	raw := func(col int) string {
+		if col <= 0 || col > len(original) {
+			return ""
+		}
+		return original[col-1]
+	}
+	var parts []string
+	var columns []int
+	for _, col := range []int{cm.materialCol, cm.specCol} {
+		if col <= 0 {
+			continue
+		}
+		values[col] = raw(col)
+		if value := get(col); value != "" && value != "/" {
+			parts = append(parts, value)
+			columns = append(columns, col)
+		}
+	}
+	var dimensions []string
+	if cm.dimensionCol > 0 {
+		for col := cm.dimensionCol; col < cm.dimensionCol+3; col++ {
+			values[col] = raw(col)
+			if value := get(col); value != "" && value != "/" && value != "0" {
+				dimensions = append(dimensions, value)
+			}
+		}
+	}
+	dimensionText := strings.Join(dimensions, "×")
+	if dimensionText != "" {
+		parts = append(parts, dimensionText)
+	}
+	originalSpec := strings.Join(parts, " ")
+	if originalSpec == "" {
+		originalSpec = "—"
+	}
+	if strings.Join(strings.Fields(spec), " ") == strings.Join(strings.Fields(originalSpec), " ") {
+		return values, nil
+	}
+	// A combined UI specification must be split back into the source columns.
+	tokens := strings.Fields(spec)
+	baseCount := len(columns)
+	if len(tokens) != baseCount && len(tokens) != baseCount+1 {
+		return nil, fmt.Errorf("规格“%s”无法对应原表的材质、规格和尺寸列，请按原有字段顺序填写", spec)
+	}
+	for i, col := range columns {
+		values[col] = tokens[i]
+	}
+	if len(tokens) == baseCount+1 {
+		if cm.dimensionCol == 0 {
+			return nil, fmt.Errorf("原表没有独立尺寸列")
+		}
+		if tokens[baseCount] != dimensionText {
+			dims := strings.FieldsFunc(tokens[baseCount], func(r rune) bool { return r == '×' || r == 'x' || r == 'X' })
+			if len(dims) != 3 {
+				return nil, fmt.Errorf("修改尺寸时请填写完整的外径×内径×长度（缺省项填0）")
+			}
+			for i, value := range dims {
+				values[cm.dimensionCol+i] = value
+			}
+		}
+	} else if dimensionText != "" {
+		return nil, fmt.Errorf("规格中缺少原表尺寸，请保留尺寸或填写完整的外径×内径×长度")
+	}
+	return values, nil
+}
+
+func updateBomTemplate(f *excelize.File, items []BomItemPayload) error {
+	for _, sheet := range f.GetSheetList() {
+		rows, err := f.GetRows(sheet)
+		if err != nil {
+			return err
+		}
+		cm := findBomColumns(rows)
+		if cm == nil {
+			continue
+		}
+		footer := len(rows) + 1
+		for i := cm.headerRow; i < len(rows); i++ {
+			if isBottomSignatureRow(rows[i]) {
+				footer = i + 1
+				break
+			}
+		}
+		start := cm.headerRow + 1
+		// Vertically merged identity headers span the entire multi-row header.
+		merges, err := f.GetMergeCells(sheet)
+		if err != nil {
+			return err
+		}
+		for _, merge := range merges {
+			col, row, err := excelize.CellNameToCoordinates(merge.GetStartAxis())
+			if err != nil {
+				return err
+			}
+			_, endRow, err := excelize.CellNameToCoordinates(merge.GetEndAxis())
+			if err != nil {
+				return err
+			}
+			if row == cm.headerRow && (col == cm.idCol || col == cm.nameCol) && endRow >= start {
+				start = endRow + 1
+			}
+		}
+		for start < footer {
+			row := rows[start-1]
+			text := strings.Join(row, "")
+			if !strings.Contains(text, "外径") && !strings.Contains(text, "内径") {
+				break
+			}
+			start++
+		}
+		capacity := footer - start
+		sourceCapacity := capacity
+		if capacity < 0 {
+			return fmt.Errorf("无法识别模板明细区域")
+		}
+		originalRows := make(map[string][]string)
+		for r := start; r < footer; r++ {
+			if cm.idCol <= len(rows[r-1]) {
+				originalRows[strings.TrimSpace(rows[r-1][cm.idCol-1])] = rows[r-1]
+			}
+		}
+		if capacity == 0 && len(items) > 0 {
+			return fmt.Errorf("原始模板缺少可复用的明细行")
+		}
+		for capacity < len(items) {
+			if err := f.DuplicateRowTo(sheet, footer-1, footer); err != nil {
+				return err
+			}
+			footer++
+			capacity++
+		}
+		for i := 0; i < capacity; i++ {
+			r := start + i
+			values := map[int]any{}
+			if i < len(items) {
+				item := items[i]
+				values = map[int]any{cm.noCol: i + 1, cm.idCol: item.ID, cm.nameCol: item.Name,
+					cm.qtyCol: item.Qty, cm.weightCol: item.Weight,
+					cm.totalCol: item.Weight * float64(item.Qty), cm.remarkCol: item.Remark}
+				original := originalRows[item.ID]
+				if original == nil && sourceCapacity > 0 {
+					original = rows[start+min(i, sourceCapacity-1)-1]
+				}
+				specValues, err := bomTemplateSpecValues(cm, original, item.Spec)
+				if err != nil {
+					return err
+				}
+				for col, value := range specValues {
+					values[col] = value
+				}
+			} else {
+				// Keep empty template rows and their formatting, but remove deleted material values.
+				for c := 1; c <= len(rows[cm.headerRow-1]); c++ {
+					values[c] = ""
+				}
+			}
+			for col, value := range values {
+				if col <= 0 {
+					continue
+				}
+				axis, err := excelize.CoordinatesToCellName(col, r)
+				if err != nil {
+					return err
+				}
+				if err := f.SetCellValue(sheet, axis, value); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("未能识别原始模板的明细表头，无法保留原格式生成打印文件")
 }
