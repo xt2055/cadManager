@@ -52,7 +52,7 @@ func loadEnv() {
 }
 
 // migratedVersion 是迁移文件中必须已应用的最小版本，用于在 schema 搭建后自检。
-const migratedVersion = "migrations/000048_change_assign_notification.sql"
+const migratedVersion = "migrations/000049_review_annotations.sql"
 
 // DB 是绑定到独立 schema 的测试数据库。
 type DB struct {

@@ -19,6 +19,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
+import { reviewAnnotationService, type ReviewAnnotationFile } from '@/services/review-annotation.service'
 
 defineOptions({ name: 'ReviewWorkspacePanel' })
 
@@ -44,6 +45,26 @@ const uiStore = useUiStore()
 const opinionText = ref('')
 const submitting = ref(false)
 const changeEvidenceReady = ref(false)
+const annotationFiles = ref<ReviewAnnotationFile[]>([])
+const annotationFilesOpen = ref(false)
+const annotationFilesLoading = ref(false)
+const annotationFilesError = ref('')
+
+async function openAnnotations() {
+  const review = reviewCase.value
+  if (!review || annotationFilesLoading.value) return
+  annotationFilesOpen.value = true; annotationFilesLoading.value = true; annotationFilesError.value = ''
+  try {
+    const files = await reviewAnnotationService.files(review.id)
+    if (reviewCase.value?.id !== review.id) return
+    annotationFiles.value = files
+    if (files.length === 1) browseAnnotation(files[0]!)
+  } catch (e) { annotationFilesError.value = e instanceof Error ? e.message : '读取审核图纸失败' }
+  finally { annotationFilesLoading.value = false }
+}
+function browseAnnotation(file: ReviewAnnotationFile) {
+  void router.push({ name: RouteName.DrawingViewer, params: { drawingId: effectiveNo.value }, query: { fileId: file.attachmentId, versionId: file.versionId, reviewCaseId: reviewCase.value?.id, from: 'review' } })
+}
 
 const drawingNo = computed(() => props.drawingNo.trim())
 const drawing = computed(() => drawingStore.getDrawing(drawingNo.value) ?? drawingStore.getPart(drawingNo.value))
@@ -265,12 +286,21 @@ async function handleDecision(action: 'pass' | 'rejected') {
           </p>
         </div>
         <div class="hero-actions">
+          <button v-if="reviewCase" class="btn primary" type="button" :disabled="annotationFilesLoading" @click="openAnnotations"><DemoIcon name="pencil" :size="14" />{{ annotationFilesLoading ? '正在读取…' : canSign ? '图纸批注' : '查看图纸批注' }}</button>
           <button class="btn" type="button" @click="openDrawingFiles"><DemoIcon name="eye" :size="14" />查阅图纸</button>
           <button v-if="embedded" class="btn" type="button" @click="emit('toggle-overview')">
             <DemoIcon name="workflow" :size="14" />{{ showOverview ? '返回签署工作台' : '查看流程总览' }}
           </button>
         </div>
       </div>
+
+      <section v-if="annotationFilesOpen" class="annotation-files card" aria-label="选择审核图纸">
+        <div class="annotation-files-head"><strong>选择要批注的图纸</strong><button class="btn sm" @click="annotationFilesOpen = false">收起</button></div>
+        <p v-if="annotationFilesLoading" role="status">正在读取本轮审核的固定版本…</p>
+        <p v-else-if="annotationFilesError" role="alert">{{ annotationFilesError }} <button class="btn sm" @click="openAnnotations">重试</button></p>
+        <p v-else-if="!annotationFiles.length">本轮审核暂无可批注的 CAD 文件。请先检查图纸文件是否已完成转换。</p>
+        <button v-for="file in annotationFiles" v-else :key="file.attachmentId" class="annotation-file" @click="browseAnnotation(file)"><span>{{ file.name }}</span><small>{{ file.version }} · {{ file.markCount ? `${file.markCount} 条批注` : '暂无批注' }}</small><DemoIcon name="arrow-right" :size="14" /></button>
+      </section>
 
       <div class="workspace-layout">
         <section class="card current-panel">
@@ -381,6 +411,13 @@ async function handleDecision(action: 'pass' | 'rejected') {
 
 <style scoped>
 .review-workspace { min-width: 0; }
+.annotation-files { padding: 14px 18px; margin: 12px 0; }
+.annotation-files-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.annotation-files p { color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.annotation-file { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 0; border: 0; border-bottom: 1px solid var(--line); color: var(--text-1); background: transparent; text-align: left; cursor: pointer; }
+.annotation-file:hover { color: var(--accent); }
+.annotation-file span { flex: 1; overflow-wrap: anywhere; }
+.annotation-file small { color: var(--text-2); }
 .review-workspace.embedded { padding-top: 0; }
 .section-head { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px; }
 .section-head h3 { font-family: var(--font-display); font-size: 16px; font-weight: 800; }

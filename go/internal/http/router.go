@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"cadguanliq/internal/annotation"
 	"cadguanliq/internal/attachment"
 	"cadguanliq/internal/audit"
 	"cadguanliq/internal/auth"
@@ -48,6 +49,10 @@ func NewRouter(cfg config.Config, pool *pgxpool.Pool, authService *auth.Service)
 	mux.Handle("/api/system/smb-access", protectedUsers(handlers.SMBAccess(cfg)))
 	mux.Handle("/api/auth/heartbeat", protectedUsers(handlers.Heartbeat(authService)))
 	reviewRepository := review.NewPGRepository(pool)
+	annotationRepository := annotation.NewRepository(pool)
+	mux.Handle("/api/review-annotations", protectedUsers(handlers.AnnotationWorkspace(annotationRepository)))
+	mux.Handle("/api/review-annotation-templates", protectedUsers(handlers.AnnotationTemplates(annotationRepository)))
+	mux.Handle("/api/review-annotation-files", protectedUsers(handlers.AnnotationFiles(annotationRepository)))
 	mux.Handle("/api/review-flows", protectedUsers(handlers.ReviewFlows(reviewRepository)))
 	mux.Handle("/api/review-flows/", protectedUsers(handlers.ReviewFlowResource(reviewRepository)))
 	mux.Handle("/api/review-cases", protectedUsers(handlers.ReviewCases(reviewRepository)))

@@ -64,6 +64,11 @@ console.log('by-kind', Object.fromEntries(['modified', 'deleted', 'added'].map(k
 if (process.argv.includes('--summary')) process.exit(0)
 for (const diff of differences) {
   const a = diff.before
+  if (process.argv.includes('--details') && a && diff.after) {
+    const before = JSON.parse(a.signature)
+    const after = JSON.parse(diff.after.signature)
+    console.log('entity-details', JSON.stringify({ before: before[0], after: after[0], sameBlock: JSON.stringify(before[1]) === JSON.stringify(after[1]) }))
+  }
   const b = diff.after ?? (a?.bounds && after.filter(e => e.type === a.type && e.bounds).sort((x, y) => {
     const distance = e => Math.abs(e.bounds.minX - a.bounds.minX) + Math.abs(e.bounds.minY - a.bounds.minY)
     return distance(x) - distance(y)

@@ -36,6 +36,16 @@ export function canonicalDxf(text: string, resolvedBlockName?: string, contentOn
     let end = start + 1
     while (end < pairs.length && pairs[end]![0] !== 100 && pairs[end]![0] !== 0) end++
     const section = pairs.slice(start, end)
+    if (resolvedBlockName && pairs[start]![1] === 'AcDb3PointAngularDimension' &&
+      pairs.some(pair => pair[0] === 2 && pair[1] === '<resolved-block>') &&
+      Number(pairs.find(pair => pair[0] === 70)?.[1]) === 0) {
+      // LibreDWG imports CAXA two-line angles as three-point dimensions with
+      // type 0. Its centerPoint (15) carries a regenerated auxiliary point,
+      // not a reliable three-point angular center.
+      // Only apply to this malformed import with a resolved graphics block:
+      // that block still compares the actual angle, radius, lines and text.
+      for (const pair of section) if ([15, 25, 35].includes(pair[0])) pair[1] = 0
+    }
     if (pairs[start]![1] === 'AcDbDimension') {
       // 标注文字也支持 MTEXT 排版码；直径、公差、堆叠及转义内容必须保留。
       for (const pair of section) if (pair[0] === 1) {

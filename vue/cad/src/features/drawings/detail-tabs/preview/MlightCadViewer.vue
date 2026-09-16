@@ -6,6 +6,7 @@ import { installCadFontDiagnostics, normalizeCadToleranceEntities, preloadCadSym
 import { registerCadConverters } from '@/services/cad-converters.service'
 import { compareEntities, snapshotDrawing, type DrawingDifference, type CompareBounds } from './cad-compare'
 import { collectTitleSpaces } from './cad-title-block'
+import type { AnnotationViewport, Point } from '@/features/reviews/annotation-model'
 
 interface Props {
   dxfUrl?: string | null
@@ -308,7 +309,31 @@ function extractTitleBlock() {
   return { spaces: collectTitleSpaces(manager.curDocument.database), activeSpaceId: String(manager.curView.activeLayoutBtrId) }
 }
 
-defineExpose({ setLayerVisibility, zoomIn, zoomOut, resetView, compareDrawing, focusDifference, clearComparison, extractTitleBlock })
+function annotationViewport(): AnnotationViewport {
+  const view = manager?.curView
+  if (!view || loading.value) throw new Error('请等待图纸加载完成')
+  return {
+    toScreen: (point: Point) => view.worldToScreen(point),
+    toDrawing: (point: Point) => view.screenToWorld(point),
+    layout: () => String(view.activeLayoutBtrId),
+    subscribe(callback) {
+      view.events.viewChanged.addEventListener(callback)
+      return () => view.events.viewChanged.removeEventListener(callback)
+    },
+    focus(points) {
+      if (!points.length) return
+      const xs = points.map(p => p.x), ys = points.map(p => p.y)
+      const x = Math.min(...xs), y = Math.min(...ys), width = Math.max(...xs) - x, height = Math.max(...ys) - y
+      const padding = Math.max(width, height, 10) * 0.8
+      void import('@mlightcad/data-model').then(({ AcGeBox2d }) => {
+        if (manager?.curView === view) view.zoomTo(new AcGeBox2d({ x: x - padding, y: y - padding }, { x: x + width + padding, y: y + height + padding }))
+      })
+    },
+    zoom(direction) { if (direction > 0) zoomIn(); else zoomOut() },
+  }
+}
+
+defineExpose({ setLayerVisibility, zoomIn, zoomOut, resetView, compareDrawing, focusDifference, clearComparison, extractTitleBlock, annotationViewport })
 
 watch(() => props.dxfUrl, (url) => {
   if (url) void loadViewer(url)

@@ -28,6 +28,7 @@ export interface FileView {
   previewable: boolean
   storageKey?: string
   currentStorageKey?: string
+  currentVersionId?: string
   replacedBy?: string
   replacedAt?: string
   replaceReason?: string
@@ -277,6 +278,7 @@ export class DrawingReadModelMapper {
         storageKey: item.currentStorageKey || item.storageKey,
         rawStorageKey: item.storageKey,
         currentStorageKey: item.currentStorageKey,
+        currentVersionId: item.currentVersionId,
         mimeType: item.currentMimeType || item.mimeType,
         previewable: item.previewable,
         revision: item.revision,
@@ -375,6 +377,7 @@ export class DrawingReadModelMapper {
     previewable: boolean
     storageKey?: string
     currentStorageKey?: string
+    currentVersionId?: string
     replacedBy?: string
     replacedAt?: string
     replaceReason?: string
@@ -410,6 +413,7 @@ export class DrawingReadModelMapper {
       previewable: file.previewable,
       ...(file.storageKey ? { storageKey: file.storageKey } : {}),
       ...(file.currentStorageKey ? { currentStorageKey: file.currentStorageKey } : {}),
+      ...(file.currentVersionId ? { currentVersionId: file.currentVersionId } : {}),
       ...(file.replacedBy ? { replacedBy: file.replacedBy } : {}),
       ...(file.replacedAt ? { replacedAt: file.replacedAt } : {}),
       ...(file.replaceReason ? { replaceReason: file.replaceReason } : {}),

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -12,6 +12,10 @@ import type { TitleSpace } from '@/features/drawings/detail-tabs/preview/cad-tit
 import { useDrawingStore } from '@/stores/drawing.store'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import type { FileView } from '@/modules/drawing'
+import ReviewAnnotationBoard from '@/features/reviews/components/ReviewAnnotationBoard.vue'
+import type { AnnotationWorkspace, AnnotationViewport } from '@/features/reviews/annotation-model'
+import { reviewAnnotationService } from '@/services/review-annotation.service'
+import { reviewCaseService } from '@/services/review-case.service'
 
 defineOptions({
   name: 'DrawingViewerPage',
@@ -28,6 +32,22 @@ const fileId = computed(() => String(route.query.fileId ?? ''))
 const versionId = computed(() => String(route.query.versionId ?? ''))
 const versionKey = computed(() => String(route.query.versionKey ?? ''))
 const fromReview = computed(() => route.query.from === 'review')
+const annotationVisible = ref(fromReview.value)
+const annotationWorkspace = shallowRef<AnnotationWorkspace | null>(null)
+const annotationView = shallowRef<AnnotationViewport | null>(null)
+const annotationError = ref('')
+let loadGeneration = 0
+
+function handleViewerReady() {
+  viewerReady.value = true
+  annotationView.value = mlightCadViewerRef.value?.annotationViewport() ?? null
+}
+async function reloadAnnotations() {
+  const scope = annotationWorkspace.value
+  if (!scope) { void loadTargetFile(); return }
+  try { annotationWorkspace.value = await reviewAnnotationService.load(scope.caseId, scope.attachmentId); annotationError.value = '' }
+  catch (e) { annotationError.value = e instanceof Error ? e.message : '读取批注失败' }
+}
 
 const currentDrawing = computed(() => drawingStore.getDrawing(drawingId.value) ?? drawingStore.getPart(drawingId.value))
 const isAssembly = computed(() => !currentDrawing.value || !('parentNo' in currentDrawing.value))
@@ -99,12 +119,17 @@ function revokeOriginalUrl() {
 }
 
 async function loadTargetFile() {
+  const generation = ++loadGeneration
   viewerReady.value = false
+  annotationView.value = null
+  annotationWorkspace.value = null
+  annotationError.value = ''
   titleResult.value = null
   titleError.value = ''
   if (conversionTimer) clearTimeout(conversionTimer)
   conversionState.value = ''
   await drawingStore.load()
+  if (generation !== loadGeneration || disposed) return
 
   // 优先按 fileId 在当前总图及其全部零件中精确查找，避免零件文件回退到总图。
   let file: FileView | undefined
@@ -125,11 +150,25 @@ async function loadTargetFile() {
   revokeOriginalUrl()
 
   if (file) {
+    let pinnedVersion = versionId.value
+    try {
+      const cases = await reviewCaseService.list()
+      if (generation !== loadGeneration || disposed) return
+      const requestedCase = String(route.query.reviewCaseId ?? '')
+      const review = requestedCase ? cases.find(c => c.id === requestedCase) : cases.find(c => c.drawingNo === (currentDrawing.value?.no || drawingId.value))
+      if (review) {
+        const scope = await reviewAnnotationService.load(review.id, file.id)
+        if (generation !== loadGeneration || disposed) return
+        if (versionKey.value || (versionId.value && versionId.value !== scope.versionId) || (!fromReview.value && !versionId.value && file.currentVersionId !== scope.versionId)) {
+          annotationError.value = '当前查看的版本与本轮审核版本不同，请从审核工作台打开对应文件。'
+        } else { annotationWorkspace.value = scope; pinnedVersion = scope.versionId }
+      } else annotationError.value = '此图纸尚未发起审核，发起审核后可在这里添加批注。'
+    } catch (e) { if (generation !== loadGeneration || disposed) return; annotationError.value = e instanceof Error ? e.message : '读取审核批注失败' }
     const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
     const storageKeyValue = file.storageKey || ''
-    if (isCad && (storageKeyValue || versionId.value)) {
+    if (isCad && (storageKeyValue || pinnedVersion)) {
       const baseUrl = getApiBaseUrl()
-      if (storageKeyValue || versionId.value) {
+      if (storageKeyValue || pinnedVersion) {
         try {
           const token = getAccessToken()
           const cacheBuster = Date.now()
@@ -143,8 +182,8 @@ async function loadTargetFile() {
             if (!response.ok) response = null
           }
           if (!response) {
-            if (versionId.value) {
-              response = await fetch(`${baseUrl}/file-versions/${encodeURIComponent(versionId.value)}/source?_t=${cacheBuster}`, {
+            if (pinnedVersion) {
+              response = await fetch(`${baseUrl}/file-versions/${encodeURIComponent(pinnedVersion)}/source?_t=${cacheBuster}`, {
                 headers: token ? { Authorization: `Bearer ${token}` } : {},
                 credentials: 'include',
               })
@@ -159,7 +198,7 @@ async function loadTargetFile() {
             throw new Error('无法确定 CAD 源文件地址')
           }
            if (!response.ok) {
-             if (response.status === 409 && !versionId.value && !versionKey.value) { void checkConversion(); return }
+             if (response.status === 409 && !pinnedVersion && !versionKey.value) { void checkConversion(); return }
              const body = await response.json().catch(() => ({}))
              throw new Error(body.message || `HTTP ${response.status}`)
            }
@@ -168,10 +207,13 @@ async function loadTargetFile() {
           if (contentType.includes('text/html') || contentType.includes('application/json')) {
             throw new Error(`渲染源接口返回了错误内容类型: ${contentType}`)
           }
-           cadOriginalUrl.value = URL.createObjectURL(await response.blob())
+           const blob = await response.blob()
+           if (generation !== loadGeneration || disposed) return
+           cadOriginalUrl.value = URL.createObjectURL(blob)
            cadSourceFileName.value = sourceName
            console.info('[DrawingViewerPage] 原始 CAD 已加载', { sourceName, storageKey: file.storageKey, versionId: versionId.value })
         } catch (error) {
+          if (generation !== loadGeneration || disposed) return
           cadOriginalError.value = error instanceof Error ? error.message : String(error)
           console.warn('读取原始 CAD 文件失败，MLightCAD 将不可用', error)
         }
@@ -266,7 +308,7 @@ onUnmounted(() => {
   revokeOriginalUrl()
 })
 
-watch([drawingId, fileId, versionId, versionKey], () => {
+watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId], () => {
   void loadTargetFile()
 })
 </script>
@@ -291,6 +333,7 @@ watch([drawingId, fileId, versionId, versionKey], () => {
       </div>
 
       <div class="header-right">
+        <button class="toggle-btn" :class="{ active: annotationVisible }" type="button" :aria-pressed="annotationVisible" @click="annotationVisible = !annotationVisible; if (annotationVisible) layerPanelVisible = false">审核批注</button>
         <button class="toggle-btn" type="button" :disabled="!viewerReady" @click="extractDrawingInfo">提取图纸信息</button>
         <button class="toggle-btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId }, query: { fileId, versionId: versionId || undefined, versionKey: versionKey || undefined } })">图纸对比</button>
         <!-- 已废弃：Canvas/MLightCAD 切换入口保留，不再显示，当前固定使用 MLightCAD。 -->
@@ -349,6 +392,7 @@ watch([drawingId, fileId, versionId, versionKey], () => {
     <div class="viewer-body">
       <!-- 中间 CAD 矢量图画板 -->
       <main class="viewer-canvas-container">
+        <ReviewAnnotationBoard :workspace="annotationWorkspace" :viewport="annotationView" :enabled="annotationVisible" :error="annotationError" @reload="reloadAnnotations">
         <!-- 已废弃：Canvas DXF 渲染组件保留，不再挂载。 -->
         <!--
         <CadVectorViewer
@@ -367,8 +411,8 @@ watch([drawingId, fileId, versionId, versionKey], () => {
           ref="mlightCadViewerRef"
           :dxf-url="cadOriginalUrl"
           :file-name="cadSourceFileName"
-          @ready="viewerReady = true"
-          @load-error="viewerReady = false; titleResult = null"
+          @ready="handleViewerReady"
+          @load-error="viewerReady = false; titleResult = null; annotationView = null"
           @layers-loaded="handleLayersLoaded"
           @zoom-change="handleZoomChange"
         />
@@ -377,11 +421,12 @@ watch([drawingId, fileId, versionId, versionKey], () => {
           <p>{{ targetFile ? (cadOriginalError || '原始 CAD 文件不可用，无法使用 MLightCAD') : '暂无选中的图纸文件' }}</p>
           <button v-if="['failed','backoff','retry'].includes(conversionState)" class="btn primary" @click="checkConversion(true)">重新转换</button>
         </div>
+        </ReviewAnnotationBoard>
       </main>
 
       <!-- 右侧图层管理器面板（可收起） -->
       <DrawingInfoPanel v-if="titleResult" :spaces="titleResult.spaces" :active-space-id="titleResult.activeSpaceId" :file-name="targetFile?.name || ''" @close="titleResult = null" />
-      <aside v-else-if="layerPanelVisible" class="side-panel layer-panel">
+      <aside v-else-if="layerPanelVisible && !annotationVisible" class="side-panel layer-panel">
         <div class="panel-header">
           <DemoIcon name="layers" :size="14" />
           <span>图层控制 ({{ dynamicLayers.length }})</span>

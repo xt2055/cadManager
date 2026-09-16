@@ -55,7 +55,7 @@ function isCad(name: string) {
 
 function browse(versionId: string | undefined, attachmentId: string) {
   if (!versionId) return
-  void router.push({ name: RouteName.DrawingViewer, params: { drawingId: props.drawingNo }, query: { fileId: attachmentId, versionId, from: 'review' } })
+  void router.push({ name: RouteName.DrawingViewer, params: { drawingId: props.drawingNo }, query: { fileId: attachmentId, versionId, reviewCaseId: submission.value?.review?.id, from: 'review' } })
 }
 
 function compare(file: LifecycleSubmission['files'][number]) {
@@ -94,7 +94,7 @@ function compare(file: LifecycleSubmission['files'][number]) {
           <span v-if="fileOwners.get(file.attachmentId)" class="file-owner">{{ fileOwners.get(file.attachmentId) }}</span>
           <strong>{{ file.name }}</strong>
           <template v-if="isCad(file.name)">
-            <button class="btn sm" type="button" :disabled="!file.submittedVersionId" @click="browse(file.submittedVersionId, file.attachmentId)">浏览</button>
+            <button class="btn sm" type="button" :disabled="!file.submittedVersionId" @click="browse(file.submittedVersionId, file.attachmentId)">浏览并批注</button>
             <button class="btn sm" type="button" :disabled="!file.baseVersionId || !file.submittedVersionId" @click="compare(file)">变更前后对比</button>
           </template>
         </div>

@@ -7,6 +7,28 @@ const require = createRequire(import.meta.url)
 const { AcDbDatabase, AcDbDxfFiler, AcDbLine, AcDbCircle, AcDbBlockTableRecord, AcDbBlockReference, AcDbLayerTableRecord } = require('@mlightcad/data-model')
 const snapshotDrawing = database => snapshot(database, () => new AcDbDxfFiler({ database, precision: 10 }))
 
+test('导入角度尺寸辅助点重算且新增两个圆时不误报，实际尺寸变化仍检出', () => {
+  function angularDrawing(auxiliary = 4, { type = 0, resolved = true, geometry = 10, text = '15°' } = {}) {
+    const child = { dxfTypeName: 'LINE', layer: '0', dxfOut(filer) { filer.text = `100\nAcDbLine\n10\n0\n11\n${geometry}\n` } }
+    const block = { name: '*X1', origin: { x: 0, y: 0, z: 0 }, newIterator: () => [child] }
+    const dimension = {
+      objectId: 'angle', dxfTypeName: 'DIMENSION', dimBlockId: '*X1', layer: '0',
+      dxfOut(filer) { filer.text = `100\nAcDbDimension\n2\n*X1\n70\n${type}\n1\n${text}\n100\nAcDb3PointAngularDimension\n13\n1\n23\n2\n33\n0\n14\n3\n24\n4\n34\n0\n15\n${auxiliary}\n25\n5\n35\n0\n16\n6\n26\n7\n36\n0\n` },
+    }
+    const db = { tables: { blockTable: { newIterator: () => resolved ? [block] : [], modelSpace: { newIterator: () => [dimension] } }, layerTable: { getAt: () => undefined } } }
+    return snapshot(db, () => ({ text: '', toString() { return this.text } }))
+  }
+  const before = angularDrawing()
+  const circles = snapshotDrawing(drawing(new AcDbCircle({ x: 30, y: 40, z: 0 }, 10), new AcDbCircle({ x: 30, y: 40, z: 0 }, 20)))
+  assert.deepEqual(compareEntities(before, [...angularDrawing(40), ...circles]).map(d => [d.kind, d.after.type]), [['added', 'CIRCLE'], ['added', 'CIRCLE']])
+  for (const options of [{ geometry: 12 }, { text: '16°' }]) {
+    assert.equal(compareEntities(before, angularDrawing(40, options))[0]?.kind, 'modified')
+  }
+  for (const options of [{ type: 5 }, { resolved: false }]) {
+    assert.equal(compareEntities(angularDrawing(4, options), angularDrawing(40, options))[0]?.kind, 'modified')
+  }
+})
+
 test('缸头直径公差标注仅排版变化不算修改，公差变化仍检出', () => {
   const dimension = text => `100\nAcDbDimension\n1\n${text}\n11\n-28.9161\n21\n-3.20132\n100\nAcDbAlignedDimension\n13\n-16.144475\n`
   const old = dimension('\\A1;%%C50{\\H1x;%%P0.012}')

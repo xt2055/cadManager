@@ -58,6 +58,7 @@ export interface DrawingFile {
   storageKey?: string
   rawStorageKey?: string
   currentStorageKey?: string
+  currentVersionId?: string
   mimeType?: string
 	previewable: boolean
 	revision?: number
