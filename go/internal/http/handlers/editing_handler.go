@@ -235,8 +235,10 @@ func writeEditingError(writer http.ResponseWriter, err error) {
 		response.WriteError(writer, http.StatusServiceUnavailable, "SMB 文件共享尚未配置")
 	case errors.Is(err, editing.ErrFileBusy):
 		response.WriteError(writer, http.StatusConflict, "该文件正在被其他用户编辑")
-	case errors.Is(err, editing.ErrInvalidTicket), errors.Is(err, editing.ErrSessionNotFound):
-		response.WriteError(writer, http.StatusGone, "编辑票据或会话已失效，请重新打开")
+	case errors.Is(err, editing.ErrInvalidTicket):
+		response.WriteError(writer, http.StatusGone, "打开票据已失效，请重新点击本地编辑")
+	case errors.Is(err, editing.ErrSessionNotFound):
+		response.WriteError(writer, http.StatusGone, "编辑会话已失效，请刷新占用状态后重新打开")
 	case errors.Is(err, editing.ErrTicketClosed):
 		response.WriteError(writer, http.StatusConflict, "变更工单已不在执行中，无法保存编辑成果")
 	case errors.Is(err, editing.ErrWorkVersionConflict):

@@ -465,10 +465,16 @@ func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, d
 		return "", fmt.Errorf("读取图纸状态失败: %w", err)
 	}
 
+	if item.Status != drawing.StatusArchived && (admin || item.CreatedByID == user.ID) {
+		return "", nil
+	}
 	switch item.Status {
 	case drawing.StatusReviewing:
 		if admin {
 			return "", nil
+		}
+		if service.reviews == nil {
+			return "", errors.New("审核节点查询未配置，无法确认编辑权限")
 		}
 		assignee, assigneeErr := service.reviews.ActiveCaseAssigneeByDrawingNo(ctx, drawingNo)
 		if assigneeErr != nil {
@@ -498,7 +504,7 @@ func (service *Service) authorizeEdit(ctx context.Context, user auth.AuthUser, d
 		if admin {
 			return "", nil
 		}
-		if designer && item.CreatedByID == user.ID {
+		if item.CreatedByID == user.ID {
 			return "", nil
 		}
 		if designer {
