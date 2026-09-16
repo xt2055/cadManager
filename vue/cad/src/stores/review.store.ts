@@ -10,7 +10,8 @@ export interface PendingReviewView {
   no: string
   name: string
   node: string
-  by: string
+  /** 负责人：后端暂未提供该字段，先占位为空串，待接口补齐后改为取其返回值。 */
+  responsible: string
   time: string
 }
 
@@ -38,7 +39,8 @@ export const useReviewStore = defineStore('review', () => {
         no: reviewCase.drawingNo,
         name: reviewCase.drawingName || reviewCase.drawingNo,
         node: activeNode.name,
-        by: activeNode.assignedName,
+        // 负责人字段待后端提供；占位期间列表显示“—”，不误用其他字段顶替。
+        responsible: '',
         time: reviewCase.startedAt,
       }]
     })

@@ -41,7 +41,8 @@ onUnmounted(() => reviewStore.stopPolling())
             <span class="dh-no review-no">{{ review.no }}</span>
           </div>
           <div class="review-meta">
-            待审节点 <b>{{ review.node }}</b> · 责任人 {{ review.by }} · 发起于 {{ review.time }} · 顺序流转
+            <!-- 负责人字段后端尚未提供，先占位显示「—」；接口补齐后取 review.responsible。 -->
+            待审节点 <b>{{ review.node }}</b> · 负责人 {{ review.responsible || '—' }} · 发起于 {{ review.time }} · 顺序流转
           </div>
         </div>
 
