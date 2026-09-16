@@ -10,7 +10,7 @@ import {
   CHANGE_STATUS_LABELS,
   type ChangeRequest,
 } from '@/services/change-request.service'
-import { buildChangeTargetGroups } from '../components/detail/change-targets'
+import { buildChangeTargetGroups, changeTargetRoleLabel } from '../components/detail/change-targets'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import EvidenceDocuments from '../components/EvidenceDocuments.vue'
 import ChangeEvidenceList from '../components/ChangeEvidenceList.vue'
@@ -117,7 +117,7 @@ const drawingTargets = computed(() =>
   groups.value.flatMap((group) =>
     group.files
       .filter((file) => file.category === 'drawing2d')
-      .map((file) => ({ id: file.id, name: file.name, no: group.no, ownerName: group.name, kind: group.kind })),
+      .map((file) => ({ id: file.id, name: file.name, no: group.no, ownerName: group.name, role: file.role })),
   ),
 )
 
@@ -491,10 +491,8 @@ function actionTone(action: string): string {
                       <DemoIcon v-if="selected.includes(item.id)" name="check" :size="12" />
                     </div>
                     <span class="file-category-badge">2D</span>
-                    <span class="target-no mono">{{ item.no }}</span>
-                    <span class="target-owner" :title="item.ownerName">{{ item.ownerName }}</span>
                     <span class="file-name-text" :title="item.name">{{ item.name }}</span>
-                    <span class="target-kind-badge">{{ item.kind }}</span>
+                    <span class="target-kind-badge">{{ changeTargetRoleLabel(item.role) }}</span>
                   </label>
                 </div>
 
@@ -543,7 +541,7 @@ function actionTone(action: string): string {
               <div class="block-title-row">
                 <h4>
                   <span class="step-num">3</span>
-                  上传变更佐证资料
+                  上传变更佐证资料（可选）
                 </h4>
                 <span class="selected-stat">
                   已选 <b>{{ evidenceFiles.length }}</b> 份
@@ -583,7 +581,7 @@ function actionTone(action: string): string {
 
               <p class="evidence-hint">
                 <DemoIcon name="info" :size="13" />
-                <span>管理员审批前必须存在至少一份变更依据材料；提交工单后这些文件将自动归档，并可在工单内的「变更证明依据与材料」区域继续补充。</span>
+                <span>此步骤可跳过：审批与提交完整审核都不校验变更依据材料；材料可在工单内的「变更证明依据与材料」区域随时补充，仅作为过程留痕。</span>
               </p>
             </div>
 
@@ -710,7 +708,7 @@ function actionTone(action: string): string {
             </div>
             <div class="prompt-text">
               <b>{{ current.status === 'pending_approval' ? '变更申请已就绪，等待管理员审批' : current.status === 'pending_verify' ? '修改成果已提交，正在审核中心进行完整审核' : `等待指定设计员「${current.executorName || '未指定'}」完成本地图纸编辑` }}</b>
-              <p>{{ current.status === 'pending_approval' ? '请确保在上方已上传充分的客户确认图或依据资料，管理员同意后即可开辟修改通道。' : current.status === 'pending_verify' ? '审核在「审核中心」进行，全部节点签署通过后系统将自动发布最新版本。' : '设计人员完成本地 CAD 文件修改后，可直接在此提交并发起完整审核。' }}</p>
+              <p>{{ current.status === 'pending_approval' ? '管理员同意后即可开辟修改通道，不校验变更依据材料；如需补充客户确认图或依据资料，可在下方「变更证明依据与材料」区域随时上传。' : current.status === 'pending_verify' ? '审核在「审核中心」进行，全部节点签署通过后系统将自动发布最新版本。' : '设计人员完成本地 CAD 文件修改后，可直接在此提交并发起完整审核，不要求先上传证明材料。' }}</p>
             </div>
             <button
               v-if="canSubmitCurrent"
@@ -1305,29 +1303,11 @@ function actionTone(action: string): string {
   flex: none;
 }
 
-.flat-card .target-no {
-  flex: none;
-  color: var(--accent);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.flat-card .target-owner {
-  flex: none;
-  max-width: 200px;
-  overflow: hidden;
-  color: var(--text-1);
-  font-size: 12px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .flat-card .file-name-text {
   flex: 1;
   min-width: 0;
-  color: var(--text-2);
+  color: var(--text-1);
+  font-weight: 600;
 }
 
 .flat-card .target-kind-badge {

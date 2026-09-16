@@ -4,6 +4,7 @@ interface TargetFileSource {
   id: string
   name: string
   fileCategory?: string
+  role?: string
 }
 
 interface TargetOwnerSource {
@@ -17,6 +18,9 @@ interface TargetPartSource extends TargetOwnerSource {
   children: TargetPartSource[]
 }
 
+/** 文件类别在上传创建时写入 attachments.file_role，变更清单直接沿用，不再按所属对象推断。 */
+export type ChangeTargetRole = 'assembly' | 'part' | 'other'
+
 export interface ChangeTargetGroup {
   no: string
   name: string
@@ -25,7 +29,18 @@ export interface ChangeTargetGroup {
     id: string
     name: string
     category: FileCategory
+    role: ChangeTargetRole
   }>
+}
+
+export function changeTargetRoleLabel(role: ChangeTargetRole): string {
+  if (role === 'assembly') return '总图'
+  if (role === 'part') return '零件图'
+  return '其他文件'
+}
+
+function changeTargetRole(role: string | undefined): ChangeTargetRole {
+  return role === 'assembly' || role === 'part' ? role : 'other'
 }
 
 function flattenParts(nodes: readonly TargetPartSource[]): TargetPartSource[] {
@@ -39,6 +54,7 @@ function ownerFiles(owner: TargetOwnerSource): ChangeTargetGroup['files'] {
       id: file.id,
       name: file.name,
       category: fileCategory(file),
+      role: changeTargetRole(file.role),
     }))
 }
 
