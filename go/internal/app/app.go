@@ -11,6 +11,7 @@ import (
 	"cadguanliq/internal/data"
 	httpapi "cadguanliq/internal/http"
 	"cadguanliq/internal/logging"
+	"cadguanliq/internal/review"
 	"cadguanliq/internal/setup"
 	"cadguanliq/internal/smb"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,6 +46,15 @@ func Run(cfg config.Config) error {
 		return err
 	}
 	logging.Infof("[数据库] 标题栏和零件索引结构检查完成")
+	// 补齐正在等签的审核提醒：责任人离线期间推进的节点、以及本改动上线前已存在的待办。
+	remindCtx, cancelRemind := context.WithTimeout(context.Background(), 30*time.Second)
+	remindErr := review.EnsureTurnNotifications(remindCtx, pool)
+	cancelRemind()
+	if remindErr != nil {
+		logging.Errorf("[通知] 补期待办审核提醒失败：%v", remindErr)
+	} else {
+		logging.Infof("[通知] 待办审核提醒补查完成")
+	}
 	authService := auth.NewService(auth.NewPGRepository(pool))
 	logging.Infof("[启动] 服务监听 %s", cfg.Addr)
 	return http.ListenAndServe(cfg.Addr, NewHandler(cfg, pool, authService))

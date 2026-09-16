@@ -7,6 +7,10 @@ export interface NotificationItem {
   content: string
   senderName: string
   drawingId: string
+  /** 图纸编号：待办审核需要它才能打开审核工作台。 */
+  drawingNo: string
+  /** 跳转目标：review-workspace 表示直接进入审核工作台。 */
+  target: string
   createdAt: string
   readAt: string | null
 }

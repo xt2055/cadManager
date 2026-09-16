@@ -93,7 +93,8 @@ func TestNotificationChangeSigning(t *testing.T) {
 			if got := db.ScanString(t, `SELECT count(*)::text FROM notifications WHERE recipient_id=$1::uuid`, fx.Author); got != "1" {
 				t.Fatalf("change result should notify once: %s", got)
 			}
-			if kind := db.ScanString(t, `SELECT kind FROM notifications LIMIT 1`); kind != "change" {
+			// 只断言发给发起人的变更结果通知，避免被其他接收人的通知干扰。
+			if kind := db.ScanString(t, `SELECT kind FROM notifications WHERE recipient_id=$1::uuid`, fx.Author); kind != "change" {
 				t.Fatalf("wrong result kind: %s", kind)
 			}
 		})

@@ -22,8 +22,11 @@ type notificationItem struct {
 	Content    string     `json:"content"`
 	SenderName string     `json:"senderName"`
 	DrawingID  string     `json:"drawingId"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	ReadAt     *time.Time `json:"readAt"`
+	// DrawingNo 与 Target 供前端直接跳转：待办审核需要图纸编号才能打开审核工作台。
+	DrawingNo string     `json:"drawingNo"`
+	Target    string     `json:"target"`
+	CreatedAt time.Time  `json:"createdAt"`
+	ReadAt    *time.Time `json:"readAt"`
 }
 
 // Notifications scopes every read and mutation to the authenticated recipient.
@@ -57,8 +60,8 @@ func Notifications(pool *pgxpool.Pool) http.HandlerFunc {
 				response.WriteError(w, 500, "读取通知失败")
 				return
 			}
-			rows, err := tx.Query(r.Context(), `SELECT n.id::text,n.kind,n.title,n.content,COALESCE(u.display_name,u.account,'系统'),COALESCE(n.drawing_id::text,''),n.created_at,n.read_at
-    FROM notifications n LEFT JOIN users u ON u.id=n.sender_id
+			rows, err := tx.Query(r.Context(), `SELECT n.id::text,n.kind,n.title,n.content,COALESCE(u.display_name,u.account,'系统'),COALESCE(n.drawing_id::text,''),COALESCE(d.drawing_no,''),CASE WHEN n.event_key LIKE 'review-turn:%' THEN 'review-workspace' ELSE '' END,n.created_at,n.read_at
+    FROM notifications n LEFT JOIN users u ON u.id=n.sender_id LEFT JOIN drawings d ON d.id=n.drawing_id
     WHERE n.recipient_id=$1::uuid AND (NOT $2 OR n.read_at IS NULL)
     ORDER BY n.created_at DESC,n.id DESC LIMIT 20 OFFSET $3`, user.ID, unreadOnly, (page-1)*20)
 			if err != nil {
@@ -68,7 +71,7 @@ func Notifications(pool *pgxpool.Pool) http.HandlerFunc {
 			items := make([]notificationItem, 0)
 			for rows.Next() {
 				var item notificationItem
-				if err = rows.Scan(&item.ID, &item.Kind, &item.Title, &item.Content, &item.SenderName, &item.DrawingID, &item.CreatedAt, &item.ReadAt); err != nil {
+				if err = rows.Scan(&item.ID, &item.Kind, &item.Title, &item.Content, &item.SenderName, &item.DrawingID, &item.DrawingNo, &item.Target, &item.CreatedAt, &item.ReadAt); err != nil {
 					break
 				}
 				items = append(items, item)

@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { notificationActionLabel } from '@/features/notifications/notification-targets'
 import type { NotificationItem } from '@/services/notification.service'
 import { formatReadableDateTime } from '@/utils/date-time'
 
@@ -47,7 +48,7 @@ const bodyText = computed(() => {
   return props.item?.content?.trim() || '无详细说明。'
 })
 const icon = computed(() => (props.item ? alertIcons[props.item.kind] ?? 'bell' : 'bell'))
-const relatedLabel = computed(() => (props.item?.kind === 'change' ? '查看变更工单' : '查看图纸审批'))
+const relatedLabel = computed(() => notificationActionLabel(props.item))
 const queueLabel = computed(() => {
   if (!props.item || props.total <= 1) return ''
   const rest = Math.max(0, props.remaining - 1)

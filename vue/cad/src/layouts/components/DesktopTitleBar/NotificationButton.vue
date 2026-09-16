@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import NotificationAlertDialog from '@/components/feedback/NotificationAlertDialog.vue'
 import { createNotificationAlertTracker } from '@/features/notifications/notification-alert-tracker'
+import { notificationActionLabel, opensReviewWorkspace } from '@/features/notifications/notification-targets'
+import { RouteName } from '@/router/route-names'
 import { notificationService, type NotificationItem } from '@/services/notification.service'
 import { connectNotifications, type NotificationConnectionState } from '@/services/notification-socket'
 import { useAuthStore } from '@/stores/auth.store'
@@ -70,7 +72,11 @@ async function sync() {
     if (!sameSession(token)) return
     const batch = tracker.collect(result.items)
     if (batch.seeded) {
-      if (result.unread > 0) summaryUnread.value = result.unread
+      // 登录/刷新后的首次同步：未读的待办审核逐条补弹，避免“派单时人不在线就永远不提醒”。
+      const pendingTurns = result.items.filter(item => !item.readAt && opensReviewWorkspace(item))
+      enqueueAlerts(pendingTurns)
+      const rest = result.unread - pendingTurns.length
+      if (rest > 0) summaryUnread.value = rest
     } else if (batch.alerts.length) {
       enqueueAlerts(batch.alerts)
     }
@@ -100,6 +106,11 @@ async function markRead(item?: NotificationItem) {
 async function viewRelated(item: NotificationItem) {
   if (!item.readAt) await markRead(item)
   open.value = false
+  // 待办审核直达审核工作台（按图纸编号打开），其余通知仍打开图纸详情对应页签。
+  if (opensReviewWorkspace(item)) {
+    await router.push({ name: RouteName.ReviewWorkspace, params: { drawingNo: item.drawingNo } })
+    return
+  }
   await router.push(`/drawings/${encodeURIComponent(item.drawingId)}/${item.kind === 'change' ? 'changes' : 'review'}`)
 }
 
@@ -220,7 +231,7 @@ onUnmounted(() => {
           <div class="notification-card-heading"><strong>{{ item.title }}</strong><span v-if="!item.readAt" class="notification-unread-label">未读</span></div>
           <p class="notification-content">{{ item.content }}</p>
           <p class="notification-muted">{{ item.kind === 'announcement' ? item.senderName : '系统通知' }} · {{ formatReadableDateTime(item.createdAt) }}</p>
-          <div class="notification-actions"><button v-if="item.drawingId" class="btn" type="button" :disabled="updating" @click="viewRelated(item)">{{ item.kind === 'change' ? '查看变更工单' : '查看图纸审批' }}</button><button v-if="!item.readAt" class="btn" type="button" :disabled="updating" @click="markRead(item)">标为已读</button></div>
+          <div class="notification-actions"><button v-if="item.drawingId" class="btn" type="button" :disabled="updating" @click="viewRelated(item)">{{ notificationActionLabel(item) }}</button><button v-if="!item.readAt" class="btn" type="button" :disabled="updating" @click="markRead(item)">标为已读</button></div>
         </article>
       </div>
       <div v-if="total > 20" class="notification-toolbar notification-pages"><button class="btn" type="button" :disabled="page === 1 || loading" @click="page--">上一页</button><span>{{ page }} / {{ pageCount }} · 共 {{ total }} 条</span><button class="btn" type="button" :disabled="page >= pageCount || loading" @click="page++">下一页</button></div>

@@ -432,6 +432,10 @@ func (repository *PGRepository) StartCase(ctx context.Context, drawingNo string,
 			}
 		}
 	}
+	// 节点已就位：通知第一位责任人审核。
+	if err := notifyNodeTurn(ctx, tx, caseID); err != nil {
+		return ReviewCase{}, err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO review_actions (review_case_id, actor_id, action, opinion)
 		VALUES ($1::uuid, $2::uuid, 'start', $3)`, caseID, userID, "发起审核流转"); err != nil {
@@ -616,6 +620,11 @@ func (repository *PGRepository) SubmitNode(ctx context.Context, caseID string, i
 				if _, err := tx.Exec(ctx, `UPDATE drawings SET status = 'archived',updated_by=$2::uuid WHERE id = $1::uuid`, drawingID, userID); err != nil {
 					return ReviewCase{}, fmt.Errorf("更新图纸状态失败: %w", err)
 				}
+			}
+		} else {
+			// 本轮未结束：待签节点推进到下一个责任人，通知新的当前责任人。
+			if err := notifyNodeTurn(ctx, tx, caseID); err != nil {
+				return ReviewCase{}, err
 			}
 		}
 	}

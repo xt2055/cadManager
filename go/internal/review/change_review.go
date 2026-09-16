@@ -128,6 +128,10 @@ func StartChangeCase(ctx context.Context, tx pgx.Tx, drawingID, submissionID, de
 			return err
 		}
 	}
+	// 新的审核轮次已建立：通知第一位待签责任人。
+	if err := notifyNodeTurn(ctx, tx, caseID); err != nil {
+		return err
+	}
 	opinion := "变更提交：全部节点重新审核，正式在用版本保持不变"
 	if prevCaseID != "" {
 		opinion = "变更提交：延续上一轮已通过节点，从驳回节点继续审核，正式在用版本保持不变"
