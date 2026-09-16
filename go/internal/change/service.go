@@ -273,13 +273,6 @@ func (s *PGService) Approve(ctx context.Context, user auth.AuthUser, id string, 
 		return Request{}, ErrState
 	}
 	direct := applicant == user.ID
-	var hasEvidence bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_documents WHERE change_request_id=$1::uuid)`, id).Scan(&hasEvidence); err != nil {
-		return Request{}, err
-	}
-	if !hasEvidence {
-		return Request{}, errors.New("请先在变更工单上传变更依据或客户要求等证明材料")
-	}
 	if strings.TrimSpace(input.ExecutorID) == "" {
 		return Request{}, errors.New("审批时必须明确指定负责修改的设计员")
 	}
@@ -515,13 +508,6 @@ func (s *PGService) Submit(ctx context.Context, user auth.AuthUser, id string, i
 	}
 	if user.ID != executor {
 		return Request{}, ErrForbidden
-	}
-	var hasEvidence bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_documents WHERE change_request_id=$1::uuid)`, id).Scan(&hasEvidence); err != nil {
-		return Request{}, err
-	}
-	if !hasEvidence {
-		return Request{}, errors.New("请先上传本次变更的证明材料，再提交完整审核")
 	}
 	// 冻结：仍有未关闭的编辑会话时不允许提交，避免提交/验收后继续写入。
 	var active bool
