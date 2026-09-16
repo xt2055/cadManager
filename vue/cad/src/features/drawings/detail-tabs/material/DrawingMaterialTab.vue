@@ -217,7 +217,7 @@ function createExcelBytes(workbook: XLSX.WorkBook): Uint8Array {
 
 async function createPrintableFile(): Promise<{ bytes: Uint8Array; drawingNo: string }> {
   const drawingNo = currentItem.value?.no || '图纸'
-  const source = materialFiles.value.find((file) => file.storageKey && /\.xlsx$/i.test(file.name))
+  const source = originalMaterialWorkbook(materialFiles.value)
   const storageKey = source?.storageKey || ''
 
   try {
@@ -228,6 +228,8 @@ async function createPrintableFile(): Promise<{ bytes: Uint8Array; drawingNo: st
       drawingNo,
     }
   } catch (backendError) {
+    // 有原始模板时不能用无样式工作簿替代，避免打印格式悄悄丢失。
+    if (source) throw backendError
     console.warn('服务端导出 Excel 异常，尝试本地回退', backendError)
     const fallback = createFallbackWorkbook()
     if (!fallback) throw new Error('暂无备料明细可导出')
@@ -261,12 +263,7 @@ async function exportExcel() {
 
 async function handlePrint() {
   try {
-    const source = originalMaterialWorkbook(materialFiles.value)
-    const sourceBlob = source?.storageKey ? await drawingFileService.read(source.storageKey) : null
-    const sourceName = source?.name
-    const result = sourceBlob && sourceName
-      ? { bytes: new Uint8Array(await sourceBlob.arrayBuffer()), fileName: sourceName }
-      : await createPrintableFile().then((generated) => ({
+    const result = await createPrintableFile().then((generated) => ({
           bytes: generated.bytes,
           fileName: `${generated.drawingNo}_备料明细表_${new Date().toISOString().slice(0, 10)}.xlsx`,
         }))
@@ -275,12 +272,12 @@ async function handlePrint() {
 
     if (isTauri) {
       await invoke('open_generated_excel', { fileName: result.fileName, bytes })
-      uiStore.toast('已打开原始备料表，请在 Excel/WPS 中打印', 'ok')
+      uiStore.toast('已打开最新备料明细，请在 Excel/WPS 中打印', 'ok')
       return
     }
 
     downloadExcel(result.bytes, result.fileName)
-    uiStore.toast('已下载原始备料表，请用 Excel/WPS 打开后打印', 'info')
+    uiStore.toast('已下载最新备料明细，请用 Excel/WPS 打开后打印', 'info')
   } catch (error) {
     console.error('打开 Excel 打印文件失败', error)
     uiStore.toast('打印文件生成失败：请确认原始文件格式有效', 'warn')

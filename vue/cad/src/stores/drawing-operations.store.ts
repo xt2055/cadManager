@@ -158,7 +158,6 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
   }
 
   function applyStoredAttachments(items: StoredAttachment[]): void {
-    if (!items.length) return
     const drawingByNo = new Map(drawings.value.map((drawing) => [drawing.no, drawing]))
     const partByNo = new Map(structure.value.map((part) => [part.no, part]))
     for (const drawing of drawings.value) {
@@ -1717,7 +1716,8 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 	      storageKey = typeof commitResult.currentStorageKey === 'string'
 	        ? commitResult.currentStorageKey
 	        : typeof commitResult.storageKey === 'string' ? commitResult.storageKey : undefined
-	      file.storageKey = storageKey
+      file.storageKey = storageKey
+      if (attachmentId) file.id = attachmentId
       attachments.craftFiles.unshift(file)
       craftFiles.value = [file, ...craftFiles.value.filter((item) => item.id !== file.id)]
       recordActivity({
@@ -1738,6 +1738,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
   async function replaceCraftFile(drawingNo: string, fileId: string, content: File): Promise<void> {
     await initialize()
+    applyStoredAttachments(await drawingQueryService.listAttachments())
     const target = findDrawingOrPart(drawingNo)
     if (!target) throw new Error(`未找到图纸或零件：${drawingNo}`)
     const attachments = getTargetAttachmentFiles(target)
@@ -1795,6 +1796,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 
   async function deleteCraftFile(drawingNo: string, fileId: string): Promise<void> {
     await initialize()
+    // 页面读模型可能比命令缓存新（其他客户端上传/替换后尤其如此）。
+    // 删除前按服务端最新附件身份和存储键刷新，不能用旧快照判断文件不存在。
+    applyStoredAttachments(await drawingQueryService.listAttachments())
     const target = findDrawingOrPart(drawingNo)
     if (!target) throw new Error(`未找到图纸或零件：${drawingNo}`)
     const attachments = getTargetAttachmentFiles(target)

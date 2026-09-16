@@ -77,6 +77,20 @@ async function adaptiveSize(kind: 'login' | 'workspace'): Promise<AdaptiveWindow
 }
 
 export const windowService = {
+  async guardClose(canClose: () => Promise<boolean>): Promise<() => void> {
+    const appWindow = getAppWindow()
+    if (!appWindow) return () => undefined
+    let approved = false
+    return appWindow.onCloseRequested(async event => {
+      if (approved) return
+      event.preventDefault()
+      if (await canClose()) {
+        approved = true
+        try { await appWindow.close() }
+        catch (error) { approved = false; console.error('关闭窗口失败', error) }
+      }
+    })
+  },
   async minimize(): Promise<void> {
     await requireAppWindow().minimize()
   },

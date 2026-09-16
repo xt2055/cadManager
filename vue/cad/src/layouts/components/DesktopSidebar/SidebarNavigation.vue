@@ -43,12 +43,12 @@ const groups = [
 
 const visibleGroups = computed(() => groups.map((group) => ({
   ...group,
-  items: group.items.filter((item) => item.id !== 'admin' || authStore.hasRole('admin')),
+  items: group.items.filter((item) => (item.id !== 'admin' && item.id !== 'patents') || authStore.hasRole('admin')),
 })).filter((group) => group.items.length > 0))
 
 const activeId = computed(() => {
   if (route.name === 'patents') return 'patents'
-  if (route.name === 'drawing-library' || route.name === 'drawing-create' || route.name === 'drawing-detail') return 'library'
+  if (route.path === '/drawings' || route.path.startsWith('/drawings/')) return 'library'
   if (route.name === 'part-index-list' || route.name === 'part-index-detail') return 'parts'
   if (route.name === 'review-pending' || route.name === 'review-completed' || route.name === 'review-center' || route.name === 'review-workspace') return 'review'
   if (String(route.name || '').startsWith('admin-')) return 'admin'

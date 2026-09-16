@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -18,44 +18,61 @@ const drawingStore = useDrawingStore()
 const workspaceStore = useWorkspaceStore()
 const isPreview = computed(() => route.name === 'drawing-preview')
 const navCollapsed = ref(false)
+const loading = ref(true)
+const loadError = ref('')
+let loadSequence = 0
 const drawing = computed(() => {
   const id = String(route.params.drawingId ?? '')
   return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
 })
 
-async function syncDrawing() {
+async function syncDrawing(force = false) {
+  const sequence = ++loadSequence
   const drawingId = String(route.params.drawingId ?? '')
-  await drawingStore.load()
-  if (drawingId) {
-    let item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
-    // 从新建页跳转时，Pinia 可能仍保留创建前的快照；目标不存在才刷新一次。
-    if (!item) {
-      await drawingStore.refresh()
-      item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
+  loading.value = true
+  loadError.value = ''
+  try {
+    await (force ? drawingStore.refresh() : drawingStore.load())
+    if (sequence !== loadSequence) return
+    if (drawingId) {
+      let item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
+      if (!item && !force) {
+        await drawingStore.refresh()
+        if (sequence !== loadSequence) return
+        item = drawingStore.getDrawing(drawingId) ?? drawingStore.getPart(drawingId)
+      }
+      if (item) {
+        if ('parentNo' in item) workspaceStore.selectPart(item.id)
+        else workspaceStore.selectDrawing(item.id)
+        void drawingStore.refreshDesigner(drawingId).catch(error => console.warn('读取设计人失败', error))
+      } else workspaceStore.clearSelection()
+    } else workspaceStore.clearSelection()
+  } catch (error) {
+    if (sequence === loadSequence) {
+      loadError.value = error instanceof Error ? error.message : '请检查连接后重试'
     }
-    if (item) {
-      if ('parentNo' in item) workspaceStore.selectPart(item.id)
-      else workspaceStore.selectDrawing(item.id)
-    }
-    await drawingStore.refreshDesigner(drawingId).catch((error) => {
-      console.warn('读取图纸标题栏设计人失败', error)
-    })
-  } else {
-    workspaceStore.clearSelection()
+  } finally {
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
-onMounted(() => {
-  void syncDrawing()
-})
 watch(() => route.params.drawingId, () => {
   void syncDrawing()
-})
+}, { immediate: true })
+onBeforeUnmount(() => { loadSequence++ })
 </script>
 
 <template>
   <div class="page detail-page">
-    <template v-if="drawing">
+    <div v-if="loading" class="card empty detail-empty" role="status">
+      <div class="t">正在加载图纸…</div>
+    </div>
+    <div v-else-if="loadError" class="card empty detail-empty" role="alert">
+      <div class="t">图纸加载失败</div><p>{{ loadError }}</p>
+      <button class="btn primary" type="button" @click="syncDrawing(true)">重新加载</button>
+      <button class="btn" type="button" @click="router.push({ name: 'drawing-library' })">返回图纸库</button>
+    </div>
+    <template v-else-if="drawing">
       <DrawingDetailHeader />
       <div class="detail-split" :class="{ 'nav-collapsed': navCollapsed }">
         <DrawingDetailSubnav />

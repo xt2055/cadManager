@@ -5,16 +5,17 @@ import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useAuthStore } from '@/stores/auth.store'
 const auth = useAuthStore()
 const records = ref<PatentRecord[]>([]), failed = ref(false)
-const count = computed(() => records.value.filter(p => (auth.hasRole('admin') || p.responsibleId === auth.currentUser?.id) && patentAlerts(p).length).length)
+const isAdmin = computed(() => auth.hasRole('admin'))
+const count = computed(() => records.value.filter(p => patentAlerts(p).length).length)
 let timer: ReturnType<typeof setInterval> | undefined
 let active = true, fetching = false
-async function refresh() { if (fetching) return; fetching = true; try { const result = await lifecycleApi<PatentRecord[]>('/patents'); if (active) { records.value = result; failed.value = false } } catch { if (active) failed.value = true } finally { fetching = false } }
+async function refresh() { if (!isAdmin.value || fetching) return; fetching = true; try { const result = await lifecycleApi<PatentRecord[]>('/patents'); if (active) { records.value = result; failed.value = false } } catch { if (active) failed.value = true } finally { fetching = false } }
 function onVisible() { if (document.visibilityState === 'visible') void refresh() }
-onMounted(() => { void refresh(); timer = setInterval(refresh, 5 * 60_000); document.addEventListener('visibilitychange', onVisible) })
+onMounted(() => { if (!isAdmin.value) return; void refresh(); timer = setInterval(refresh, 5 * 60_000); document.addEventListener('visibilitychange', onVisible) })
 onUnmounted(() => { active = false; if (timer) clearInterval(timer); document.removeEventListener('visibilitychange', onVisible) })
 </script>
 <template>
-  <RouterLink v-if="count || failed" to="/patents" class="patent-reminder" role="status">
+  <RouterLink v-if="isAdmin && (count || failed)" to="/patents" class="patent-reminder" role="status">
     <span class="pr-icon"><DemoIcon :name="failed ? 'alert-circle' : 'bell'" :size="14" /></span>
     <span class="pr-text">{{ failed ? '专利提醒暂未更新' : `${count} 项专利需要关注` }}</span>
     <DemoIcon class="pr-arrow" name="chevron-right" :size="14" />

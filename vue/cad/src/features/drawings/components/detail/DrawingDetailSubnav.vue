@@ -33,7 +33,7 @@ const groups = computed(() => {
         v-for="tab in group.items"
         :key="tab.key"
         class="detail-nav-item"
-        :to="{ name: tab.routeName, params: { drawingId } }"
+        :to="{ name: tab.routeName, params: { drawingId }, query: route.query.from === 'review' ? { from: 'review', reviewNo: route.query.reviewNo || drawingId } : {} }"
       >
         <DemoIcon :name="tab.icon" :size="16" />
         <span class="detail-nav-label">{{ tab.title }}</span>

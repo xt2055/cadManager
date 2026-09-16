@@ -30,7 +30,8 @@ const userAvatar = computed(() => {
   return currentUser.value.displayName.slice(0, 1)
 })
 
-function logout() {
+async function logout() {
+  if (!await uiStore.confirmNavigation()) return
   authStore.logout()
   uiStore.toast('已退出登录', 'info')
   router.push({ name: 'login' })

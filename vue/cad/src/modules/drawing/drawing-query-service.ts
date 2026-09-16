@@ -23,6 +23,10 @@ export class DrawingQueryService {
     return this.gateway.loadDrawings()
   }
 
+  listAttachments(): Promise<StoredAttachment[]> {
+    return this.gateway.loadAttachments()
+  }
+
   async getDrawing(idOrNo: string): Promise<Drawing | null> {
     const drawings = await this.listDrawings()
     return drawings.find((drawing) => drawing.id === idOrNo || drawing.no === idOrNo) ?? null

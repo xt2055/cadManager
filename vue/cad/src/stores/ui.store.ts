@@ -27,11 +27,20 @@ export interface ModalState {
   title: string
   payload?: Record<string, string>
   onConfirm?: () => void | Promise<void>
+  onCancel?: () => void
 }
 
 let toastId = 0
 
 export const useUiStore = defineStore('ui', () => {
+  let leaveGuard: (() => Promise<boolean>) | null = null
+  function setLeaveGuard(guard: () => Promise<boolean>) {
+    leaveGuard = guard
+    return () => { if (leaveGuard === guard) leaveGuard = null }
+  }
+  async function confirmNavigation(): Promise<boolean> {
+    return leaveGuard ? leaveGuard() : true
+  }
   const toasts = ref<ToastMessage[]>([])
   const modal = ref<ModalState | null>(null)
 
@@ -44,6 +53,7 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   function openModal(type: ModalType, title: string, payload?: Record<string, string>, onConfirm?: () => void | Promise<void>) {
+    closeModal()
     modal.value = { type, title, payload, onConfirm }
   }
 
@@ -61,8 +71,22 @@ export const useUiStore = defineStore('ui', () => {
     )
   }
 
-  function closeModal() {
+  function askConfirm(title: string, message: string, confirmText: string, cancelText = '取消'): Promise<boolean> {
+    closeModal()
+    return new Promise((resolve) => {
+      modal.value = {
+        type: 'confirm', title,
+        payload: { message, confirmText, cancelText, danger: '1' },
+        onConfirm: () => resolve(true),
+        onCancel: () => resolve(false),
+      }
+    })
+  }
+
+  function closeModal(confirmed = false) {
+    const current = modal.value
     modal.value = null
+    if (!confirmed) current?.onCancel?.()
   }
 
   return {
@@ -71,6 +95,9 @@ export const useUiStore = defineStore('ui', () => {
     toast,
     openModal,
     confirm,
+    askConfirm,
+    setLeaveGuard,
+    confirmNavigation,
     closeModal,
   }
 })

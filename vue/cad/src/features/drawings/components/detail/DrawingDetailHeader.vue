@@ -54,13 +54,13 @@ const creatorLabel = computed(() => {
 
 function openProperties() {
   if (!drawing.value) return
-  router.push({ name: 'drawing-properties', params: { drawingId: drawing.value.no } })
+  router.push({ name: 'drawing-properties', params: { drawingId: drawing.value.no }, query: route.query.from === 'review' ? route.query : {} })
 }
 
 function openParentDrawing() {
   if (!parentDrawing.value) return
   workspaceStore.selectDrawing(parentDrawing.value.id)
-  router.push({ name: 'drawing-preview', params: { drawingId: parentDrawing.value.no } })
+  router.push({ name: 'drawing-preview', params: { drawingId: parentDrawing.value.no }, query: route.query.from === 'review' ? route.query : {} })
 }
 </script>
 
@@ -101,6 +101,7 @@ function openParentDrawing() {
        </div>
 
         <div class="dh-acts">
+          <button v-if="route.query.from === 'review'" class="btn primary" type="button" @click="router.push({ name: 'review-workspace', params: { drawingNo: String(route.query.reviewNo || drawing?.no || '') } })"><DemoIcon name="arrow-left" :size="14" />返回本次审核</button>
           <button class="btn" type="button" @click="openProperties"><DemoIcon name="info" :size="14" />属性详情</button>
         </div>
     </div>

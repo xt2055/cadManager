@@ -30,7 +30,7 @@ export const routes: RouteRecordRaw[] = [
         path: '',
         redirect: '/dashboard',
       },
-      { path: 'patents', name: 'patents', component: () => import('@/features/patents/PatentPage.vue') },
+      { path: 'patents', name: 'patents', component: () => import('@/features/patents/PatentPage.vue'), meta: { roles: ['admin'] satisfies UserRole[] } },
       {
         path: 'dashboard',
         name: RouteName.Dashboard,

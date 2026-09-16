@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { windowService } from '@/services/tauri/window.service'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import DrawingAttributesForm from '@/components/common/DrawingAttributesForm.vue'
@@ -53,12 +54,28 @@ const steps = [
   { step: 3, title: '图纸属性', sub: '业务分类与自定义属性' },
   { step: 4, title: '3D 模型与资料', sub: '三维模型装配包与归档凭证' },
 ]
+const validationErrors = ref<Record<string, string>>({})
+const attributeFieldErrors = computed(() => Object.fromEntries(Object.entries(validationErrors.value)
+  .filter(([key]) => key.startsWith('drawing-attr-')).map(([key, value]) => [key.slice('drawing-attr-'.length), value])))
+
+function invalidField(step: number, field: string, message: string): false {
+  validationErrors.value = { [field]: message }
+  currentStep.value = step
+  void nextTick(() => {
+    const element = document.getElementById(field)
+    element?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    element?.focus()
+  })
+  return false
+}
+watch([formProject, formProjectNo, formDrawingNo, selectedForkSourceNo, formAttributeValues], () => {
+  validationErrors.value = {}
+}, { deep: true })
 
 /** 步骤 1：2D 工程图纸（支持上传总图以自动识别项目基本信息）。 */
 function validateDrawingStep(): boolean {
   if (isIdentifyingAssembly.value) {
-    uiStore.toast('正在识别总图文件名，请稍候再进入下一步', 'warn')
-    return false
+    return invalidField(1, 'create-validation', '正在识别总图文件名，请稍候。')
   }
   return true
 }
@@ -67,31 +84,25 @@ function validateDrawingStep(): boolean {
 function validateBasicInfo(): boolean {
   const projectName = formProject.value.trim()
   if (!projectName) {
-    uiStore.toast('请填写项目名称', 'warn')
-    return false
+    return invalidField(2, 'create-project-name', '请填写项目名称')
   }
   const projectNo = formProjectNo.value.trim()
   const drawingNo = formDrawingNo.value.trim()
   if (!projectNo) {
-    uiStore.toast('请填写项目号；项目号只能来自总图文件名或用户手动输入', 'warn')
-    return false
+    return invalidField(2, 'create-project-no', '请填写项目号')
   }
   if (isIdentifyingAssembly.value) {
-    uiStore.toast('正在识别总图文件名，请稍候再进入下一步', 'warn')
-    return false
+    return invalidField(2, 'create-drawing-no', '正在识别总图文件名，请稍候。')
   }
   if (!drawingNo) {
-    uiStore.toast('请填写总图图号；请以总图文件名识别结果或人工核对结果为准', 'warn')
-    return false
+    return invalidField(2, 'create-drawing-no', '请填写总图图号')
   }
   if (createMode.value === 'fork') {
     if (!selectedForkSourceNo.value) {
-      uiStore.toast('请选择要分叉的源图纸', 'warn')
-      return false
+      return invalidField(2, 'fork-source-select', '请选择源图纸')
     }
     if (selectedForkSourceNo.value === drawingNo) {
-      uiStore.toast('分叉新图号不能与源图号相同', 'warn')
-      return false
+      return invalidField(2, 'create-drawing-no', '请填写与源图纸不同的新图号')
     }
   }
   return true
@@ -99,16 +110,23 @@ function validateBasicInfo(): boolean {
 
 /** 步骤 3：按后台配置校验必填业务属性。 */
 function validateAttributes(): boolean {
+  if (attributeStore.loading || attributeStore.error) {
+    return invalidField(3, 'create-validation', attributeStore.loading ? '正在加载图纸属性，请稍候。' : '图纸属性加载失败，请重新加载后继续。')
+  }
   const attributeErrors = attributeStore.validate(formAttributeValues.value)
   if (attributeErrors.length) {
-    uiStore.toast(attributeErrors[0] ?? '请完善图纸属性', 'warn')
-    return false
+    const invalid = attributeStore.sortedAttributes.find(attribute => attribute.enabled && (
+      (attribute.required && !formAttributeValues.value[attribute.id]) ||
+      (formAttributeValues.value[attribute.id] && !attribute.fields.some(field => field.enabled && field.id === formAttributeValues.value[attribute.id]))
+    ))
+    return invalidField(3, invalid ? `drawing-attr-${invalid.id}` : 'create-validation', attributeErrors[0] || '请完善图纸属性')
   }
   return true
 }
 
 /** 前进时逐个校验所有前置步骤，保证跳步不会绕过必填项。 */
 function validateUpTo(step: number): boolean {
+  validationErrors.value = {}
   if (step > 1 && !validateDrawingStep()) return false
   if (step > 2 && !validateBasicInfo()) return false
   if (step > 3 && !validateAttributes()) return false
@@ -117,7 +135,7 @@ function validateUpTo(step: number): boolean {
 
 function nextStep() {
   if (currentStep.value >= steps.length) return
-  if (!validateUpTo(currentStep.value)) return
+  if (!validateUpTo(currentStep.value + 1)) return
   currentStep.value += 1
 }
 
@@ -130,7 +148,7 @@ function prevStep() {
 function goToStep(step: number) {
   if (step === currentStep.value) return
   if (step > currentStep.value) {
-    if (!validateUpTo(step - 1)) return
+    if (!validateUpTo(step)) return
     currentStep.value = step
   } else {
     currentStep.value = step
@@ -187,6 +205,7 @@ const isDraggingModels = ref(false)
 const isCreating = ref(false)
 const createStatus = ref('正在准备创建')
 const createError = ref('')
+const savedDrawingNo = ref('')
 const canRetryUpload = computed(() => Boolean(drawingOperationsStore.pendingUploadSessionId))
 const uploadSnapshot = ref<UploadSessionSnapshot | null>(null)
 const readyUploadCount = computed(() => uploadSnapshot.value?.items.filter((item) => item.status === 'ready' || item.status === 'committed').length ?? 0)
@@ -219,6 +238,70 @@ const isDraggingEvidence = ref(false)
 interface ConversionProgressItem { id: string; name: string; status: string; error?: string; attempts?: number }
 const conversionModalVisible = ref(false)
 const conversionBusy = ref(false)
+const conversionError = ref('')
+let conversionGeneration = 0
+let disposed = false
+let leavingAfterSave = false
+let discardApproved = false
+let pendingLeave: Promise<boolean> | null = null
+const hasUnsavedChanges = computed(() => savedDrawingNo.value ? evidenceFiles.value.length > 0 : Boolean(
+  formProject.value || formProjectNo.value || formDrawingNo.value || formRemark.value ||
+  Object.values(formAttributeValues.value).some(Boolean) || selectedForkSourceNo.value ||
+  assemblyFile.value || partFiles.value.length || modelFiles.value.length || evidenceFiles.value.length ||
+  evidenceFolderPath.value || evidenceDescription.value || drawingOperationsStore.pendingUploadSessionId,
+))
+
+async function confirmLeave(): Promise<boolean> {
+  if (leavingAfterSave || discardApproved) return true
+  if (isCreating.value && !conversionModalVisible.value) {
+    uiStore.toast('正在保存图纸或资料，请等待完成后再离开。', 'warn')
+    return false
+  }
+  if (!hasUnsavedChanges.value) return true
+  if (pendingLeave) return pendingLeave
+  pendingLeave = (async () => {
+    const accepted = await uiStore.askConfirm(
+      savedDrawingNo.value ? '还有资料未归档' : '放弃本次创建？',
+      savedDrawingNo.value ? '图纸已经创建，未归档的资料需要稍后重新选择并上传。' : '填写的信息和选择的本地文件尚未保存，离开后需要重新填写和选择。',
+      savedDrawingNo.value ? '离开，稍后补传' : '放弃创建', '继续编辑',
+    )
+    if (!accepted) return false
+    if (!savedDrawingNo.value) {
+      try { await drawingOperationsStore.cancelPendingUploadSession() }
+      catch {
+        uiStore.toast('暂时无法清理上传进度，请重试。填写内容仍保留在当前页面。', 'warn')
+        return false
+      }
+    }
+    discardApproved = true
+    return true
+  })()
+  try { return await pendingLeave } finally { pendingLeave = null }
+}
+onBeforeRouteLeave(confirmLeave)
+const removeLeaveGuard = uiStore.setLeaveGuard(confirmLeave)
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (discardApproved || leavingAfterSave) return
+  if (hasUnsavedChanges.value || (isCreating.value && !conversionModalVisible.value)) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
+}
+let removeCloseGuard = () => {}
+onMounted(() => {
+  window.addEventListener('beforeunload', beforeUnload)
+  void windowService.guardClose(confirmLeave).then(remove => {
+    if (disposed) remove()
+    else removeCloseGuard = remove
+  }).catch(() => { uiStore.toast('窗口关闭保护未能启用，请保存后再关闭。', 'warn') })
+})
+onBeforeUnmount(() => {
+  disposed = true
+  conversionGeneration++
+  removeLeaveGuard()
+  removeCloseGuard()
+  window.removeEventListener('beforeunload', beforeUnload)
+})
 const conversionDrawingNo = ref('')
 const conversionItems = ref<ConversionProgressItem[]>([])
 const conversionReadyCount = computed(() => conversionItems.value.filter((item) => item.status === 'ready').length)
@@ -261,6 +344,9 @@ async function saveCreatedTitleBlocks(files: Array<{ id: string; name: string }>
 }
 
 async function waitForDrawingConversions(drawingNo: string): Promise<boolean> {
+  const generation = ++conversionGeneration
+  conversionBusy.value = true
+  conversionError.value = ''
   conversionDrawingNo.value = drawingNo
   const drawing = drawingStore.getDrawing(drawingNo)
   const structureFiles = flattenConversionFiles(drawingStore.getStructure(drawingNo))
@@ -268,43 +354,77 @@ async function waitForDrawingConversions(drawingNo: string): Promise<boolean> {
     .filter((file) => isCadFile(file.name))
     .filter((file, index, all) => all.findIndex((candidate) => candidate.id === file.id) === index)
   conversionItems.value = files.map((file) => ({ id: file.id, name: file.name, status: 'pending' }))
-  if (!conversionItems.value.length) return true
-  conversionModalVisible.value = true
-  while (conversionModalVisible.value) {
-    try {
+  try {
+    if (!conversionItems.value.length) return true
+    conversionModalVisible.value = true
+    while (!disposed && generation === conversionGeneration && conversionModalVisible.value) {
       conversionItems.value = await Promise.all(conversionItems.value.map(readConversionStatus))
-    } catch (error) {
-      createError.value = error instanceof Error ? error.message : '读取转换进度失败'
-      return false
+      if (disposed || generation !== conversionGeneration) return false
+      createStatus.value = `正在生成预览（${conversionReadyCount.value}/${conversionItems.value.length}）`
+      if (conversionReadyCount.value === conversionItems.value.length) {
+        await saveCreatedTitleBlocks(files)
+        return !disposed && generation === conversionGeneration
+      }
+      if (conversionFailedCount.value > 0) return false
+      await wait(2000)
     }
-    createStatus.value = `正在转换图纸（${conversionReadyCount.value}/${conversionItems.value.length}）`
-    if (conversionReadyCount.value === conversionItems.value.length) {
-      conversionModalVisible.value = false
-      await saveCreatedTitleBlocks(files)
-      return true
-    }
-    if (conversionFailedCount.value > 0) return false
-    await wait(2000)
+    return false
+  } catch (error) {
+    if (!disposed && generation === conversionGeneration) conversionError.value = error instanceof Error ? error.message : '读取预览进度失败'
+    return false
+  } finally {
+    if (generation === conversionGeneration) conversionBusy.value = false
   }
-  return false
 }
 
 async function retryFailedConversions() {
   if (conversionBusy.value) return
   conversionBusy.value = true
+  conversionError.value = ''
+  const generation = conversionGeneration
   try {
     const failed = conversionItems.value.filter((item) => item.status === 'failed')
     await Promise.all(failed.map(async (item) => {
       const response = await fetch(`${getApiBaseUrl()}/cad/conversions/${encodeURIComponent(item.id)}`, {
-        method: 'POST', headers: { Accept: 'application/json', Authorization: `Bearer ${accessToken()}` }, credentials: 'include',
+        method: 'POST', headers: { Accept: 'application/json', Authorization: `Bearer ${accessToken()}` }, credentials: 'include', signal: AbortSignal.timeout(10000),
       })
       if (!response.ok) throw new Error(`「${item.name}」重新转换失败`)
     }))
+    if (disposed || generation !== conversionGeneration) return
     conversionItems.value = conversionItems.value.map((item) => item.status === 'failed' ? { ...item, status: 'pending', error: undefined } : item)
-    await waitForDrawingConversions(conversionDrawingNo.value || formDrawingNo.value.trim())
+    if (await waitForDrawingConversions(savedDrawingNo.value)) await openSavedDrawing()
   } catch (error) {
-    createError.value = error instanceof Error ? error.message : '重新转换失败'
+    if (!disposed && generation === conversionGeneration) conversionError.value = error instanceof Error ? error.message : '重新生成预览失败'
   } finally { conversionBusy.value = false }
+}
+
+async function resumeConversionProgress() {
+  if (conversionBusy.value) return
+  if (await waitForDrawingConversions(savedDrawingNo.value)) await openSavedDrawing()
+}
+
+async function openSavedDrawing() {
+  if (!savedDrawingNo.value || disposed) return
+  leavingAfterSave = evidenceFiles.value.length === 0
+  try {
+    await router.push({ name: modelFiles.value.length && !assemblyFile.value ? 'drawing-models' : 'drawing-preview', params: { drawingId: savedDrawingNo.value } })
+  } finally { leavingAfterSave = false }
+}
+
+/** 项目只提交一次；后续刷新、资料归档与预览失败只能重试后续步骤。 */
+async function completeSavedDrawing() {
+  createError.value = ''
+  try {
+    await drawingStore.refresh()
+    await archiveEvidenceForDrawing(savedDrawingNo.value)
+    if (evidenceFiles.value.length) {
+      createError.value = '图纸已创建，部分相关资料尚未归档。请重试资料归档，或进入详情后补传。'
+      return
+    }
+    if (createMode.value === 'fork' || await waitForDrawingConversions(savedDrawingNo.value)) await openSavedDrawing()
+  } catch (error) {
+    createError.value = `图纸已创建，后续处理未完成：${error instanceof Error ? error.message : '请重试'}`
+  }
 }
 
 async function refreshUploadSnapshot() {
@@ -373,7 +493,9 @@ async function retryUploadItem(itemId: string) {
 }
 
 onMounted(() => {
-  void Promise.all([drawingStore.load(), attributeStore.load(), refreshUploadSnapshot()])
+  void Promise.all([drawingStore.load(), attributeStore.load(), refreshUploadSnapshot()]).catch(() => {
+    uiStore.toast('部分创建数据加载失败，请重试后继续。', 'warn')
+  })
 })
 watch(() => drawingOperationsStore.pendingUploadSessionId, () => { void refreshUploadSnapshot() })
 
@@ -570,6 +692,7 @@ function clearAllEvidence() {
  */
 async function archiveEvidenceForDrawing(drawingNo: string): Promise<void> {
   if (!evidenceFiles.value.length) return
+  const count = evidenceFiles.value.length
   const drawingId = drawingStore.getDrawing(drawingNo)?.id || ''
   const failures = drawingId
     ? await archiveCreatedEvidence(drawingId)
@@ -577,12 +700,13 @@ async function archiveEvidenceForDrawing(drawingNo: string): Promise<void> {
   if (failures.length) {
     uiStore.toast(`${failures.length} 份相关资料未归档：${failures.join('；')}`, 'warn')
   } else {
-    uiStore.toast(`${evidenceFiles.value.length} 份相关资料已归档到「${drawingNo}」的资料档案`, 'ok')
+    uiStore.toast(`${count} 份相关资料已归档到「${drawingNo}」的资料档案`, 'ok')
   }
 }
 
 async function archiveCreatedEvidence(drawingId: string): Promise<string[]> {
   const failures: string[] = []
+  const archived = new Set<string>()
   for (const [index, item] of evidenceFiles.value.entries()) {
     createStatus.value = `正在归档相关资料（${index + 1}/${evidenceFiles.value.length}）`
     try {
@@ -595,10 +719,12 @@ async function archiveCreatedEvidence(drawingId: string): Promise<string[]> {
       form.set('drawingId', drawingId)
       form.set('source', '图纸创建')
       await lifecycleApi('/lifecycle-documents', { method: 'POST', body: form })
+      archived.add(item.id)
     } catch (error) {
       failures.push(`${item.name}：${error instanceof Error ? error.message : '归档失败'}`)
     }
   }
+  evidenceFiles.value = evidenceFiles.value.filter(item => !archived.has(item.id))
   return failures
 }
 
@@ -677,18 +803,19 @@ function triggerFolderPick() {
 }
 
 function handleCancel() {
-  void drawingOperationsStore.cancelPendingUploadSession().catch((error) => {
-    console.warn('取消上传会话清理失败', error)
-  })
-  router.push({ name: 'drawing-library' })
+  void router.push({ name: 'drawing-library' })
 }
 
 function handleSubmit() {
   if (isCreating.value) return
+  if (!savedDrawingNo.value && !validateUpTo(4)) return
   isCreating.value = true
   createError.value = ''
   createStatus.value = '正在准备创建'
-  void performCreate().finally(() => {
+  void (savedDrawingNo.value ? completeSavedDrawing() : performCreate()).catch(error => {
+    createError.value = error instanceof Error ? error.message : '操作未完成，请重试'
+    uiStore.toast(createError.value, 'warn')
+  }).finally(() => {
     isCreating.value = false
     createStatus.value = '正在准备创建'
   })
@@ -696,41 +823,10 @@ function handleSubmit() {
 
 async function performCreate() {
   const projectName = formProject.value.trim()
-  if (!projectName) {
-    uiStore.toast('请填写项目名称', 'warn')
-    return
-  }
-
   const projectNo = formProjectNo.value.trim()
   const drawingNo = formDrawingNo.value.trim()
-  if (!projectNo) {
-    uiStore.toast('请填写项目号；项目号只能来自总图文件名或用户手动输入', 'warn')
-    return
-  }
-  if (isIdentifyingAssembly.value) {
-    uiStore.toast('正在识别总图文件名，请稍候再保存', 'warn')
-    return
-  }
-  if (!drawingNo) {
-    uiStore.toast('请填写总图图号；请以总图文件名识别结果或人工核对结果为准', 'warn')
-    return
-  }
-
-  const attributeErrors = attributeStore.validate(formAttributeValues.value)
-  if (attributeErrors.length) {
-    uiStore.toast(attributeErrors[0] ?? '请完善图纸属性', 'warn')
-    return
-  }
 
   if (createMode.value === 'fork') {
-    if (!selectedForkSourceNo.value) {
-      uiStore.toast('请选择要分叉的源图纸', 'warn')
-      return
-    }
-    if (selectedForkSourceNo.value === drawingNo) {
-      uiStore.toast('分叉新图号不能与源图号相同', 'warn')
-      return
-    }
     try {
       createStatus.value = '正在继承源图纸结构与文件'
       await drawingOperationsStore.forkDrawing(
@@ -741,13 +837,11 @@ async function performCreate() {
        formRemark.value.trim(),
          undefined,
          projectNo,
-         formAttributeValues.value,
+       formAttributeValues.value,
        )
+      savedDrawingNo.value = drawingNo
       uiStore.toast(`已基于「${selectedForkSourceNo.value}」成功分叉项目「${projectNo}」，总图图号为「${drawingNo}」`, 'ok')
-      // 分叉命令只失效旧写模型，归档资料前需要取回新图号的服务端身份。
-      await drawingStore.refresh()
-      await archiveEvidenceForDrawing(drawingNo)
-      router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
+      await completeSavedDrawing()
       return
     } catch (error) {
       console.error('分叉图纸失败', error)
@@ -946,9 +1040,7 @@ async function performCreate() {
   try {
     createStatus.value = '正在保存项目结构并上传图纸文件'
     await drawingOperationsStore.addDrawing(newProjectDrawing, partsForStructure, attachments.filter((item): item is { id: string; content: File } => Boolean(item.id && item.content)))
-    // 新建完成后刷新同一份结构与附件快照，进入详情页即可看到全部图纸。
-    await drawingStore.refresh()
-    if (!await waitForDrawingConversions(drawingNo)) return
+    savedDrawingNo.value = drawingNo
   } catch (error) {
     console.error('保存新建图纸失败', error)
     createError.value = error instanceof Error ? error.message : '项目创建失败，数据未能保存'
@@ -965,8 +1057,7 @@ async function performCreate() {
      : ''
    uiStore.toast(`项目「${projectNo}」已成功创建，总图图号为「${drawingNo}」${borrowedPartCount ? `，${borrowedPartCount} 个借用组件已关联` : ''}${duplicatePartFileCount ? `，${duplicatePartFileCount} 个同图号文件已合并到对应零件` : ''}${otherDrawingFiles.length ? `，${otherDrawingFiles.length} 个文件归入其他文件` : ''}${fallbackMessage}`, unidentifiedPartNames.length ? 'warn' : 'ok')
 
-  await archiveEvidenceForDrawing(drawingNo)
-  router.push({ name: modelFiles.value.length && !assemblyFile.value ? 'drawing-models' : 'drawing-preview', params: { drawingId: newProjectDrawing.no } })
+  await completeSavedDrawing()
 }
 
 async function retryFailedUpload() {
@@ -976,10 +1067,9 @@ async function retryFailedUpload() {
   createStatus.value = '正在重试失败文件'
   try {
     const drawingNo = await drawingOperationsStore.retryFailedDrawingUpload()
-    await drawingStore.refresh()
-    if (!await waitForDrawingConversions(drawingNo)) return
+    savedDrawingNo.value = drawingNo
     uiStore.toast(`上传已恢复，项目「${drawingNo}」创建成功`, 'ok')
-    router.push({ name: 'drawing-preview', params: { drawingId: drawingNo } })
+    await completeSavedDrawing()
   } catch (error) {
     createError.value = error instanceof Error ? error.message : '重试失败文件时发生错误'
     uiStore.toast(createError.value, 'warn')
@@ -1006,10 +1096,12 @@ async function retryFailedUpload() {
     <!-- 转换进度模态框 -->
     <div v-if="conversionModalVisible" class="create-loading-overlay conversion-progress-overlay" role="dialog" aria-modal="true">
       <div class="create-loading-card conversion-progress-card">
-        <strong>图纸转换进度</strong>
+        <strong>图纸已创建，正在生成预览</strong>
         <span>{{ conversionReadyCount }}/{{ conversionItems.length }} 个文件已完成</span>
-        <span v-if="conversionPendingCount">还有 {{ conversionPendingCount }} 个文件正在转换，完成后将进入图纸详情</span>
+        <span v-if="conversionPendingCount">还有 {{ conversionPendingCount }} 个文件等待生成预览，可先进入图纸详情。</span>
+        <span>已保存的图纸不会因预览失败而丢失，无需重复创建。</span>
         <span v-if="conversionFailedCount" class="conversion-failed-text">{{ conversionFailedCount }} 个文件转换失败</span>
+        <p v-if="conversionError" class="conversion-failed-text" role="alert">预览进度读取或重试失败：{{ conversionError }}</p>
         <div class="conversion-progress-list">
           <div v-for="item in conversionItems" :key="item.id" class="conversion-progress-row">
             <span>{{ item.name }}</span>
@@ -1017,12 +1109,14 @@ async function retryFailedUpload() {
             <small v-if="item.error" class="conversion-error">{{ item.error }}</small>
           </div>
         </div>
-        <button v-if="conversionFailedCount" class="btn primary" type="button" :disabled="conversionBusy" @click="retryFailedConversions">{{ conversionBusy ? '正在重新排队…' : '重试失败文件' }}</button>
+        <button v-if="conversionFailedCount" class="btn" type="button" :disabled="conversionBusy" @click="retryFailedConversions">{{ conversionBusy ? '正在处理…' : '重试失败文件' }}</button>
+        <button v-if="conversionError" class="btn" type="button" :disabled="conversionBusy" @click="resumeConversionProgress">重新读取进度</button>
+        <button class="btn primary" type="button" @click="openSavedDrawing">进入图纸详情</button>
       </div>
     </div>
 
     <!-- 会话中断恢复卡片 -->
-    <div v-if="canRetryUpload" class="create-upload-recovery" :role="createError ? 'alert' : undefined">
+    <div v-if="canRetryUpload && !savedDrawingNo" class="create-upload-recovery" :role="createError ? 'alert' : undefined">
       <div>
         <strong>{{ failedUploadCount ? '部分文件尚未上传完成' : createError ? '文件已上传，项目尚未提交' : '上传会话进度' }}</strong>
         <span>项目尚未写入数据库，已完成文件会保留在暂存会话中。</span>
@@ -1045,6 +1139,20 @@ async function retryFailedUpload() {
       </div>
     </div>
 
+    <section v-if="savedDrawingNo" class="card saved-drawing-state" role="status">
+      <h2>图纸「{{ savedDrawingNo }}」已创建</h2>
+      <p v-if="createError" role="alert">{{ createError }}</p>
+      <p v-else>{{ isCreating ? createStatus : '图纸已保存，可以进入详情继续处理。' }}</p>
+      <button v-if="createError" class="btn" type="button" :disabled="isCreating" @click="handleSubmit">重试后续处理</button>
+      <button class="btn primary" type="button" :disabled="isCreating && !conversionModalVisible" @click="openSavedDrawing">进入图纸详情</button>
+    </section>
+
+    <template v-if="!savedDrawingNo">
+    <div v-if="Object.keys(validationErrors).length" id="create-validation" class="create-validation" tabindex="-1" role="alert">
+      {{ Object.values(validationErrors)[0] }}
+      <button v-if="attributeStore.error && currentStep === 3" class="btn sm" type="button" @click="attributeStore.load().catch(() => undefined)">重新加载属性</button>
+    </div>
+    <div v-if="createError && !canRetryUpload" class="create-validation" role="alert">{{ createError }}</div>
     <!-- 顶部状态栏 -->
     <div class="create-topbar">
       <div class="topbar-left">
@@ -1058,9 +1166,9 @@ async function retryFailedUpload() {
       </div>
       <div class="topbar-actions">
         <button class="btn" type="button" :disabled="isCreating" @click="handleCancel">取消</button>
-        <button class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
+        <button v-if="currentStep >= 3" class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
           <span v-if="isCreating" class="button-spinner" aria-hidden="true"></span>
-          <DemoIcon v-else name="check" :size="14" />{{ isCreating ? '创建中…' : '保存并创建' }}
+          <DemoIcon v-else name="check" :size="14" />{{ isCreating ? '创建中…' : '创建草稿' }}
         </button>
       </div>
     </div>
@@ -1071,12 +1179,16 @@ async function retryFailedUpload() {
         v-for="s in steps"
         :key="s.step"
         class="stepper-item"
+        role="button"
+        tabindex="0"
         :class="{
           active: currentStep === s.step,
           completed: currentStep > s.step,
           clickable: true,
         }"
         @click="goToStep(s.step)"
+        @keydown.enter.prevent="goToStep(s.step)"
+        @keydown.space.prevent="goToStep(s.step)"
       >
         <div class="stepper-badge">
           <DemoIcon v-if="currentStep > s.step" name="check" :size="14" />
@@ -1255,9 +1367,6 @@ async function retryFailedUpload() {
       <footer class="panel-actions card">
         <span class="step-hint">选入总图后会自动读取项目名与总图图号；若无图纸也可直接进入下一步手动建档</span>
         <div class="footer-actions">
-          <button class="btn" type="button" :disabled="isCreating" @click="handleSubmit">
-            <DemoIcon name="check" :size="13" />跳过后续，直接保存
-          </button>
           <button class="btn primary" type="button" @click="nextStep">
             下一步：基础档案 <DemoIcon name="arrow-right" :size="14" />
           </button>
@@ -1297,6 +1406,7 @@ async function retryFailedUpload() {
                 {{ item.no }} · {{ item.name }} ({{ item.vendor || '内部项目部' }})
               </option>
             </select>
+            <small v-if="validationErrors['fork-source-select']" class="field-error">{{ validationErrors['fork-source-select'] }}</small>
             <p class="fork-tip">
               <DemoIcon name="info" :size="12" />
               分叉将完整继承源图纸的属性、零件层级与工艺备料文件；提交前请确认新的总图图号。
@@ -1308,27 +1418,35 @@ async function retryFailedUpload() {
               <label for="create-project-name">项目名称</label>
               <input
                 id="create-project-name"
+                :aria-invalid="Boolean(validationErrors['create-project-name'])"
+                :aria-describedby="validationErrors['create-project-name'] ? 'create-project-name-error' : undefined"
                 v-model="formProject"
                 class="inp"
                 placeholder="例如：智能回转减速传动装置"
               />
+              <small v-if="validationErrors['create-project-name']" id="create-project-name-error" class="field-error">{{ validationErrors['create-project-name'] }}</small>
             </div>
 
             <div class="form-item required">
               <label for="create-project-no">项目号</label>
               <input
                 id="create-project-no"
+                :aria-invalid="Boolean(validationErrors['create-project-no'])"
+                :aria-describedby="validationErrors['create-project-no'] ? 'create-project-no-error' : undefined"
                 v-model="formProjectNo"
                 class="inp"
                 placeholder="例如：PRJ-2026-081"
               />
               <small class="field-help">用于项目分类和文件夹目录，不是总图图号。</small>
+              <small v-if="validationErrors['create-project-no']" id="create-project-no-error" class="field-error">{{ validationErrors['create-project-no'] }}</small>
             </div>
 
             <div class="form-item required">
               <label for="create-drawing-no">总图图号</label>
               <input
                 id="create-drawing-no"
+                :aria-invalid="Boolean(validationErrors['create-drawing-no'])"
+                :aria-describedby="validationErrors['create-drawing-no'] ? 'create-drawing-no-error' : undefined"
                 v-model="formDrawingNo"
                 class="inp"
                 :placeholder="isIdentifyingAssembly ? '正在识别文件名…' : '例如：JG9055e-50/32-00'"
@@ -1340,6 +1458,7 @@ async function retryFailedUpload() {
               >
                 {{ createMode === 'fork' && formDrawingNo === selectedForkSourceNo ? '分叉需要新的总图图号，请修改后再提交。' : assemblyIdentifyMessage || '图号规范唯一，已关联上一步总图文件名识别结果。' }}
               </small>
+              <small v-if="validationErrors['create-drawing-no']" id="create-drawing-no-error" class="field-error">{{ validationErrors['create-drawing-no'] }}</small>
             </div>
 
             <div class="form-item">
@@ -1359,9 +1478,6 @@ async function retryFailedUpload() {
             <DemoIcon name="arrow-left" :size="14" />上一步：2D 工程图纸
           </button>
           <div class="footer-actions">
-            <button class="btn" type="button" :disabled="isCreating" @click="handleSubmit">
-              <DemoIcon name="check" :size="13" />先立项，稍后补传
-            </button>
             <button class="btn primary" type="button" @click="nextStep">
               下一步：图纸属性 <DemoIcon name="arrow-right" :size="14" />
             </button>
@@ -1389,6 +1505,7 @@ async function retryFailedUpload() {
             <DrawingAttributesForm
               v-model="formAttributeValues"
               :attributes="attributeStore.sortedAttributes"
+              :errors="attributeFieldErrors"
               compact
             />
           </div>
@@ -1401,7 +1518,7 @@ async function retryFailedUpload() {
           </button>
           <div class="footer-actions">
             <button class="btn" type="button" :disabled="isCreating" @click="handleSubmit">
-              <DemoIcon name="check" :size="13" />先立项，稍后补传
+              <DemoIcon name="check" :size="13" />创建草稿
             </button>
             <button class="btn primary" type="button" @click="nextStep">
               下一步：3D 模型与资料 <DemoIcon name="arrow-right" :size="14" />
@@ -1582,15 +1699,23 @@ async function retryFailedUpload() {
           <button class="btn" type="button" :disabled="isCreating" @click="handleCancel">取消</button>
           <button class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
             <span v-if="isCreating" class="button-spinner" aria-hidden="true"></span>
-            <DemoIcon v-else name="check" :size="15" />{{ isCreating ? '正在保存创建…' : '保存并创建项目图纸' }}
+            <DemoIcon v-else name="check" :size="15" />{{ isCreating ? '创建中…' : '创建草稿' }}
           </button>
         </div>
       </footer>
     </section>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.create-validation, .field-error { color: var(--danger); }
+.create-validation { padding: 12px 16px; border: 1px solid var(--danger); border-radius: var(--radius); }
+.field-error { display: block; margin-top: 4px; }
+.inp[aria-invalid='true'] { border-color: var(--danger); }
+.saved-drawing-state { padding: 24px; }
+.saved-drawing-state p { margin: 12px 0; }
+.saved-drawing-state .btn + .btn { margin-left: 8px; }
 .drawing-create-view {
   display: flex;
   flex-direction: column;

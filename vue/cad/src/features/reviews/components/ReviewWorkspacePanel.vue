@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import ChangeReviewEvidence from './ChangeReviewEvidence.vue'
+import { opinionDraftKey, readOpinionDraft, writeOpinionDraft } from '../review-opinion-draft'
 import {
   activeReviewNode,
   canSignReviewNode,
@@ -136,9 +137,25 @@ async function handleRestartChangeReview() {
   }
 }
 
-watch(currentNode, (node) => {
-  opinionText.value = node?.status === 'pending' ? '' : (node?.opinion || '')
-}, { immediate: true })
+const draftKey = computed(() => {
+  const review = reviewCase.value
+  const node = currentNode.value
+  const user = authStore.currentUser
+  if (!review || !node || !user || !canSignReviewNode(node, node.name, user, reviewing.value)) return ''
+  return opinionDraftKey({ userId: user.id, caseId: review.id, startedAt: review.startedAt,
+    submissionId: review.changeSubmissionId, node: node.name, order: node.order })
+})
+let activeDraftKey = ''
+let restoringOpinion = false
+watch(draftKey, key => {
+  restoringOpinion = true
+  activeDraftKey = key
+  opinionText.value = key ? readOpinionDraft(key) : ''
+  restoringOpinion = false
+}, { immediate: true, flush: 'sync' })
+watch(opinionText, text => {
+  if (activeDraftKey && !restoringOpinion) writeOpinionDraft(activeDraftKey, text)
+}, { flush: 'sync' })
 
 onMounted(() => {
   void Promise.all([drawingStore.load(), reviewStore.load()]).catch(() => undefined)
@@ -146,7 +163,7 @@ onMounted(() => {
 
 function openDrawingFiles() {
   if (!effectiveNo.value) return
-  void router.push({ name: RouteName.DrawingPreview, params: { drawingId: effectiveNo.value } })
+  void router.push({ name: RouteName.DrawingPreview, params: { drawingId: effectiveNo.value }, query: { from: 'review', reviewNo: effectiveNo.value } })
 }
 
 function nodeStatus(node: (typeof nodes.value)[number]) {
@@ -183,6 +200,7 @@ function archiveDrawing() {
 }
 
 async function handleDecision(action: 'pass' | 'rejected') {
+  if (submitting.value || !canSign.value) return
   const node = currentNode.value
   const review = reviewCase.value
   if (!node || !review) return
@@ -191,8 +209,10 @@ async function handleDecision(action: 'pass' | 'rejected') {
     return
   }
   submitting.value = true
+  const submittedDraftKey = activeDraftKey
   try {
     const updatedCase = await reviewStore.submitNode(review.id, node.name, action, opinionText.value.trim())
+    if (submittedDraftKey) writeOpinionDraft(submittedDraftKey, '')
     if (updatedCase.status !== 'reviewing') {
       drawingStore.invalidate()
       await drawingStore.load()
@@ -201,12 +221,11 @@ async function handleDecision(action: 'pass' | 'rejected') {
       action === 'pass' ? `节点「${node.name}」已审核通过` : `节点「${node.name}」已驳回，发起人将收到整改通知`,
       action === 'pass' ? 'ok' : 'warn',
     )
-    const next = reviewStore.getCase(drawingNo.value)
+    const next = reviewStore.getCase(effectiveNo.value)
     const nextMine = next && next.status === 'reviewing'
       ? activeReviewNode(toWorkspaceNodes(next), true)
       : null
     if (nextMine && canSignReviewNode(nextMine, nextMine.name, authStore.currentUser, true)) {
-      opinionText.value = ''
       return
     }
     if (!props.embedded) void router.push({ name: RouteName.ReviewPending })
@@ -267,6 +286,7 @@ async function handleDecision(action: 'pass' | 'rejected') {
               rows="6"
               placeholder="请填写本节点意见。通过可写简要结论；驳回必须写明问题和整改要求。"
             ></textarea>
+            <p class="current-meta">意见已在本次会话中保留，查图返回后可继续填写；提交成功后清除。</p>
             <div class="current-actions">
               <button class="btn danger" type="button" :disabled="submitting" @click="handleDecision('rejected')">
                 <DemoIcon name="x" :size="14" />驳回

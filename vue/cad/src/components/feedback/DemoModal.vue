@@ -133,7 +133,7 @@ function toggleRole(role: UserRole) {
   try {
     if (current.type === 'confirm') {
       const callback = current.onConfirm
-      close()
+      uiStore.closeModal(true)
       if (callback) await callback()
       return
     } else if (current.type === 'borrow-drawing') {
@@ -273,7 +273,7 @@ function toggleRole(role: UserRole) {
       </div>
 
       <footer class="modal-foot">
-        <button class="btn" type="button" @click="close">取消</button>
+        <button class="btn" type="button" @click="close">{{ modal.payload?.cancelText || '取消' }}</button>
          <button class="btn primary" :class="{ danger: modal.type === 'confirm' && modal.payload?.danger }" type="button" @click="submit"><DemoIcon :name="modal.type === 'confirm' && modal.payload?.danger ? 'alert-triangle' : 'check'" :size="14" />{{ modal.type === 'confirm' ? (modal.payload?.confirmText || '确定') : modal.type === 'exit' ? '退出' : modal.type === 'borrow-drawing' ? '建立借用' : modal.type === 'revert' ? '执行回退' : modal.type === 'add-user' ? '创建账号' : modal.type === 'edit-user-role' ? '保存身份' : modal.type === 'reset-user' ? '重置密码' : '保存流程' }}</button>
       </footer>
     </section>

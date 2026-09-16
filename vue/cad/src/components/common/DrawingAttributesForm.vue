@@ -11,6 +11,7 @@ const props = withDefaults(defineProps<{
   compact?: boolean
   title?: string
   description?: string
+  errors?: Record<string, string>
 }>(), {
   modelValue: () => ({}),
   readonly: false,
@@ -83,6 +84,8 @@ function getFieldName(attribute: DrawingAttribute, fieldId: string): string {
               :id="`drawing-attr-${attribute.id}`"
               class="inp attribute-select"
               :value="valueOf(attribute.id)"
+              :aria-invalid="Boolean(errors?.[attribute.id])"
+              :aria-describedby="errors?.[attribute.id] ? `drawing-attr-error-${attribute.id}` : undefined"
               :disabled="!enabledFields(attribute).length"
               @change="setValue(attribute.id, ($event.target as HTMLSelectElement).value)"
             >
@@ -93,6 +96,7 @@ function getFieldName(attribute: DrawingAttribute, fieldId: string): string {
             </select>
             <span class="select-indicator"><DemoIcon name="chevron-down" :size="13" /></span>
           </div>
+          <small v-if="errors?.[attribute.id]" :id="`drawing-attr-error-${attribute.id}`" class="attribute-error">{{ errors[attribute.id] }}</small>
         </div>
       </div>
     </div>
@@ -131,6 +135,8 @@ function getFieldName(attribute: DrawingAttribute, fieldId: string): string {
 </template>
 
 <style scoped>
+.attribute-error { color: var(--danger); }
+.attribute-select[aria-invalid='true'] { border-color: var(--danger); }
 .attributes-wrapper {
   width: 100%;
 }

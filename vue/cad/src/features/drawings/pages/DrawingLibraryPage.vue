@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRefs, watch } from 'vue'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { STATUS } from '@/constants/drawing-status'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useAttributeStore } from '@/stores/attribute.store'
-import type { DrawingStatus } from '@/types/domain.types'
+import { useDrawingLibraryUiStore } from '@/stores/drawing-library-ui.store'
 import { formatReadableDateTime } from '@/utils/date-time'
 import { drawingMediaLabel } from '@/utils/model-formats'
 
@@ -18,12 +18,15 @@ const attributeStore = useAttributeStore()
 const authStore = useAuthStore()
 const router = useRouter()
 
-const query = ref('')
-const status = ref<DrawingStatus | ''>('')
-const media = ref('')
-const mode = ref<'drawing' | 'part'>('drawing')
-const attributeFilters = ref<Record<string, string>>({})
-const expandedProjects = ref<Set<string>>(new Set())
+const viewState = useDrawingLibraryUiStore().forUser(authStore.currentUser?.id || '')
+const { query, status, media, mode, attributeFilters, expandedProjects, collapsedProjects } = toRefs(viewState)
+const pageElement = ref<HTMLElement | null>(null)
+const tableElement = ref<HTMLElement | null>(null)
+const loading = ref(true)
+const loadError = ref('')
+let disposed = false
+const hasFilters = computed(() => Boolean(query.value.trim() || status.value || media.value || (mode.value === 'drawing' && activeFilterCount.value)))
+const availableStatuses = Object.entries(STATUS).filter(([key]) => key !== 'disabled')
 const isAdmin = computed(() => authStore.hasRole('admin'))
 
 const activeFilterCount = computed(() => Object.values(attributeFilters.value).filter(Boolean).length)
@@ -119,18 +122,23 @@ const partRows = computed(() => {
 })
 
 function isProjectExpanded(drawingNo: string): boolean {
-  return expandedProjects.value.has(drawingNo) || matchingPartProjects.value.has(drawingNo)
+  return !collapsedProjects.value.has(drawingNo) && (expandedProjects.value.has(drawingNo) || matchingPartProjects.value.has(drawingNo))
 }
 
 function toggleExpanded(drawingNo: string) {
-  if (expandedProjects.value.has(drawingNo)) {
+  if (isProjectExpanded(drawingNo)) {
     expandedProjects.value.delete(drawingNo)
+    collapsedProjects.value.add(drawingNo)
   } else {
+    collapsedProjects.value.delete(drawingNo)
     expandedProjects.value.add(drawingNo)
   }
 }
 
 function clearFilters() {
+  query.value = ''
+  status.value = ''
+  media.value = ''
   attributeFilters.value = {}
 }
 
@@ -143,19 +151,40 @@ function openDetail(drawingNo: string) {
   router.push({ name: owner && drawingMediaLabel(owner) === '3D' ? 'drawing-models' : 'drawing-preview', params: { drawingId: drawingNo } })
 }
 
-onMounted(() => {
-  void Promise.all([drawingStore.load(), attributeStore.load()]).catch(() => undefined)
+async function loadLibrary(force = false) {
+  loading.value = true
+  loadError.value = ''
+  const results = await Promise.allSettled([force ? drawingStore.refresh() : drawingStore.load(), attributeStore.load()])
+  if (disposed) return
+  if (results.some(result => result.status === 'rejected')) loadError.value = '图纸或筛选条件加载失败，请检查连接后重试。'
+  loading.value = false
+  await nextTick()
+  if (pageElement.value) pageElement.value.scrollTop = viewState.scrollTop
+  if (tableElement.value) tableElement.value.scrollLeft = viewState.tableScrollLeft
+}
+onMounted(() => { void loadLibrary() })
+onBeforeUnmount(() => { disposed = true })
+onBeforeRouteLeave(() => {
+  viewState.scrollTop = pageElement.value?.scrollTop ?? 0
+  viewState.tableScrollLeft = tableElement.value?.scrollLeft ?? 0
 })
+watch(query, () => { collapsedProjects.value.clear() })
+watch([query, status, media, mode, attributeFilters], () => {
+  viewState.scrollTop = 0
+  if (pageElement.value) pageElement.value.scrollTop = 0
+}, { deep: true })
 </script>
 
 <template>
-  <div class="page drawing-library-page">
+  <div ref="pageElement" class="page drawing-library-page" :aria-busy="loading">
     <header class="library-head">
       <div class="head-left">
         <div class="eyebrow"><DemoIcon name="layers" :size="14" /> 企业图纸资产中心</div>
         <h1>工程图纸库</h1>
-        <p v-if="mode === 'drawing'">支持按企业标准化业务属性组合筛选，已收录 {{ rows.length }} 份项目总图</p>
-        <p v-else>按文件名、所属图号和项目号检索，已收录 {{ partRows.length }} 个零件</p>
+        <p v-if="loading">正在加载图纸库…</p>
+        <p v-else-if="loadError">图纸库暂时不可用</p>
+        <p v-else-if="mode === 'drawing'">{{ hasFilters ? '找到' : '已收录' }} {{ rows.length }} 份项目总图</p>
+        <p v-else>{{ hasFilters ? '找到' : '已收录' }} {{ partRows.length }} 个零件</p>
       </div>
       <div class="library-actions">
         <button v-if="isAdmin" class="btn" type="button" @click="router.push({ name: 'admin-attributes' })">
@@ -184,7 +213,6 @@ onMounted(() => {
         <div v-for="attribute in attributeStore.sortedAttributes" :key="attribute.id" class="filter-field">
           <div class="filter-label">
             <span>{{ attribute.name }}</span>
-            <em v-if="attribute.required">必填项</em>
           </div>
           <div class="filter-select-wrap">
             <select v-model="attributeFilters[attribute.id]" class="inp filter-select" :class="{ 'is-selected': Boolean(attributeFilters[attribute.id]) }">
@@ -227,7 +255,7 @@ onMounted(() => {
         <label class="search-box">
           <DemoIcon name="search" :size="15" />
           <input v-model="query" :placeholder="mode === 'part' ? '搜索零件文件名、所属图号、项目号…' : '搜索图号、名称、项目号、责任单位、属性字段…'" />
-          <button v-if="query" class="clear-search" type="button" @click="query = ''">
+          <button v-if="query" class="clear-search" type="button" aria-label="清空搜索" @click="query = ''">
             <DemoIcon name="x" :size="12" />
           </button>
         </label>
@@ -237,14 +265,19 @@ onMounted(() => {
             <option value="2D">仅 2D</option><option value="3D">仅 3D</option><option value="2D + 3D">2D + 3D</option>
             <option value="未上传图纸">未上传图纸</option>
           </select>
-           <select v-model="status" class="inp status-select">
+           <select v-model="status" class="inp status-select" aria-label="图纸状态">
              <option value="">全部状态</option>
-             <option v-for="(item, key) in STATUS" :key="key" :value="key">{{ item.t }}</option>
-          </select>
+             <option v-for="[key, item] in availableStatuses" :key="key" :value="key">{{ item.t }}</option>
+           </select>
+           <button v-if="hasFilters" class="btn" type="button" @click="clearFilters">清空全部筛选</button>
         </div>
       </div>
 
-      <div class="table-scroll">
+      <div v-if="loading" class="empty-state-view" role="status"><strong>正在加载图纸…</strong></div>
+      <div v-else-if="loadError" class="empty-state-view" role="alert">
+        <strong>{{ loadError }}</strong><button class="btn primary" type="button" @click="loadLibrary(true)">重新加载</button>
+      </div>
+      <div v-else ref="tableElement" class="table-scroll">
         <table v-if="mode === 'drawing'" class="tbl library-table">
           <thead>
             <tr>
@@ -266,10 +299,11 @@ onMounted(() => {
                     v-if="partsForDrawing(drawing.no).length"
                     class="expand-btn"
                     type="button"
-                    :title="expandedProjects.has(drawing.no) ? '收起零件' : '展开零件清单'"
+                    :title="isProjectExpanded(drawing.no) ? '收起零件' : '展开零件清单'"
+                    :aria-expanded="isProjectExpanded(drawing.no)"
                     @click="toggleExpanded(drawing.no)"
                   >
-                    <DemoIcon name="chevron-down" :size="13" :class="{ collapsed: !expandedProjects.has(drawing.no) }" />
+                    <DemoIcon name="chevron-down" :size="13" :class="{ collapsed: !isProjectExpanded(drawing.no) }" />
                   </button>
                   <button class="link drawing-no-link" type="button" @click="openDetail(drawing.no)">
                     {{ drawing.no }}
@@ -336,8 +370,10 @@ onMounted(() => {
               <td colspan="8">
                 <div class="empty-state-view">
                   <DemoIcon name="search-x" :size="36" />
-                  <strong>没有找到符合条件的图纸</strong>
-                  <span>尝试调整搜索关键词或重置业务属性筛选</span>
+                  <strong>{{ hasFilters ? '没有找到符合条件的图纸' : '图纸库还没有图纸' }}</strong>
+                  <span>{{ hasFilters ? '调整关键词，或清空筛选后重新查找。' : '创建第一份图纸，开始建立项目档案。' }}</span>
+                  <button v-if="hasFilters" class="btn" type="button" @click="clearFilters">清空全部筛选</button>
+                  <button v-else class="btn primary" type="button" @click="router.push({ name: 'drawing-create' })">创建图纸</button>
                 </div>
               </td>
             </tr>
@@ -388,8 +424,10 @@ onMounted(() => {
               <td colspan="8">
                 <div class="empty-state-view">
                   <DemoIcon name="search-x" :size="36" />
-                  <strong>没有找到符合条件的零件</strong>
-                  <span>请按零件文件名、所属图号或项目号搜索</span>
+                  <strong>{{ hasFilters ? '没有找到符合条件的零件' : '还没有零件图纸' }}</strong>
+                  <span>{{ hasFilters ? '调整关键词，或清空筛选后重新查找。' : '创建项目并导入零件图后，会显示在这里。' }}</span>
+                  <button v-if="hasFilters" class="btn" type="button" @click="clearFilters">清空全部筛选</button>
+                  <button v-else class="btn primary" type="button" @click="router.push({ name: 'drawing-create' })">创建图纸</button>
                 </div>
               </td>
             </tr>

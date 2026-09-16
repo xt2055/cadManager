@@ -21,6 +21,8 @@ import { convertCadToPdfBlob } from '@/services/cad-pdf-export.service'
 import { changeRequestService } from '@/services/change-request.service'
 import { editableChangeTargets } from '../../components/detail/change-edit-access'
 import { canDeleteDrawingFiles } from './drawing-file-delete'
+import { getApiBaseUrl } from '@/services/api-base.service'
+import { editSessionStorageKey, sessionsForFiles, isExpiredEditSession } from '@/modules/editing/session-state'
 import { isModelFile } from '@/utils/model-formats'
 import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
 
@@ -275,11 +277,12 @@ interface LocalActiveEditSession {
 }
 
 // 编辑会话状态持久化：切换页签/路由导致本组件卸载重建时，“编辑中”状态栏不能丢。
-const LOCAL_SESSIONS_STORAGE_KEY = 'cad:active-edit-sessions:v1'
+const localSessionsStorageKey = computed(() => editSessionStorageKey(getApiBaseUrl(), authStore.currentUser?.id || ''))
 
 function loadLocalSessions(): LocalActiveEditSession[] {
   try {
-    const raw = window.localStorage.getItem(LOCAL_SESSIONS_STORAGE_KEY)
+    if (!authStore.currentUser?.id) return []
+    const raw = window.localStorage.getItem(localSessionsStorageKey.value)
     const list = raw ? JSON.parse(raw) : []
     if (!Array.isArray(list)) return []
     return list.filter((item): item is LocalActiveEditSession => Boolean(item && item.sessionId && item.fileId))
@@ -290,7 +293,8 @@ function loadLocalSessions(): LocalActiveEditSession[] {
 
 function persistLocalSessions() {
   try {
-    window.localStorage.setItem(LOCAL_SESSIONS_STORAGE_KEY, JSON.stringify(myActiveSessions.value))
+    if (!authStore.currentUser?.id) return
+    window.localStorage.setItem(localSessionsStorageKey.value, JSON.stringify(myActiveSessions.value))
   } catch {
     // 本地存储不可用时忽略：仅影响状态栏恢复
   }
@@ -302,6 +306,12 @@ const editingFileId = ref<string | null>(null)
 const readonlyFileId = ref<string | null>(null)
 const activeSessionList = ref<ActiveEditSessionInfo[]>([])
 const myActiveSessions = ref<LocalActiveEditSession[]>(loadLocalSessions())
+const projectActiveSessions = computed(() => sessionsForFiles(myActiveSessions.value, allFiles.value))
+watch(localSessionsStorageKey, () => {
+  myActiveSessions.value = loadLocalSessions()
+  activeSessionList.value = []
+  void refreshActiveSessions()
+})
 const closingSessionIds = ref<Set<string>>(new Set())
 const closedSessions = ref<{ sessionId: string; fileName: string; savedAt: string }[]>([])
 const borrowReasonInput = ref('')
@@ -562,12 +572,14 @@ function openOnlineEditor(file: DrawingFile) {
 
 async function refreshActiveSessions() {
   const drawingNo = currentItem.value?.no
+  const accountKey = localSessionsStorageKey.value
   if (!drawingNo) {
     activeSessionList.value = []
     return
   }
   try {
     const list = await editingService.listSessions(drawingNo)
+    if (currentItem.value?.no !== drawingNo || localSessionsStorageKey.value !== accountKey) return
     activeSessionList.value = list
 
     // 同步更新 myActiveSessions：只校验当前图纸的会话（服务端已关闭则剔除）；
@@ -651,6 +663,11 @@ async function doStopSession(targetId: string, targetFileName: string) {
     await drawingStore.refresh()
   } catch (error) {
     // 捕获失败时后端保留编辑会话，用户可重试结束编辑，不会丢失工作内容。
+    if (isExpiredEditSession(error)) {
+      myActiveSessions.value = myActiveSessions.value.filter((item) => item.sessionId !== targetId)
+      persistLocalSessions()
+      await refreshActiveSessions()
+    }
     uiStore.toast(error instanceof Error ? error.message : '释放编辑会话失败', 'warn')
   } finally {
     closingSessionIds.value.delete(targetId)
@@ -670,6 +687,7 @@ async function relaunchEditor(session: LocalActiveEditSession) {
   editingFileId.value = session.fileId
   try {
     const result = await editingService.openSession(storageKey, session.fileId)
+    session.sessionId = result.sessionId
     session.openUrl = result.openUrl
     session.uncPath = result.uncPath
     session.lastHeartbeatAt = Date.now()
@@ -743,7 +761,7 @@ async function refreshChangeEditAccess() {
 watch([() => currentItem.value, rootDrawingNo, archivedProject, () => authStore.currentUser?.id], () => { void refreshChangeEditAccess() }, { immediate: true })
 
 // 编辑权限矩阵（前端显隐；后端 editing.Open 同步强校验）：
-// 草稿/生产 → 创建者或管理员；审核中 → 当前节点责任人或管理员；
+// 未存档 → 创建者或管理员；审核中另允许当前节点责任人；
 // 存档 → 仅当当前用户持有执行中的变更工单时可编辑。
 function canEditFile(file: DrawingFile): boolean {
   const item = currentItem.value
@@ -751,11 +769,13 @@ function canEditFile(file: DrawingFile): boolean {
   if (!item || !current) return false
   const admin = current.roles?.includes('admin') ?? false
   if (archivedProject.value) return changeTargetIds.value.has(file.id)
+  const project = drawingStore.getDrawing(rootDrawingNo.value)
+  const creator = (project?.createdBy || (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : ''))) === current.displayName
+  if (creator || admin) return true
   if (item.status === 'reviewing') {
     if (admin) return true
     return reviewStore.myPendingReviews().some((reviewCase) => reviewCase.no === item.no)
   }
-  const creator = (('createdBy' in item && item.createdBy) || ('by' in item ? item.by : '')) === current.displayName
   return creator || admin
 }
 
@@ -766,8 +786,8 @@ const canDeleteFiles = computed(() => {
   const rawCreator = (item as { createdBy?: unknown }).createdBy
   const creator = typeof rawCreator === 'string' ? rawCreator : ('by' in item && typeof item.by === 'string' ? item.by : '')
   return canDeleteDrawingFiles({
-    status: item.status,
-    creator,
+    status: archivedProject.value ? 'archived' : item.status,
+    creator: drawingStore.getDrawing(rootDrawingNo.value)?.createdBy || creator,
     userName: current.displayName,
     admin: current.roles?.includes('admin') ?? false,
   })
@@ -858,7 +878,11 @@ async function openEditor(file: DrawingFile) {
     const message = error instanceof Error ? error.message : String(error)
     // 本机未找到 CAXA 时保留服务端会话：文件已唤醒到工作区，用户在弹窗中选择程序后可直接重试。
     if (sessionId && !message.startsWith(CAXA_NOT_FOUND_PREFIX)) {
-      await editingService.closeSession(sessionId).catch(() => undefined)
+      try {
+        await editingService.closeSession(sessionId)
+        myActiveSessions.value = myActiveSessions.value.filter((item) => item.sessionId !== sessionId)
+        persistLocalSessions()
+      } catch { /* 保存失败时保留会话供用户重试。 */ }
     }
     handleCadOpenError(error, () => openEditor(file))
   } finally {
@@ -869,6 +893,7 @@ async function openEditor(file: DrawingFile) {
 watch(
   () => currentItem.value?.no,
   () => {
+    activeSessionList.value = []
     void refreshActiveSessions()
   },
   { immediate: true },
@@ -883,12 +908,20 @@ onMounted(() => {
 
   // 统一心跳轮询：对当前正在编辑的多开图纸批量保活，并记录最近成功时间用于状态展示
   heartbeatTimer = window.setInterval(() => {
+    const accountKey = localSessionsStorageKey.value
     for (const session of myActiveSessions.value) {
       void editingService.heartbeat(session.sessionId)
         .then(() => {
           session.lastHeartbeatAt = Date.now()
         })
         .catch((error) => {
+          if (accountKey !== localSessionsStorageKey.value) return
+          if (isExpiredEditSession(error)) {
+            myActiveSessions.value = myActiveSessions.value.filter((item) => item.sessionId !== session.sessionId)
+            persistLocalSessions()
+            void refreshActiveSessions()
+            return
+          }
           console.warn(`会话 ${session.sessionId} 心跳失败`, error)
         })
     }
@@ -1523,8 +1556,8 @@ function closeReidentifyModal() {
     </div>
 
     <!-- 本地 CAD 协同状态面板（支持多开协同编辑，置于表格上方） -->
-    <div v-if="myActiveSessions.length > 0" class="collab-multi-container">
-      <div v-for="session in myActiveSessions" :key="session.sessionId" class="card collab-dock-card">
+    <div v-if="projectActiveSessions.length > 0" class="collab-multi-container">
+      <div v-for="session in projectActiveSessions" :key="session.sessionId" class="card collab-dock-card">
         <div class="dock-left">
           <div class="dock-status-tag">
             <span class="pulse-dot"></span>

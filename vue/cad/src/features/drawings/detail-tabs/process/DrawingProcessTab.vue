@@ -161,19 +161,21 @@ async function deleteCraftFiles(files: CraftFileView[]) {
   if (!currentItem.value) return
   bulkLoading.value = true
   let failed = 0
+  let failureReason = ''
   try {
     for (const file of files) {
       try {
         await drawingOperationsStore.deleteCraftFile(currentItem.value.no, file.id)
       } catch (error) {
         failed += 1
+        failureReason = error instanceof Error ? error.message : String(error)
         console.error(`删除工艺文件失败：${file.name}`, error)
       }
     }
     selectedFileIds.value = new Set()
     await drawingStore.refresh()
     const succeeded = files.length - failed
-    uiStore.toast(failed ? `已删除 ${succeeded} 个工艺文件，${failed} 个删除失败` : `已删除 ${succeeded} 个工艺文件`, failed ? 'warn' : 'ok')
+    uiStore.toast(failed ? `已删除 ${succeeded} 个工艺文件，${failed} 个删除失败：${failureReason}` : `已删除 ${succeeded} 个工艺文件`, failed ? 'warn' : 'ok')
   } finally {
     bulkLoading.value = false
   }
