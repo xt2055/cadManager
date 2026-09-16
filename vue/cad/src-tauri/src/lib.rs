@@ -412,16 +412,12 @@ fn file_write_locked(path: &Path) -> bool {
 
 #[cfg(windows)]
 fn open_cad_file(caxa_path: Option<&Path>, file_path: &Path, wait: bool) -> Result<(), String> {
-  // 候选顺序：服务器提示路径（本机存在时）→ 客户端本机扫描结果。
-  let mut candidates: Vec<PathBuf> = Vec::new();
+  // 服务端路径只作为候选，与本机安装一起按年份排序，不能抢占新版。
+  let mut candidates = find_local_caxa();
   if let Some(path) = caxa_path.filter(|path| path.is_file()) {
     candidates.push(path.to_path_buf());
   }
-  if let Some(local) = find_local_caxa() {
-    if !candidates.iter().any(|item| item == &local) {
-      candidates.push(local);
-    }
-  }
+  prioritize_caxa(&mut candidates, caxa_override().filter(|path| path.is_file()));
   for candidate in &candidates {
     println!("[CAD] 使用本机 CAXA 打开文件：{} -> {}", candidate.display(), file_path.display());
     let mut command = std::process::Command::new(candidate);
@@ -483,52 +479,23 @@ fn open_with_shell_execute(file_path: &Path, wait: bool) -> Result<(), String> {
   Ok(())
 }
 
-/// 客户端自行寻找本机 CAXA（与服务端互不干扰）：优先用户手动指定的路径，其次自动扫描（进程内缓存）。
+/// 缓存所有安装，保留启动失败时尝试其他安装的机会；无结果或缓存失效时重新扫描。
 #[cfg(windows)]
-fn find_local_caxa() -> Option<PathBuf> {
-  if let Some(path) = caxa_override() {
-    if path.is_file() {
-      return Some(path);
-    }
-    eprintln!("[CAD] 手动指定的 CAXA 路径已失效：{}，改用自动扫描", path.display());
+fn find_local_caxa() -> Vec<PathBuf> {
+  static CACHE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+  let mut cached = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+  if cached.is_empty() || cached.iter().any(|path| !path.is_file()) {
+    *cached = scan_local_caxa();
   }
-  static CACHE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-  CACHE
-    .get_or_init(|| {
-      let best = scan_local_caxa().into_iter().next();
-      match &best {
-        Some(path) => println!("[CAD] 本机扫描到 CAXA：{}", path.display()),
-        None => println!("[CAD] 本机未扫描到 CAXA，将按 Windows 文件关联打开"),
-      }
-      best
-    })
-    .clone()
+  cached.clone()
 }
 
 /// 本机扫描 CAXA 安装（注册表 Uninstall 键 + 常见目录），按版本号新→旧排序。
 #[cfg(windows)]
 fn scan_local_caxa() -> Vec<PathBuf> {
   let mut matches: Vec<PathBuf> = Vec::new();
-
-  for root in [
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-    r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall",
-  ] {
-    let Ok(output) = silent_command("reg").args(["query", root, "/s", "/f", "CAXA", "/d"]).output() else {
-      continue;
-    };
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    for line in text.lines().map(str::trim).filter(|line| line.starts_with("HKEY_")) {
-      let Ok(detail) = silent_command("reg").args(["query", line, "/v", "InstallLocation"]).output() else {
-        continue;
-      };
-      let install_dir = extract_reg_string(&String::from_utf8_lossy(&detail.stdout));
-      if install_dir.is_empty() {
-        continue;
-      }
-      matches.extend(glob_caxa_bin(Path::new(&install_dir)));
-    }
+  for directory in caxa_registry_directories() {
+    matches.extend(glob_caxa_bin(&directory));
   }
 
   let mut roots: Vec<PathBuf> = Vec::new();
@@ -538,7 +505,7 @@ fn scan_local_caxa() -> Vec<PathBuf> {
     }
   }
   for drive in ["C", "D", "E", "F"] {
-    roots.push(PathBuf::from(format!("{drive}:")));
+    roots.push(PathBuf::from(format!("{drive}:\\")));
   }
   for root in roots {
     let caxa_root = root.join("CAXA");
@@ -547,8 +514,7 @@ fn scan_local_caxa() -> Vec<PathBuf> {
     }
   }
 
-  matches.sort_by_key(|path| std::cmp::Reverse(numeric_segments(path)));
-  matches.dedup();
+  prioritize_caxa(&mut matches, None);
   matches
 }
 
@@ -556,6 +522,10 @@ fn scan_local_caxa() -> Vec<PathBuf> {
 #[cfg(windows)]
 fn glob_caxa_bin(install_dir: &Path) -> Vec<PathBuf> {
   fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+    let executable = dir.join("CDRAFT_M.exe");
+    if executable.is_file() {
+      found.push(executable);
+    }
     for bin in ["Bin64", "Bin"] {
       let candidate = dir.join(bin).join("CDRAFT_M.exe");
       if candidate.is_file() {
@@ -568,7 +538,7 @@ fn glob_caxa_bin(install_dir: &Path) -> Vec<PathBuf> {
     if let Ok(entries) = fs::read_dir(dir) {
       for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
           walk(&path, depth - 1, found);
         }
       }
@@ -579,34 +549,107 @@ fn glob_caxa_bin(install_dir: &Path) -> Vec<PathBuf> {
   found
 }
 
-/// 从 reg query 输出提取 REG_SZ 字符串值。
+/// 直接读取 Unicode 注册表，避免 reg.exe 的本地编码损坏中文安装路径。
 #[cfg(windows)]
-fn extract_reg_string(output: &str) -> String {
-  for line in output.lines() {
-    if let Some(index) = line.find("REG_SZ") {
-      return line[index + "REG_SZ".len()..].trim().to_string();
-    }
+fn caxa_registry_directories() -> Vec<PathBuf> {
+  use windows_sys::Win32::System::Registry::*;
+  fn wide(text: &str) -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() }
+  fn read_string(key: HKEY, subkey: &[u16], name: &str) -> String {
+    let name = wide(name);
+    let mut buffer = vec![0u16; 32768];
+    let mut size = (buffer.len() * 2) as u32;
+    let result = unsafe { RegGetValueW(key, subkey.as_ptr(), name.as_ptr(),
+      RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, std::ptr::null_mut(),
+      buffer.as_mut_ptr().cast(), &mut size) };
+    if result != 0 { return String::new(); }
+    let length = buffer.iter().position(|value| *value == 0).unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..length])
   }
-  String::new()
+  let mut directories = Vec::new();
+  for (hive, location) in [
+    (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    (HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+  ] {
+    let mut key = std::ptr::null_mut();
+    if unsafe { RegOpenKeyExW(hive, wide(location).as_ptr(), 0, KEY_READ, &mut key) } != 0 {
+      continue;
+    }
+    let mut index = 0;
+    loop {
+      let mut name = [0u16; 256];
+      let mut length = name.len() as u32;
+      let result = unsafe { RegEnumKeyExW(key, index, name.as_mut_ptr(), &mut length,
+        std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
+      if result != 0 { break; }
+      index += 1;
+      let display_name = read_string(key, &name, "DisplayName");
+      let install = read_string(key, &name, "InstallLocation");
+      let subkey = String::from_utf16_lossy(&name[..length as usize]);
+      if !install.trim().is_empty() && [display_name.as_str(), install.as_str(), subkey.as_str()]
+        .iter().any(|value| value.to_ascii_lowercase().contains("caxa")) {
+        directories.push(PathBuf::from(install.trim().trim_matches('"')));
+      }
+    }
+    unsafe { RegCloseKey(key); }
+  }
+  directories
 }
 
-/// 提取路径中的数字段用于比较版本新旧（如 ...\CAXA CAD\2022\Bin64 -> [2022, 64]）。
+/// 只从 CAXA 安装目录起识别四位年份，避免 Program Files (x86)、Bin64 等干扰排序。
 #[cfg(windows)]
-fn numeric_segments(path: &Path) -> Vec<u64> {
-  let mut segments: Vec<u64> = Vec::new();
-  let mut current = String::new();
-  for character in path.to_string_lossy().chars() {
-    if character.is_ascii_digit() {
-      current.push(character);
-    } else if !current.is_empty() {
-      segments.push(current.parse().unwrap_or(0));
-      current.clear();
-    }
+fn caxa_version_year(path: &Path) -> u16 {
+  let text = path.to_string_lossy().to_ascii_lowercase();
+  let installation = text.find("caxa").map(|index| &text[index..]).unwrap_or(&text);
+  installation.split(|character: char| !character.is_ascii_digit())
+    .filter(|part| part.len() == 4)
+    .filter_map(|part| part.parse::<u16>().ok())
+    .filter(|year| (2000..2100).contains(year))
+    .max().unwrap_or(0)
+}
+
+#[cfg(windows)]
+fn prioritize_caxa(candidates: &mut Vec<PathBuf>, manual: Option<PathBuf>) {
+  candidates.sort_by_key(|path| (
+    std::cmp::Reverse(caxa_version_year(path)),
+    path.to_string_lossy().to_ascii_lowercase(),
+  ));
+  candidates.dedup_by(|a, b| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()));
+  // 用户明确指定的程序仍然优先于自动选择。
+  if let Some(path) = manual {
+    candidates.retain(|item| !item.to_string_lossy().eq_ignore_ascii_case(&path.to_string_lossy()));
+    candidates.insert(0, path);
   }
-  if !current.is_empty() {
-    segments.push(current.parse().unwrap_or(0));
+}
+
+#[cfg(all(test, windows))]
+mod caxa_selection_tests {
+  use super::*;
+
+  #[test]
+  fn newer_installations_win_over_server_hint_and_architecture_digits() {
+    let old = PathBuf::from(r"C:\Program Files (x86)\CAXA\2015\Bin\CDRAFT_M.exe");
+    let current = PathBuf::from(r"D:\CAXA\电子图板2022\Bin64\CDRAFT_M.exe");
+    let newest = PathBuf::from(r"C:\Program Files\CAXA\2025\Bin64\CDRAFT_M.exe");
+    let mut candidates = vec![old.clone(), current.clone(), newest.clone(), old.clone()];
+    prioritize_caxa(&mut candidates, None);
+    assert_eq!(candidates, vec![newest, current, old]);
   }
-  segments
+
+  #[test]
+  fn explicit_user_choice_is_preserved_and_deduplicated() {
+    let manual = PathBuf::from(r"D:\CAXA\2022\Bin64\CDRAFT_M.exe");
+    let latest = PathBuf::from(r"D:\CAXA\2025\Bin64\CDRAFT_M.exe");
+    let mut candidates = vec![latest.clone(), PathBuf::from(r"d:\caxa\2022\bin64\cdraft_m.exe")];
+    prioritize_caxa(&mut candidates, Some(manual.clone()));
+    assert_eq!(candidates, vec![manual, latest]);
+  }
+
+  #[test]
+  fn version_ignores_unrelated_numbers_and_unknown_installations() {
+    assert_eq!(caxa_version_year(Path::new(r"D:\backup2026\CAXA\2022\Bin64\CDRAFT_M.exe")), 2022);
+    assert_eq!(caxa_version_year(Path::new(r"C:\Program Files (x86)\CAXA\Bin64\CDRAFT_M.exe")), 0);
+  }
 }
 
 #[tauri::command]
