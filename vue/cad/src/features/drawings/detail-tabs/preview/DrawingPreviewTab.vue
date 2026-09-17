@@ -599,7 +599,6 @@ const {
     </div>
 
     <!-- 本机未找到 CAXA：提供可操作的解决途径，而不是一闪而过的提示 -->
-    <!-- 本机未找到 CAXA：提供可操作的解决途径，而不是一闪而过的提示 -->
     <CaxaHelpModal
       v-if="caxaHelpVisible"
       :detail="caxaHelpDetail"
@@ -1014,12 +1013,19 @@ const {
   </div>
 </template>
 
+<style scoped src="./styles/modal-chrome.css"></style>
+
 <style scoped>
+/* 弹窗外壳（backdrop / head / title / close-btn / body / foot）与 .text-accent / .info-note
+   都来自上一行的共享 modal-chrome；本文件不再对子组件内部结构使用 :deep()。
+   这里只留父页面自身的布局与「借用零件弹窗」（P5b 再抽成组件）的样式。 */
 .new-drawing-modal { width: min(460px, calc(100vw - 32px)); padding: 24px; display: grid; gap: 18px; }
 .new-drawing-modal p { color: var(--text-2); line-height: 1.6; margin: 0; }
 .new-drawing-modal label { display: grid; gap: 8px; }
 .new-drawing-modal .modal-foot { display: flex; justify-content: flex-end; gap: 10px; }
-.creation-backdrop { z-index: 2900; cursor: wait; }
+/* 旧结构里 z-index: 2900 被父页面同优先级的 .modal-backdrop（z-index: 1000，源码在后）整条覆盖，
+   从未生效；为保持重构前后渲染一致，这里只保留真正生效的 cursor。 */
+.creation-backdrop { cursor: wait; }
 .new-drawing-modal { cursor: default; }
 .drawing-creating-modal { width: min(480px, calc(100vw - 32px)); padding: 30px; display: grid; justify-items: center; gap: 16px; text-align: center; cursor: wait; }
 .drawing-creating-spinner { width: 54px; height: 54px; padding: 5px; border-radius: 50%; background: conic-gradient(var(--accent), transparent 65%); animation: drawing-creating-spin .85s linear infinite; }
@@ -1061,17 +1067,6 @@ const {
   margin-left: 2px;
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
 .replace-modal {
   width: 520px;
   max-width: 90vw;
@@ -1096,10 +1091,11 @@ const {
 }
 
 .reidentify-modal-body {
-  padding: 16px 20px;
+  /* padding / gap 沿用共享 modal-chrome 的 .modal-body：本文件原先声明的 16px 20px 与 gap 12px，
+     在旧结构里被父页面 :deep(.modal-body)（同优先级、源码在后）整条覆盖，从未生效；
+     这里不再重复声明，以免重构后静默改成另一套值。 */
   display: flex;
   flex-direction: column;
-  gap: 12px;
   overflow-y: auto;
   min-height: 0;
 }
@@ -1161,46 +1157,6 @@ const {
   overflow-y: auto;
 }
 
-:deep(.modal-head) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--line);
-}
-
-:deep(.modal-title) {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text-1);
-}
-
-:deep(.modal-title svg) {
-  color: var(--accent);
-}
-
-:deep(.close-btn) {
-  border: none;
-  background: transparent;
-  font-size: 14px;
-  color: var(--text-3);
-  cursor: pointer;
-}
-
-:deep(.close-btn:hover) {
-  color: var(--text-1);
-}
-
-:deep(.modal-body) {
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
 .replace-meta-box {
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -1229,26 +1185,6 @@ const {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 260px;
-}
-
-.text-accent {
-  color: var(--accent) !important;
-}
-
-.info-note {
-  margin: 0;
-}
-
-:deep(.modal-foot) {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 12px 18px;
-  border-top: 1px solid var(--line);
-  background: var(--panel-2);
-  border-bottom-left-radius: inherit;
-  border-bottom-right-radius: inherit;
 }
 
 .files-title-row {

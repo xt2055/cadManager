@@ -50,8 +50,11 @@ const emit = defineEmits<{
   </div>
 </template>
 
+<style scoped src="../styles/modal-chrome.css"></style>
+
 <style scoped>
-/* 背景层与共享的 modal chrome 由父页面统一提供（父层已对子组件内部用 :deep()）；这里只放本组件专属样式。 */
+/* 弹窗外壳（backdrop / head / title / close-btn / body / foot）由本组件自己引入的共享 modal-chrome 持有，
+   父页面不再用 :deep() 兜本组件的内部结构；这里只放本组件专属样式。 */
 .caxa-help-modal {
   max-width: 540px;
   width: min(540px, calc(100vw - 48px));

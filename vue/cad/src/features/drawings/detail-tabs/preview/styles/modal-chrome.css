@@ -1,0 +1,88 @@
+/*
+ * 图纸预览特性内共享的 Modal chrome（弹窗外壳）。
+ *
+ * 归属：本文件由「用到它的组件自己引入」，不再由父页面用 :deep() 从外部兜子组件的内部结构。
+ *   · 每个 Modal 组件：<style scoped src="../styles/modal-chrome.css"></style>
+ *   · 过渡期仍留在父页面的弹窗（借用零件弹窗，P5b 抽出）：DrawingPreviewTab 同样以 scoped src 引入，
+ *     这样 chrome 的维护源只有这一处，父页面里没有第二份副本。
+ * 因为各组件是以 scoped 方式引入，编译后每条规则都带各自的 scope id（.modal-head[data-v-x]），
+ * 不会外泄成全应用生效的规则——全应用的 .modal/.modal-head 骨架仍由 styles/index.css 负责。
+ *
+ * 只放「稳定的结构规则」＋多个弹窗共用的展示类；某个弹窗专属的类名留在它自己的 <style scoped> 里。
+ * .modal 本身的骨架（宽度 / 最大高度 / 圆角 / 投影 / 出场动画）属于全局设计系统，见 styles/index.css:1302，
+ * 不在这里重复声明，避免局部 (0,2,0) 副本与全局规则产生优先级竞合。
+ */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+/* 标题里的图标由 DemoIcon 渲染，其根节点是 lucide 的 <svg>；这里显式用 :deep() 命中，
+   不依赖「组件根节点继承父 scope id」的跨层级推断。 */
+.modal-title :deep(svg) {
+  color: var(--accent);
+}
+
+.close-btn {
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.close-btn:hover {
+  color: var(--text-1);
+}
+
+.modal-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+}
+
+/* 多个弹窗共用的展示类 */
+.text-accent {
+  color: var(--accent) !important;
+}
+
+.info-note {
+  margin: 0;
+}
