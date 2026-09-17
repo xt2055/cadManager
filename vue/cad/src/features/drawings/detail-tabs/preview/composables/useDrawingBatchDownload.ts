@@ -44,6 +44,11 @@ export function useDrawingBatchDownload(options: UseDrawingBatchDownloadOptions)
     isDownloadOpen.value = true
   }
 
+  /** 关闭弹窗（取消与右上角关闭共用；打包中由弹窗自身禁用按钮）。 */
+  function closeDownloadModal() {
+    isDownloadOpen.value = false
+  }
+
   function onFormatChange(format: DownloadFormat) {
     downloadFormat.value = format
     // 切换格式时自动保留已选且当前格式可用的项，或者默认全选当前可用项
@@ -114,6 +119,7 @@ export function useDrawingBatchDownload(options: UseDrawingBatchDownloadOptions)
     isDownloading,
     downloadProgress,
     openDownloadModal,
+    closeDownloadModal,
     onFormatChange,
     toggleDownloadFile,
     toggleAllDownloadFiles,

@@ -3,7 +3,9 @@ import { computed, onMounted, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import BatchDownloadModal from './components/BatchDownloadModal.vue'
 import CaxaHelpModal from './components/CaxaHelpModal.vue'
+import CreateDrawingModal from './components/CreateDrawingModal.vue'
 import ReidentifyDrawingModal from './components/ReidentifyDrawingModal.vue'
 import ReplaceDrawingModal from './components/ReplaceDrawingModal.vue'
 import { useAuthStore } from '@/stores/auth.store'
@@ -235,6 +237,7 @@ const {
   isDownloading,
   downloadProgress,
   openDownloadModal,
+  closeDownloadModal,
   onFormatChange,
   toggleDownloadFile,
   toggleAllDownloadFiles,
@@ -243,6 +246,17 @@ const {
   allFiles,
   currentItem,
 })
+
+// 弹窗只接「纯展示数据」：候选行（含当前格式是否可用）在父页面投影，勾选 / 切格式 / 打包都是事件
+const downloadRows = computed(() =>
+  downloadCandidates.value.map((item) => ({
+    id: item.file.id,
+    name: item.file.name,
+    sizeLabel: item.file.size,
+    available: candidateHasFormat(item, downloadFormat.value),
+    checked: downloadFileIds.value.has(item.file.id),
+  })),
+)
 
 // 批量识别校正弹窗状态
 const {
@@ -580,109 +594,31 @@ const replaceNewSize = computed(() => formatFileSize(selectedReplaceBlob.value?.
       @close="cancelReplace"
       @confirm="confirmReplace"
     />
-    <!-- 批量下载弹窗：选择文件与格式（EXB 原始 / DWG / PDF），zip 打包 -->
-    <div v-if="isDownloadOpen" class="modal-backdrop">
-      <div class="modal card download-modal">
-        <div class="modal-head">
-          <div class="modal-title">
-            <DemoIcon name="download" :size="18" />
-            <span>批量下载图纸文件</span>
-          </div>
-          <button class="btn sm close-btn" type="button" @click="isDownloadOpen = false">✕</button>
-        </div>
-
-        <div class="modal-body">
-          <div class="download-format-row">
-            <span class="lbl bold">下载格式：</span>
-            <label class="mode-option" :class="{ active: downloadFormat === 'exb' }">
-              <input type="radio" :checked="downloadFormat === 'exb'" @change="onFormatChange('exb')" />
-              <span>EXB 原始格式</span>
-            </label>
-            <label class="mode-option" :class="{ active: downloadFormat === 'dwg' }">
-              <input type="radio" :checked="downloadFormat === 'dwg'" @change="onFormatChange('dwg')" />
-              <span>DWG 格式</span>
-            </label>
-            <label class="mode-option" :class="{ active: downloadFormat === 'pdf' }">
-              <input type="radio" :checked="downloadFormat === 'pdf'" @change="onFormatChange('pdf')" />
-              <span>PDF 格式 (矢量)</span>
-            </label>
-          </div>
-
-          <div class="download-list-head">
-            <label class="download-check-all">
-              <input type="checkbox" :checked="allDownloadSelected" @change="toggleAllDownloadFiles" />
-              <b>全选</b>
-            </label>
-            <span class="hint">已选 {{ downloadFileIds.size }} / {{ downloadCandidates.length }} 个文件 · {{ downloadFormat === 'pdf' ? '支持 CAD 转矢量 PDF 及 PDF 附件' : '按所选格式下载' }}</span>
-          </div>
-
-          <div class="download-file-list">
-            <label
-              v-for="item in downloadCandidates"
-              :key="item.file.id"
-              class="download-file-row"
-              :class="{ unavailable: !candidateHasFormat(item, downloadFormat) }"
-            >
-              <input
-                type="checkbox"
-                :checked="downloadFileIds.has(item.file.id)"
-                :disabled="!candidateHasFormat(item, downloadFormat)"
-                @change="toggleDownloadFile(item.file.id)"
-              />
-              <span class="file-name mono" :title="item.file.name">{{ item.file.name }}</span>
-              <span class="dl-size">{{ item.file.size }}</span>
-              <span class="tag" :class="candidateHasFormat(item, downloadFormat) ? 'ok' : 'mute'">
-                {{ candidateHasFormat(item, downloadFormat) ? (downloadFormat === 'exb' ? 'EXB' : downloadFormat === 'dwg' ? 'DWG' : 'PDF') : '无此格式' }}
-              </span>
-            </label>
-            <div v-if="!downloadCandidates.length" class="empty compact-empty">
-              <DemoIcon name="file" :size="28" />
-              <div class="t">当前图纸暂无可下载的文件</div>
-            </div>
-          </div>
-
-          <div class="note info-note">
-            <DemoIcon name="info" :size="15" />
-            <div>所选文件将打包为一个 zip 压缩包；没有对应格式文件的行会被跳过并标注。</div>
-          </div>
-        </div>
-
-        <div class="modal-foot">
-          <button class="btn" type="button" @click="isDownloadOpen = false">取消</button>
-          <button class="btn primary" type="button" :disabled="isDownloading || downloadFileIds.size === 0" @click="executeDownload">
-            <span v-if="isDownloading" class="local-edit-spinner" aria-hidden="true"></span>
-            <DemoIcon v-else name="download" :size="14" />
-            {{ isDownloading ? (downloadProgress || '正在打包...') : `打包下载 (${downloadFileIds.size})` }}
-          </button>
-        </div>
-      </div>
-    </div>
-    <Teleport to="body">
-    <div v-if="isCreatingDrawing" class="modal-backdrop creation-backdrop">
-      <div v-if="creatingDrawing" class="modal card drawing-creating-modal" role="alertdialog" aria-modal="true" aria-labelledby="drawing-creating-title" aria-describedby="drawing-creating-detail">
-        <div class="drawing-creating-spinner" aria-hidden="true"><span></span></div>
-        <div class="drawing-creating-copy">
-          <span class="drawing-creating-step">步骤 {{ drawingCreationProgress.step }} / 4</span>
-          <h3 id="drawing-creating-title">{{ drawingCreationProgress.title }}</h3>
-          <p id="drawing-creating-detail">{{ drawingCreationProgress.detail }}</p>
-          <strong>{{ newDrawingNo }} · {{ newDrawingName }}</strong>
-        </div>
-        <div class="drawing-creating-track" aria-hidden="true"><i :style="{ width: `${drawingCreationProgress.step * 25}%` }"></i></div>
-        <p class="drawing-creating-warning"><DemoIcon name="info" :size="15" />创建期间请勿刷新、返回或重复操作</p>
-      </div>
-      <form v-else class="modal card new-drawing-modal" role="dialog" aria-modal="true" aria-labelledby="new-drawing-title" @submit.prevent="createDrawing">
-        <div class="modal-head"><h3 id="new-drawing-title">新建图纸</h3></div>
-        <p>使用 CAXA 空白模板创建草稿零件，并在本机 CAXA 中绘制。保存后点击「结束编辑」回写版本。</p>
-        <div v-if="drawingCreationError" class="drawing-creation-error" role="alert"><DemoIcon name="alert-triangle" :size="16" />{{ drawingCreationError }}</div>
-        <label>名称<input v-model="newDrawingName" class="input" required maxlength="200" autofocus /></label>
-        <label>图号<input v-model="newDrawingNo" class="input" required maxlength="200" /></label>
-        <div class="modal-foot">
-          <button class="btn" type="button" @click="closeCreateDrawing">取消</button>
-          <button class="btn primary" type="submit">创建并本地编辑</button>
-        </div>
-      </form>
-    </div>
-    </Teleport>
+    <!-- 批量下载弹窗：候选行与格式在父页面投影，勾选 / 切格式 / 打包都是事件 -->
+    <BatchDownloadModal
+      v-if="isDownloadOpen"
+      :format="downloadFormat"
+      :rows="downloadRows"
+      :all-selected="allDownloadSelected"
+      :busy="isDownloading"
+      :progress="downloadProgress"
+      @close="closeDownloadModal"
+      @confirm="executeDownload"
+      @format-change="onFormatChange"
+      @toggle="toggleDownloadFile"
+      @toggle-all="toggleAllDownloadFiles"
+    />
+    <!-- 新建图纸弹窗：Teleport 已在组件内部，父页面不再需要为 scope id 替它包一层 -->
+    <CreateDrawingModal
+      v-if="isCreatingDrawing"
+      v-model:name="newDrawingName"
+      v-model:drawing-no="newDrawingNo"
+      :creating="creatingDrawing"
+      :progress="drawingCreationProgress"
+      :error="drawingCreationError"
+      @close="closeCreateDrawing"
+      @submit="createDrawing"
+    />
     <!-- 借用其他项目零件弹窗 (支持千级项目/海量零件双模智能选型体系) -->
     <div v-if="isBorrowing" class="modal-backdrop">
       <div class="modal card borrow-modal">
@@ -942,28 +878,6 @@ const replaceNewSize = computed(() => formatFileSize(selectedReplaceBlob.value?.
 /* 弹窗外壳（backdrop / head / title / close-btn / body / foot）与 .text-accent / .info-note
    都来自上一行的共享 modal-chrome；本文件不再对子组件内部结构使用 :deep()。
    这里只留父页面自身的布局与「借用零件弹窗」（P5b 再抽成组件）的样式。 */
-.new-drawing-modal { width: min(460px, calc(100vw - 32px)); padding: 24px; display: grid; gap: 18px; }
-.new-drawing-modal p { color: var(--text-2); line-height: 1.6; margin: 0; }
-.new-drawing-modal label { display: grid; gap: 8px; }
-.new-drawing-modal .modal-foot { display: flex; justify-content: flex-end; gap: 10px; }
-/* 旧结构里 z-index: 2900 被父页面同优先级的 .modal-backdrop（z-index: 1000，源码在后）整条覆盖，
-   从未生效；为保持重构前后渲染一致，这里只保留真正生效的 cursor。 */
-.creation-backdrop { cursor: wait; }
-.new-drawing-modal { cursor: default; }
-.drawing-creating-modal { width: min(480px, calc(100vw - 32px)); padding: 30px; display: grid; justify-items: center; gap: 16px; text-align: center; cursor: wait; }
-.drawing-creating-spinner { width: 54px; height: 54px; padding: 5px; border-radius: 50%; background: conic-gradient(var(--accent), transparent 65%); animation: drawing-creating-spin .85s linear infinite; }
-.drawing-creating-spinner span { display: block; width: 100%; height: 100%; border-radius: 50%; background: var(--panel); }
-.drawing-creating-copy { display: grid; justify-items: center; gap: 7px; }
-.drawing-creating-copy h3, .drawing-creating-copy p { margin: 0; }
-.drawing-creating-copy p { color: var(--text-2); line-height: 1.6; }
-.drawing-creating-copy strong { color: var(--text-1); font-family: 'JetBrains Mono', monospace; overflow-wrap: anywhere; }
-.drawing-creating-step { color: var(--accent); font-size: 12px; font-weight: 700; }
-.drawing-creating-track { width: 100%; height: 5px; overflow: hidden; border-radius: 999px; background: var(--panel-2); }
-.drawing-creating-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .35s ease; }
-.drawing-creating-warning, .drawing-creation-error { display: flex; align-items: center; gap: 8px; }
-.drawing-creating-warning { color: var(--text-2); font-size: 12px; margin: 0; }
-.drawing-creation-error { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
-@keyframes drawing-creating-spin { to { transform: rotate(360deg); } }
 .ver-badge {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11.5px;
@@ -1549,79 +1463,6 @@ const replaceNewSize = computed(() => formatFileSize(selectedReplaceBlob.value?.
   margin-top: 2px;
   color: var(--muted);
   font-size: 12px;
-}
-
-.download-modal {
-  width: 560px;
-}
-
-.download-format-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.download-list-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.download-check-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  cursor: pointer;
-  font-size: 12.5px;
-}
-
-.download-file-list {
-  display: flex;
-  max-height: 320px;
-  flex-direction: column;
-  overflow-y: auto;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-}
-
-.download-file-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--line);
-  cursor: pointer;
-  font-size: 12.5px;
-}
-
-.download-file-row:last-child {
-  border-bottom: none;
-}
-
-.download-file-row:hover {
-  background: var(--panel-2);
-}
-
-.download-file-row.unavailable {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.download-file-row .file-name {
-  flex: 1;
-  overflow: hidden;
-  min-width: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.download-file-row .dl-size {
-  flex-shrink: 0;
-  color: var(--text-3);
-  font-size: 11.5px;
 }
 
 .badge-collab {
