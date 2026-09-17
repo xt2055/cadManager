@@ -11,7 +11,8 @@ import { useDrawingLibraryUiStore } from '@/stores/drawing-library-ui.store'
 import { useUiStore } from '@/stores/ui.store'
 import { formatReadableDateTime } from '@/utils/date-time'
 import { drawingMediaLabel } from '@/utils/model-formats'
-import { CREATE_MODE_OPTIONS, type DrawingCreateMode } from '@/features/drawings/create/drawing-create-modes'
+import type { DrawingCreateMode } from '@/features/drawings/create/drawing-create-modes'
+import CreateDrawingDialog from '@/features/drawings/components/CreateDrawingDialog.vue'
 
 defineOptions({ name: 'DrawingLibraryPage' })
 
@@ -173,32 +174,17 @@ async function loadLibrary(force = false) {
 
 // 创建图纸入口：三种方式共用同一页面，用 query.mode 区分。
 const createMenuOpen = ref(false)
-const createMenuElement = ref<HTMLElement | null>(null)
-const createModeEntries = CREATE_MODE_OPTIONS
 
 function openCreate(createMode: DrawingCreateMode) {
   createMenuOpen.value = false
   void router.push({ name: 'drawing-create', query: { mode: createMode } })
 }
 
-function closeCreateMenuOnOutsideClick(event: MouseEvent) {
-  if (!createMenuOpen.value) return
-  if (createMenuElement.value?.contains(event.target as Node)) return
-  createMenuOpen.value = false
-}
-
-function closeCreateMenuOnEscape(event: KeyboardEvent) {
-  if (event.key === 'Escape') createMenuOpen.value = false
-}
 onMounted(() => {
   void loadLibrary()
-  document.addEventListener('click', closeCreateMenuOnOutsideClick)
-  document.addEventListener('keydown', closeCreateMenuOnEscape)
 })
 onBeforeUnmount(() => {
   disposed = true
-  document.removeEventListener('click', closeCreateMenuOnOutsideClick)
-  document.removeEventListener('keydown', closeCreateMenuOnEscape)
 })
 onBeforeRouteLeave(() => {
   viewState.scrollTop = pageElement.value?.scrollTop ?? 0
@@ -243,35 +229,20 @@ watch([query, status, media, mode, attributeFilters], () => {
         >
           <DemoIcon name="info" :size="14" />创建图纸需计划员权限
         </button>
-        <div v-if="canCreateDrawing" ref="createMenuElement" class="create-menu">
-          <button
-            class="btn primary"
-            type="button"
-            aria-haspopup="menu"
-            :aria-expanded="createMenuOpen"
-            @click="createMenuOpen = !createMenuOpen"
-          >
-            <DemoIcon name="plus" :size="14" />创建图纸<DemoIcon name="chevron-down" :size="12" />
-          </button>
-          <div v-if="createMenuOpen" class="dropdown create-menu-panel" role="menu" aria-label="创建图纸方式">
-            <button
-              v-for="option in createModeEntries"
-              :key="option.value"
-              class="dd-item create-menu-item"
-              type="button"
-              role="menuitem"
-              @click="openCreate(option.value)"
-            >
-              <DemoIcon :name="option.icon" :size="15" />
-              <span class="create-menu-text">
-                <b>{{ option.title }}</b>
-                <small>{{ option.sub }}</small>
-              </span>
-            </button>
-          </div>
-        </div>
+        <button
+          v-if="canCreateDrawing"
+          class="btn primary"
+          type="button"
+          aria-haspopup="dialog"
+          :aria-expanded="createMenuOpen"
+          @click="createMenuOpen = true"
+        >
+          <DemoIcon name="plus" :size="14" />创建图纸
+        </button>
       </div>
     </header>
+
+    <CreateDrawingDialog v-model:open="createMenuOpen" />
 
     <!-- 属性筛选面板 -->
     <section v-if="mode === 'drawing' && attributeStore.sortedAttributes.length" class="attribute-filter-panel card">
@@ -570,38 +541,6 @@ watch([query, status, media, mode, attributeFilters], () => {
 .library-actions {
   display: flex;
   gap: 8px;
-}
-
-/* 创建图纸下拉：三种创建方式（创建新图纸 / 上传老图纸 / 从老图纸分叉） */
-.create-menu {
-  position: relative;
-}
-
-.create-menu-panel {
-  top: calc(100% + 6px);
-  right: 0;
-  min-width: 250px;
-}
-
-.create-menu-item {
-  align-items: flex-start;
-}
-
-.create-menu-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.create-menu-text b {
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.create-menu-text small {
-  color: var(--text-3);
-  font-size: 10.5px;
 }
 
 /* ================= 筛选面板 ================= */

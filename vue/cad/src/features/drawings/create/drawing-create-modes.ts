@@ -20,7 +20,7 @@ export interface CreateModeOption {
 
 export const CREATE_MODE_OPTIONS: CreateModeOption[] = [
   { value: 'new', title: '创建新图纸', sub: '只填图纸名称与图号，材料可选', icon: 'file-plus' },
-  { value: 'legacy', title: '上传老图纸', sub: '导入既有 2D 总图与零件图', icon: 'folder-up' },
+  { value: 'legacy', title: '上传老图纸', sub: '导入既有 2D 总图与零件图', icon: 'upload' },
   { value: 'fork', title: '从老图纸分叉', sub: '继承老图纸结构与文件', icon: 'git-branch' },
 ]
 

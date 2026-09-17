@@ -9,6 +9,7 @@ import { useUiStore } from '@/stores/ui.store'
 import { STATUS } from '@/constants/drawing-status'
 import type { DrawingTaskHistoryEntry, DrawingTaskRow } from '@/services/drawing-task.service'
 import type { DrawingStatus } from '@/types/domain.types'
+import CreateDrawingDialog from '@/features/drawings/components/CreateDrawingDialog.vue'
 import AssigneeDialog from '../components/AssigneeDialog.vue'
 import {
   assigneeLabel,
@@ -30,6 +31,7 @@ const uiStore = useUiStore()
 const filter = ref<TaskBoardFilter>(defaultTaskBoardFilter())
 const page = ref(1)
 const filterOpen = ref(false)
+const createOpen = ref(false)
 const activeRow = ref<DrawingTaskRow | null>(null)
 const history = ref<DrawingTaskHistoryEntry[]>([])
 const loadingHistory = ref(false)
@@ -186,7 +188,7 @@ onBeforeUnmount(() => { disposed = true; requestGeneration++ })
         <button class="btn" type="button" :disabled="taskStore.loadingBoard" @click="load(page)">
           <DemoIcon name="refresh-cw" :size="14" />刷新
         </button>
-        <button class="btn" type="button" @click="router.push({ name: RouteName.DrawingCreate })">
+        <button class="btn" type="button" @click="createOpen = true">
           <DemoIcon name="plus" :size="14" />创建图纸
         </button>
       </div>
@@ -264,7 +266,7 @@ onBeforeUnmount(() => { disposed = true; requestGeneration++ })
         <strong>{{ hasFilter ? '没有符合条件的图纸' : '还没有需要指派的图纸' }}</strong>
         <p>{{ hasFilter ? '调整关键词或筛选条件后重新查询。' : '先用「创建图纸」建立图纸档案，再在这里指派负责人。' }}</p>
         <button v-if="hasFilter" class="btn" type="button" @click="clearFilter">清空筛选</button>
-        <button v-else class="btn primary" type="button" @click="router.push({ name: RouteName.DrawingCreate })">创建图纸</button>
+        <button v-else class="btn primary" type="button" @click="createOpen = true">创建图纸</button>
       </div>
 
       <div v-else class="task-table-wrap">
@@ -344,6 +346,8 @@ onBeforeUnmount(() => { disposed = true; requestGeneration++ })
       @submit="submitAssignment"
       @close="closeDialog"
     />
+
+    <CreateDrawingDialog v-model:open="createOpen" />
   </div>
 </template>
 
