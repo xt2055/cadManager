@@ -18,16 +18,6 @@
 .cad-workbench .wb-role-switch { display: flex; flex-shrink: 0; padding: 3px; gap: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--wb-surface); }
 .cad-workbench .wb-role-switch button { min-height: 32px; padding: 6px 10px; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); font-size: 12px; white-space: nowrap; }
 .cad-workbench .wb-role-switch button.active { background: var(--accent-soft); color: var(--accent); font-weight: 650; }
-.cad-workbench .wb-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.cad-workbench .wb-metric { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 72px; min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-top: 2px solid var(--line); border-radius: 8px; background: var(--wb-surface); color: var(--text-1); text-align: left; transition: border-color .15s; }
-.cad-workbench .wb-metric:hover { border-color: var(--accent); }
-.cad-workbench .wb-metric.attention { border-top-color: var(--warn, #c98a2e); }
-.cad-workbench .wb-metric.positive { border-top-color: var(--ok, #408b70); }
-.cad-workbench .wb-metric-label { display: flex; align-items: center; gap: 9px; color: var(--text-2); font-size: 12px; white-space: nowrap; }
-.cad-workbench .wb-metric-label svg { opacity: .8; }
-.cad-workbench .wb-metric-number { display: flex; align-items: baseline; gap: 6px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 26px; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
-.cad-workbench .wb-metric-number small { color: var(--text-2); font-family: var(--font-body, sans-serif); font-size: 11px; font-weight: 400; }
-.cad-workbench .wb-metric-number > svg { align-self: center; color: var(--text-2); }
 .cad-workbench .wb-layout { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(0, 1fr) 280px; gap: 14px; }
 .cad-workbench .wb-main, .cad-workbench .wb-aside { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
 .cad-workbench .wb-aside > .wb-panel { flex-shrink: 0; }
@@ -40,11 +30,25 @@
 .cad-workbench h2 { display: flex; align-items: center; gap: 9px; margin: 0; color: var(--text-1); font-size: 14px; font-weight: 650; }
 .cad-workbench h2 svg { color: var(--text-2); }
 .cad-workbench .wb-text-button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 11px; white-space: nowrap; }
-.cad-workbench .wb-document-tools { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
-.cad-workbench .wb-tabs { display: flex; flex-shrink: 0; gap: 2px; }
-.cad-workbench .wb-tabs button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-2); font-size: 11px; }
-.cad-workbench .wb-tabs button.active { border-color: var(--line); background: var(--accent-soft); color: var(--accent); }
-.cad-workbench .wb-tabs button span { font-family: ui-monospace, Consolas, monospace; font-size: 10px; }
+.cad-workbench .wb-document-tools { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+/* 状态卡片即筛选 Tab：原来「4 张统计卡片 + 一行 Tab」是同一批信息的两次呈现，合并成一行后只剩这一个控件。 */
+.cad-workbench .wb-status-tabs { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.cad-workbench .wb-status-tab { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text-2); font-size: 11.5px; transition: border-color .15s, background-color .15s, color .15s; }
+.cad-workbench .wb-status-tab:hover { border-color: var(--accent); color: var(--text-1); }
+.cad-workbench .wb-status-tab svg { flex-shrink: 0; opacity: .85; }
+.cad-workbench .wb-status-tab-label { white-space: nowrap; }
+.cad-workbench .wb-status-tab-count { color: var(--text-1); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 15px; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 选中态用多通道表达，避免「只有一点点底色、看不出选了哪个」：
+   2px 品牌色描边 + 加粗标签 + 图标满亮；padding 同步减 1px，边框加粗不引起跳动。 */
+.cad-workbench .wb-status-tab.active { padding: 5px 10px; border-width: 2px; border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.cad-workbench .wb-status-tab.active .wb-status-tab-label { font-weight: 600; }
+.cad-workbench .wb-status-tab.active svg { opacity: 1; }
+/* 计数按状态上色：草稿暖琥珀、审核中品牌蓝、生产中翡翠绿；中性状态不硬凑色相，留给正文色。 */
+.cad-workbench .wb-status-tab.draft .wb-status-tab-count { color: var(--warn, #a07834); }
+.cad-workbench .wb-status-tab.reviewing .wb-status-tab-count { color: var(--accent); }
+.cad-workbench .wb-status-tab.published .wb-status-tab-count { color: var(--ok, #368269); }
+.cad-workbench .wb-status-tab.danger .wb-status-tab-count { color: var(--danger); }
+.cad-workbench .wb-status-tab.muted .wb-status-tab-count { color: var(--text-2); }
 .cad-workbench .wb-search { display: flex; align-items: center; gap: 8px; width: 200px; min-width: 100px; min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--text-2); }
 .cad-workbench .wb-search:focus-within { border-color: var(--accent); }
 .cad-workbench .wb-search input { width: 0; min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-1); font-size: 11px; }
@@ -107,16 +111,6 @@
 .cad-workbench .wb-storage span { color: var(--text-2); font-size: 11px; }
 .cad-workbench .wb-storage strong { display: block; margin-top: 4px; font-family: ui-monospace, Consolas, monospace; font-size: 20px; font-weight: 500; }
 .cad-workbench .wb-storage p { margin: 0 0 0 auto; color: var(--text-2); font-size: 11px; }
-.cad-workbench .wb-distribution { padding: 14px; }
-.cad-workbench .wb-distribution-bar { display: flex; gap: 3px; height: 7px; margin-bottom: 17px; overflow: hidden; border-radius: 2px; background: var(--line); }
-.cad-workbench .wb-distribution-bar span { background: var(--text-3); }
-.cad-workbench .wb-distribution-bar .draft { background: var(--warn, #a07834); }
-.cad-workbench .wb-distribution-bar .reviewing { background: var(--accent); }
-.cad-workbench .wb-distribution-bar .published { background: var(--ok, #368269); }
-.cad-workbench .wb-distribution-bar .disabled { background: var(--danger); }
-.cad-workbench .wb-distribution button { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 0; border: 0; background: transparent; color: var(--text-1); font-size: 12px; }
-.cad-workbench .wb-distribution button:hover { color: var(--accent); }
-.cad-workbench .wb-distribution b { font-family: ui-monospace, Consolas, monospace; font-weight: 500; }
 .cad-workbench .wb-activity { padding: 0 14px; margin: 0; list-style: none; }
 .cad-workbench .wb-activity li { display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 .cad-workbench .wb-activity li:last-child { border: 0; }
@@ -145,7 +139,7 @@
 .cad-workbench .wb-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .cad-workbench .wb-spinning { animation: wb-spin 1s linear infinite; }
 @keyframes wb-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .cad-workbench .wb-spinning { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .cad-workbench .wb-spinning { animation: none; } .cad-workbench .wb-status-tab { transition: none; } }
 /* 计划工作台：进度与逾期只做视觉区分，数值与文案一律来自任务推导，页面不再自己算。 */
 .cad-workbench .wb-task-progress { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text-2); }
 .cad-workbench .wb-task-progress b { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }

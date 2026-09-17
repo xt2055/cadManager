@@ -68,6 +68,7 @@ const shortcuts = computed<Array<{ label: string; description: string; icon: str
     { label: '格式转换', description: '转换任务与异常', icon: 'refresh-cw', route: RouteName.AdminConversions },
     { label: '操作审计', description: '操作记录追溯', icon: 'history', route: RouteName.AdminLogs },
     { label: '系统日志', description: '服务诊断', icon: 'file-terminal', route: RouteName.AdminSystemLogs },
+    { label: '零件索引', description: '按图号与材料检索', icon: 'box', route: RouteName.PartIndexLibrary },
   ]
   if (workspace.value === 'planner') return [
     { label: '任务管理台', description: '指派与改派负责人', icon: 'clipboard-list', route: RouteName.TaskBoard },
@@ -84,32 +85,73 @@ const shortcuts = computed<Array<{ label: string; description: string; icon: str
       : { label: '操作记录', description: '图纸操作追溯', icon: 'history', route: RouteName.OperationLogs },
   ]
 })
-const metrics = computed(() => {
-  if (workspace.value === 'planner') return [
-    { label: '待指派', value: taskStore.boardSummary.unassigned, unit: '张', icon: 'user-plus', tone: 'attention', filter: 'unassigned' },
-    { label: '已指派', value: taskStore.boardSummary.assigned, unit: '张', icon: 'user-check', tone: '', filter: 'assigned' },
-    { label: '进行中', value: taskStore.boardSummary.active, unit: '张', icon: 'pencil', tone: '', filter: 'assigned' },
-    { label: '已完成', value: taskStore.boardSummary.done, unit: '张', icon: 'check-circle-2', tone: 'positive', filter: 'done' },
-  ]
+// 状态筛选：卡片本身就是 Tab。
+// 原先「上方 4 张统计卡片 + 列表上方一行 Tab」是同一批信息的两次呈现，合并成一行后
+// 既省掉整条 72px 卡片带，也不再出现「看数字在一处、点筛选在另一处」的割裂。
+type StatusTabTone = 'draft' | 'reviewing' | 'published' | 'danger' | 'muted'
+interface StatusTab { key: string; label: string; icon: string; tone: StatusTabTone; count: number }
+const archivedCount = computed(() => drawings.value.filter(item => item.status === 'archived').length)
+const disabledCount = computed(() => drawings.value.filter(item => item.status === 'disabled').length)
+const passCount = computed(() => completed.value.filter(item => item.result === 'pass').length)
+const rejectedCount = computed(() => completed.value.filter(item => item.result === 'rejected').length)
+// 计划工作台只看「待指派」时用本地筛选；页脚会说明这是当前页，完整筛选在任务管理台。
+const plannedOnly = ref<'all' | 'unassigned'>('all')
+// 计划工作台的主列表只是任务总表的第一页预览，因此卡片计数只统计这一页真实存在的行，
+// 保证「卡片上的数字 = 点下去看到的行数」；全局的待指派/已指派/进行中/已完成仍在右侧「指派进度」里。
+const statusTabs = computed<StatusTab[]>(() => {
   if (workspace.value === 'reviewer') return [
-    { label: '待我审核', value: pending.value.length, unit: '项', icon: 'clipboard-check', tone: 'attention', filter: 'pending' },
-    { label: '我的签署', value: completed.value.length, unit: '次', icon: 'stamp', tone: '', filter: 'completed' },
-    { label: '已通过', value: completed.value.filter(item => item.result === 'pass').length, unit: '次', icon: 'check-circle-2', tone: 'positive', filter: 'pass' },
-    { label: '已驳回', value: completed.value.filter(item => item.result === 'rejected').length, unit: '次', icon: 'corner-up-left', tone: '', filter: 'rejected' },
+    { key: 'pending', label: '待我审核', icon: 'clipboard-check', tone: 'reviewing', count: pending.value.length },
+    { key: 'completed', label: '我的已办', icon: 'stamp', tone: 'muted', count: completed.value.length },
+    { key: 'pass', label: '已通过', icon: 'check-circle-2', tone: 'published', count: passCount.value },
+    { key: 'rejected', label: '已驳回', icon: 'corner-up-left', tone: 'danger', count: rejectedCount.value },
   ]
+  if (workspace.value === 'planner') {
+    const rows = taskStore.boardRows
+    const byStatus = (status: DrawingStatus) => rows.filter(row => row.drawing.status === status).length
+    return [
+      { key: 'unassigned', label: '待指派', icon: 'user-plus', tone: 'draft', count: rows.filter(row => !row.assignment).length },
+      { key: 'all', label: '全部图纸', icon: 'folder-tree', tone: 'muted', count: rows.length },
+      { key: 'draft', label: '草稿', icon: 'pencil', tone: 'draft', count: byStatus('draft') },
+      { key: 'reviewing', label: '审核中', icon: 'workflow', tone: 'reviewing', count: byStatus('reviewing') },
+      { key: 'published', label: '生产中', icon: 'layers', tone: 'published', count: byStatus('published') },
+    ]
+  }
   if (workspace.value === 'admin') return [
-    { label: '图纸项目', value: drawings.value.length, unit: '项', icon: 'folder-tree', tone: '', filter: '' },
-    { label: '零件资料', value: new Set(drawingStore.parts.map(item => item.id || item.no)).size, unit: '项', icon: 'box', tone: '', filter: null },
-    { label: '审核中', value: reviewingCount.value, unit: '项', icon: 'workflow', tone: 'attention', filter: 'reviewing' },
-    { label: '生产中', value: publishedCount.value, unit: '项', icon: 'layers', tone: 'positive', filter: 'published' },
+    { key: 'all', label: '全部图纸', icon: 'folder-tree', tone: 'muted', count: drawings.value.length },
+    { key: 'reviewing', label: '审核中', icon: 'workflow', tone: 'reviewing', count: reviewingCount.value },
+    { key: 'published', label: '生产中', icon: 'layers', tone: 'published', count: publishedCount.value },
+    { key: 'archived', label: '已存档', icon: 'archive', tone: 'muted', count: archivedCount.value },
+    { key: 'disabled', label: '已停用', icon: 'circle-slash', tone: 'danger', count: disabledCount.value },
   ]
   return [
-    { label: '我的图纸', value: drawings.value.length, unit: '项', icon: 'folder-tree', tone: '', filter: '' },
-    { label: '待完善草稿', value: draftCount.value, unit: '项', icon: 'pencil', tone: 'attention', filter: 'draft' },
-    { label: '审核中', value: reviewingCount.value, unit: '项', icon: 'workflow', tone: '', filter: 'reviewing' },
-    { label: '生产中', value: publishedCount.value, unit: '项', icon: 'layers', tone: 'positive', filter: 'published' },
+    { key: 'all', label: '全部图纸', icon: 'folder-tree', tone: 'muted', count: drawings.value.length },
+    { key: 'draft', label: '待完善草稿', icon: 'pencil', tone: 'draft', count: draftCount.value },
+    { key: 'reviewing', label: '审核中', icon: 'workflow', tone: 'reviewing', count: reviewingCount.value },
+    { key: 'published', label: '生产中', icon: 'layers', tone: 'published', count: publishedCount.value },
+    { key: 'archived', label: '已存档', icon: 'archive', tone: 'muted', count: archivedCount.value },
+    { key: 'disabled', label: '已停用', icon: 'circle-slash', tone: 'danger', count: disabledCount.value },
   ]
 })
+const activeStatusKey = computed(() => {
+  if (workspace.value === 'reviewer') return reviewResult.value || reviewFilter.value
+  if (workspace.value === 'planner') return plannedOnly.value === 'unassigned' ? 'unassigned' : drawingFilter.value || 'all'
+  return drawingFilter.value || 'all'
+})
+function selectStatusTab(key: string) {
+  if (workspace.value === 'reviewer') {
+    if (key === 'pending') { reviewFilter.value = 'pending'; reviewResult.value = ''; return }
+    if (key === 'completed') { reviewFilter.value = 'completed'; reviewResult.value = ''; return }
+    reviewFilter.value = 'completed'
+    reviewResult.value = key === 'pass' ? 'pass' : 'rejected'
+    return
+  }
+  if (workspace.value === 'planner') {
+    plannedOnly.value = key === 'unassigned' ? 'unassigned' : 'all'
+    drawingFilter.value = key === 'unassigned' || key === 'all' ? '' : key as DrawingStatus
+    return
+  }
+  drawingFilter.value = key === 'all' ? '' : key as DrawingStatus
+}
 const filteredDrawings = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   return drawings.value.filter(item => (!drawingFilter.value || item.status === drawingFilter.value) && (!search || [item.no, item.name, item.project].some(value => value.toLowerCase().includes(search))))
@@ -135,35 +177,17 @@ const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.va
 const visibleDrawings = computed(() => filteredDrawings.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const visiblePlanRows = computed(() => plannedRows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const visibleReviews = computed(() => reviewRows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
-const stateBreakdown = computed(() => (['draft', 'reviewing', 'published', 'archived', 'disabled'] as const).map(status => ({ status, label: STATUS[status].t, count: drawings.value.filter(item => item.status === status).length })))
 // 主面板的标题与出口按工作视图集中判定：模板里堆多层三元表达式最容易改错一处。
 const panelTitle = computed(() => workspace.value === 'reviewer' ? '审核任务' : workspace.value === 'planner' ? '图纸任务' : workspace.value === 'designer' ? '我的设计图纸' : '图纸资产')
 const panelIcon = computed(() => workspace.value === 'reviewer' ? 'clipboard-check' : workspace.value === 'planner' ? 'clipboard-list' : 'folder-tree')
 const panelRoute = computed<RouteNameKey>(() => workspace.value === 'reviewer' ? RouteName.ReviewPending : workspace.value === 'planner' ? RouteName.TaskBoard : RouteName.DrawingLibrary)
 const panelLinkLabel = computed(() => workspace.value === 'reviewer' ? '审核中心' : workspace.value === 'planner' ? '任务管理台' : '打开图纸库')
-// 计划工作台只看「待指派」时用本地筛选；页脚会说明这是当前页，完整筛选在任务管理台。
-const plannedOnly = ref<'all' | 'unassigned'>('all')
 const storage = computed(() => systemStore.status?.storage)
 const serviceReady = computed(() => systemStore.isOnline && systemStore.status?.service.status === 'ok')
 
 function go(route: RouteNameKey) { void router.push({ name: route }) }
 function openDrawing(no: string) { void router.push({ name: RouteName.DrawingPreview, params: { drawingId: no } }) }
 function openReview(no: string) { void router.push({ name: RouteName.ReviewWorkspace, params: { drawingNo: no } }) }
-function showMetric(filter: string | null) {
-  activePanel.value = 'documents'
-  if (filter === null) { go(RouteName.PartIndexLibrary); return }
-  if (workspace.value === 'reviewer') {
-    reviewFilter.value = filter === 'pending' ? 'pending' : 'completed'
-    reviewResult.value = filter === 'pass' || filter === 'rejected' ? filter : ''
-  }
-  else if (workspace.value === 'planner') {
-    // 计划工作台的指标对应任务视角，点开就去任务管理台继续处理：
-    // 在那里筛选与分页都是完整的，不会出现「筛过了但其实只筛了当页」的错觉。
-    go(RouteName.TaskBoard)
-  }
-  else drawingFilter.value = filter as DrawingStatus | ''
-  keyword.value = ''
-}
 function clearSearch() { keyword.value = ''; drawingFilter.value = ''; reviewFilter.value = 'pending'; reviewResult.value = '' }
 function dateText(value?: string) {
   if (!value) return '—'
@@ -213,21 +237,15 @@ onBeforeUnmount(() => { disposed = true; requestGeneration++ })
       <div class="wb-header-actions"><span class="wb-date">{{ today }}</span><button class="btn wb-refresh" type="button" :disabled="refreshing" aria-label="刷新工作台" @click="loadData(true)"><DemoIcon name="refresh-cw" :size="16" :class="{ 'wb-spinning': refreshing }" /></button><button v-if="workspace" class="btn primary" type="button" @click="go(primaryAction.route)"><DemoIcon :name="primaryAction.icon" :size="16" />{{ primaryAction.label }}</button></div>
     </header>
     <template v-if="workspace">
-      <section class="wb-metrics" aria-label="工作概览">
-        <button v-for="metric in metrics" :key="metric.label" class="wb-metric" :class="metric.tone" type="button" @click="showMetric(metric.filter)"><span class="wb-metric-label"><DemoIcon :name="metric.icon" :size="18" />{{ metric.label }}</span><span class="wb-metric-number">{{ sourceLoading || dataError ? '—' : metric.value }}<small>{{ metric.unit }}</small><DemoIcon name="chevron-right" :size="14" /></span></button>
-      </section>
       <div class="wb-layout">
         <main class="wb-main">
           <div v-if="workspace === 'admin'" class="wb-view-switch" role="group" aria-label="切换工作内容"><button type="button" :class="{ active: activePanel === 'documents' }" :aria-pressed="activePanel === 'documents'" @click="activePanel = 'documents'"><DemoIcon name="folder-tree" :size="16" />图纸资产</button><button type="button" :class="{ active: activePanel === 'activity' }" :aria-pressed="activePanel === 'activity'" @click="activePanel = 'activity'"><DemoIcon name="history" :size="16" />最近操作</button></div>
           <section v-show="activePanel === 'documents'" class="wb-panel wb-documents" :aria-busy="sourceLoading">
             <div class="wb-panel-heading"><h2><DemoIcon :name="panelIcon" :size="17" />{{ panelTitle }}</h2><button class="wb-text-button" type="button" @click="go(panelRoute)">{{ panelLinkLabel }}<DemoIcon name="arrow-up-right" :size="14" /></button></div>
             <div class="wb-document-tools">
-              <div class="wb-tabs" role="group" aria-label="筛选工作内容">
-                <template v-if="workspace === 'reviewer'"><button type="button" :aria-pressed="reviewFilter === 'pending'" :class="{ active: reviewFilter === 'pending' }" @click="reviewFilter = 'pending'">待我审核 <span>{{ pending.length }}</span></button><button type="button" :aria-pressed="reviewFilter === 'completed'" :class="{ active: reviewFilter === 'completed' }" @click="reviewFilter = 'completed'; reviewResult = ''">我的已办 <span>{{ completed.length }}</span></button></template>
-                <template v-else-if="workspace === 'planner'"><button type="button" :aria-pressed="plannedOnly === 'unassigned'" :class="{ active: plannedOnly === 'unassigned' }" @click="plannedOnly = 'unassigned'; drawingFilter = ''">待指派 <span>{{ taskStore.boardSummary.unassigned }}</span></button><button type="button" :aria-pressed="plannedOnly === 'all' && !drawingFilter" :class="{ active: plannedOnly === 'all' && !drawingFilter }" @click="plannedOnly = 'all'; drawingFilter = ''">全部图纸</button><button type="button" :aria-pressed="drawingFilter === 'draft'" :class="{ active: drawingFilter === 'draft' }" @click="plannedOnly = 'all'; drawingFilter = 'draft'">草稿</button><button type="button" :aria-pressed="drawingFilter === 'reviewing'" :class="{ active: drawingFilter === 'reviewing' }" @click="plannedOnly = 'all'; drawingFilter = 'reviewing'">审核中</button><button type="button" :aria-pressed="drawingFilter === 'published'" :class="{ active: drawingFilter === 'published' }" @click="plannedOnly = 'all'; drawingFilter = 'published'">生产中</button></template>
-                <template v-else><button type="button" :aria-pressed="drawingFilter === ''" :class="{ active: !drawingFilter }" @click="drawingFilter = ''">最近更新</button><button type="button" :aria-pressed="drawingFilter === 'draft'" :class="{ active: drawingFilter === 'draft' }" @click="drawingFilter = 'draft'">草稿 <span>{{ draftCount }}</span></button><button type="button" :aria-pressed="drawingFilter === 'reviewing'" :class="{ active: drawingFilter === 'reviewing' }" @click="drawingFilter = 'reviewing'">审核中 <span>{{ reviewingCount }}</span></button><button type="button" :aria-pressed="drawingFilter === 'published'" :class="{ active: drawingFilter === 'published' }" @click="drawingFilter = 'published'">生产中</button></template>
+              <div class="wb-status-tabs" role="group" aria-label="按状态筛选图纸">
+                <button v-for="tab in statusTabs" :key="tab.key" type="button" class="wb-status-tab" :class="[tab.tone, { active: activeStatusKey === tab.key }]" :aria-pressed="activeStatusKey === tab.key" @click="selectStatusTab(tab.key)"><DemoIcon :name="tab.icon" :size="15" /><span class="wb-status-tab-label">{{ tab.label }}</span><b class="wb-status-tab-count">{{ sourceLoading || dataError ? '—' : tab.count }}</b></button>
               </div>
-              <button v-if="workspace === 'reviewer' && reviewFilter === 'completed' && reviewResult" class="wb-text-button" type="button" @click="reviewResult = ''">{{ reviewResult === 'pass' ? '仅已通过' : '仅已驳回' }}<DemoIcon name="x" :size="13" /></button>
               <label class="wb-search"><DemoIcon name="search" :size="15" /><input v-model="keyword" :placeholder="workspace === 'reviewer' ? '图号、名称、审核节点' : workspace === 'planner' ? '图号、名称、项目号或负责人' : '图号、名称、项目编号'" aria-label="搜索工作台图纸" /><button v-if="keyword" type="button" aria-label="清空搜索" @click="keyword = ''"><DemoIcon name="x" :size="13" /></button></label>
             </div>
             <div v-if="dataError" class="wb-message error" role="alert"><DemoIcon name="alert-circle" :size="20" /><strong>工作数据加载失败</strong><p>{{ dataError }}</p><button class="btn" type="button" :disabled="refreshing" @click="loadData(true)">重新加载</button></div>
@@ -259,8 +277,7 @@ onBeforeUnmount(() => { disposed = true; requestGeneration++ })
           <section class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon :name="workspace === 'admin' ? 'sliders-horizontal' : 'layers'" :size="17" />{{ workspace === 'admin' ? '管理工具' : '常用工具' }}</h2></div><div class="wb-shortcuts" :class="{ 'admin-tools': workspace === 'admin' }"><button v-for="item in shortcuts" :key="item.route" type="button" @click="go(item.route)"><span class="wb-tool-icon"><DemoIcon :name="item.icon" :size="19" /></span><span><strong>{{ item.label }}</strong><small>{{ item.description }}</small></span><DemoIcon name="chevron-right" :size="14" /></button></div></section>
           <section v-if="workspace === 'admin'" class="wb-panel wb-runtime"><div class="wb-panel-heading"><h2><DemoIcon name="server" :size="17" />运行与存储</h2><span class="wb-status" :class="serviceReady ? 'published' : 'draft'"><i />{{ systemStore.loading ? '检测中' : serviceReady ? '服务在线' : '待检查' }}</span></div><dl class="wb-system"><div><dt>数据库</dt><dd>{{ !systemStore.status ? '未获取' : systemStore.status.database.status === 'ok' ? '连接正常' : '连接异常' }}</dd></div><div><dt>在线用户</dt><dd>{{ systemStore.status ? systemStore.onlineCount : '—' }}<small v-if="systemStore.status"> 人</small></dd></div><div><dt>最近检测</dt><dd>{{ dateText(systemStore.lastChecked?.toISOString()) }}</dd></div></dl><div class="wb-storage"><DemoIcon name="hard-drive" :size="20" /><div><span>数据库文件容量</span><strong>{{ storage ? storage.formattedUsed : '—' }}</strong></div><p>{{ storage ? `${storage.fileCount} 份文件记录` : '暂未获取' }}</p></div><dl class="wb-system wb-storage-facts"><div><dt>统计状态</dt><dd>{{ !storage ? '未获取' : storage.status === 'ok' ? '正常' : '读取异常' }}</dd></div><div><dt>统计来源</dt><dd>数据库记录</dd></div></dl></section>
           <section v-else-if="workspace === 'planner'" class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="workflow" :size="17" />指派进度</h2><button class="wb-text-button" type="button" @click="go(RouteName.TaskBoard)">去处理<DemoIcon name="arrow-up-right" :size="14" /></button></div><dl class="wb-system"><div><dt>待指派</dt><dd>{{ taskStore.boardSummary.unassigned }}<small> 张</small></dd></div><div><dt>已指派</dt><dd>{{ taskStore.boardSummary.assigned }}<small> 张</small></dd></div><div><dt>进行中</dt><dd>{{ taskStore.boardSummary.active }}<small> 张</small></dd></div><div><dt>已完成</dt><dd>{{ taskStore.boardSummary.done }}<small> 张</small></dd></div><div><dt>已逾期</dt><dd :class="{ 'wb-overdue': taskStore.boardSummary.overdue }">{{ taskStore.boardSummary.overdue }}<small> 张</small></dd></div></dl></section>
-          <section v-else-if="workspace === 'designer'" class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="workflow" :size="17" />我的图纸状态</h2></div><div class="wb-distribution"><div class="wb-distribution-bar" aria-hidden="true"><span v-for="item in stateBreakdown.filter(item => item.count)" :key="item.status" :class="item.status" :style="{ flex: item.count }" /></div><button v-for="item in stateBreakdown" :key="item.status" type="button" @click="showMetric(item.status)"><span class="wb-status" :class="item.status"><i />{{ item.label }}</span><b>{{ dataError || sourceLoading ? '—' : item.count }}</b></button></div></section>
-          <section v-else class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="stamp" :size="17" />最近签署</h2></div><p v-if="dataError" class="wb-inline-message">审核记录暂时不可用</p><p v-else-if="!completed.length" class="wb-inline-message">{{ sourceLoading ? '正在加载…' : '暂无个人签署记录' }}</p><ul v-else class="wb-signatures"><li v-for="item in completed.slice(0, 3)" :key="item.id"><button type="button" @click="openDrawing(item.no)">{{ item.name || item.no }}</button><div><span class="wb-status" :class="item.result === 'pass' ? 'published' : 'rejected'">{{ item.result === 'pass' ? '通过' : '驳回' }} · {{ item.node }}</span><time>{{ dateText(item.time) }}</time></div><p v-if="item.opinion">{{ item.opinion }}</p></li></ul></section>
+          <section v-else-if="workspace === 'reviewer'" class="wb-panel"><div class="wb-panel-heading"><h2><DemoIcon name="stamp" :size="17" />最近签署</h2></div><p v-if="dataError" class="wb-inline-message">审核记录暂时不可用</p><p v-else-if="!completed.length" class="wb-inline-message">{{ sourceLoading ? '正在加载…' : '暂无个人签署记录' }}</p><ul v-else class="wb-signatures"><li v-for="item in completed.slice(0, 3)" :key="item.id"><button type="button" @click="openDrawing(item.no)">{{ item.name || item.no }}</button><div><span class="wb-status" :class="item.result === 'pass' ? 'published' : 'rejected'">{{ item.result === 'pass' ? '通过' : '驳回' }} · {{ item.node }}</span><time>{{ dateText(item.time) }}</time></div><p v-if="item.opinion">{{ item.opinion }}</p></li></ul></section>
         </aside>
       </div>
     </template>
