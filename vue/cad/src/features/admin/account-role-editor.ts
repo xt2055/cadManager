@@ -12,14 +12,16 @@ export const USER_ROLE_OPTIONS: ReadonlyArray<{ value: UserRole; label: string; 
 export function buildUserRoleUpdate(
   user: Pick<UserAccount, 'account' | 'displayName' | 'status'>,
   roles: UserRole[],
-  displayName?: string,
+  changes: { account?: string; displayName?: string } = {},
 ): UserManagementInput {
   if (!roles.length) throw new Error('请至少选择一个身份')
-  const name = (displayName ?? user.displayName).trim()
-  if (!name) throw new Error('姓名不能为空')
+  const account = (changes.account ?? user.account).trim()
+  if (!account) throw new Error('登录账号不能为空')
+  const displayName = (changes.displayName ?? user.displayName).trim()
+  if (!displayName) throw new Error('姓名不能为空')
   return {
-    account: user.account,
-    displayName: name,
+    account,
+    displayName,
     roles: [...roles],
     status: user.status,
   }

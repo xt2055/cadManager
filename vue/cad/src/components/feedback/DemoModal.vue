@@ -97,6 +97,7 @@ watch(modal, (current) => {
     const user = adminStore.users.find((item) => item.id === current.payload?.userId)
     userRoles.value = user ? [...user.roles] : []
     userName.value = user?.displayName || ''
+    userAccount.value = user?.account || ''
   } else if (current?.type === 'reset-user') {
     resetPassword.value = ''
   } else if (current?.type === 'edit-flow') {
@@ -156,7 +157,7 @@ function toggleRole(role: UserRole) {
       if (!userId) throw new Error('未找到目标账号')
       const user = adminStore.users.find((item) => item.id === userId)
       if (!user) throw new Error('未找到目标账号')
-      await adminStore.updateUser(userId, buildUserRoleUpdate(user, userRoles.value, userName.value))
+      await adminStore.updateUser(userId, buildUserRoleUpdate(user, userRoles.value, { account: userAccount.value, displayName: userName.value }))
       uiStore.toast('账号信息已更新')
     } else if (current.type === 'reset-user') {
       const userId = current.payload?.userId
@@ -240,8 +241,11 @@ function toggleRole(role: UserRole) {
          </template>
 
          <template v-else-if="modal.type === 'edit-user-role'">
-           <div class="note"><DemoIcon name="users" :size="14" /><div>正在修改账号「{{ modal.payload?.account || '未知账号' }}」的姓名与身份。一个账号可同时拥有多个身份。</div></div>
-           <div class="field"><label for="edit-user-name">姓名 *</label><input id="edit-user-name" v-model="userName" class="inp" placeholder="如 张工" autocomplete="off" /></div>
+           <div class="note"><DemoIcon name="users" :size="14" /><div>正在修改账号「{{ modal.payload?.account || '未知账号' }}」的登录账号、姓名与身份。一个账号可同时拥有多个身份。</div></div>
+           <div class="modal-form-grid">
+             <div class="field"><label for="edit-user-account">登录账号 *</label><input id="edit-user-account" v-model="userAccount" class="inp" placeholder="如 zhang" autocomplete="off" /></div>
+             <div class="field"><label for="edit-user-name">姓名 *</label><input id="edit-user-name" v-model="userName" class="inp" placeholder="如 张工" autocomplete="off" /></div>
+           </div>
            <div class="field field-last"><label>身份 *</label><div class="role-checks"><label v-for="role in USER_ROLE_OPTIONS" :key="role.value" class="role-check" :title="role.description"><input type="checkbox" :checked="userRoles.includes(role.value)" @change="toggleRole(role.value)" /><span>{{ role.label }}</span></label></div></div>
          </template>
 

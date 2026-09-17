@@ -25,11 +25,21 @@ test('修改身份时至少保留一个身份', () => {
 })
 
 test('修改账号时可同时改名，姓名去空格且不能为空', () => {
-  assert.deepEqual(buildUserRoleUpdate(user, ['designer'], '  李工  '), {
+  assert.deepEqual(buildUserRoleUpdate(user, ['designer'], { displayName: '  李工  ' }), {
     account: 'zhang',
     displayName: '李工',
     roles: ['designer'],
     status: 'active',
   })
-  assert.throws(() => buildUserRoleUpdate(user, ['designer'], '   '), /姓名不能为空/)
+  assert.throws(() => buildUserRoleUpdate(user, ['designer'], { displayName: '   ' }), /姓名不能为空/)
+})
+
+test('修改账号时可同时改登录账号，去空格且不能为空', () => {
+  assert.deepEqual(buildUserRoleUpdate(user, ['designer'], { account: '  li  ' }), {
+    account: 'li',
+    displayName: '张工',
+    roles: ['designer'],
+    status: 'active',
+  })
+  assert.throws(() => buildUserRoleUpdate(user, ['designer'], { account: '  ' }), /登录账号不能为空/)
 })
