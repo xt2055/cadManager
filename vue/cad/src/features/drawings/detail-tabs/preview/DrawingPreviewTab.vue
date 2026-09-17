@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue'
+import { computed, onMounted, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
@@ -12,11 +12,12 @@ import { useUiStore } from '@/stores/ui.store'
 import type { DrawingFile } from '@/types/domain.types'
 import type { PartView } from '@/modules/drawing'
 import { parseDrawingNumber } from '@/utils/drawing-number-parser'
-import { formatReadableDateTime } from '@/utils/date-time'
 import { isTauri } from '@tauri-apps/api/core'
 import { saveDownloadFile } from '@/services/tauri/cad-edit.service'
 import { convertCadToPdfBlob } from '@/services/cad-pdf-export.service'
 import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
+import { formatCurrentTime, formatFileSize } from './drawing-preview-format'
+import { useDrawingCreation } from './composables/useDrawingCreation'
 import { useDrawingEditSessions } from './composables/useDrawingEditSessions'
 import { useDrawingPreviewContext } from './composables/useDrawingPreviewContext'
 
@@ -58,99 +59,7 @@ const selectedReplaceBlob = ref<File | null>(null)
 
 // 借用零件弹窗与多维度智能选型系统
 const isBorrowing = ref(false)
-const isCreatingDrawing = ref(false)
-const creatingDrawing = ref(false)
-type DrawingCreationStage = 'preparing' | 'uploading' | 'converting' | 'opening'
-const drawingCreationStage = ref<DrawingCreationStage>('preparing')
-const drawingCreationError = ref('')
-const newDrawingName = ref('')
-const newDrawingNo = ref('')
-const drawingCreationProgress = computed(() => ({
-  preparing: { step: 1, title: '正在准备空白图纸', detail: '正在校验 CAXA 模板，请稍候…' },
-  uploading: { step: 2, title: '正在创建图纸', detail: '正在创建草稿零件并保存空白模板…' },
-  converting: { step: 3, title: '正在同步新建图纸', detail: '正在读取刚创建的零件和附件信息…' },
-  opening: { step: 4, title: '正在准备并打开 CAXA', detail: '正在等待 DWG 就绪并启动本地编辑，首次可能需要几十秒…' },
-})[drawingCreationStage.value])
 
-function openCreateDrawing() {
-  newDrawingName.value = ''
-  newDrawingNo.value = ''
-  drawingCreationError.value = ''
-  drawingCreationStage.value = 'preparing'
-  isCreatingDrawing.value = true
-}
-
-function closeCreateDrawing() {
-  if (creatingDrawing.value) return
-  isCreatingDrawing.value = false
-  drawingCreationError.value = ''
-}
-
-function guardDrawingCreationUnload(event: BeforeUnloadEvent) {
-  if (!creatingDrawing.value) return
-  event.preventDefault()
-  event.returnValue = ''
-}
-
-async function createDrawing() {
-  if (creatingDrawing.value || !canCreateDrawing.value) return
-  const name = newDrawingName.value.trim()
-  const no = newDrawingNo.value.trim()
-  const parentNo = rootDrawingNo.value
-  if (!name || !no) {
-    uiStore.toast('请填写名称和图号', 'warn')
-    return
-  }
-  const normalize = (value: string) => value.replace(/[\s/\\]/g, '').toLowerCase()
-  if ([...drawingStore.drawings, ...drawingStore.parts].some((item) => normalize(item.no) === normalize(no))) {
-    uiStore.toast('图号已存在，请使用其他图号', 'warn')
-    return
-  }
-  drawingCreationError.value = ''
-  drawingCreationStage.value = 'preparing'
-  creatingDrawing.value = true
-  let created = false
-  try {
-    const response = await fetch(`${import.meta.env.BASE_URL}templates/blank.exb`)
-    if (!response.ok) throw new Error('空白 EXB 模板读取失败')
-    const content = await response.blob()
-    const signature = new Uint8Array(await content.slice(0, 8).arrayBuffer())
-    if (signature.length !== 8 || ![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((byte, index) => signature[index] === byte)) {
-      throw new Error('空白 EXB 模板无效')
-    }
-    const filename = `${no}(${name})`.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') + '.exb'
-    const file: DrawingFile = {
-      id: crypto.randomUUID(), name: filename, size: formatFileSize(content.size),
-      role: 'part', drawingNo: parentNo, partNo: no, version: 'v1.0',
-      uploadedBy: authStore.currentUser?.displayName || '', uploadedAt: formatCurrentTime(), previewable: true,
-    }
-    drawingCreationStage.value = 'uploading'
-    await drawingOperationsStore.createPartWithFile(parentNo, {
-      no, name, parentNo, project: drawingStore.getDrawing(parentNo)?.project || parentNo,
-      material: '—', spec: '', weight: 0, surfaceTreatment: '', partType: '自制件',
-      qty: 1, status: 'draft', ver: 'v1.0', hasFile: true, files: [file],
-    }, file, content)
-    created = true
-    drawingCreationStage.value = 'converting'
-    await drawingStore.refresh()
-    // 新建零件仅有这张附件；EXB 转换完成后展示名可能已经变为 DWG。
-    const savedFile = allFiles.value.find((entry) => entry.ownerNo === no && entry.role === 'part')
-    uiStore.toast(`图纸「${name}」已创建`, 'ok')
-    if (savedFile) {
-      drawingCreationStage.value = 'opening'
-      await openEditor(savedFile)
-    }
-    else uiStore.toast('图纸已创建，请刷新列表后点击「本地编辑」', 'warn')
-    isCreatingDrawing.value = false
-  } catch (error) {
-    const message = created ? '图纸已创建，但自动打开失败；请刷新列表后点击「本地编辑」' : error instanceof Error ? error.message : '新建图纸失败'
-    if (created) isCreatingDrawing.value = false
-    else drawingCreationError.value = message
-    uiStore.toast(message, 'warn')
-  } finally {
-    creatingDrawing.value = false
-  }
-}
 const isReidentifyingAll = ref(false)
 const HISTORY_READ_STORAGE_KEY = 'cad:read-file-history:v1'
 const borrowSearchMode = ref<'by-project' | 'global-part'>('by-project')
@@ -331,22 +240,6 @@ async function confirmBorrowPart() {
   }
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function formatCurrentTime(): string {
-  const current = new Date()
-  const year = current.getFullYear()
-  const month = String(current.getMonth() + 1).padStart(2, '0')
-  const day = String(current.getDate()).padStart(2, '0')
-  const hours = String(current.getHours()).padStart(2, '0')
-  const minutes = String(current.getMinutes()).padStart(2, '0')
-  return `${year}-${month}-${day} ${hours}:${minutes}`
-}
-
 function openBrowse(file: DrawingFile) {
   if (!currentItem.value) return
   router.push({
@@ -397,13 +290,25 @@ const {
   canEditFile,
 })
 
-onMounted(() => {
-  window.addEventListener('beforeunload', guardDrawingCreationUnload)
-  void Promise.all([drawingStore.load(), reviewStore.load()])
+const {
+  isCreatingDrawing,
+  creatingDrawing,
+  drawingCreationError,
+  newDrawingName,
+  newDrawingNo,
+  drawingCreationProgress,
+  openCreateDrawing,
+  closeCreateDrawing,
+  createDrawing,
+} = useDrawingCreation({
+  canCreateDrawing,
+  rootDrawingNo,
+  allFiles,
+  openEditor,
 })
 
-onBeforeUnmount(() => {
-  window.removeEventListener('beforeunload', guardDrawingCreationUnload)
+onMounted(() => {
+  void Promise.all([drawingStore.load(), reviewStore.load()])
 })
 
 function openHistory(file: DrawingFile) {
