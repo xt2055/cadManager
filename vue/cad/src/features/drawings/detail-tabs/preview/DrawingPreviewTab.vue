@@ -11,14 +11,15 @@ import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingFile } from '@/types/domain.types'
 import type { PartView } from '@/modules/drawing'
-import { parseDrawingNumber } from '@/utils/drawing-number-parser'
 import { isTauri } from '@tauri-apps/api/core'
 import { saveDownloadFile } from '@/services/tauri/cad-edit.service'
 import { convertCadToPdfBlob } from '@/services/cad-pdf-export.service'
 import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
-import { formatCurrentTime, formatFileSize } from './drawing-preview-format'
+import { formatFileSize } from './drawing-preview-format'
 import { useDrawingCreation } from './composables/useDrawingCreation'
 import { useDrawingEditSessions } from './composables/useDrawingEditSessions'
+import { useDrawingFileReplacement } from './composables/useDrawingFileReplacement'
+import { useDrawingFileUpload } from './composables/useDrawingFileUpload'
 import { useDrawingPreviewContext } from './composables/useDrawingPreviewContext'
 
 defineOptions({
@@ -46,16 +47,34 @@ const {
   canDeleteFiles,
 } = useDrawingPreviewContext()
 
-// 文件上传 input ref
-const assemblyInput = ref<HTMLInputElement | null>(null)
-const partInput = ref<HTMLInputElement | null>(null)
-const replaceInput = ref<HTMLInputElement | null>(null)
+// 上传与替换的 UI 状态各由自己的 composable 管理
+const {
+  assemblyInput,
+  partInput,
+  triggerUploadAssembly,
+  triggerUploadPart,
+  onAssemblyFileChange,
+  onPartFilesChange,
+} = useDrawingFileUpload({
+  currentItem,
+  rootDrawingNo,
+  isAssembly,
+  hasAssemblyFile,
+  canManageDrawingFiles,
+  onAssemblyUploaded: openBrowse,
+})
 
-// 替换弹窗与正在替换的目标文件
-const isReplacing = ref(false)
-const targetReplaceFile = ref<DrawingFile | null>(null)
-const replaceReasonInput = ref('')
-const selectedReplaceBlob = ref<File | null>(null)
+const {
+  replaceInput,
+  isReplacing,
+  targetReplaceFile,
+  replaceReasonInput,
+  selectedReplaceBlob,
+  triggerReplace,
+  onReplaceFileSelected,
+  confirmReplace,
+  cancelReplace,
+} = useDrawingFileReplacement({ currentItem })
 
 // 借用零件弹窗与多维度智能选型系统
 const isBorrowing = ref(false)
@@ -341,55 +360,6 @@ function isHistoryUnread(file: DrawingFile): boolean {
   return Boolean(file.history?.length) && !readHistoryIds().has(file.id)
 }
 
-function triggerReplace(file: DrawingFile) {
-  targetReplaceFile.value = file
-  replaceReasonInput.value = ''
-  selectedReplaceBlob.value = null
-  replaceInput.value?.click()
-}
-
-function onReplaceFileSelected(event: Event) {
-  const target = event.target as HTMLInputElement
-  const file = target.files?.[0]
-  if (!file || !targetReplaceFile.value) return
-  selectedReplaceBlob.value = file
-  isReplacing.value = true
-  target.value = ''
-}
-
-async function confirmReplace() {
-  if (!targetReplaceFile.value || !selectedReplaceBlob.value) return
-  const cur = targetReplaceFile.value
-  const targetNo = cur.partNo || cur.drawingNo || currentItem.value?.no || ''
-
-  try {
-    const updated = await drawingOperationsStore.replaceDrawingFile(
-      targetNo,
-      cur.id,
-      {
-        name: selectedReplaceBlob.value.name,
-        size: formatFileSize(selectedReplaceBlob.value.size),
-        replaceReason: replaceReasonInput.value.trim() || '版本替换更新',
-      },
-      selectedReplaceBlob.value,
-    )
-    await drawingStore.refresh()
-    uiStore.toast(`文件已成功替换为 ${updated.version} · 历史版本已归档留痕`, 'ok')
-    isReplacing.value = false
-    targetReplaceFile.value = null
-    selectedReplaceBlob.value = null
-  } catch (error) {
-    console.error('替换文件失败', error)
-    uiStore.toast('替换文件失败，请重试', 'warn')
-  }
-}
-
-function cancelReplace() {
-  isReplacing.value = false
-  targetReplaceFile.value = null
-  selectedReplaceBlob.value = null
-}
-
 async function handleDeleteFile(file: DrawingFile) {
   if (!currentItem.value) return
   uiStore.confirm(
@@ -606,158 +576,6 @@ async function executeDownload() {
   } finally {
     isDownloading.value = false
     downloadProgress.value = ''
-  }
-}
-
-function triggerUploadAssembly() {
-  if (!canManageDrawingFiles.value) {
-    uiStore.toast('只有图纸负责人、创建人或管理员可以为该图纸上传文件', 'warn')
-    return
-  }
-  assemblyInput.value?.click()
-}
-
-function triggerUploadPart() {
-  if (!canManageDrawingFiles.value) {
-    uiStore.toast('只有图纸负责人、创建人或管理员可以为该图纸上传文件', 'warn')
-    return
-  }
-  if (!hasAssemblyFile.value && isAssembly.value) {
-    uiStore.toast('请先上传总图文件，再进行零件图上传', 'warn')
-    return
-  }
-  partInput.value?.click()
-}
-
-async function onAssemblyFileChange(event: Event) {
-  const target = event.target as HTMLInputElement
-  const file = target.files?.[0]
-  if (!file || !currentItem.value) return
-
-  const newFile: DrawingFile = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    name: file.name,
-    size: formatFileSize(file.size),
-    role: 'assembly',
-    drawingNo: currentItem.value.no,
-    version: currentItem.value.version || 'v1.0',
-        uploadedBy: authStore.currentUser?.displayName || authStore.currentUser?.account || '未知',
-    uploadedAt: formatCurrentTime(),
-    previewable: true,
-  }
-
-  try {
-    await drawingOperationsStore.uploadDrawingFile(currentItem.value.no, newFile, file)
-    await drawingStore.refresh()
-    uiStore.toast(`总图文件「${file.name}」上传成功`, 'ok')
-    openBrowse(newFile)
-  } catch (error) {
-    console.error('上传总图失败', error)
-    uiStore.toast('上传总图失败', 'warn')
-  } finally {
-    target.value = ''
-  }
-}
-
-async function onPartFilesChange(event: Event) {
-  const target = event.target as HTMLInputElement
-  const files = target.files
-  if (!files || !files.length || !currentItem.value) return
-
-  let createdCount = 0
-  let otherCount = 0
-  try {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]
-      if (!file) continue
-      const cleanName = file.name.replace(/\.[^/.]+$/, '')
-      const rootNo = rootDrawingNo.value
-      const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || ''
-      const isCadPart = extension === '.exb' || extension === '.dwg' || extension === '.dxf'
-      if (!isCadPart) {
-        const newFile: DrawingFile = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          name: file.name,
-          size: formatFileSize(file.size),
-          role: 'other',
-          drawingNo: rootNo,
-          version: 'v1.0',
-          uploadedBy: authStore.currentUser?.displayName || authStore.currentUser?.account || '未知',
-          uploadedAt: formatCurrentTime(),
-          previewable: true,
-        }
-        await drawingOperationsStore.uploadOtherFile(rootNo, newFile, file)
-        await drawingStore.refresh()
-        otherCount += 1
-        continue
-      }
-
-      const identity = await drawingFileService.identify(file, file.name)
-      const parsed = parseDrawingNumber(identity.partNo)
-      const material = identity.material || identity.titleBlock?.['材料名称'] || identity.titleBlock?.['材料'] || identity.titleBlock?.['材质'] || '—'
-      const isBorrowed = parsed.rootNo !== rootNo
-      const isStructuredPart = parsed.no !== rootNo
-      const parentNo = isBorrowed ? rootNo : parsed.parentNo ?? rootNo
-      const partNo = parsed.no
-
-      const newFile: DrawingFile = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        name: file.name,
-        size: formatFileSize(file.size),
-        role: isStructuredPart ? 'part' : 'other',
-        drawingNo: rootNo,
-        ...(isStructuredPart ? { partNo } : {}),
-        version: 'v1.0',
-        uploadedBy: authStore.currentUser?.displayName || authStore.currentUser?.account || '未知',
-        uploadedAt: formatCurrentTime(),
-        previewable: true,
-      }
-
-      const parentExists = Boolean(
-        drawingStore.drawings.some((drawing) => drawing.no === parentNo)
-        || drawingStore.parts.some((part) => part.no === parentNo),
-      )
-      const existingPart = partNo
-        ? drawingStore.parts.find((part) => part.no === partNo && part.parentNo === rootNo)
-        : undefined
-
-      if (!isStructuredPart || !parentExists) {
-        await drawingOperationsStore.uploadOtherFile(rootNo, newFile, file)
-        await drawingStore.refresh()
-        otherCount += 1
-      } else if (existingPart) {
-        if (material !== '—') existingPart.material = material
-        await drawingOperationsStore.uploadDrawingFile(partNo, newFile, file)
-        await drawingStore.refresh()
-        createdCount += 1
-      } else {
-        await drawingOperationsStore.createPartWithFile(parentNo, {
-          no: partNo,
-          name: cleanName,
-          parentNo,
-          project: '',
-           material,
-          spec: '',
-          weight: 0,
-          surfaceTreatment: '',
-          partType: '自制件',
-          qty: 1,
-          status: 'draft',
-          ver: 'v1.0',
-          hasFile: true,
-           files: [newFile],
-            ...(isBorrowed ? { borrowFrom: parsed.rootNo ?? parsed.no } : {}),
-        }, newFile, file)
-        await drawingStore.refresh()
-        createdCount += 1
-      }
-    }
-    uiStore.toast(`已整理 ${createdCount} 个规范零件文件${otherCount ? `，${otherCount} 个文件归入其他文件` : ''}`, 'ok')
-  } catch (error) {
-    console.error('上传零件图失败', error)
-    uiStore.toast('上传零件图失败', 'warn')
-  } finally {
-    target.value = ''
   }
 }
 
