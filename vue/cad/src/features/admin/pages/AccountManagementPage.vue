@@ -39,7 +39,7 @@ function openResetPassword(user: { id: string; account: string }) {
 }
 
 function openEditRole(user: { id: string; account: string }) {
-  uiStore.openModal('edit-user-role', '修改身份', { userId: user.id, account: user.account })
+  uiStore.openModal('edit-user-role', '修改账号', { userId: user.id, account: user.account })
 }
 </script>
 
@@ -57,7 +57,7 @@ function openEditRole(user: { id: string; account: string }) {
             <td class="num">{{ user.account }}</td><td class="user-name"><span class="mini-avatar">{{ user.displayName[0] }}</span>{{ user.displayName }}</td>
             <td><span v-for="role in user.roles" :key="role" class="tag plain role-tag">{{ roleLabel(role) }}</span></td>
             <td><span class="tag" :class="user.status === 'active' ? 'ok' : 'danger'">{{ user.status === 'active' ? '正常' : '已禁用' }}</span></td><td class="num updated">{{ user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : '从未登录' }}</td>
-            <td class="admin-row-actions"><button class="btn sm" type="button" @click="openEditRole(user)">修改身份</button><button class="btn sm" :class="{ danger: user.status === 'active' }" type="button" @click="toggleUser(index)">{{ user.status === 'active' ? '禁用' : '启用' }}</button><button class="btn sm" type="button" @click="openResetPassword(user)">重置密码</button></td>
+            <td class="admin-row-actions"><button class="btn sm" type="button" @click="openEditRole(user)">修改</button><button class="btn sm" :class="{ danger: user.status === 'active' }" type="button" @click="toggleUser(index)">{{ user.status === 'active' ? '禁用' : '启用' }}</button><button class="btn sm" type="button" @click="openResetPassword(user)">重置密码</button></td>
           </tr>
               <tr v-if="!adminStore.users.length"><td colspan="6"><div class="empty"><DemoIcon name="user-plus" :size="34" /><div class="t">暂无账号数据</div></div></td></tr>
         </tbody>
