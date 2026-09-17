@@ -12,6 +12,7 @@ import { useUiStore } from '@/stores/ui.store'
 import { formatReadableDateTime } from '@/utils/date-time'
 import { drawingMediaLabel } from '@/utils/model-formats'
 import type { DrawingCreateMode } from '@/features/drawings/create/drawing-create-modes'
+import type { DrawingSummaryView } from '@/modules/drawing'
 import CreateDrawingDialog from '@/features/drawings/components/CreateDrawingDialog.vue'
 
 defineOptions({ name: 'DrawingLibraryPage' })
@@ -158,6 +159,18 @@ function removeFilter(attributeId: string) {
 function openDetail(drawingNo: string) {
   const owner = drawingStore.getDrawing(drawingNo) ?? drawingStore.getPart(drawingNo)
   router.push({ name: owner && drawingMediaLabel(owner) === '3D' ? 'drawing-models' : 'drawing-preview', params: { drawingId: drawingNo } })
+}
+
+function assigneeName(drawing: DrawingSummaryView): string {
+  return drawing.assignees?.[0]?.name?.trim() || ''
+}
+
+function creatorName(drawing: DrawingSummaryView): string {
+  return drawing.createdBy?.trim() || '—'
+}
+
+function assigneeInitial(drawing: DrawingSummaryView): string {
+  return assigneeName(drawing).slice(0, 1) || '?'
 }
 
 async function loadLibrary(force = false) {
@@ -325,116 +338,117 @@ watch([query, status, media, mode, attributeFilters], () => {
       <div v-else-if="loadError" class="empty-state-view" role="alert">
         <strong>{{ loadError }}</strong><button class="btn primary" type="button" @click="loadLibrary(true)">重新加载</button>
       </div>
-      <div v-else ref="tableElement" class="table-scroll">
-        <table v-if="mode === 'drawing'" class="tbl library-table">
-          <thead>
-            <tr>
-              <th style="width: 140px;">总图图号</th>
-              <th style="width: 180px;">图纸名称</th>
-              <th>业务属性规格</th>
-              <th style="width: 120px;">责任单位</th>
-              <th style="width: 90px;">状态</th>
-              <th style="width: 70px;">版本</th>
-              <th style="width: 110px;">更新时间</th>
-              <th style="width: 100px; text-align: center;">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="drawing in rows" :key="drawing.no">
-              <tr>
-                <td class="mono no-cell">
-                  <button
-                    v-if="partsForDrawing(drawing.no).length"
-                    class="expand-btn"
-                    type="button"
-                    :title="isProjectExpanded(drawing.no) ? '收起零件' : '展开零件清单'"
-                    :aria-expanded="isProjectExpanded(drawing.no)"
-                    @click="toggleExpanded(drawing.no)"
-                  >
-                    <DemoIcon name="chevron-down" :size="13" :class="{ collapsed: !isProjectExpanded(drawing.no) }" />
-                  </button>
-                  <button class="link drawing-no-link" type="button" @click="openDetail(drawing.no)">
-                    {{ drawing.no }}
-                  </button>
-                </td>
+      <div v-else-if="mode === 'drawing'" class="drawing-card-grid">
+        <article
+          v-for="drawing in rows"
+          :key="drawing.no"
+          class="drawing-card"
+          role="button"
+          tabindex="0"
+          @click="openDetail(drawing.no)"
+          @keydown.enter.self="openDetail(drawing.no)"
+        >
+          <!-- hover 时右上角滑出的打开箭头 -->
+          <span class="dc-open-hint" aria-hidden="true">
+            <DemoIcon name="arrow-up-right" :size="13" />
+          </span>
 
-                <td>
-                  <strong>{{ drawing.name }}</strong>
-                  <span class="tag plain">{{ drawingMediaLabel(drawing) }}</span>
-                  <small v-if="drawing.remark">{{ drawing.remark }}</small>
-                </td>
+          <!-- 顶部：状态 + 介质 -->
+          <header class="dc-top">
+            <span class="tag dc-status" :class="STATUS[drawing.status].c">
+              <i class="dc-status-dot"></i>{{ STATUS[drawing.status].t }}
+            </span>
+            <span class="dc-media mono">{{ drawingMediaLabel(drawing) }}</span>
+          </header>
 
-                <!-- 属性规格标签化展示 -->
-                <td class="attribute-summary-cell">
-                  <div v-if="attributeStore.sortedAttributes.some((attr) => drawing.attributeValues?.[attr.id])" class="attr-pill-group">
-                    <template v-for="attr in attributeStore.sortedAttributes" :key="attr.id">
-                      <span v-if="drawing.attributeValues?.[attr.id]" class="attr-tag">
-                        <span class="attr-k">{{ attr.name }}:</span>
-                        <span class="attr-v">{{ attributeStore.fieldName(attr.id, drawing.attributeValues?.[attr.id]) }}</span>
-                      </span>
-                    </template>
-                  </div>
-                  <span v-else class="tag plain empty-attr-tag">未指定属性</span>
-                </td>
+          <!-- 主体：图号 / 名称 / 备注 -->
+          <div class="dc-body">
+            <div class="dc-no-row">
+              <span class="dc-no mono">{{ drawing.no }}</span>
+              <button
+                v-if="partsForDrawing(drawing.no).length"
+                class="dc-expand"
+                type="button"
+                :title="isProjectExpanded(drawing.no) ? '收起零件' : '展开零件清单'"
+                :aria-expanded="isProjectExpanded(drawing.no)"
+                @click.stop="toggleExpanded(drawing.no)"
+              >
+                <DemoIcon name="chevron-down" :size="12" :class="{ collapsed: !isProjectExpanded(drawing.no) }" />
+                {{ partsForDrawing(drawing.no).length }} 个零件
+              </button>
+            </div>
+            <h3 class="dc-name" :title="drawing.name">{{ drawing.name }}</h3>
+            <p v-if="drawing.remark" class="dc-remark" :title="drawing.remark">{{ drawing.remark }}</p>
+          </div>
 
-                <td>{{ drawing.vendor || '—' }}</td>
-                <td><span class="tag" :class="STATUS[drawing.status].c">{{ STATUS[drawing.status].t }}</span></td>
-                <td class="mono">{{ drawing.version }}</td>
-                <td class="mono text-time">{{ formatReadableDateTime(drawing.updatedAt, '—') }}</td>
-                <td class="row-actions">
-                  <button class="btn sm" type="button" @click="openDetail(drawing.no)">
-                    <DemoIcon name="eye" :size="13" />详情
-                  </button>
-                </td>
-              </tr>
-
-              <!-- 展开的零件清单折叠面板 -->
-              <tr v-if="isProjectExpanded(drawing.no)" class="parts-row">
-                <td colspan="8">
-                  <div class="parts-panel">
-                    <span class="parts-title">
-                      <DemoIcon name="folder-tree" :size="13" />
-                      项目零件结构清单（共 {{ partsForDrawing(drawing.no).length }} 个零件）
-                    </span>
-                    <div class="parts-chips">
-                      <button
-                        v-for="part in partsForDrawing(drawing.no)"
-                        :key="part.no"
-                        class="part-link-chip"
-                        type="button"
-                        @click="openDetail(part.no)"
-                      >
-                        <DemoIcon name="file" :size="12" />
-                        <span class="part-name-txt">{{ part.name }}</span>
-                        <span class="mono part-no-txt">{{ part.no }}</span>
-                      </button>
-                    </div>
-                  </div>
-                </td>
-              </tr>
+          <!-- 业务属性 -->
+          <div class="dc-attrs">
+            <template v-for="attr in attributeStore.sortedAttributes" :key="attr.id">
+              <span v-if="drawing.attributeValues?.[attr.id]" class="dc-attr">
+                <span class="dc-attr-k">{{ attr.name }}</span>
+                <span class="dc-attr-v">{{ attributeStore.fieldName(attr.id, drawing.attributeValues?.[attr.id]) }}</span>
+              </span>
             </template>
+            <span
+              v-if="!attributeStore.sortedAttributes.some((attr) => drawing.attributeValues?.[attr.id])"
+              class="dc-attr dc-attr-empty"
+            >未指定属性</span>
+          </div>
 
-            <tr v-if="!rows.length">
-              <td colspan="8">
-                <div class="empty-state-view">
-                  <DemoIcon name="search-x" :size="36" />
-                  <strong>{{ hasFilters ? '没有找到符合条件的图纸' : '图纸库还没有图纸' }}</strong>
-                  <span>{{ hasFilters ? '调整关键词，或清空筛选后重新查找。' : '创建第一份图纸，开始建立项目档案。' }}</span>
-                  <button v-if="hasFilters" class="btn" type="button" @click="clearFilters">清空全部筛选</button>
-                  <template v-else-if="canCreateDrawing">
-                    <button class="btn primary" type="button" @click="openCreate('legacy')">上传老图纸</button>
-                    <button class="btn" type="button" @click="openCreate('new')">创建新图纸</button>
-                  </template>
-                  <template v-else>
-                    <span class="empty-state-hint">{{ createDeniedHint }}</span>
-                    <button class="btn" type="button" @click="router.push({ name: 'dashboard' })">回到工作台查看我的任务</button>
-                  </template>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <table v-else class="tbl library-table part-library-table">
+          <!-- 底部：负责人 + 版本信息 -->
+          <footer class="dc-foot">
+            <div class="dc-owner" :class="{ 'is-empty': !assigneeName(drawing) }">
+              <span class="dc-avatar">{{ assigneeInitial(drawing) }}</span>
+              <span class="dc-owner-meta">
+                <b>{{ assigneeName(drawing) || '待指派' }}</b>
+                <i>负责人</i>
+              </span>
+            </div>
+            <div class="dc-foot-right">
+              <span class="dc-updated mono">{{ drawing.version }} · {{ formatReadableDateTime(drawing.updatedAt, '—') }}</span>
+              <span v-if="creatorName(drawing) !== '—'" class="dc-creator">由 {{ creatorName(drawing) }} 创建</span>
+            </div>
+          </footer>
+
+          <!-- 展开的零件清单 -->
+          <div v-if="isProjectExpanded(drawing.no)" class="dc-parts" @click.stop>
+            <span class="dc-parts-title">
+              <DemoIcon name="folder-tree" :size="13" />
+              项目零件结构清单（共 {{ partsForDrawing(drawing.no).length }} 个）
+            </span>
+            <div class="dc-parts-chips">
+              <button
+                v-for="part in partsForDrawing(drawing.no)"
+                :key="part.no"
+                class="part-link-chip"
+                type="button"
+                @click.stop="openDetail(part.no)"
+              >
+                <DemoIcon name="file" :size="12" />
+                <span class="part-name-txt">{{ part.name }}</span>
+                <span class="mono part-no-txt">{{ part.no }}</span>
+              </button>
+            </div>
+          </div>
+        </article>
+
+        <div v-if="!rows.length" class="empty-state-view">
+          <DemoIcon name="search-x" :size="36" />
+          <strong>{{ hasFilters ? '没有找到符合条件的图纸' : '图纸库还没有图纸' }}</strong>
+          <span>{{ hasFilters ? '调整关键词，或清空筛选后重新查找。' : '创建第一份图纸，开始建立项目档案。' }}</span>
+          <button v-if="hasFilters" class="btn" type="button" @click="clearFilters">清空全部筛选</button>
+          <template v-else-if="canCreateDrawing">
+            <button class="btn primary" type="button" @click="openCreate('legacy')">上传老图纸</button>
+            <button class="btn" type="button" @click="openCreate('new')">创建新图纸</button>
+          </template>
+          <template v-else>
+            <span class="empty-state-hint">{{ createDeniedHint }}</span>
+            <button class="btn" type="button" @click="router.push({ name: 'dashboard' })">回到工作台查看我的任务</button>
+          </template>
+        </div>
+      </div>
+      <div v-else ref="tableElement" class="table-scroll">
+        <table class="tbl library-table part-library-table">
           <thead>
             <tr>
               <th style="width: 150px;">零件图号</th>
@@ -866,62 +880,6 @@ watch([query, status, media, mode, attributeFilters], () => {
   font-size: 12.5px;
 }
 
-.expand-btn {
-  margin-right: 6px;
-  padding: 2px;
-  border: 0;
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  vertical-align: middle;
-}
-
-.expand-btn .collapsed {
-  transform: rotate(-90deg);
-}
-
-/* ================= 属性规格标签化 ================= */
-.attribute-summary-cell {
-  max-width: 320px;
-}
-
-.attr-pill-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 6px;
-}
-
-.attr-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.attr-k {
-  color: var(--text-3);
-}
-
-.attr-v {
-  color: var(--text-1);
-  font-weight: 600;
-}
-
-.empty-attr-tag {
-  font-size: 10.5px;
-  opacity: 0.7;
-}
-
-.text-time {
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
 .row-actions {
   position: relative;
   display: flex;
@@ -931,19 +889,356 @@ watch([query, status, media, mode, attributeFilters], () => {
   white-space: nowrap;
 }
 
-/* ================= 展开零件卡片 ================= */
-.parts-row {
-  background: var(--panel-2);
+/* ================= 总图卡片视图 ================= */
+.drawing-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  gap: 14px;
+  padding: 16px;
 }
 
-.parts-panel {
+.drawing-card-grid > .empty-state-view {
+  grid-column: 1 / -1;
+}
+
+.drawing-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+  animation: dc-in 0.25s ease;
+}
+
+@keyframes dc-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* 顶部高光线：hover 时显现，给出微妙的“被激活”感 */
+.drawing-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), transparent 75%);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.drawing-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  box-shadow: var(--shadow);
+}
+
+.drawing-card:hover::before {
+  opacity: 1;
+}
+
+.drawing-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* hover 时右上角滑出的打开箭头 */
+.dc-open-hint {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  opacity: 0;
+  transform: translate(-3px, 3px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  pointer-events: none;
+}
+
+.drawing-card:hover .dc-open-hint {
+  opacity: 1;
+  transform: translate(0, 0);
+}
+
+/* ---------- 顶部行：状态 + 介质 ---------- */
+.dc-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 26px; /* 给 hover 箭头留位 */
+}
+
+.dc-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* 状态标签自带发光圆点，隐藏全局 .tag 的默认圆点避免重复 */
+.dc-status::before {
+  display: none;
+}
+
+.dc-status-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentcolor;
+  box-shadow: 0 0 6px currentcolor;
+}
+
+.dc-media {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+/* ---------- 主体：图号 / 名称 / 备注 ---------- */
+.dc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dc-no-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.dc-no {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dc-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 10.5px;
+  transition: all 0.15s ease;
+}
+
+.dc-expand:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dc-expand svg {
+  transition: transform 0.18s ease;
+}
+
+.dc-expand .collapsed {
+  transform: rotate(-90deg);
+}
+
+.dc-name {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-1);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.4;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  transition: color 0.15s ease;
+}
+
+.drawing-card:hover .dc-name {
+  color: var(--accent);
+}
+
+.dc-remark {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 属性区 ---------- */
+.dc-attrs {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.dc-attr {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.dc-attr-k {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
+.dc-attr-v {
+  overflow: hidden;
+  color: var(--text-1);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dc-attr-empty {
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-3);
+}
+
+/* ---------- 底部：负责人 + 版本信息 ---------- */
+.dc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.dc-owner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.dc-avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--accent) 24%, transparent));
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.dc-owner-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.dc-owner-meta b {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dc-owner-meta i {
+  color: var(--text-3);
+  font-size: 10px;
+  font-style: normal;
+  letter-spacing: 0.4px;
+}
+
+.dc-owner.is-empty .dc-avatar {
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  color: var(--text-3);
+}
+
+.dc-owner.is-empty .dc-owner-meta b {
+  color: var(--text-3);
+  font-weight: 600;
+}
+
+.dc-foot-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.dc-updated,
+.dc-creator {
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.dc-updated {
+  color: var(--text-2);
+}
+
+.dc-creator {
+  color: var(--text-3);
+}
+
+/* ---------- 展开的零件清单 ---------- */
+.dc-parts {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  cursor: default;
 }
 
-.parts-title {
+.dc-parts-title {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -951,38 +1246,49 @@ watch([query, status, media, mode, attributeFilters], () => {
   font-size: 11px;
 }
 
-.parts-chips {
+.dc-parts-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .part-link-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 9px;
+  max-width: 100%;
+  padding: 4px 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
+  border-radius: 999px;
+  background: var(--panel-2);
   color: var(--text-2);
   cursor: pointer;
-  font-size: 11.5px;
-  transition: all 0.15s;
+  font-size: 11px;
+  transition: all 0.15s ease;
 }
 
 .part-link-chip:hover {
+  transform: translateY(-1px);
   border-color: var(--accent);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
 .part-name-txt {
-  font-weight: 500;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .part-no-txt {
   color: var(--text-3);
-  font-size: 10.5px;
+  font-size: 10px;
+}
+
+.part-link-chip:hover .part-no-txt {
+  color: inherit;
+  opacity: 0.7;
 }
 
 .empty-state-view {
