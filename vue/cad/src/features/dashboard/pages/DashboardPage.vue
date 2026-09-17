@@ -42,8 +42,24 @@ let requestGeneration = 0
 let disposed = false
 
 const identity = computed(() => auth.currentUser?.displayName || auth.currentUser?.account || '')
-const descriptions = { planner: '创建图纸并把图纸指派给负责人，跟踪每张图纸的编制进度。', designer: '在被指派后编制图纸，跟进校审与发布。', reviewer: '查阅图纸，处理待办，追溯签署意见。', admin: '掌握图纸资产与系统运行，管理团队和业务流程。' }
-const today = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', weekday: 'long' }).format(new Date())
+// 顶栏问候卡：时段问候取代「工作台」，姓名取自当前账号，右侧一枚微型英文章戳。
+// 工作台是常驻窗口，每分钟自检一次时钟，跨时段后问候语与日期跟着换，避免晚上还写着「晨安」。
+const clock = ref(new Date())
+const clockTimer = window.setInterval(() => { clock.value = new Date() }, 60_000)
+const greeting = computed(() => { const hour = clock.value.getHours(); return hour >= 5 && hour < 12 ? '晨安' : hour < 18 ? '午安' : '夜安' })
+const salutation = computed(() => identity.value ? `${greeting.value}，${identity.value}。` : `${greeting.value}。`)
+// 章戳跟着工作视图走，只作身份标注，不抢问候语。
+const ROLE_STAMPS: Record<WorkspaceRole, string> = { planner: 'CHIEF DESIGNER', designer: 'STRUCTURAL ENG.', reviewer: 'REVIEW OFFICE', admin: 'SYSTEM ADMIN' }
+const stamp = computed(() => workspace.value ? ROLE_STAMPS[workspace.value] : '')
+// 日期做成腕表副表盘：上一行等宽大写（09 / 17 · THU），下一行小字标注地点与年份。
+const dateStamp = computed(() => {
+  const now = clock.value
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(now).toUpperCase()
+  return { main: `${pad(now.getMonth() + 1)} / ${pad(now.getDate())} · ${weekday}`, sub: `SHANGHAI · ${now.getFullYear()}` }
+})
+// 英文副表盘对读屏不友好，补一条完整的中文日期。
+const dateLabel = computed(() => new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(clock.value))
 const drawings = computed(() => workspaceDrawings(drawingStore.drawings, auth.currentUser, workspace.value))
 const pending = computed(() => pendingWorkspaceReviews(reviewStore.cases, auth.currentUser))
 const completed = computed(() => completedWorkspaceReviews(reviewStore.completed, auth.currentUser))
@@ -56,7 +72,7 @@ const primaryAction = computed(() => {
   if (workspace.value === 'planner') return { label: '任务管理台', icon: 'clipboard-list', route: RouteName.TaskBoard }
   if (workspace.value === 'reviewer') return { label: '进入审核中心', icon: 'clipboard-check', route: RouteName.ReviewPending }
   // 设计人员没有建档权，主操作指向图纸库（那里能找到自己被指派和参与过的图纸）。
-  return { label: '打开图纸库', icon: 'folder-open', route: RouteName.DrawingLibrary }
+  return { label: '调阅图纸资产', icon: 'folder-open', route: RouteName.DrawingLibrary }
 })
 const shortcuts = computed<Array<{ label: string; description: string; icon: string; route: RouteNameKey }>>(() => {
   if (workspace.value === 'admin') return [
@@ -94,6 +110,36 @@ const archivedCount = computed(() => drawings.value.filter(item => item.status =
 const disabledCount = computed(() => drawings.value.filter(item => item.status === 'disabled').length)
 const passCount = computed(() => completed.value.filter(item => item.result === 'pass').length)
 const rejectedCount = computed(() => completed.value.filter(item => item.result === 'rejected').length)
+
+// 今日待办摘要：先一句定调，再报能落地的数字；为 0 的项不写出来（「待完善图稿 0 份」是噪声）。
+// 加载中一律显示「—」，不拿 0 冒充数据：加载中／加载失败／无匹配／确实没有数据是四种状态。
+interface BriefItem { label: string; count: number; unit: string }
+const BRIEF_LEADS: Record<WorkspaceRole, string> = { planner: '今日排程已就绪。', designer: '今日构想已就绪。', reviewer: '今日校审已就绪。', admin: '今日总览已就绪。' }
+const briefItems = computed<BriefItem[]>(() => {
+  const items: BriefItem[] = []
+  const push = (label: string, count: number, unit: string) => { if (count > 0) items.push({ label, count, unit }) }
+  if (workspace.value === 'planner') {
+    push('待指派', taskStore.boardSummary.unassigned, '张')
+    push('进行中', taskStore.boardSummary.active, '张')
+    push('已逾期', taskStore.boardSummary.overdue, '张')
+  } else if (workspace.value === 'reviewer') {
+    push('待我审核', pending.value.length, '项')
+    push('已签署', completed.value.length, '项')
+  } else if (workspace.value === 'admin') {
+    push('审核中', reviewingCount.value, '份')
+    push('生产中', publishedCount.value, '份')
+    push('已停用', disabledCount.value, '份')
+  } else if (workspace.value === 'designer') {
+    push('待完善图稿', draftCount.value, '份')
+    push('审核中', reviewingCount.value, '份')
+    push('校审待批', pending.value.length, '项')
+  }
+  return items
+})
+const briefLead = computed(() => workspace.value ? BRIEF_LEADS[workspace.value] : '当前账号尚未分配工作角色。')
+const briefLoading = computed(() => sourceLoading.value && !dataError.value)
+// 没有工作视图时「尚未分配角色」本身就是全部信息，不再叠一句「今日无待办」。
+const briefFallback = computed(() => !workspace.value ? '' : briefLoading.value ? '正在核对今日待办…' : '当前没有待办，图稿状态均已就绪。')
 // 计划工作台只看「待指派」时用本地筛选；页脚会说明这是当前页，完整筛选在任务管理台。
 const plannedOnly = ref<'all' | 'unassigned'>('all')
 // 计划工作台的主列表只是任务总表的第一页预览，因此卡片计数只统计这一页真实存在的行，
@@ -226,15 +272,15 @@ watch([workspace, () => auth.currentUser?.id], () => {
 }, { immediate: true })
 watch([keyword, drawingFilter, reviewFilter, reviewResult], () => { page.value = 1 })
 watch([pageCount, plannedOnly], () => { if (page.value > pageCount.value) page.value = pageCount.value })
-onBeforeUnmount(() => { disposed = true; requestGeneration++ })
+onBeforeUnmount(() => { disposed = true; requestGeneration++; window.clearInterval(clockTimer) })
 </script>
 
 <template>
   <div class="page cad-workbench">
     <header class="wb-header">
-      <div class="wb-heading"><div class="wb-heading-title"><h1>工作台</h1><span class="wb-identity">{{ identity }}</span></div><p>{{ workspace ? descriptions[workspace] : '当前账号尚未分配工作角色。' }}</p></div>
+      <div class="wb-heading"><div class="wb-heading-title"><h1>{{ salutation }}</h1><span v-if="stamp" class="wb-stamp">{{ stamp }}</span></div><p class="wb-brief"><span>{{ briefLead }}</span><template v-if="briefItems.length"><span v-for="(item, index) in briefItems" :key="item.label"><span v-if="index" class="wb-brief-sep" aria-hidden="true">·</span>{{ item.label }} <b class="wb-brief-num">{{ briefLoading ? '—' : item.count }}</b> {{ item.unit }}</span></template><span v-else>{{ briefFallback }}</span></p></div>
       <div v-if="workspaces.length > 1" class="wb-role-switch" role="group" aria-label="切换工作视图"><button v-for="role in workspaces" :key="role" type="button" :aria-pressed="workspace === role" :class="{ active: workspace === role }" @click="selectedWorkspace = role">{{ workspaceLabels[role] }}</button></div>
-      <div class="wb-header-actions"><span class="wb-date">{{ today }}</span><button class="btn wb-refresh" type="button" :disabled="refreshing" aria-label="刷新工作台" @click="loadData(true)"><DemoIcon name="refresh-cw" :size="16" :class="{ 'wb-spinning': refreshing }" /></button><button v-if="workspace" class="btn primary" type="button" @click="go(primaryAction.route)"><DemoIcon :name="primaryAction.icon" :size="16" />{{ primaryAction.label }}</button></div>
+      <div class="wb-header-actions"><span class="wb-date"><span class="wb-sr-only">{{ dateLabel }}</span><span class="wb-date-main" aria-hidden="true">{{ dateStamp.main }}</span><small aria-hidden="true">{{ dateStamp.sub }}</small></span><button class="btn wb-refresh" type="button" :disabled="refreshing" aria-label="刷新工作台" @click="loadData(true)"><DemoIcon name="refresh-cw" :size="16" :class="{ 'wb-spinning': refreshing }" /></button><button v-if="workspace" class="btn wb-primary" type="button" @click="go(primaryAction.route)"><DemoIcon :name="primaryAction.icon" :size="16" />{{ primaryAction.label }}</button></div>
     </header>
     <template v-if="workspace">
       <div class="wb-layout">
