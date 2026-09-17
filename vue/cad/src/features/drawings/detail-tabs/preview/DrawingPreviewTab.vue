@@ -3,7 +3,7 @@ import { computed, onMounted, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { drawingFileService } from '@/app/container'
+import CaxaHelpModal from './components/CaxaHelpModal.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
@@ -599,36 +599,15 @@ const {
     </div>
 
     <!-- 本机未找到 CAXA：提供可操作的解决途径，而不是一闪而过的提示 -->
-    <div v-if="caxaHelpVisible" class="modal-backdrop">
-      <div class="modal card caxa-help-modal">
-        <div class="modal-head">
-          <div class="modal-title">
-            <DemoIcon name="alert-triangle" :size="18" />
-            <span>未找到本机 CAD 程序</span>
-          </div>
-          <button class="btn sm close-btn" type="button" @click="closeCaxaHelpModal">✕</button>
-        </div>
-
-        <div class="modal-body">
-          <p class="caxa-help-detail">{{ caxaHelpDetail }}</p>
-          <p class="caxa-help-text">请选择一种处理方式；指定一次后系统会自动记住，之后无需重复选择：</p>
-          <div class="caxa-help-actions">
-            <button class="btn primary" type="button" :disabled="isSavingCaxaPath" @click="pickAndSaveCaxa">
-              <DemoIcon name="folder-open" :size="14" />
-              {{ isSavingCaxaPath ? '处理中...' : '选择 CAXA 程序（CDRAFT_M.exe）' }}
-            </button>
-            <button class="btn" type="button" @click="openSystemDefaultApps">
-              <DemoIcon name="settings" :size="14" />打开系统「默认应用」设置
-            </button>
-          </div>
-        </div>
-
-        <div class="modal-foot">
-          <button class="btn" type="button" @click="closeCaxaHelpModal">稍后处理</button>
-          <button class="btn primary" type="button" :disabled="isSavingCaxaPath" @click="pickAndSaveCaxa">选择程序并重试</button>
-        </div>
-      </div>
-    </div>
+    <!-- 本机未找到 CAXA：提供可操作的解决途径，而不是一闪而过的提示 -->
+    <CaxaHelpModal
+      v-if="caxaHelpVisible"
+      :detail="caxaHelpDetail"
+      :saving="isSavingCaxaPath"
+      @close="closeCaxaHelpModal"
+      @pick="pickAndSaveCaxa"
+      @open-system-apps="openSystemDefaultApps"
+    />
 
     <!-- 替换图纸确认与说明弹窗 -->
     <div v-if="isReplacing" class="modal-backdrop">
@@ -1182,7 +1161,7 @@ const {
   overflow-y: auto;
 }
 
-.modal-head {
+:deep(.modal-head) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1190,7 +1169,7 @@ const {
   border-bottom: 1px solid var(--line);
 }
 
-.modal-title {
+:deep(.modal-title) {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1199,11 +1178,11 @@ const {
   color: var(--text-1);
 }
 
-.modal-title svg {
+:deep(.modal-title svg) {
   color: var(--accent);
 }
 
-.close-btn {
+:deep(.close-btn) {
   border: none;
   background: transparent;
   font-size: 14px;
@@ -1211,11 +1190,11 @@ const {
   cursor: pointer;
 }
 
-.close-btn:hover {
+:deep(.close-btn:hover) {
   color: var(--text-1);
 }
 
-.modal-body {
+:deep(.modal-body) {
   padding: 18px;
   display: flex;
   flex-direction: column;
@@ -1260,7 +1239,7 @@ const {
   margin: 0;
 }
 
-.modal-foot {
+:deep(.modal-foot) {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1986,38 +1965,6 @@ const {
   flex-direction: column;
   gap: 8px;
   width: 100%;
-}
-
-.caxa-help-modal {
-  max-width: 540px;
-  width: min(540px, calc(100vw - 48px));
-}
-
-.caxa-help-detail {
-  margin: 0 0 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--warn-soft, rgba(234, 179, 8, 0.12));
-  color: var(--warn, #b45309);
-  font-size: 12.5px;
-  line-height: 1.7;
-  word-break: break-all;
-}
-
-.caxa-help-text {
-  margin: 0 0 12px;
-  font-size: 13px;
-  color: var(--text-2, #4b5563);
-}
-
-.caxa-help-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.caxa-help-actions .btn {
-  justify-content: center;
 }
 
 .collab-dock-card {
