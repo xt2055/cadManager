@@ -116,6 +116,19 @@ export function useDrawingReidentify(options: UseDrawingReidentifyOptions) {
     }
   }
 
+  /** 弹窗勾选 / 取消勾选一行：勾选状态只在这里落账，弹窗组件不直接改 props。 */
+  function toggleReidentifyItem(fileId: string, checked: boolean) {
+    const item = reidentifyList.value.find((entry) => entry.file.id === fileId)
+    if (item) item.checked = checked
+  }
+
+  /** 弹窗表头的全选 / 全不选。 */
+  function toggleAllReidentifyItems(checked: boolean) {
+    reidentifyList.value.forEach((entry) => {
+      entry.checked = checked
+    })
+  }
+
   function closeReidentifyModal() {
     if (isExecutingReidentify.value) return
     isReidentifyModalOpen.value = false
@@ -130,5 +143,7 @@ export function useDrawingReidentify(options: UseDrawingReidentifyOptions) {
     reidentifyAllPartFiles,
     confirmBatchReidentify,
     closeReidentifyModal,
+    toggleReidentifyItem,
+    toggleAllReidentifyItems,
   }
 }

@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import CaxaHelpModal from './components/CaxaHelpModal.vue'
+import ReidentifyDrawingModal from './components/ReidentifyDrawingModal.vue'
+import ReplaceDrawingModal from './components/ReplaceDrawingModal.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
@@ -252,11 +254,30 @@ const {
   reidentifyAllPartFiles,
   confirmBatchReidentify,
   closeReidentifyModal,
+  toggleReidentifyItem,
+  toggleAllReidentifyItems,
 } = useDrawingReidentify({
   allFiles,
   rootDrawingNo,
   canManageDrawingFiles,
 })
+
+// 弹窗只接「纯展示数据」：投影与格式化留在父页面这一层，勾选 / 输入意图再由事件交回 composable
+const reidentifyRows = computed(() =>
+  reidentifyList.value.map((item) => ({
+    id: item.file.id,
+    name: item.file.name,
+    oldPartNo: item.oldPartNo,
+    newPartNo: item.newPartNo,
+    checked: item.checked,
+  })),
+)
+
+const replaceOriginalVersion = computed(() =>
+  targetReplaceFile.value ? versionDisplayLabel(targetReplaceFile.value.version) : 'v1.0',
+)
+
+const replaceNewSize = computed(() => formatFileSize(selectedReplaceBlob.value?.size || 0))
 
 </script>
 
@@ -526,77 +547,17 @@ const {
       </div>
     </div>
 
-    <!-- 批量重新识别并校正图号弹窗 -->
-    <div v-if="isReidentifyModalOpen" class="modal-backdrop">
-      <div class="modal card reidentify-modal">
-        <div class="modal-head">
-          <div class="modal-title">
-            <DemoIcon name="scan" :size="18" />
-            <span>批量校正零件图号</span>
-          </div>
-          <button class="btn sm close-btn" type="button" :disabled="isExecutingReidentify" @click="closeReidentifyModal">✕</button>
-        </div>
-
-        <div class="modal-body reidentify-modal-body">
-          <div class="reidentify-hint">
-            <DemoIcon name="info" :size="14" />
-            <span>系统已按图纸文件名识别图号，并已自动过滤明细表和非零件图文件。请核对并勾选需校正的项：</span>
-          </div>
-
-          <div class="reidentify-table-wrap">
-            <table class="tbl compact-tbl">
-              <thead>
-                <tr>
-                  <th style="width: 40px; text-align: center">
-                    <input
-                      type="checkbox"
-                      :checked="reidentifyList.length > 0 && reidentifyList.every((i) => i.checked)"
-                      @change="reidentifyList.forEach((i) => (i.checked = ($event.target as HTMLInputElement).checked))"
-                    />
-                  </th>
-                  <th>文件名</th>
-                  <th>当前关联图号</th>
-                  <th>识别图号 (文件名)</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="item in reidentifyList" :key="item.file.id">
-                  <td style="text-align: center">
-                    <input v-model="item.checked" type="checkbox" />
-                  </td>
-                  <td class="file-name-cell">
-                    <DemoIcon name="file" :size="14" />
-                    <span>{{ item.file.name }}</span>
-                  </td>
-                  <td class="num mono text-muted">{{ item.oldPartNo }}</td>
-                  <td class="num mono bold text-accent">
-                    {{ item.newPartNo }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div v-if="reidentifyFailures.length" class="reidentify-fail-box">
-            <div class="fail-title">
-              <DemoIcon name="alert-triangle" :size="13" />
-              <span>以下 {{ reidentifyFailures.length }} 个文件未能从文件名识别出规范图号（已忽略）：</span>
-            </div>
-            <ul>
-              <li v-for="(msg, idx) in reidentifyFailures" :key="idx">{{ msg }}</li>
-            </ul>
-          </div>
-        </div>
-
-        <div class="modal-foot">
-          <button class="btn" type="button" :disabled="isExecutingReidentify" @click="closeReidentifyModal">取消</button>
-          <button class="btn primary" type="button" :disabled="isExecutingReidentify" @click="confirmBatchReidentify">
-            <DemoIcon name="check" :size="14" />
-            {{ isExecutingReidentify ? '校正中...' : `确认校正 (${reidentifyList.filter((i) => i.checked).length} 项)` }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <!-- 批量重新识别并校正图号弹窗：DOM 与外壳样式都在组件内，勾选意图回抛给父页面 -->
+    <ReidentifyDrawingModal
+      v-if="isReidentifyModalOpen"
+      :rows="reidentifyRows"
+      :failures="reidentifyFailures"
+      :executing="isExecutingReidentify"
+      @close="closeReidentifyModal"
+      @confirm="confirmBatchReidentify"
+      @toggle="toggleReidentifyItem"
+      @toggle-all="toggleAllReidentifyItems"
+    />
 
     <!-- 本机未找到 CAXA：提供可操作的解决途径，而不是一闪而过的提示 -->
     <CaxaHelpModal
@@ -608,55 +569,17 @@ const {
       @open-system-apps="openSystemDefaultApps"
     />
 
-    <!-- 替换图纸确认与说明弹窗 -->
-    <div v-if="isReplacing" class="modal-backdrop">
-      <div class="modal card replace-modal">
-        <div class="modal-head">
-          <div class="modal-title">
-            <DemoIcon name="refresh-cw" :size="18" />
-            <span>替换图纸文件并生成新版本</span>
-          </div>
-          <button class="btn sm close-btn" type="button" @click="cancelReplace">✕</button>
-        </div>
-
-        <div class="modal-body">
-          <div class="replace-meta-box">
-            <div class="meta-row">
-              <span class="lbl">原文件：</span>
-              <span class="val mono bold">{{ targetReplaceFile?.name }}</span>
-              <span class="tag info">{{ targetReplaceFile ? versionDisplayLabel(targetReplaceFile.version) : 'v1.0' }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="lbl">新文件：</span>
-              <span class="val mono bold text-accent">{{ selectedReplaceBlob?.name }}</span>
-              <span class="tag ok">({{ formatFileSize(selectedReplaceBlob?.size || 0) }})</span>
-            </div>
-          </div>
-
-          <div class="field">
-            <label class="bold">版本更新说明 / 替换原因</label>
-            <input
-              v-model="replaceReasonInput"
-              type="text"
-              class="inp"
-              placeholder="例如：修改活塞密封槽倒角与公差，重新出图"
-            />
-          </div>
-
-          <div class="note info-note">
-            <DemoIcon name="shield-check" :size="15" />
-            <div>替换将保留原文件所有图纸历史树与下载凭据，版本号自动递进，全程留痕。</div>
-          </div>
-        </div>
-
-        <div class="modal-foot">
-          <button class="btn" type="button" @click="cancelReplace">取消</button>
-          <button class="btn primary" type="button" @click="confirmReplace">
-            <DemoIcon name="check" :size="14" />确认替换升级
-          </button>
-        </div>
-      </div>
-    </div>
+    <!-- 替换图纸确认与说明弹窗：展示串由父页面备好，替换原因经 update:reason 回抛 -->
+    <ReplaceDrawingModal
+      v-if="isReplacing"
+      v-model:reason="replaceReasonInput"
+      :original-name="targetReplaceFile?.name ?? ''"
+      :original-version="replaceOriginalVersion"
+      :new-name="selectedReplaceBlob?.name ?? ''"
+      :new-size="replaceNewSize"
+      @close="cancelReplace"
+      @confirm="confirmReplace"
+    />
     <!-- 批量下载弹窗：选择文件与格式（EXB 原始 / DWG / PDF），zip 打包 -->
     <div v-if="isDownloadOpen" class="modal-backdrop">
       <div class="modal card download-modal">
@@ -1065,126 +988,6 @@ const {
   color: #fff;
   padding: 0 4px;
   margin-left: 2px;
-}
-
-.replace-modal {
-  width: 520px;
-  max-width: 90vw;
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md, 8px);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
-  display: flex;
-  flex-direction: column;
-}
-
-.reidentify-modal {
-  width: 680px;
-  max-width: 92vw;
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md, 8px);
-  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
-  display: flex;
-  flex-direction: column;
-  max-height: 85vh;
-}
-
-.reidentify-modal-body {
-  /* padding / gap 沿用共享 modal-chrome 的 .modal-body：本文件原先声明的 16px 20px 与 gap 12px，
-     在旧结构里被父页面 :deep(.modal-body)（同优先级、源码在后）整条覆盖，从未生效；
-     这里不再重复声明，以免重构后静默改成另一套值。 */
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.reidentify-hint {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 12.5px;
-  color: var(--text-2);
-  line-height: 1.5;
-  background: var(--panel-2);
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-}
-
-.reidentify-table-wrap {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-  max-height: 320px;
-  overflow-y: auto;
-}
-
-.compact-tbl th,
-.compact-tbl td {
-  padding: 8px 10px;
-  font-size: 12.5px;
-}
-
-.text-muted {
-  color: var(--text-3);
-}
-
-.reidentify-fail-box {
-  background: rgba(234, 179, 8, 0.08);
-  border: 1px dashed rgba(234, 179, 8, 0.35);
-  border-radius: 6px;
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-
-.reidentify-fail-box .fail-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  color: var(--warn, #eab308);
-  margin-bottom: 6px;
-}
-
-.reidentify-fail-box ul {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--text-3);
-  max-height: 80px;
-  overflow-y: auto;
-}
-
-.replace-meta-box {
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.meta-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.meta-row .lbl {
-  color: var(--text-3);
-  min-width: 60px;
-}
-
-.meta-row .val {
-  color: var(--text-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 260px;
 }
 
 .files-title-row {
