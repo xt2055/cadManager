@@ -11,11 +11,9 @@ import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingFile } from '@/types/domain.types'
 import type { PartView } from '@/modules/drawing'
-import { isTauri } from '@tauri-apps/api/core'
-import { saveDownloadFile } from '@/services/tauri/cad-edit.service'
-import { convertCadToPdfBlob } from '@/services/cad-pdf-export.service'
 import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
 import { formatFileSize } from './drawing-preview-format'
+import { useDrawingBatchDownload } from './composables/useDrawingBatchDownload'
 import { useDrawingCreation } from './composables/useDrawingCreation'
 import { useDrawingEditSessions } from './composables/useDrawingEditSessions'
 import { useDrawingFileReplacement } from './composables/useDrawingFileReplacement'
@@ -391,193 +389,24 @@ async function doDeleteFile(file: DrawingFile) {
 }
 
 // ===== 批量下载：选择文件与格式（EXB 原始 / DWG / PDF），zip 打包下载 =====
-type DownloadFormat = 'exb' | 'dwg' | 'pdf'
-
-interface DownloadCandidate {
-  file: DrawingFile
-  exbKey: string
-  dwgKey: string
-  pdfKey: string
-  canConvertToPdf: boolean
-}
-
-const isDownloadOpen = ref(false)
-const downloadFormat = ref<DownloadFormat>('dwg')
-const downloadFileIds = ref<Set<string>>(new Set())
-const isDownloading = ref(false)
-const downloadProgress = ref('')
-
-const downloadCandidates = computed<DownloadCandidate[]>(() =>
-  allFiles.value.map((file) => {
-    const isDirectPdf = /\.pdf$/i.test(file.name || '') || /\.pdf$/i.test(file.storageKey || '')
-    const exbKey = file.rawStorageKey || (/\.exb$/i.test(file.storageKey || '') ? file.storageKey! : '')
-    const dwgKey = file.currentStorageKey || (/\.dwg$/i.test(file.storageKey || '') ? file.storageKey! : '')
-    const pdfKey = isDirectPdf ? (file.storageKey || file.currentStorageKey || '') : ''
-    const canConvertToPdf = Boolean(dwgKey || (/\.dxf$/i.test(file.storageKey || '') ? file.storageKey : ''))
-
-    return {
-      file,
-      exbKey,
-      dwgKey,
-      pdfKey,
-      canConvertToPdf,
-    }
-  }),
-)
-
-const allDownloadSelected = computed(() =>
-  downloadCandidates.value.length > 0
-  && downloadCandidates.value.filter((item) => candidateHasFormat(item, downloadFormat.value)).every((item) => downloadFileIds.value.has(item.file.id)),
-)
-
-function candidateHasFormat(item: DownloadCandidate, format: DownloadFormat): boolean {
-  if (format === 'exb') return Boolean(item.exbKey)
-  if (format === 'dwg') return Boolean(item.dwgKey)
-  if (format === 'pdf') return Boolean(item.pdfKey || item.canConvertToPdf)
-  return false
-}
-
-function openDownloadModal() {
-  downloadFormat.value = 'dwg'
-  downloadFileIds.value = new Set(downloadCandidates.value.filter((item) => candidateHasFormat(item, 'dwg')).map((item) => item.file.id))
-  isDownloadOpen.value = true
-}
-
-function onFormatChange(format: DownloadFormat) {
-  downloadFormat.value = format
-  // 切换格式时自动保留已选且当前格式可用的项，或者默认全选当前可用项
-  const available = downloadCandidates.value.filter((item) => candidateHasFormat(item, format)).map((item) => item.file.id)
-  const currentSelectedAvailable = available.filter((id) => downloadFileIds.value.has(id))
-  downloadFileIds.value = new Set(currentSelectedAvailable.length ? currentSelectedAvailable : available)
-}
-
-function toggleDownloadFile(id: string) {
-  const next = new Set(downloadFileIds.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  downloadFileIds.value = next
-}
-
-function toggleAllDownloadFiles() {
-  if (allDownloadSelected.value) {
-    downloadFileIds.value = new Set()
-  } else {
-    downloadFileIds.value = new Set(downloadCandidates.value.filter((item) => candidateHasFormat(item, downloadFormat.value)).map((item) => item.file.id))
-  }
-}
-
-async function executeDownload() {
-  const selected = downloadCandidates.value.filter((item) => downloadFileIds.value.has(item.file.id) && candidateHasFormat(item, downloadFormat.value))
-  if (!selected.length) {
-    uiStore.toast('请至少选择一个当前格式可用的文件', 'warn')
-    return
-  }
-  isDownloading.value = true
-  try {
-    const JSZip = (await import('jszip')).default
-    const zip = new JSZip()
-    const usedNames = new Set<string>()
-    let failed = 0
-    for (const [index, item] of selected.entries()) {
-      const baseName = item.file.name.replace(/\.[^/.]+$/, '')
-      let fileName = `${baseName}.${downloadFormat.value}`
-      let suffix = 1
-      while (usedNames.has(fileName.toLowerCase())) {
-        fileName = `${baseName}(${suffix++}).${downloadFormat.value}`
-      }
-      usedNames.add(fileName.toLowerCase())
-
-      try {
-        if (downloadFormat.value === 'pdf') {
-          downloadProgress.value = `正在生成 PDF ${index + 1}/${selected.length} · ${item.file.name}`
-          if (item.pdfKey) {
-            // 原本就是 PDF 格式的附件
-            const content = await drawingFileService.read(item.pdfKey)
-            zip.file(fileName, content)
-          } else {
-            // CAD 图纸（DWG / DXF）：读取二进制数据并使用 CAD 查看器渲染为高清 PDF
-            const cadSourceKey = item.dwgKey || item.file.storageKey || ''
-            if (!cadSourceKey) throw new Error('缺少 CAD 图纸源文件')
-            const cadBlob = await drawingFileService.read(cadSourceKey)
-            const cadBuffer = await cadBlob.arrayBuffer()
-            const pdfBlob = await convertCadToPdfBlob(cadBuffer, item.file.name)
-            zip.file(fileName, pdfBlob)
-          }
-        } else {
-          downloadProgress.value = `正在获取 ${index + 1}/${selected.length} · ${item.file.name}`
-          const key = downloadFormat.value === 'exb' ? item.exbKey : item.dwgKey
-          const content = await drawingFileService.read(key)
-          // 直接存放在 zip 根目录下，不套外层文件夹
-          zip.file(fileName, content)
-        }
-      } catch (itemError) {
-        console.error(`获取/转换文件失败：${item.file.name}`, itemError)
-        failed += 1
-      }
-    }
-    downloadProgress.value = '正在打包 zip...'
-    const uint8Array = await zip.generateAsync({ type: 'uint8array' })
-    const formatNameLabel = downloadFormat.value === 'exb' ? 'EXB原始格式' : downloadFormat.value === 'dwg' ? 'DWG格式' : 'PDF格式'
-    const defaultZipName = `${currentItem.value?.no || '图纸文件'}-${formatNameLabel}.zip`
-
-    // 1. 桌面客户端模式：调起系统原生“另存为”文件选择框
-    if (isTauri()) {
-      const savedPath = await saveDownloadFile(defaultZipName, uint8Array)
-      if (!savedPath) {
-        // 用户在文件选择框中点击了取消
-        return
-      }
-      isDownloadOpen.value = false
-      const okCount = selected.length - failed
-      uiStore.toast(`已成功保存至：${savedPath}（共 ${okCount} 个文件）`, 'ok')
-      return
-    }
-
-    // 2. 浏览器端模式：优先调起浏览器原生另存为文件选择器
-    const blob = new Blob([uint8Array.buffer as ArrayBuffer], { type: 'application/zip' })
-    const showSaveFilePicker = (window as unknown as { showSaveFilePicker?: (options: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker
-    if (typeof showSaveFilePicker === 'function') {
-      try {
-        const handle = await showSaveFilePicker({
-          suggestedName: defaultZipName,
-          types: [{
-            description: 'ZIP 压缩包 (*.zip)',
-            accept: { 'application/zip': ['.zip'] },
-          }],
-        })
-        const writable = await handle.createWritable()
-        await writable.write(blob)
-        await writable.close()
-        isDownloadOpen.value = false
-        const okCount = selected.length - failed
-        uiStore.toast(`已成功保存所选图纸（共 ${okCount} 个文件）`, 'ok')
-        return
-      } catch (err: unknown) {
-        if (err && typeof err === 'object' && 'name' in err && err.name === 'AbortError') {
-          // 用户取消保存
-          return
-        }
-      }
-    }
-
-    // 3. 浏览器降级：触发 a 标签下载
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = defaultZipName
-    anchor.click()
-    URL.revokeObjectURL(url)
-    isDownloadOpen.value = false
-    const okCount = selected.length - failed
-    uiStore.toast(`已打包下载 ${okCount} 个文件${failed ? `，${failed} 个获取失败已跳过` : ''}`, failed ? 'warn' : 'ok')
-  } catch (error) {
-    console.error('批量下载失败', error)
-    uiStore.toast('批量下载失败，请重试', 'warn')
-  } finally {
-    isDownloading.value = false
-    downloadProgress.value = ''
-  }
-}
+const {
+  isDownloadOpen,
+  downloadFormat,
+  downloadFileIds,
+  downloadCandidates,
+  allDownloadSelected,
+  candidateHasFormat,
+  isDownloading,
+  downloadProgress,
+  openDownloadModal,
+  onFormatChange,
+  toggleDownloadFile,
+  toggleAllDownloadFiles,
+  executeDownload,
+} = useDrawingBatchDownload({
+  allFiles,
+  currentItem,
+})
 
 // 批量识别校正弹窗状态
 const isReidentifyModalOpen = ref(false)
