@@ -16,6 +16,7 @@ import { useDrawingBatchDownload } from './composables/useDrawingBatchDownload'
 import { useDrawingBorrow } from './composables/useDrawingBorrow'
 import { useDrawingCreation } from './composables/useDrawingCreation'
 import { useDrawingEditSessions } from './composables/useDrawingEditSessions'
+import { useDrawingFileHistory } from './composables/useDrawingFileHistory'
 import { useDrawingFileReplacement } from './composables/useDrawingFileReplacement'
 import { useDrawingFileUpload } from './composables/useDrawingFileUpload'
 import { useDrawingPreviewContext } from './composables/useDrawingPreviewContext'
@@ -107,8 +108,6 @@ const {
   },
 })
 
-const HISTORY_READ_STORAGE_KEY = 'cad:read-file-history:v1'
-
 function openBrowse(file: DrawingFile) {
   if (!currentItem.value) return
   router.push({
@@ -180,35 +179,18 @@ onMounted(() => {
   void Promise.all([drawingStore.load(), reviewStore.load()])
 })
 
-function openHistory(file: DrawingFile) {
-  if (!currentItem.value) return
-  markHistoryAsRead(file.id)
-  router.push({
-    name: 'drawing-file-history',
-    params: { drawingId: currentItem.value.no },
-    query: { fileId: file.id },
-  })
-}
-
-function readHistoryIds(): Set<string> {
-  try {
-    const raw = window.localStorage.getItem(HISTORY_READ_STORAGE_KEY)
-    const ids = raw ? JSON.parse(raw) : []
-    return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [])
-  } catch {
-    return new Set()
-  }
-}
-
-function markHistoryAsRead(fileId: string) {
-  const ids = readHistoryIds()
-  ids.add(fileId)
-  window.localStorage.setItem(HISTORY_READ_STORAGE_KEY, JSON.stringify([...ids]))
-}
-
-function isHistoryUnread(file: DrawingFile): boolean {
-  return Boolean(file.history?.length) && !readHistoryIds().has(file.id)
-}
+const { isHistoryUnread, openHistory } = useDrawingFileHistory({
+  currentItem,
+  onOpenHistory: (fileId) => {
+    const item = currentItem.value
+    if (!item) return
+    router.push({
+      name: 'drawing-file-history',
+      params: { drawingId: item.no },
+      query: { fileId },
+    })
+  },
+})
 
 async function handleDeleteFile(file: DrawingFile) {
   if (!currentItem.value) return
