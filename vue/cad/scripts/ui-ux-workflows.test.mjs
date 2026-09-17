@@ -77,6 +77,8 @@ function mountFile(relative, f, props = {}) {
     '@/services/lifecycle.service': { lifecycleApi: async () => ({}) },
     '@/services/drawing-title-block.service': { extractCreationTitleBlocks: async () => [] },
     '@/services/change-request.service': { changeRequestService: { listByDrawing: async () => [] } },
+    // 审核批注列表：ReviewWorkspacePanel 只用到 files()，测试里不需要真实实现。
+    '@/services/review-annotation.service': { reviewAnnotationService: { files: async () => [] } },
     '@/utils/model-formats': { drawingMediaLabel: () => '2D' },
     '@/features/drawings/create/drawing-create-modes': createModes,
     '@/utils/drawing-number-parser': {},
