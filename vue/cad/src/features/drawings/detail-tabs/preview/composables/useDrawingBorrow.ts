@@ -149,6 +149,12 @@ export function useDrawingBorrow(options: UseDrawingBorrowOptions) {
     selectedSourcePartNo.value = ''
   }
 
+  /** 选中零件；全局穿透搜索模式下点击卡片还会顺带把该零件所属项目设为来源项目。 */
+  function selectPart(partNo: string, parentNo?: string) {
+    selectedSourcePartNo.value = partNo
+    if (parentNo) selectedSourceProjectNo.value = parentNo
+  }
+
   async function confirmBorrowPart() {
     if (isSubmittingBorrow.value) return
     if (!selectedSourcePartNo.value || !options.currentItem.value) return
@@ -215,6 +221,7 @@ export function useDrawingBorrow(options: UseDrawingBorrowOptions) {
     openBorrowModal,
     cancelBorrowModal,
     selectProject,
+    selectPart,
     confirmBorrowPart,
   }
 }

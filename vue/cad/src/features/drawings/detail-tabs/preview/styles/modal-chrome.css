@@ -2,14 +2,15 @@
  * 图纸预览特性内共享的 Modal chrome（弹窗外壳）。
  *
  * 归属：本文件由「用到它的组件自己引入」，不再由父页面用 :deep() 从外部兜子组件的内部结构。
- *   · 每个 Modal 组件：<style scoped src="../styles/modal-chrome.css"></style>
- *   · 过渡期仍留在父页面的弹窗（借用零件弹窗，P5b 抽出）：DrawingPreviewTab 同样以 scoped src 引入，
- *     这样 chrome 的维护源只有这一处，父页面里没有第二份副本。
- * 因为各组件是以 scoped 方式引入，编译后每条规则都带各自的 scope id（.modal-head[data-v-x]），
+ * 每个弹窗组件都以 <style scoped src="../styles/modal-chrome.css"></style> 引入：
+ *   ＊ 弹窗自己拥有自己的外壳（删掉父页面某条规则不会影响子组件，反之亦然）；
+ *   ＊ 外壳仍然只有一个维护源，不需要在 6 个弹窗里手抄六遍。
+ * 因为是以 scoped 方式引入，编译后每条规则都带各自的 scope id（.modal-head[data-v-x]），
  * 不会外泄成全应用生效的规则——全应用的 .modal/.modal-head 骨架仍由 styles/index.css 负责。
+ * 现在父页面 DrawingPreviewTab 不再引入本文件：它已经把弹窗全部交给组件，只保留页面外壳样式。
  *
  * 只放「稳定的结构规则」＋多个弹窗共用的展示类；某个弹窗专属的类名留在它自己的 <style scoped> 里。
- * .modal 本身的骨架（宽度 / 最大高度 / 圆角 / 投影 / 出场动画）属于全局设计系统，见 styles/index.css:1302，
+ * .modal 本身的骨架（宽度 / 最大高度 / 圆角 / 投影 / 出场动画）属于全局设计系统（styles/index.css），
  * 不在这里重复声明，避免局部 (0,2,0) 副本与全局规则产生优先级竞合。
  */
 

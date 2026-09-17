@@ -10,6 +10,7 @@ import { useUiStore } from '@/stores/ui.store'
 import type { DrawingSummaryView, PartView } from '@/modules/drawing'
 import type { ActiveEditSessionInfo } from '@/types/application.types'
 import type { DrawingFile } from '@/types/domain.types'
+import type { CadLauncherPort } from './useCaxaLauncher'
 
 export interface LocalActiveEditSession {
   sessionId: string
@@ -27,6 +28,8 @@ interface UseDrawingEditSessionsOptions {
   currentItem: ComputedRef<DrawingSummaryView | PartView | null>
   files: ComputedRef<readonly DrawingFile[]>
   canEditFile: (file: DrawingFile) => boolean
+  /** CAXA 启动兜底（未找到本机 CAXA 时的弹窗与重试）：由 useCaxaLauncher 提供，本 composable 不再持有。 */
+  launcher: CadLauncherPort
 }
 
 export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
@@ -56,10 +59,6 @@ export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
   const closingSessionIds = ref<Set<string>>(new Set())
   const closedSessions = ref<{ sessionId: string; fileName: string; savedAt: string }[]>([])
 
-  const caxaHelpVisible = ref(false)
-  const caxaHelpDetail = ref('')
-  const isSavingCaxaPath = ref(false)
-  let pendingCadRetry: (() => Promise<void>) | null = null
   let sessionPollTimer: number | null = null
   let heartbeatTimer: number | null = null
 
@@ -126,50 +125,6 @@ export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
       uiStore.toast(`${label}已复制`, 'ok')
     } catch {
       uiStore.toast(`无法复制${label}，请手动选择文本`, 'warn')
-    }
-  }
-
-  function handleCadOpenError(error: unknown, retry: () => Promise<void>) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (message.startsWith(CAXA_NOT_FOUND_PREFIX)) {
-      caxaHelpDetail.value = message.slice(CAXA_NOT_FOUND_PREFIX.length)
-      pendingCadRetry = retry
-      caxaHelpVisible.value = true
-      return
-    }
-    uiStore.toast(message, 'warn')
-  }
-
-  function closeCaxaHelpModal() {
-    caxaHelpVisible.value = false
-    pendingCadRetry = null
-  }
-
-  async function pickAndSaveCaxa() {
-    if (isSavingCaxaPath.value) return
-    isSavingCaxaPath.value = true
-    try {
-      const picked = await editingService.pickCaxa()
-      if (!picked) return
-      await editingService.saveCaxaPath(picked)
-      uiStore.toast(`已记住本机 CAXA 程序：${picked}`, 'ok')
-      caxaHelpVisible.value = false
-      const retry = pendingCadRetry
-      pendingCadRetry = null
-      await retry?.()
-    } catch (error) {
-      uiStore.toast(error instanceof Error ? error.message : '保存 CAXA 路径失败', 'warn')
-    } finally {
-      isSavingCaxaPath.value = false
-    }
-  }
-
-  async function openSystemDefaultApps() {
-    try {
-      await editingService.openDefaultApps()
-      uiStore.toast('已打开系统「默认应用」设置，请为图纸扩展名配置打开方式', 'ok')
-    } catch (error) {
-      uiStore.toast(error instanceof Error ? error.message : '打开系统设置失败', 'warn')
     }
   }
 
@@ -249,7 +204,7 @@ export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
       await editingService.openCad(result)
       uiStore.toast('已重新呼出本地 CAD', 'ok')
     } catch (error) {
-      handleCadOpenError(error, () => relaunchEditor(session))
+      options.launcher.handleCadOpenError(error, () => relaunchEditor(session))
     } finally {
       editingFileId.value = null
     }
@@ -287,7 +242,7 @@ export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
       await refreshActiveSessions()
       uiStore.toast('已重新认领编辑会话并呼出本地 CAD', 'ok')
     } catch (error) {
-      handleCadOpenError(error, () => relaunchEditorForFile(file))
+      options.launcher.handleCadOpenError(error, () => relaunchEditorForFile(file))
     } finally {
       editingFileId.value = null
     }
@@ -306,7 +261,7 @@ export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
       await editingService.openReadonly({ storageKey })
       uiStore.toast(`已用本机 CAD 打开「${file.name}」（只读副本，关闭后自动销毁）`, 'ok')
     } catch (error) {
-      handleCadOpenError(error, () => openReadonly(file))
+      options.launcher.handleCadOpenError(error, () => openReadonly(file))
     } finally {
       readonlyFileId.value = null
     }
@@ -378,7 +333,7 @@ export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
           // 保存失败时保留会话供用户重试。
         }
       }
-      handleCadOpenError(error, () => openEditor(file))
+      options.launcher.handleCadOpenError(error, () => openEditor(file))
     } finally {
       editingFileId.value = null
     }
@@ -439,15 +394,9 @@ export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
   return {
     editingFileId,
     readonlyFileId,
-    activeSessionList,
-    myActiveSessions,
     projectActiveSessions,
     closingSessionIds,
     closedSessions,
-    caxaHelpVisible,
-    caxaHelpDetail,
-    isSavingCaxaPath,
-    refreshActiveSessions,
     getFileLockInfo,
     isFileLockedByOther,
     isFileEditingByMe,
@@ -458,8 +407,5 @@ export function useDrawingEditSessions(options: UseDrawingEditSessionsOptions) {
     relaunchEditorForFile,
     openReadonly,
     openEditor,
-    closeCaxaHelpModal,
-    pickAndSaveCaxa,
-    openSystemDefaultApps,
   }
 }
