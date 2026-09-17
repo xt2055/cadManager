@@ -1,0 +1,134 @@
+import { ref, type ComputedRef } from 'vue'
+
+import { drawingFileService } from '@/app/container'
+import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
+import { useDrawingStore } from '@/stores/drawing.store'
+import { useUiStore } from '@/stores/ui.store'
+import type { DrawingFile } from '@/types/domain.types'
+import type { ProjectDrawingFile } from '../drawing-preview-files'
+import { filterReidentifiableFiles } from '../drawing-reidentify'
+
+/** 弹窗里的一行待校正记录。 */
+export interface ReidentifyItem {
+  file: DrawingFile
+  oldPartNo: string
+  newPartNo: string
+  checked: boolean
+}
+
+interface UseDrawingReidentifyOptions {
+  allFiles: ComputedRef<ProjectDrawingFile[]>
+  rootDrawingNo: ComputedRef<string>
+  canManageDrawingFiles: ComputedRef<boolean>
+}
+
+/**
+ * 批量重新识别图号：读文件 → CAD identify → 收集变化 → 弹窗勾选 → 逐项校正。
+ * 「哪些文件该参与」与「表格类文件判断」在 drawing-reidentify.ts 的纯函数里。
+ */
+export function useDrawingReidentify(options: UseDrawingReidentifyOptions) {
+  const drawingStore = useDrawingStore()
+  const drawingOperationsStore = useDrawingOperationsStore()
+  const uiStore = useUiStore()
+
+  const isReidentifyingAll = ref(false)
+  const isReidentifyModalOpen = ref(false)
+  const reidentifyList = ref<ReidentifyItem[]>([])
+  const reidentifyFailures = ref<string[]>([])
+  const isExecutingReidentify = ref(false)
+
+  async function reidentifyAllPartFiles() {
+    if (isReidentifyingAll.value) return
+    if (!options.canManageDrawingFiles.value) {
+      uiStore.toast('只有图纸负责人、创建人或管理员可以校正图号', 'warn')
+      return
+    }
+    const currentRootNo = options.rootDrawingNo.value
+    const cadFiles = filterReidentifiableFiles(options.allFiles.value)
+    if (!cadFiles.length) {
+      uiStore.toast('当前图纸没有可重新识别的零件 CAD 文件（已自动过滤明细表与表格）', 'warn')
+      return
+    }
+
+    isReidentifyingAll.value = true
+    try {
+      const results: ReidentifyItem[] = []
+      const failures: string[] = []
+      for (const file of cadFiles) {
+        try {
+          const content = await drawingFileService.read(file.storageKey as string)
+          const identity = await drawingFileService.identify(content, file.name)
+          const identifiedNo = identity.partNo.trim()
+
+          // 过滤：如果识别出的图号与总图号完全相同，说明是附属文件或总图明细，跳过
+          if (currentRootNo && identifiedNo === currentRootNo) {
+            continue
+          }
+
+          if (identifiedNo !== (file.partNo || '')) {
+            results.push({ file, oldPartNo: file.partNo || '未关联', newPartNo: identifiedNo, checked: true })
+          }
+        } catch (error) {
+          failures.push(`${file.name}：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+
+      if (!results.length) {
+        uiStore.toast(failures.length ? `没有发现图号变化，${failures.length} 个文件识别失败` : '所有零件图号均已与文件名一致', failures.length ? 'warn' : 'ok')
+        return
+      }
+
+      reidentifyList.value = results
+      reidentifyFailures.value = failures
+      isReidentifyModalOpen.value = true
+    } finally {
+      isReidentifyingAll.value = false
+    }
+  }
+
+  async function confirmBatchReidentify() {
+    const selected = reidentifyList.value.filter((item) => item.checked)
+    if (!selected.length) {
+      uiStore.toast('请至少勾选一个要校正的文件', 'warn')
+      return
+    }
+
+    isExecutingReidentify.value = true
+    let updatedCount = 0
+    const executeFailures: string[] = []
+    try {
+      for (const item of selected) {
+        try {
+          await drawingOperationsStore.reidentifyDrawingFile(item.file, item.newPartNo)
+          await drawingStore.refresh()
+          updatedCount += 1
+        } catch (error) {
+          executeFailures.push(`${item.file.name}：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      uiStore.toast(
+        `已完成 ${updatedCount}/${selected.length} 个文件的图号校正${executeFailures.length ? `，${executeFailures.length} 个失败` : ''}`,
+        executeFailures.length ? 'warn' : 'ok',
+      )
+      isReidentifyModalOpen.value = false
+    } finally {
+      isExecutingReidentify.value = false
+    }
+  }
+
+  function closeReidentifyModal() {
+    if (isExecutingReidentify.value) return
+    isReidentifyModalOpen.value = false
+  }
+
+  return {
+    isReidentifyingAll,
+    isReidentifyModalOpen,
+    reidentifyList,
+    reidentifyFailures,
+    isExecutingReidentify,
+    reidentifyAllPartFiles,
+    confirmBatchReidentify,
+    closeReidentifyModal,
+  }
+}

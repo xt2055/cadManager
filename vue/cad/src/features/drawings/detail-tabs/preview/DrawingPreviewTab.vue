@@ -19,6 +19,7 @@ import { useDrawingEditSessions } from './composables/useDrawingEditSessions'
 import { useDrawingFileReplacement } from './composables/useDrawingFileReplacement'
 import { useDrawingFileUpload } from './composables/useDrawingFileUpload'
 import { useDrawingPreviewContext } from './composables/useDrawingPreviewContext'
+import { useDrawingReidentify } from './composables/useDrawingReidentify'
 
 defineOptions({
   name: 'DrawingPreviewTab',
@@ -106,7 +107,6 @@ const {
   },
 })
 
-const isReidentifyingAll = ref(false)
 const HISTORY_READ_STORAGE_KEY = 'cad:read-file-history:v1'
 
 function openBrowse(file: DrawingFile) {
@@ -261,116 +261,21 @@ const {
 })
 
 // 批量识别校正弹窗状态
-const isReidentifyModalOpen = ref(false)
-const reidentifyList = ref<Array<{ file: DrawingFile; oldPartNo: string; newPartNo: string; checked: boolean }>>([])
-const reidentifyFailures = ref<string[]>([])
-const isExecutingReidentify = ref(false)
+const {
+  isReidentifyingAll,
+  isReidentifyModalOpen,
+  reidentifyList,
+  reidentifyFailures,
+  isExecutingReidentify,
+  reidentifyAllPartFiles,
+  confirmBatchReidentify,
+  closeReidentifyModal,
+} = useDrawingReidentify({
+  allFiles,
+  rootDrawingNo,
+  canManageDrawingFiles,
+})
 
-function isNonPartCadFile(fileName: string): boolean {
-  const lower = fileName.toLowerCase()
-  return (
-    lower.includes('明细表') ||
-    lower.includes('外购件') ||
-    lower.includes('标准件') ||
-    lower.includes('密封件') ||
-    lower.includes('汇总表') ||
-    lower.includes('目录') ||
-    lower.includes('bom')
-  )
-}
-
-async function reidentifyAllPartFiles() {
-  if (isReidentifyingAll.value) return
-  if (!canManageDrawingFiles.value) {
-    uiStore.toast('只有图纸负责人、创建人或管理员可以校正图号', 'warn')
-    return
-  }
-  const currentRootNo = rootDrawingNo.value
-  const cadFiles = allFiles.value.filter((file) => {
-    const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || ''
-    // 排除总图、非 CAD 以及明细表/BOM等表格文件
-    return (
-      file.role !== 'assembly' &&
-      Boolean(file.storageKey) &&
-      ['.exb', '.dwg', '.dxf'].includes(extension) &&
-      !isNonPartCadFile(file.name)
-    )
-  })
-  if (!cadFiles.length) {
-    uiStore.toast('当前图纸没有可重新识别的零件 CAD 文件（已自动过滤明细表与表格）', 'warn')
-    return
-  }
-
-  isReidentifyingAll.value = true
-  try {
-    const results: Array<{ file: DrawingFile; oldPartNo: string; newPartNo: string; checked: boolean }> = []
-    const failures: string[] = []
-    for (const file of cadFiles) {
-      try {
-        const content = await drawingFileService.read(file.storageKey as string)
-        const identity = await drawingFileService.identify(content, file.name)
-        const identifiedNo = identity.partNo.trim()
-
-        // 过滤：如果识别出的图号与总图号完全相同，说明是附属文件或总图明细，跳过
-        if (currentRootNo && identifiedNo === currentRootNo) {
-          continue
-        }
-
-        if (identifiedNo !== (file.partNo || '')) {
-          results.push({ file, oldPartNo: file.partNo || '未关联', newPartNo: identifiedNo, checked: true })
-        }
-      } catch (error) {
-        failures.push(`${file.name}：${error instanceof Error ? error.message : String(error)}`)
-      }
-    }
-
-    if (!results.length) {
-      uiStore.toast(failures.length ? `没有发现图号变化，${failures.length} 个文件识别失败` : '所有零件图号均已与文件名一致', failures.length ? 'warn' : 'ok')
-      return
-    }
-
-    reidentifyList.value = results
-    reidentifyFailures.value = failures
-    isReidentifyModalOpen.value = true
-  } finally {
-    isReidentifyingAll.value = false
-  }
-}
-
-async function confirmBatchReidentify() {
-  const selected = reidentifyList.value.filter((item) => item.checked)
-  if (!selected.length) {
-    uiStore.toast('请至少勾选一个要校正的文件', 'warn')
-    return
-  }
-
-  isExecutingReidentify.value = true
-  let updatedCount = 0
-  const executeFailures: string[] = []
-  try {
-    for (const item of selected) {
-      try {
-        await drawingOperationsStore.reidentifyDrawingFile(item.file, item.newPartNo)
-        await drawingStore.refresh()
-        updatedCount += 1
-      } catch (error) {
-        executeFailures.push(`${item.file.name}：${error instanceof Error ? error.message : String(error)}`)
-      }
-    }
-    uiStore.toast(
-      `已完成 ${updatedCount}/${selected.length} 个文件的图号校正${executeFailures.length ? `，${executeFailures.length} 个失败` : ''}`,
-      executeFailures.length ? 'warn' : 'ok',
-    )
-    isReidentifyModalOpen.value = false
-  } finally {
-    isExecutingReidentify.value = false
-  }
-}
-
-function closeReidentifyModal() {
-  if (isExecutingReidentify.value) return
-  isReidentifyModalOpen.value = false
-}
 </script>
 
 <template>
