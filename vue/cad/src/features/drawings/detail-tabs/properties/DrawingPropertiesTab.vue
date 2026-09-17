@@ -11,6 +11,8 @@ import { useDrawingStore } from '@/stores/drawing.store'
 import { useAttributeStore } from '@/stores/attribute.store'
 import { useAuditStore } from '@/stores/audit.store'
 import { useWorkspaceStore } from '@/stores/workspace.store'
+import { useAuthStore } from '@/stores/auth.store'
+import { isDrawingDecider } from '@/modules/drawing/drawing-authority'
 import { drawingCommandService } from '@/app/container'
 import type { StructurePartEditable } from '@/types/domain.types'
 import { formatReadableDateTime } from '@/utils/date-time'
@@ -22,6 +24,7 @@ const drawingStore = useDrawingStore()
 const attributeStore = useAttributeStore()
 const auditStore = useAuditStore()
 const workspaceStore = useWorkspaceStore()
+const authStore = useAuthStore()
 const router = useRouter()
 const uiStore = useUiStore()
 
@@ -33,6 +36,15 @@ const isPart = computed(() => Boolean(currentPart.value))
 const parentDrawing = computed(() => {
   const parentNo = currentPart.value?.parentNo
   return parentNo ? drawingStore.getDrawing(parentNo) ?? drawingStore.getPart(parentNo) : null
+})
+
+// 编辑属性属于编制动作：控制权判定统一走 isDrawingDecider（负责人，未指派时回落创建人）。
+// 零件的控制权跟随所属总图，避免只看零件自身的 createdBy 导致负责人被漏判。
+const canManageItem = computed(() => {
+  const target = currentDrawing.value ?? parentDrawing.value
+  const user = authStore.currentUser
+  if (!target || !user || target.status === 'archived') return false
+  return isDrawingDecider(target, user)
 })
 
 const editing = ref(false)
@@ -105,7 +117,7 @@ watch(currentId, () => {
 })
 
 function startEdit() {
-  if (!currentPart.value) return
+  if (!currentPart.value || !canManageItem.value) return
   loadEditForm(currentPart.value)
   editing.value = true
 }
@@ -151,7 +163,7 @@ async function saveEdit() {
 }
 
 function startAttributeEdit() {
-  if (!currentDrawing.value) return
+  if (!currentDrawing.value || !canManageItem.value) return
   attributeForm.value = { ...(currentDrawing.value.attributeValues ?? {}) }
   attributeEditing.value = true
 }
@@ -215,12 +227,12 @@ const feedIcons: Record<string, string> = {
           <span class="spec-count-tag">{{ attributeStore.sortedAttributes.length }} 项规格</span>
         </div>
 
-        <div v-if="!attributeEditing" class="property-actions">
+        <div v-if="!attributeEditing && canManageItem" class="property-actions">
           <button class="btn sm primary" type="button" @click="startAttributeEdit">
             <DemoIcon name="pencil" :size="13" />修改规格属性
           </button>
         </div>
-        <div v-else class="property-actions">
+        <div v-else-if="attributeEditing" class="property-actions">
           <button class="btn sm" type="button" :disabled="attributeSaving" @click="cancelAttributeEdit">取消</button>
           <button class="btn sm primary" type="button" :disabled="attributeSaving" @click="saveAttributes">
             <DemoIcon :name="attributeSaving ? 'loader' : 'check'" :size="13" />{{ attributeSaving ? '保存中…' : '保存修改' }}
@@ -247,10 +259,10 @@ const feedIcons: Record<string, string> = {
           <span>{{ isPart ? '零件图核心元数据属性' : '项目总图工程信息' }}</span>
         </div>
 
-        <button v-if="isPart && !editing" class="btn sm primary property-edit-button" type="button" @click="startEdit">
+        <button v-if="isPart && !editing && canManageItem" class="btn sm primary property-edit-button" type="button" @click="startEdit">
           <DemoIcon name="pencil" :size="13" />编辑零件属性
         </button>
-        <div v-else-if="isPart" class="property-actions">
+        <div v-else-if="isPart && editing" class="property-actions">
           <button class="btn sm" type="button" :disabled="saving" @click="cancelEdit">取消</button>
           <button class="btn sm primary" type="button" :disabled="saving" @click="saveEdit">
             <DemoIcon :name="saving ? 'loader' : 'check'" :size="13" />{{ saving ? '保存中…' : '保存修改' }}

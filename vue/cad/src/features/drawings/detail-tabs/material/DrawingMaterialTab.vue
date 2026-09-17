@@ -9,6 +9,8 @@ import { drawingFileService } from '@/app/container'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
+import { useAuthStore } from '@/stores/auth.store'
+import { isDrawingDecider } from '@/modules/drawing/drawing-authority'
 import type { BomItem, MaterialFile } from '@/types/domain.types'
 import type { MaterialFileView } from '@/modules/drawing'
 import { formatReadableDateTime } from '@/utils/date-time'
@@ -23,11 +25,32 @@ defineOptions({ name: 'DrawingMaterialTab' })
 const drawingOperationsStore = useDrawingOperationsStore()
 const route = useRoute()
 const drawingStore = useDrawingStore()
+const authStore = useAuthStore()
 const uiStore = useUiStore()
 
 const currentItem = computed(() => {
   const id = String(route.params.drawingId ?? '')
   return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
+})
+
+// 备料表与用料文件属于编制动作：控制权跟所属总图，避免只看零件自身 createdBy。
+type DrawingNode = NonNullable<typeof currentItem.value>
+const rootDrawing = computed<DrawingNode | null>(() => {
+  let node: DrawingNode | null = currentItem.value
+  const visited = new Set<string>()
+  while (node && 'parentNo' in node && node.parentNo && !visited.has(node.parentNo)) {
+    visited.add(node.parentNo)
+    const parent: DrawingNode | null = drawingStore.getDrawing(node.parentNo) ?? drawingStore.getPart(node.parentNo)
+    if (!parent) break
+    node = parent
+  }
+  return node
+})
+const canManage = computed(() => {
+  const target = rootDrawing.value
+  const user = authStore.currentUser
+  if (!target || !user || target.status === 'archived') return false
+  return isDrawingDecider(target, user)
 })
 const fileInput = ref<HTMLInputElement | null>(null)
 const replaceInput = ref<HTMLInputElement | null>(null)
@@ -72,10 +95,18 @@ function formatFileSize(bytes: number): string {
 }
 
 function triggerUpload() {
+  if (!canManage.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以修改备料表', 'warn')
+    return
+  }
   fileInput.value?.click()
 }
 
 function triggerReplace(file: MaterialFile) {
+  if (!canManage.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以替换备料表', 'warn')
+    return
+  }
   replacingFileId.value = file.id
   replaceInput.value?.click()
 }
@@ -99,6 +130,10 @@ async function onReplaceChange(event: Event) {
 }
 
 function startEdit() {
+  if (!canManage.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以编辑备料明细', 'warn')
+    return
+  }
   localBom.value = drawingStore.getBom(currentItem.value?.no ?? '').map((item) => ({ ...item }))
   isEditing.value = true
 }
@@ -486,10 +521,10 @@ onMounted(async () => {
       </div>
       <div class="mat-actions">
         <template v-if="!isEditing">
-          <button class="btn primary" type="button" @click="triggerUpload">
+          <button v-if="canManage" class="btn primary" type="button" @click="triggerUpload">
             <DemoIcon name="upload" :size="14" />上传备料表 (Excel/CSV)
           </button>
-          <button class="btn" type="button" @click="startEdit">
+          <button v-if="canManage" class="btn" type="button" @click="startEdit">
             <DemoIcon name="edit" :size="14" />编辑明细
           </button>
           <button class="btn" type="button" @click="exportExcel">
@@ -524,7 +559,7 @@ onMounted(async () => {
           <button v-if="selectedMaterialFiles.length" class="btn sm" type="button" :disabled="bulkLoading" @click="handleDownloadSelectedMaterialFiles">
             <DemoIcon name="download" :size="13" />下载所选（{{ selectedMaterialFiles.length }}）
           </button>
-          <button v-if="selectedMaterialFiles.length" class="btn sm danger" type="button" :disabled="bulkLoading" @click="handleDeleteSelectedMaterialFiles">
+          <button v-if="canManage && selectedMaterialFiles.length" class="btn sm danger" type="button" :disabled="bulkLoading" @click="handleDeleteSelectedMaterialFiles">
             <DemoIcon name="trash-2" :size="13" />删除所选（{{ selectedMaterialFiles.length }}）
           </button>
         </span>
@@ -545,13 +580,13 @@ onMounted(async () => {
             <button class="btn sm" type="button" @click="handleDownloadFile(f)">
              <DemoIcon name="download" :size="13" />下载
             </button>
-            <button class="btn sm" type="button" @click="triggerReplace(f)">
+            <button v-if="canManage" class="btn sm" type="button" @click="triggerReplace(f)">
              <DemoIcon name="refresh-cw" :size="13" />替换
             </button>
-            <button class="btn sm" type="button" @click="handleParseFile(f)">
+            <button v-if="canManage" class="btn sm" type="button" @click="handleParseFile(f)">
              <DemoIcon name="refresh-cw" :size="13" />解析明细
             </button>
-            <button class="btn sm danger" type="button" @click="handleDeleteFile(f)">
+            <button v-if="canManage" class="btn sm danger" type="button" @click="handleDeleteFile(f)">
             <DemoIcon name="trash-2" :size="13" />删除
           </button>
         </div>

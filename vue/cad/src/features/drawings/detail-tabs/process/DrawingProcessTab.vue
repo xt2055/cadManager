@@ -7,6 +7,8 @@ import DocxPreviewModal from './DocxPreviewModal.vue'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
+import { useAuthStore } from '@/stores/auth.store'
+import { isDrawingDecider } from '@/modules/drawing/drawing-authority'
 import type { CraftFile } from '@/types/domain.types'
 import type { CraftFileView } from '@/modules/drawing'
 import { saveFilesAsZip } from '@/utils/download-file'
@@ -18,11 +20,32 @@ defineOptions({ name: 'DrawingProcessTab' })
 const drawingOperationsStore = useDrawingOperationsStore()
 const route = useRoute()
 const drawingStore = useDrawingStore()
+const authStore = useAuthStore()
 const uiStore = useUiStore()
 
 const currentItem = computed(() => {
   const id = String(route.params.drawingId ?? '')
   return drawingStore.getDrawing(id) ?? drawingStore.getPart(id)
+})
+
+// 工艺文件属于编制动作：控制权跟所属总图，避免只看零件自身 createdBy。
+type DrawingNode = NonNullable<typeof currentItem.value>
+const rootDrawing = computed<DrawingNode | null>(() => {
+  let node: DrawingNode | null = currentItem.value
+  const visited = new Set<string>()
+  while (node && 'parentNo' in node && node.parentNo && !visited.has(node.parentNo)) {
+    visited.add(node.parentNo)
+    const parent: DrawingNode | null = drawingStore.getDrawing(node.parentNo) ?? drawingStore.getPart(node.parentNo)
+    if (!parent) break
+    node = parent
+  }
+  return node
+})
+const canManage = computed(() => {
+  const target = rootDrawing.value
+  const user = authStore.currentUser
+  if (!target || !user || target.status === 'archived') return false
+  return isDrawingDecider(target, user)
 })
 const crafts = computed<CraftFileView[]>(() => currentItem.value?.craftFiles ?? [])
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -52,10 +75,18 @@ function formatFileSize(bytes: number): string {
 }
 
 function triggerUpload() {
+  if (!canManage.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以修改工艺文件', 'warn')
+    return
+  }
   fileInput.value?.click()
 }
 
 function triggerReplace(file: CraftFileView) {
+  if (!canManage.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以替换工艺文件', 'warn')
+    return
+  }
   replacingFileId.value = file.id
   replaceInput.value?.click()
 }
@@ -260,10 +291,10 @@ onMounted(async () => {
         <button v-if="selectedCrafts.length" class="btn sm" type="button" :disabled="bulkLoading" @click="handleDownloadSelectedCrafts">
           <DemoIcon name="download" :size="14" />下载所选（{{ selectedCrafts.length }}）
         </button>
-        <button v-if="selectedCrafts.length" class="btn sm danger" type="button" :disabled="bulkLoading" @click="handleDeleteSelectedCrafts">
+        <button v-if="canManage && selectedCrafts.length" class="btn sm danger" type="button" :disabled="bulkLoading" @click="handleDeleteSelectedCrafts">
           <DemoIcon name="trash-2" :size="14" />删除所选（{{ selectedCrafts.length }}）
         </button>
-        <button class="btn primary" type="button" @click="triggerUpload">
+        <button v-if="canManage" class="btn primary" type="button" @click="triggerUpload">
           <DemoIcon name="upload" :size="14" />上传工艺文件
         </button>
       </div>
@@ -310,10 +341,10 @@ onMounted(async () => {
           <button class="btn sm" type="button" @click="handleDownloadCraft(file)">
             <DemoIcon name="download" :size="13" />下载
           </button>
-          <button class="btn sm" type="button" @click="triggerReplace(file)">
+            <button v-if="canManage" class="btn sm" type="button" @click="triggerReplace(file)">
             <DemoIcon name="refresh-cw" :size="13" />替换
           </button>
-          <button class="btn sm danger" type="button" @click="handleDeleteCraft(file)">
+            <button v-if="canManage" class="btn sm danger" type="button" @click="handleDeleteCraft(file)">
             <DemoIcon name="trash-2" :size="13" />删除
           </button>
         </div>

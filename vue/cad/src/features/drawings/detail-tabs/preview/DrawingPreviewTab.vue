@@ -180,6 +180,15 @@ const canCreateDrawing = computed(() => {
   return isDrawingDecider(project, user)
 })
 
+// 上传总图文件、上传零件图同样属于编制动作：只有控制权持有人（负责人，未指派时回落创建人）可操作。
+// 判定与后端 drawing_decision_owner 同构，避免非负责人向他人项目上传文件。
+const canManageDrawingFiles = computed(() => {
+  const project = drawingStore.getDrawing(rootDrawingNo.value)
+  const user = authStore.currentUser
+  if (!project || !user || project.status === 'archived') return false
+  return isDrawingDecider(project, user)
+})
+
 function openCreateDrawing() {
   newDrawingName.value = ''
   newDrawingNo.value = ''
@@ -441,6 +450,10 @@ const selectedPartDetail = computed(() => {
 })
 
 function openBorrowModal() {
+  if (!canManageDrawingFiles.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以借用零件', 'warn')
+    return
+  }
   if (archivedProject.value) {
     uiStore.confirm('图纸已存档，无法直接借用零件', '存档图纸处于只读保护。如需把其他项目的零件挂到当前图纸，请先发起变更工单，经管理员审批后再修改。', {
       confirmText: '去发起变更工单',
@@ -1251,10 +1264,18 @@ async function executeDownload() {
 }
 
 function triggerUploadAssembly() {
+  if (!canManageDrawingFiles.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以为该图纸上传文件', 'warn')
+    return
+  }
   assemblyInput.value?.click()
 }
 
 function triggerUploadPart() {
+  if (!canManageDrawingFiles.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以为该图纸上传文件', 'warn')
+    return
+  }
   if (!hasAssemblyFile.value && isAssembly.value) {
     uiStore.toast('请先上传总图文件，再进行零件图上传', 'warn')
     return
@@ -1415,6 +1436,10 @@ function isNonPartCadFile(fileName: string): boolean {
 
 async function reidentifyAllPartFiles() {
   if (isReidentifyingAll.value) return
+  if (!canManageDrawingFiles.value) {
+    uiStore.toast('只有图纸负责人、创建人或管理员可以校正图号', 'warn')
+    return
+  }
   const currentRootNo = rootDrawingNo.value
   const cadFiles = allFiles.value.filter((file) => {
     const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || ''
@@ -1548,13 +1573,14 @@ function closeReidentifyModal() {
         <button class="btn" type="button" title="选择文件与格式（EXB / DWG / PDF），打包为 zip 下载" @click="openDownloadModal">
           <DemoIcon name="download" :size="14" />下载
         </button>
-        <button class="btn" type="button" title="从其他工程项目借用零件图及关联文件" @click="openBorrowModal">
+        <button v-if="canManageDrawingFiles" class="btn" type="button" title="从其他工程项目借用零件图及关联文件" @click="openBorrowModal">
           <DemoIcon name="share-2" :size="14" />借用零件
         </button>
-        <button class="btn primary" type="button" @click="triggerUploadAssembly">
+        <button v-if="canManageDrawingFiles" class="btn primary" type="button" @click="triggerUploadAssembly">
           <DemoIcon name="upload" :size="14" />上传总图文件
         </button>
         <button
+          v-if="canManageDrawingFiles"
           class="btn"
           :class="{ primary: hasAssemblyFile }"
           type="button"
@@ -1628,7 +1654,7 @@ function closeReidentifyModal() {
         <DemoIcon name="file-text" :size="16" />
         已关联图纸文件清单 ({{ allFiles.length }})
         <span class="hint">支持 DWG / DXF / EXB / PDF / STEP</span>
-        <button class="btn sm" type="button" :disabled="isReidentifyingAll" title="按全部零件 CAD 文件名批量校正图号" @click="reidentifyAllPartFiles">
+        <button v-if="canManageDrawingFiles" class="btn sm" type="button" :disabled="isReidentifyingAll" title="按全部零件 CAD 文件名批量校正图号" @click="reidentifyAllPartFiles">
           <DemoIcon name="scan" :size="13" />
           {{ isReidentifyingAll ? '识别中...' : '全部重新识别图号' }}
         </button>

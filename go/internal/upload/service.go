@@ -1022,13 +1022,23 @@ func (service *Service) Commit(ctx context.Context, userID, sessionID string) (j
 	var attachmentID, version, versionID, createdPartID string
 	// 存档图纸的正式成果受变更工单保护，禁止通过上传直接新增/替换文件版本；
 	// 需要修改时由工单执行人通过受管控的 CAXA 编辑产生工作版本，验收后发布。
+	// 控制权判定与 3D 模型写入口一致走 drawing_decision_owner：负责人拥有原创建人权限，
+	// 管理员始终通过；非负责人不得对他人项目上传文件或随附件创建零件。
 	if item.DrawingNo != "" {
-		var archived bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM drawings WHERE drawing_no = $1 AND status = 'archived')`, item.DrawingNo).Scan(&archived); err != nil {
+		var archived, decides bool
+		if err := tx.QueryRow(ctx, `
+			SELECT d.status = 'archived', drawing_decision_owner(d.id, $2::uuid)
+			FROM drawings d WHERE d.drawing_no = $1`, item.DrawingNo, userID).Scan(&archived, &decides); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrNotFound
+			}
 			return nil, fmt.Errorf("查询图纸状态失败: %w", err)
 		}
 		if archived {
 			return nil, errors.New("图纸已存档，请通过变更工单修改，不能直接上传替换文件")
+		}
+		if !decides {
+			return nil, errors.New("只有图纸负责人、创建人或管理员可以为该图纸上传文件")
 		}
 	}
 	if item.AttachmentID == "" {
