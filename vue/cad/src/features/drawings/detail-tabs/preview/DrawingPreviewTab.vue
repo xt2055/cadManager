@@ -1678,7 +1678,6 @@ const {
 
 
 
-<style scoped>
 .drawing-preview-view {
   display: flex;
   flex-direction: column;
