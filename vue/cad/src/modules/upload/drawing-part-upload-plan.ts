@@ -64,8 +64,10 @@ export function planPartUpload(input: PartUploadPlanInput): PartUploadPlan {
   const parentExists = input.drawingNos.includes(parentNo) || input.parts.some((part) => part.no === parentNo)
   if (!parentExists) return { kind: 'other-file', reason: 'parent-missing', role: 'part', partNo: parsed.no, material }
 
-  const existing = input.parts.find((part) => part.no === parsed.no && part.parentNo === input.rootDrawingNo)
-  if (existing) return { kind: 'attach-to-existing-part', role: 'part', partNo: parsed.no, material }
+  const existingPart = parsed.no
+    ? input.parts.find((part) => part.no === parsed.no && part.parentNo === input.rootDrawingNo)
+    : undefined
+  if (existingPart) return { kind: 'attach-to-existing-part', role: 'part', partNo: parsed.no, material }
 
   return {
     kind: 'create-part',
