@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted, onBeforeUnmount, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 const HydraulicBackdrop = defineAsyncComponent(() => import('./components/common/HydraulicBackdrop.vue'))
+const LiquidGlassBackdrop = defineAsyncComponent(() => import('./components/common/LiquidGlassBackdrop.vue'))
 import './styles/themes/juli.css'
 import { useThemeStore } from './stores/theme.store'
 import { useAuthStore } from './stores/auth.store'
@@ -14,6 +15,7 @@ defineOptions({
 const themeStore = useThemeStore()
 const route = useRoute()
 const authStore = useAuthStore()
+const isAuthRoute = computed(() => route.path.startsWith('/login'))
 let stopAutomaticIndex: (() => void) | undefined
 watch(() => authStore.isAuthenticated ? authStore.currentUser?.id : null, (userId) => {
   stopAutomaticIndex?.()
@@ -27,7 +29,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <HydraulicBackdrop v-if="themeStore.skin === 'juli' && route.path !== '/login' && route.path !== '/login/'" />
+  <HydraulicBackdrop v-if="themeStore.skin === 'juli' && !isAuthRoute" />
+  <LiquidGlassBackdrop v-else-if="themeStore.skin === 'liquid' && !isAuthRoute" />
   <div class="theme-ui" :class="themeStore.skin === 'juli' ? `hydraulic-ui hydraulic-ui--${themeStore.hydraulicPhase}` : ''" :inert="themeStore.hydraulicPhase !== 'idle'">
     <RouterView />
   </div>

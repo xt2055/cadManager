@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import JuliLogo from '@/components/common/JuliLogo.vue'
 const HydraulicBackdrop = defineAsyncComponent(() => import('@/components/common/HydraulicBackdrop.vue'))
+const LiquidGlassBackdrop = defineAsyncComponent(() => import('@/components/common/LiquidGlassBackdrop.vue'))
 import { useThemeStore } from '@/stores/theme.store'
 import { windowService } from '@/services/tauri/window.service'
 import { useUserPreferenceStore } from '@/stores/user-preference.store'
@@ -635,6 +636,7 @@ onBeforeUnmount(() => {
     }"
   >
     <HydraulicBackdrop v-if="themeStore.skin === 'juli'" />
+    <LiquidGlassBackdrop v-else-if="themeStore.skin === 'liquid'" />
     <canvas v-if="isLaserAnimating" ref="laserCanvas" class="laser-login-canvas" aria-hidden="true"></canvas>
     <div v-if="isLaserAnimating" class="laser-login-status">{{ laserStatus }}</div>
     <!-- 顶部可拖拽条与最小化/关闭按钮 -->

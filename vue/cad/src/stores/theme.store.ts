@@ -7,8 +7,18 @@ export function getTimeBasedMode(): ThemeMode {
   return hour >= 6 && hour < 18 ? 'light' : 'dark'
 }
 
+const SKIN_STORAGE_KEY = 'cad:theme-skin'
+const LEGACY_JULI_KEY = 'cad:juli-theme'
+const SKINS: ThemeSkin[] = ['elegant', 'tech', 'classic', 'starry', 'bamboo', 'sage', 'juli', 'liquid']
+
+function readStoredSkin(): ThemeSkin {
+  const stored = localStorage.getItem(SKIN_STORAGE_KEY)
+  if (stored && (SKINS as string[]).includes(stored)) return stored as ThemeSkin
+  return localStorage.getItem(LEGACY_JULI_KEY) === 'true' ? 'juli' : 'classic'
+}
+
 export const useThemeStore = defineStore('theme', () => {
-  const skin = ref<ThemeSkin>(localStorage.getItem('cad:juli-theme') === 'true' ? 'juli' : 'classic')
+  const skin = ref<ThemeSkin>(readStoredSkin())
   const mode = ref<ThemeMode>(getTimeBasedMode())
   const hydraulicPhase = ref<'idle' | 'withdraw' | 'charge' | 'impact' | 'reveal'>('idle')
   const hydraulicStartedAt = ref(0)
@@ -24,7 +34,8 @@ export const useThemeStore = defineStore('theme', () => {
   function setSkin(value: ThemeSkin) {
     stopHydraulicTransition()
     skin.value = value
-    localStorage.setItem('cad:juli-theme', String(value === 'juli'))
+    localStorage.setItem(SKIN_STORAGE_KEY, value)
+    localStorage.setItem(LEGACY_JULI_KEY, String(value === 'juli'))
     applyTheme()
   }
 

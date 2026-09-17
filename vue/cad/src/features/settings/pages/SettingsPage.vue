@@ -180,6 +180,14 @@ const skins: SkinMeta[] = [
     tag: '苍翠沉静',
     colors: { bg: '#0c1410', panel: '#131d17', accent: '#2dd4bf', accent2: '#34d399' },
   },
+  {
+    key: 'liquid',
+    title: '液态玻璃',
+    subtitle: 'Liquid Glass',
+    desc: 'Apple 液态玻璃质感、真实折射与菲涅尔高光的通透界面',
+    tag: '玻璃质感',
+    colors: { bg: '#050b14', panel: '#16283a', accent: '#56e0f2', accent2: '#ffb066' },
+  },
 ]
 
 const modes: Array<{ key: ThemeMode; title: string; desc: string; icon: string }> = [

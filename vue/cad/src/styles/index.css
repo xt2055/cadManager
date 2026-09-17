@@ -11,6 +11,7 @@
 @import './themes/bamboo-dark.css';
 @import './themes/sage-light.css';
 @import './themes/sage-dark.css';
+@import './themes/liquid.css';
 
 :root {
   color-scheme: dark;
