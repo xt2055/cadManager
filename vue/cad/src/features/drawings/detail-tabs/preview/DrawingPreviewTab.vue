@@ -1,16 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
-import { drawingFileService, editingService } from '@/app/container'
-import type { ActiveEditSessionInfo, EditSessionOpenResult } from '@/types/application.types'
+import { drawingFileService } from '@/app/container'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useReviewStore } from '@/stores/review.store'
 import { useUiStore } from '@/stores/ui.store'
-import { CAXA_NOT_FOUND_PREFIX } from '@/modules/editing'
 import { isDrawingDecider } from '@/modules/drawing/drawing-authority'
 import type { DrawingFile } from '@/types/domain.types'
 import type { DrawingSummaryView, FileView, PartView, StructureNodeView } from '@/modules/drawing'
@@ -22,10 +20,9 @@ import { convertCadToPdfBlob } from '@/services/cad-pdf-export.service'
 import { changeRequestService } from '@/services/change-request.service'
 import { editableChangeTargets } from '../../components/detail/change-edit-access'
 import { canDeleteDrawingFiles } from './drawing-file-delete'
-import { getApiBaseUrl } from '@/services/api-base.service'
-import { editSessionStorageKey, sessionsForFiles, isExpiredEditSession } from '@/modules/editing/session-state'
 import { isModelFile } from '@/utils/model-formats'
 import { versionDisplayLabel } from '@/modules/versioning/versioning-service'
+import { useDrawingEditSessions } from './composables/useDrawingEditSessions'
 
 defineOptions({
   name: 'DrawingPreviewTab',
@@ -275,106 +272,7 @@ const projectSearchQuery = ref('')
 const partSearchQuery = ref('')
 const selectedSourceProjectNo = ref('')
 const selectedSourcePartNo = ref('')
-interface LocalActiveEditSession {
-  sessionId: string
-  fileId: string
-  fileName: string
-  drawingNo: string
-  storageKey?: string
-  uncPath: string
-  openUrl: string
-  startedAt: string
-  lastHeartbeatAt?: number
-}
-
-// 编辑会话状态持久化：切换页签/路由导致本组件卸载重建时，“编辑中”状态栏不能丢。
-const localSessionsStorageKey = computed(() => editSessionStorageKey(getApiBaseUrl(), authStore.currentUser?.id || ''))
-
-function loadLocalSessions(): LocalActiveEditSession[] {
-  try {
-    if (!authStore.currentUser?.id) return []
-    const raw = window.localStorage.getItem(localSessionsStorageKey.value)
-    const list = raw ? JSON.parse(raw) : []
-    if (!Array.isArray(list)) return []
-    return list.filter((item): item is LocalActiveEditSession => Boolean(item && item.sessionId && item.fileId))
-  } catch {
-    return []
-  }
-}
-
-function persistLocalSessions() {
-  try {
-    if (!authStore.currentUser?.id) return
-    window.localStorage.setItem(localSessionsStorageKey.value, JSON.stringify(myActiveSessions.value))
-  } catch {
-    // 本地存储不可用时忽略：仅影响状态栏恢复
-  }
-}
-
-let sessionPollTimer: number | null = null
-let heartbeatTimer: number | null = null
-const editingFileId = ref<string | null>(null)
-const readonlyFileId = ref<string | null>(null)
-const activeSessionList = ref<ActiveEditSessionInfo[]>([])
-const myActiveSessions = ref<LocalActiveEditSession[]>(loadLocalSessions())
-const projectActiveSessions = computed(() => sessionsForFiles(myActiveSessions.value, allFiles.value))
-watch(localSessionsStorageKey, () => {
-  myActiveSessions.value = loadLocalSessions()
-  activeSessionList.value = []
-  void refreshActiveSessions()
-})
-const closingSessionIds = ref<Set<string>>(new Set())
-const closedSessions = ref<{ sessionId: string; fileName: string; savedAt: string }[]>([])
 const borrowReasonInput = ref('')
-const caxaHelpVisible = ref(false)
-const caxaHelpDetail = ref('')
-const isSavingCaxaPath = ref(false)
-let pendingCadRetry: (() => Promise<void>) | null = null
-
-/** 统一处理本地 CAD 打开失败：找不到 CAXA 时弹出可操作的弹窗，其余仅提示。 */
-function handleCadOpenError(error: unknown, retry: () => Promise<void>) {
-  const message = error instanceof Error ? error.message : String(error)
-  if (message.startsWith(CAXA_NOT_FOUND_PREFIX)) {
-    caxaHelpDetail.value = message.slice(CAXA_NOT_FOUND_PREFIX.length)
-    pendingCadRetry = retry
-    caxaHelpVisible.value = true
-    return
-  }
-  uiStore.toast(message, 'warn')
-}
-
-function closeCaxaHelpModal() {
-  caxaHelpVisible.value = false
-  pendingCadRetry = null
-}
-
-async function pickAndSaveCaxa() {
-  if (isSavingCaxaPath.value) return
-  isSavingCaxaPath.value = true
-  try {
-    const picked = await editingService.pickCaxa()
-    if (!picked) return
-    await editingService.saveCaxaPath(picked)
-    uiStore.toast(`已记住本机 CAXA 程序：${picked}`, 'ok')
-    caxaHelpVisible.value = false
-    const retry = pendingCadRetry
-    pendingCadRetry = null
-    await retry?.()
-  } catch (error) {
-    uiStore.toast(error instanceof Error ? error.message : '保存 CAXA 路径失败', 'warn')
-  } finally {
-    isSavingCaxaPath.value = false
-  }
-}
-
-async function openSystemDefaultApps() {
-  try {
-    await editingService.openDefaultApps()
-    uiStore.toast('已打开系统「默认应用」设置，请为图纸扩展名配置打开方式', 'ok')
-  } catch (error) {
-    uiStore.toast(error instanceof Error ? error.message : '打开系统设置失败', 'warn')
-  }
-}
 
 // 获取除当前项目外的所有可选项目（支持名称、图号、厂商模糊过滤）
 const candidateProjects = computed(() => {
@@ -585,174 +483,6 @@ function openOnlineEditor(file: DrawingFile) {
   })
 }
 
-async function refreshActiveSessions() {
-  const drawingNo = currentItem.value?.no
-  const accountKey = localSessionsStorageKey.value
-  if (!drawingNo) {
-    activeSessionList.value = []
-    return
-  }
-  try {
-    const list = await editingService.listSessions(drawingNo)
-    if (currentItem.value?.no !== drawingNo || localSessionsStorageKey.value !== accountKey) return
-    activeSessionList.value = list
-
-    // 同步更新 myActiveSessions：只校验当前图纸的会话（服务端已关闭则剔除）；
-    // 其他图纸的会话不由本次轮询裁决，否则在项目间切换时会误删编辑状态。
-    const validIds = new Set(list.filter((s) => s.isCurrent).map((s) => s.id))
-    const filtered = myActiveSessions.value.filter((s) => s.drawingNo !== drawingNo || validIds.has(s.sessionId))
-    if (filtered.length !== myActiveSessions.value.length) {
-      myActiveSessions.value = filtered
-      persistLocalSessions()
-    }
-  } catch {
-    // 轮询静默失败
-  }
-}
-
-function getFileLockInfo(file: DrawingFile): ActiveEditSessionInfo | undefined {
-  // 服务端会话记录的是原始存储键（EXB 上传场景），优先用原始键匹配。
-  const originalKey = file.rawStorageKey || file.storageKey
-  if (!originalKey) return undefined
-  return activeSessionList.value.find((s) => s.attachmentId ? s.attachmentId === file.id : s.storageKey === originalKey || s.storageKey === file.storageKey)
-}
-
-function isFileLockedByOther(file: DrawingFile): boolean {
-  const lock = getFileLockInfo(file)
-  return Boolean(lock && !lock.isCurrent)
-}
-
-function isFileEditingByMe(file: DrawingFile): boolean {
-  if (myActiveSessions.value.some((s) => s.fileId === file.id)) return true
-  const lock = getFileLockInfo(file)
-  return Boolean(lock && lock.isCurrent)
-}
-
-async function copyEditLink(value: string, label: string) {
-  try {
-    await navigator.clipboard.writeText(value)
-    uiStore.toast(`${label}已复制`, 'ok')
-  } catch {
-    uiStore.toast(`无法复制${label}，请手动选择文本`, 'warn')
-  }
-}
-
-async function stopSession(session: ActiveEditSessionInfo | { sessionId: string }) {
-  const targetId = 'id' in session ? session.id : session.sessionId
-  if (!targetId || closingSessionIds.value.has(targetId)) return
-
-  const targetFileName = ('fileName' in session && session.fileName)
-    || myActiveSessions.value.find((s) => s.sessionId === targetId)?.fileName
-    || '当前文件'
-  uiStore.confirm(
-    '结束本地编辑',
-    `确定要结束「${targetFileName}」的编辑吗？\n结束后端会等待图纸落盘并自动生成新版本，通常需要数秒，请耐心等待。`,
-    {
-      confirmText: '结束编辑',
-      danger: true,
-      onConfirm: () => doStopSession(targetId, targetFileName),
-    },
-  )
-}
-
-async function doStopSession(targetId: string, targetFileName: string) {
-  if (closingSessionIds.value.has(targetId)) return
-  closingSessionIds.value.add(targetId)
-  try {
-    const result = await editingService.closeSession(targetId)
-    myActiveSessions.value = myActiveSessions.value.filter((s) => s.sessionId !== targetId)
-    persistLocalSessions()
-    await refreshActiveSessions()
-    // 后端已完成文件稳定等待与版本捕获；有改动时后端已生成新版本并切换当前指针，
-    // 从后端重新加载业务文档，保证文件列表/版本号以服务端数据库为准。
-    const successRecord = { sessionId: targetId, fileName: targetFileName, savedAt: new Date().toLocaleTimeString() }
-    closedSessions.value = [...closedSessions.value, successRecord]
-    window.setTimeout(() => {
-      closedSessions.value = closedSessions.value.filter((item) => item.sessionId !== targetId)
-    }, 5000)
-    if (result.changed && result.version) {
-      uiStore.toast(`编辑已结束，已保存新版本 ${result.version}`, 'ok')
-    } else {
-      uiStore.toast('编辑已结束，图纸无改动', 'ok')
-    }
-    await drawingStore.refresh()
-  } catch (error) {
-    // 捕获失败时后端保留编辑会话，用户可重试结束编辑，不会丢失工作内容。
-    if (isExpiredEditSession(error)) {
-      myActiveSessions.value = myActiveSessions.value.filter((item) => item.sessionId !== targetId)
-      persistLocalSessions()
-      await refreshActiveSessions()
-    }
-    uiStore.toast(error instanceof Error ? error.message : '释放编辑会话失败', 'warn')
-  } finally {
-    closingSessionIds.value.delete(targetId)
-  }
-}
-
-async function relaunchEditor(session: LocalActiveEditSession) {
-  // 打开票据是一次性的（消费即失效，5 分钟过期），不能复用首次呼出时的旧 URL；
-  // 重新呼出必须重新调 openSession 幂等认领，服务端会签发新票据且不覆盖工作文件。
-  const file = allFiles.value.find((item) => item.id === session.fileId)
-  const storageKey = session.storageKey || file?.rawStorageKey || file?.storageKey
-  if (!storageKey) {
-    uiStore.toast('本地会话缺少存储键，无法重新呼出；请改点文件行的「本地编辑」重新认领', 'warn')
-    return
-  }
-  if (editingFileId.value) return
-  editingFileId.value = session.fileId
-  try {
-    const result = await editingService.openSession(storageKey, session.fileId)
-    session.sessionId = result.sessionId
-    session.openUrl = result.openUrl
-    session.uncPath = result.uncPath
-    session.lastHeartbeatAt = Date.now()
-    persistLocalSessions()
-    await editingService.openCad(result)
-    uiStore.toast('已重新呼出本地 CAD', 'ok')
-  } catch (error) {
-    handleCadOpenError(error, () => relaunchEditor(session))
-  } finally {
-    editingFileId.value = null
-  }
-}
-
-async function relaunchEditorForFile(file: DrawingFile) {
-  const session = myActiveSessions.value.find((s) => s.fileId === file.id)
-  if (session) {
-    await relaunchEditor(session)
-    return
-  }
-  // 页面关闭后重开的恢复场景：服务端会话仍在占用中，重新认领（幂等）并呼出 CAD。
-  const storageKey = file.rawStorageKey || file.storageKey
-  if (!storageKey) return
-  if (editingFileId.value) return
-  editingFileId.value = file.id
-  try {
-    const result = await editingService.openSession(storageKey, file.id)
-    myActiveSessions.value = [
-      ...myActiveSessions.value.filter((s) => s.sessionId !== result.sessionId),
-      {
-        sessionId: result.sessionId,
-        fileId: file.id,
-        fileName: file.name,
-        drawingNo: currentItem.value?.no || '',
-        uncPath: result.uncPath,
-        openUrl: result.openUrl,
-        startedAt: new Date().toLocaleTimeString(),
-        lastHeartbeatAt: Date.now(),
-      },
-    ]
-    persistLocalSessions()
-    await editingService.openCad(result)
-    await refreshActiveSessions()
-    uiStore.toast('已重新认领编辑会话并呼出本地 CAD', 'ok')
-  } catch (error) {
-    handleCadOpenError(error, () => relaunchEditorForFile(file))
-  } finally {
-    editingFileId.value = null
-  }
-}
-
 // 总图清单包含零件文件：按所属项目读取工单，再按附件 ID 判定授权。
 const changeTargetIds = ref<Set<string>>(new Set())
 const archivedProject = computed(() => drawingStore.getDrawing(rootDrawingNo.value)?.status === 'archived' || currentItem.value?.status === 'archived')
@@ -817,152 +547,42 @@ const canDeleteFiles = computed(() => {
     decides: isDrawingDecider(drawingAuthorityTarget(item), current),
   })
 })
-// 心跳新鲜度：30s 一次心跳，90s 内有成功记录视为保护生效中。
-function isHeartbeatFresh(session: LocalActiveEditSession): boolean {
-  return Boolean(session.lastHeartbeatAt && Date.now() - session.lastHeartbeatAt < 90_000)
-}
 
-/** 本地只读查看：临时副本在本机打开，退出即销毁，不回传服务器。 */
-async function openReadonly(file: DrawingFile) {
-  // 服务端附件记录与编辑会话都以原始存储键为准；合并后的当前键可能指向转换产物。
-  const storageKey = file.rawStorageKey || file.storageKey
-  if (!storageKey) {
-    uiStore.toast('该文件尚未保存物理存储，无法本地查看', 'warn')
-    return
-  }
-  if (readonlyFileId.value) return
-  readonlyFileId.value = file.id
-  try {
-    await editingService.openReadonly({ storageKey })
-    uiStore.toast(`已用本机 CAD 打开「${file.name}」（只读副本，关闭后自动销毁）`, 'ok')
-  } catch (error) {
-    handleCadOpenError(error, () => openReadonly(file))
-  } finally {
-    readonlyFileId.value = null
-  }
-}
-
-async function openEditor(file: DrawingFile) {
-  if (!currentItem.value || !canEditFile(file)) return
-  if (editingFileId.value) return
-  if (!file.storageKey) {
-    uiStore.toast('该文件尚未保存物理存储，无法使用本地 CAD 打开', 'warn')
-    return
-  }
-
-  // 检查是否已被他人锁定
-  const lock = getFileLockInfo(file)
-  if (lock && !lock.isCurrent) {
-    uiStore.toast(`该图纸正由「${lock.userName || lock.userAccount}」编辑中，已被协同锁定`, 'warn')
-    return
-  }
-
-  // 如果自己已经打开了该文件，直接重新唤醒 CAD
-  const existingMySession = myActiveSessions.value.find((s) => s.fileId === file.id)
-  if (existingMySession) {
-    await relaunchEditor(existingMySession)
-    return
-  }
-  // 服务端仍保留自己的会话（例如关闭页面后重新打开）：重新认领并呼出 CAD，不新建占用。
-  const ownServerSession = activeSessionList.value.find((s) => s.isCurrent && (s.attachmentId ? s.attachmentId === file.id : s.storageKey === file.rawStorageKey || s.storageKey === file.storageKey))
-  if (ownServerSession) {
-    await relaunchEditorForFile(file)
-    return
-  }
-
-  editingFileId.value = file.id
-  let sessionId: string | null = null
-  try {
-    // 会话占用与票据都以原始存储键为准（EXB 上传场景，当前键可能指向转换产物）。
-    const session = await editingService.openSession(file.rawStorageKey || file.storageKey, file.id)
-    sessionId = session.sessionId
-    window.localStorage.setItem('cad_last_edit_url', session.openUrl)
-
-    const newLocalSession: LocalActiveEditSession = {
-      sessionId: session.sessionId,
-      fileId: file.id,
-      fileName: file.name,
-      drawingNo: currentItem.value?.no || '',
-      storageKey: file.rawStorageKey || file.storageKey,
-      uncPath: session.uncPath,
-      openUrl: session.openUrl,
-      startedAt: new Date().toLocaleTimeString(),
-      lastHeartbeatAt: Date.now(),
-    }
-
-    myActiveSessions.value = [
-      ...myActiveSessions.value.filter((s) => s.sessionId !== session.sessionId && s.fileId !== file.id),
-      newLocalSession,
-    ]
-    persistLocalSessions()
-
-    await editingService.openCad(session)
-    await refreshActiveSessions()
-    uiStore.toast(`已在本地 CAD 中打开「${file.name}」，支持多开协同编辑`, 'ok')
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    // 本机未找到 CAXA 时保留服务端会话：文件已唤醒到工作区，用户在弹窗中选择程序后可直接重试。
-    if (sessionId && !message.startsWith(CAXA_NOT_FOUND_PREFIX)) {
-      try {
-        await editingService.closeSession(sessionId)
-        myActiveSessions.value = myActiveSessions.value.filter((item) => item.sessionId !== sessionId)
-        persistLocalSessions()
-      } catch { /* 保存失败时保留会话供用户重试。 */ }
-    }
-    handleCadOpenError(error, () => openEditor(file))
-  } finally {
-    editingFileId.value = null
-  }
-}
-
-watch(
-  () => currentItem.value?.no,
-  () => {
-    activeSessionList.value = []
-    void refreshActiveSessions()
-  },
-  { immediate: true },
-)
+const {
+  editingFileId,
+  readonlyFileId,
+  projectActiveSessions,
+  closingSessionIds,
+  closedSessions,
+  caxaHelpVisible,
+  caxaHelpDetail,
+  isSavingCaxaPath,
+  getFileLockInfo,
+  isFileLockedByOther,
+  isFileEditingByMe,
+  isHeartbeatFresh,
+  copyEditLink,
+  stopSession,
+  relaunchEditor,
+  relaunchEditorForFile,
+  openReadonly,
+  openEditor,
+  closeCaxaHelpModal,
+  pickAndSaveCaxa,
+  openSystemDefaultApps,
+} = useDrawingEditSessions({
+  currentItem,
+  files: allFiles,
+  canEditFile,
+})
 
 onMounted(() => {
   window.addEventListener('beforeunload', guardDrawingCreationUnload)
   void Promise.all([drawingStore.load(), reviewStore.load()])
-  sessionPollTimer = window.setInterval(() => {
-    void refreshActiveSessions()
-  }, 10_000)
-
-  // 统一心跳轮询：对当前正在编辑的多开图纸批量保活，并记录最近成功时间用于状态展示
-  heartbeatTimer = window.setInterval(() => {
-    const accountKey = localSessionsStorageKey.value
-    for (const session of myActiveSessions.value) {
-      void editingService.heartbeat(session.sessionId)
-        .then(() => {
-          session.lastHeartbeatAt = Date.now()
-        })
-        .catch((error) => {
-          if (accountKey !== localSessionsStorageKey.value) return
-          if (isExpiredEditSession(error)) {
-            myActiveSessions.value = myActiveSessions.value.filter((item) => item.sessionId !== session.sessionId)
-            persistLocalSessions()
-            void refreshActiveSessions()
-            return
-          }
-          console.warn(`会话 ${session.sessionId} 心跳失败`, error)
-        })
-    }
-  }, 30_000)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', guardDrawingCreationUnload)
-  if (heartbeatTimer) {
-    window.clearInterval(heartbeatTimer)
-    heartbeatTimer = null
-  }
-  if (sessionPollTimer) {
-    window.clearInterval(sessionPollTimer)
-    sessionPollTimer = null
-  }
 })
 
 function openHistory(file: DrawingFile) {

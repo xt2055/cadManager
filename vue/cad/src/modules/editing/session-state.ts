@@ -3,7 +3,7 @@ export function editSessionStorageKey(apiBaseUrl: string, userId: string): strin
   return `cad:active-edit-sessions:v2:${encodeURIComponent(apiBaseUrl)}:${userId}`
 }
 
-export function sessionsForFiles<T extends { fileId: string }>(sessions: T[], files: { id: string }[]): T[] {
+export function sessionsForFiles<T extends { fileId: string }>(sessions: T[], files: readonly { id: string }[]): T[] {
   const ids = new Set(files.map((file) => file.id))
   return sessions.filter((session) => ids.has(session.fileId))
 }

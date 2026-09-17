@@ -42,21 +42,28 @@ replaceOnce(
   "import { versionDisplayLabel } from '@/modules/versioning/versioning-service'\nimport { useDrawingEditSessions } from './composables/useDrawingEditSessions'",
 )
 
-// 第一段：本地 session 缓存 + CAXA 错误处理。借用功能从紧随其后的 candidateProjects 开始，不能一起删。
+// 第一段：本地 session 缓存。边界卡在 borrowReasonInput 之前——那属于「借用图纸」弹窗状态，与本重构无关，误删会直接报 TS2304。
 replaceOnce(
-  'session state and CAXA block',
-  /interface LocalActiveEditSession \{[\s\S]*?async function openSystemDefaultApps\(\) \{[\s\S]*?\n\}\n\n(?=\/\/ 获取除当前项目外的所有可选项目)/,
+  'local session state block',
+  /interface LocalActiveEditSession \{[\s\S]*?(?=const borrowReasonInput = ref\(''\)\n)/,
   '',
 )
 
-// 第二段：服务端会话轮询 / 锁 / 停止 / 重新呼出。权限块从“总图清单包含零件文件”开始，保留。
+// 第二段：CAXA 打开失败处理与路径选择。
+replaceOnce(
+  'CAXA help block',
+  /const caxaHelpVisible = ref\(false\)[\s\S]*?async function openSystemDefaultApps\(\) \{[\s\S]*?\n\}\n(?=\n\/\/ 获取除当前项目外的所有可选项目)/,
+  '',
+)
+
+// 第三段：服务端会话轮询 / 锁 / 停止 / 重新呼出。权限块从“总图清单包含零件文件”开始，保留。
 replaceOnce(
   'session commands block',
   /async function refreshActiveSessions\(\) \{[\s\S]*?async function relaunchEditorForFile\(file: DrawingFile\) \{[\s\S]*?\n\}\n\n(?=\/\/ 总图清单包含零件文件)/,
   '',
 )
 
-// 第三段：心跳展示 + 本地只读/编辑 + 会话 watch。生命周期由 composable 接管。
+// 第四段：心跳展示 + 本地只读/编辑 + 会话 watch。生命周期由 composable 接管。
 replaceOnce(
   'editor open block',
   /\/\/ 心跳新鲜度：[\s\S]*?watch\(\n  \(\) => currentItem\.value\?\.no,[\s\S]*?\n\)\n\n(?=onMounted\(\(\) => \{)/,
@@ -80,7 +87,7 @@ replaceOnce(
 replaceOnce(
   'edit session controller',
   /(const canDeleteFiles = computed\(\(\) => \{[\s\S]*?\n\}\)\n)/,
-  `$1\nconst {\n  editingFileId,\n  readonlyFileId,\n  projectActiveSessions,\n  closingSessionIds,\n  closedSessions,\n  caxaHelpVisible,\n  caxaHelpDetail,\n  isSavingCaxaPath,\n  getFileLockInfo,\n  isFileLockedByOther,\n  isFileEditingByMe,\n  isHeartbeatFresh,\n  copyEditLink,\n  stopSession,\n  relaunchEditor,\n  relaunchEditorForFile,\n  openReadonly,\n  openEditor,\n  closeCaxaHelpModal,\n  pickAndSaveCaxa,\n  openSystemDefaultApps,\n} = useDrawingEditSessions({\n  currentItem,\n  files: allFiles,\n  canEditFile,\n})\n`,
+  `$1\nconst {\n  editingFileId,\n  readonlyFileId,\n  projectActiveSessions,\n  closingSessionIds,\n  closedSessions,\n  caxaHelpVisible,\n  caxaHelpDetail,\n  isSavingCaxaPath,\n  getFileLockInfo,\n  isFileLockedByOther,\n  isFileEditingByMe,\n  isHeartbeatFresh,\n  copyEditLink,\n  stopSession,\n  relaunchEditor,\n  relaunchEditorForFile,\n  openReadonly,\n  openEditor,\n  closeCaxaHelpModal,\n  pickAndSaveCaxa,\n  openSystemDefaultApps,\n} = useDrawingEditSessions({\n  currentItem,\n  files: allFiles,\n  canEditFile,\n})\n\n`,
 )
 
 writeFileSync(target, source, 'utf8')
