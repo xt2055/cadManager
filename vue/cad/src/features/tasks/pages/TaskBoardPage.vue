@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { RouteName } from '@/router/route-names'
 import { useTaskStore } from '@/stores/task.store'
+import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
 import { STATUS } from '@/constants/drawing-status'
 import type { DrawingTaskHistoryEntry, DrawingTaskRow } from '@/services/drawing-task.service'
@@ -26,6 +27,7 @@ defineOptions({ name: 'TaskBoardPage' })
 
 const router = useRouter()
 const taskStore = useTaskStore()
+const drawingStore = useDrawingStore()
 const uiStore = useUiStore()
 
 const filter = ref<TaskBoardFilter>(defaultTaskBoardFilter())
@@ -130,7 +132,8 @@ async function submitAssignment(payload: { assigneeId: string; note: string; due
       uiStore.toast(`已指派「${row.drawing.no}」的负责人`, 'ok')
     }
     activeRow.value = null
-    await taskStore.refreshAfterWrite(filter.value, page.value)
+    drawingStore.invalidate()
+    await Promise.allSettled([taskStore.refreshAfterWrite(filter.value, page.value), drawingStore.refresh()])
   } catch (error) {
     dialogError.value = error instanceof Error ? error.message : '指派未完成，请重试'
   } finally {
@@ -150,7 +153,8 @@ function cancelAssignment(row: DrawingTaskRow) {
     try {
       await taskStore.cancel(taskId, '计划员取消指派')
       uiStore.toast('已取消指派', 'ok')
-      await taskStore.refreshAfterWrite(filter.value, page.value)
+      drawingStore.invalidate()
+      await Promise.allSettled([taskStore.refreshAfterWrite(filter.value, page.value), drawingStore.refresh()])
     } catch (error) {
       uiStore.toast(error instanceof Error ? error.message : '取消指派失败', 'warn')
     }
