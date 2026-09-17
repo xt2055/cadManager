@@ -955,20 +955,6 @@ table.tbl {
   display: none;
 }
 
-.dh-meta {
-  display: flex;
-  gap: 7px 18px;
-  flex-wrap: wrap;
-  margin-top: 9px;
-  color: var(--text-2);
-  font-size: 12px;
-}
-
-.dh-meta b {
-  color: var(--text-1);
-  font-weight: 500;
-}
-
 .dh-acts {
   display: flex;
   flex: none;
