@@ -12,10 +12,8 @@ defineOptions({
 
 const props = withDefaults(
   defineProps<{
-    /** 当前需要确认的单条通知；为空时走启动汇总模式 */
+    /** 当前需要确认的单条通知；为空时不显示弹窗 */
     item?: NotificationItem | null
-    /** 本次会话启动时已存在的未读数量，仅用于汇总提醒 */
-    summaryUnread?: number | null
     /** 队列中仍需确认的通知条数（含当前这条） */
     remaining?: number
     /** 当前是本次批量中的第几条 */
@@ -25,13 +23,12 @@ const props = withDefaults(
     /** 确认请求进行中：按钮禁用，防止重复提交 */
     busy?: boolean
   }>(),
-  { item: null, summaryUnread: null, remaining: 1, position: 1, total: 1, busy: false },
+  { item: null, remaining: 1, position: 1, total: 1, busy: false },
 )
 
 const emit = defineEmits<{
   acknowledge: []
   'view-related': [item: NotificationItem]
-  'open-center': []
 }>()
 
 const alertIcons = {
@@ -41,13 +38,9 @@ const alertIcons = {
   announcement: 'bell',
 } as const
 
-const summaryMode = computed(() => !props.item && (props.summaryUnread ?? 0) > 0)
-const visible = computed(() => Boolean(props.item) || summaryMode.value)
-const heading = computed(() => (summaryMode.value ? `你有 ${props.summaryUnread} 条未读通知` : props.item?.title || '新通知'))
-const bodyText = computed(() => {
-  if (summaryMode.value) return `共 ${props.summaryUnread} 条未读通知，请打开通知中心查看处理。`
-  return props.item?.content?.trim() || '无详细说明。'
-})
+const visible = computed(() => Boolean(props.item))
+const heading = computed(() => props.item?.title || '新通知')
+const bodyText = computed(() => props.item?.content?.trim() || '无详细说明。')
 const icon = computed(() => (props.item ? alertIcons[props.item.kind] ?? 'bell' : 'bell'))
 const relatedLabel = computed(() => notificationActionLabel(props.item))
 const queueLabel = computed(() => {
@@ -64,7 +57,7 @@ async function focusAcknowledge() {
   acknowledgeButton.value?.focus()
 }
 
-watch([() => props.item?.id, () => props.summaryUnread, visible], focusAcknowledge, { immediate: true })
+watch([() => props.item?.id, visible], focusAcknowledge, { immediate: true })
 </script>
 
 <template>
@@ -79,7 +72,7 @@ watch([() => props.item?.id, () => props.summaryUnread, visible], focusAcknowled
       >
         <header class="modal-head">
           <h3 id="notification-alert-title">{{ heading }}</h3>
-          <span class="alert-kind">{{ summaryMode ? '未读汇总' : '新通知' }}</span>
+          <span class="alert-kind">新通知</span>
         </header>
 
         <div class="modal-body">
@@ -93,10 +86,7 @@ watch([() => props.item?.id, () => props.summaryUnread, visible], focusAcknowled
 
         <footer class="modal-foot">
           <p v-if="busy" class="alert-busy" role="status">正在标记已读…</p>
-          <template v-if="summaryMode">
-            <button class="btn" type="button" :disabled="busy" @click="emit('open-center')">去通知中心</button>
-          </template>
-          <template v-else-if="item?.drawingId">
+          <template v-if="item?.drawingId">
             <button class="btn" type="button" :disabled="busy" @click="emit('view-related', item)">{{ relatedLabel }}</button>
           </template>
           <button ref="acknowledgeButton" class="btn primary" type="button" :disabled="busy" @click="emit('acknowledge')">

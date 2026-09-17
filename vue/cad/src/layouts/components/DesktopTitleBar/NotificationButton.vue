@@ -31,7 +31,6 @@ let syncing = false
 let syncAgain = false
 const ALERT_QUEUE_LIMIT = 20
 const alerts = ref<NotificationItem[]>([])
-const summaryUnread = ref<number | null>(null)
 const alertHandled = ref(0)
 const alertBusy = ref(false)
 const tracker = createNotificationAlertTracker()
@@ -72,11 +71,9 @@ async function sync() {
     if (!sameSession(token)) return
     const batch = tracker.collect(result.items)
     if (batch.seeded) {
-      // 登录/刷新后的首次同步：未读的待办审核逐条补弹，避免“派单时人不在线就永远不提醒”。
-      const pendingTurns = result.items.filter(item => !item.readAt && opensReviewWorkspace(item))
-      enqueueAlerts(pendingTurns)
-      const rest = result.unread - pendingTurns.length
-      if (rest > 0) summaryUnread.value = rest
+      // 登录/刷新后的首次同步：所有未读通知逐条补弹，直接在弹窗里展示详情，
+      // 不再只给「有 N 条未读」的汇总数字、还要用户去通知中心才能看到内容。
+      enqueueAlerts(result.items.filter(item => !item.readAt))
     } else if (batch.alerts.length) {
       enqueueAlerts(batch.alerts)
     }
@@ -135,10 +132,9 @@ function dropAlert(id: string) {
   if (!alerts.value.length) alertHandled.value = 0
 }
 
-/** 弹窗必须确认：单条「知道了」= 标记该条已读并出队；汇总模式只关闭，不批量已读。 */
+/** 弹窗必须确认：「知道了」= 标记该条已读并出队，不批量已读其余通知。 */
 async function acknowledgeAlert() {
   if (alertBusy.value) return
-  if (summaryUnread.value !== null) { summaryUnread.value = null; return }
   const item = alerts.value[0]
   if (!item) return
   alertBusy.value = true
@@ -162,11 +158,6 @@ async function viewRelatedAlert(item: NotificationItem) {
   }
 }
 
-function openCenterFromAlert() {
-  summaryUnread.value = null
-  open.value = true
-}
-
 function startSocket() {
   disconnectSocket?.()
   if (!auth.token) return
@@ -184,7 +175,7 @@ watch(() => auth.token, () => {
   ++listVersion
   items.value = []; unread.value = 0; total.value = 0; error.value = ''
   tracker.reset()
-  alerts.value = []; summaryUnread.value = null; alertHandled.value = 0; alertBusy.value = false
+  alerts.value = []; alertHandled.value = 0; alertBusy.value = false
   open.value = false
   loading.value = false; updating.value = false
   startSocket()
@@ -245,14 +236,12 @@ onUnmounted(() => {
     </Transition>
       <NotificationAlertDialog
         :item="alerts[0] || null"
-        :summary-unread="summaryUnread"
         :remaining="alerts.length"
         :position="alertHandled + 1"
         :total="alertHandled + alerts.length"
         :busy="alertBusy"
         @acknowledge="acknowledgeAlert"
         @view-related="viewRelatedAlert"
-        @open-center="openCenterFromAlert"
       />
   </Teleport>
 </template>
