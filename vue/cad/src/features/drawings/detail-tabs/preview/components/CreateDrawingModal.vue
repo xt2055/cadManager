@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { NEW_DRAWING_NAME_PRESETS } from '../new-drawing-name-presets'
 
 defineOptions({ name: 'CreateDrawingModal' })
 
 /**
  * 新建图纸弹窗：表单态、创建进度与错误都只做展示。
- * 不引入任何 store / composable；名称、图号前缀与图号后几位经 update 事件回抛给持有状态的 useDrawingCreation，
- * 提交只发 submit 意图。项目号（前缀）由页面按当前图纸带出，用户只需填后几位；
- * 完整图号 drawingNo 由外部拼好，这里只做展示。Teleport 也收在组件内部——弹窗自己的外壳样式已经自包含，
+ * 不引入任何 store / composable（名称预设是静态常量表，不是状态）；名称、图号前缀与图号后几位
+ * 经 update 事件回抛给持有状态的 useDrawingCreation，提交只发 submit 意图。
+ * 项目号（前缀）由页面按当前图纸带出，用户只需填后几位；完整图号 drawingNo 由外部拼好，这里只做展示。
+ * Teleport 也收在组件内部——弹窗自己的外壳样式已经自包含，
  * 父页面不需要为了 scope id 而替它包一层 <Teleport>。
  */
 defineProps<{
@@ -37,6 +39,9 @@ const emit = defineEmits<{
 
 /** 三个输入框都只是把原始值回抛给持有状态的一方，取值的写法统一在这里。 */
 const inputValue = (event: Event) => (event.target as HTMLInputElement).value
+
+/** 常用零件名称：点一下填入名称框，省掉打字并避免错别字（名称会拼进文件名）。 */
+const namePresets = NEW_DRAWING_NAME_PRESETS
 </script>
 
 <template>
@@ -81,6 +86,19 @@ const inputValue = (event: Event) => (event.target as HTMLInputElement).value
             @input="emit('update:name', inputValue($event))"
           />
         </label>
+        <div class="new-drawing-presets">
+          <span class="presets-label">常用名称 · 点选填入</span>
+          <div class="preset-chips">
+            <button
+              v-for="preset in namePresets"
+              :key="preset"
+              class="preset-chip"
+              :class="{ active: preset === name.trim() }"
+              type="button"
+              @click="emit('update:name', preset)"
+            >{{ preset }}</button>
+          </div>
+        </div>
         <div class="new-drawing-no">
           <label>
             项目号<input
@@ -119,9 +137,25 @@ const inputValue = (event: Event) => (event.target as HTMLInputElement).value
 
 <style scoped>
 /* 只放本弹窗专属样式；弹窗外壳来自上面的共享 modal-chrome。 */
-.new-drawing-modal { width: min(460px, calc(100vw - 32px)); padding: 24px; display: grid; gap: 18px; }
+.new-drawing-modal {
+  width: min(460px, calc(100vw - 32px));
+  /* 名称预设让弹窗变高：内容超出全局 .modal 的 84vh 上限时由弹窗自己滚动。 */
+  max-height: 84vh;
+  padding: 24px;
+  display: grid;
+  gap: 18px;
+  overflow-y: auto;
+}
 .new-drawing-modal p { color: var(--text-2); line-height: 1.6; margin: 0; }
 .new-drawing-modal label { display: grid; gap: 8px; }
+
+/* 名称预设：固定名称点选填入，省掉打字与错别字。 */
+.new-drawing-modal .new-drawing-presets { display: grid; gap: 6px; }
+.presets-label { color: var(--text-3); font-size: 11px; }
+.preset-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 116px; overflow-y: auto; padding-right: 2px; }
+.preset-chip { flex: none; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); color: var(--text-2); font-size: 11px; }
+.preset-chip:hover { border-color: var(--accent); color: var(--accent); }
+.preset-chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
 /* 项目号 + 后几位两列并排：前缀已带出，视线只需落在右边一格。 */
 .new-drawing-no { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
