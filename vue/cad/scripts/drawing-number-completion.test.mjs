@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { composePartNo, defaultProjectNo, isBorrowedNumber, parentPartNoOf, validateManualPartNo } from '../src/utils/drawing-number-completion.ts'
+import { composeNewDrawingNo, composePartNo, defaultProjectNo, isBorrowedNumber, parentPartNoOf, validateManualPartNo } from '../src/utils/drawing-number-completion.ts'
 
 // 图号的主来源是图幅，手工补录只是兜底；这里锁定补录时的拼接规则：
 // 用户只填后几位，项目号自动带出来，借用件允许改成别的项目号。
@@ -34,6 +34,28 @@ test('composePartNo：单边缺失时退化为另一边的原值', () => {
   assert.equal(composePartNo('2000W.02.03d-', '-01-01c'), '2000W.02.03d-01-01c')
   assert.equal(composePartNo('2000W.02.03d', ''), '2000W.02.03d')
   assert.equal(composePartNo('', ''), '')
+})
+
+// 详情页「新建图纸」：项目号已经由当前图纸带出，用户只填后几位。
+test('composeNewDrawingNo：带出的项目号直接架在前面，只补后几位', () => {
+  assert.equal(composeNewDrawingNo('2000W.02.03d', '01'), '2000W.02.03d-01')
+  assert.equal(composeNewDrawingNo('2000W.02.03d', '-01'), '2000W.02.03d-01')
+  assert.equal(composeNewDrawingNo('2000W.02.03d', '01-01c'), '2000W.02.03d-01-01c')
+  // 项目号自己是完整编号（可能含层级与斜杠）时整段保留，新零件挂在它下面。
+  assert.equal(composeNewDrawingNo('JG9055e-50/32-00', '01'), 'JG9055e-50/32-00-01')
+  // 借用件：用户整段粘别族图号，原样接受。
+  assert.equal(composeNewDrawingNo('2000W.02.03d', 'JG9055e-5032-01'), 'JG9055e-5032-01')
+})
+
+test('composeNewDrawingNo：后几位没填时返回空串，不能把项目号当新图号', () => {
+  assert.equal(composeNewDrawingNo('2000W.02.03d', ''), '')
+  assert.equal(composeNewDrawingNo('2000W.02.03d', '   '), '')
+  assert.equal(composeNewDrawingNo('2000W.02.03d', '-'), '')
+  assert.equal(composeNewDrawingNo('2000W.02.03d', '2000W.02.03d'), '')
+  assert.equal(composeNewDrawingNo('2000W.02.03d-', '2000w.02.03d'), '')
+  // 没有项目号兜底时（图纸数据缺失），后几位本身就是完整图号。
+  assert.equal(composeNewDrawingNo('', '01'), '01')
+  assert.equal(composeNewDrawingNo('', ''), '')
 })
 
 test('defaultProjectNo：项目号默认取图号族根', () => {

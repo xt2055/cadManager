@@ -2,10 +2,11 @@
 import { directParentDrawingNo, drawingNumberRoot, isSameDrawingFamily } from './drawing-number-parser.ts'
 
 /**
- * 手工补录图号的纯逻辑（无 Vue 状态、无 IO）。
+ * 图号补齐的纯逻辑（无 Vue 状态、无 IO）。两个使用场景：
  *
- * 图号的主来源是**图幅（标题栏）**，文件名不可信（可能忘改）。只有在图幅里确实读不到图号时，
- * 才让用户手工补录：补录时用户只填后几位，项目号自动带出来；项目号允许修改 —— 借用件本来就跨项目号。
+ * 1. 手工补录：图号的主来源是**图幅（标题栏）**，文件名不可信（可能忘改）。只有在图幅里确实读不到图号时，
+ *    才让用户手工补录：补录时用户只填后几位，项目号自动带出来；项目号允许修改 —— 借用件本来就跨项目号。
+ * 2. 新建图纸（详情页新增零件图）：项目号已经由当前图纸带出，用户只填后几位。
  */
 
 function trimTailSeparators(value: string): string {
@@ -38,6 +39,19 @@ export function composePartNo(projectNo: string, suffix: string): string {
   const firstSegment = tail.split('-')[0]
   if (firstSegment && looksLikeRoot(firstSegment)) return tail
   return `${prefix}-${tail}`
+}
+
+/**
+ * 新建图纸的完整图号：项目号（前缀）已由页面按当前图纸带出，用户只填后几位。
+ * 后几位为空、只填了分隔符、或把项目号整段粘回来时一律返回空串 —— 此时图号还没写，
+ * 不能让「跟项目号一模一样」的值被当成合法的新图号提交。
+ */
+export function composeNewDrawingNo(projectNo: string, suffix: string): string {
+  const prefix = trimTailSeparators(projectNo)
+  const value = composePartNo(prefix, suffix)
+  if (!value) return ''
+  // 与项目号相同（含大小写变体）说明后几位还没填，不能拿项目号冒充新图号。
+  return value.toLowerCase() === prefix.toLowerCase() ? '' : value
 }
 
 /** 手工补录的项目号默认值：当前项目图号的族根。 */

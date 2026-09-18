@@ -5,8 +5,9 @@ defineOptions({ name: 'CreateDrawingModal' })
 
 /**
  * 新建图纸弹窗：表单态、创建进度与错误都只做展示。
- * 不引入任何 store / composable；名称/图号经 update 事件回抛给持有状态的 useDrawingCreation，
- * 提交只发 submit 意图。Teleport 也收在组件内部——弹窗自己的外壳样式已经自包含，
+ * 不引入任何 store / composable；名称、图号前缀与图号后几位经 update 事件回抛给持有状态的 useDrawingCreation，
+ * 提交只发 submit 意图。项目号（前缀）由页面按当前图纸带出，用户只需填后几位；
+ * 完整图号 drawingNo 由外部拼好，这里只做展示。Teleport 也收在组件内部——弹窗自己的外壳样式已经自包含，
  * 父页面不需要为了 scope id 而替它包一层 <Teleport>。
  */
 defineProps<{
@@ -16,7 +17,11 @@ defineProps<{
   progress: { step: number; title: string; detail: string }
   /** 表单：名称。 */
   name: string
-  /** 表单：图号。 */
+  /** 表单：图号前缀（当前图纸的项目号）。 */
+  drawingNoPrefix: string
+  /** 表单：图号后几位，用户真正要填的部分。 */
+  drawingNoSuffix: string
+  /** 已拼好的完整图号，只做展示。 */
   drawingNo: string
   /** 创建失败原因（为空表示无错误）。 */
   error: string
@@ -26,8 +31,12 @@ const emit = defineEmits<{
   close: []
   submit: []
   'update:name': [value: string]
-  'update:drawingNo': [value: string]
+  'update:drawingNoPrefix': [value: string]
+  'update:drawingNoSuffix': [value: string]
 }>()
+
+/** 三个输入框都只是把原始值回抛给持有状态的一方，取值的写法统一在这里。 */
+const inputValue = (event: Event) => (event.target as HTMLInputElement).value
 </script>
 
 <template>
@@ -64,23 +73,39 @@ const emit = defineEmits<{
         <div v-if="error" class="drawing-creation-error" role="alert"><DemoIcon name="alert-triangle" :size="16" />{{ error }}</div>
         <label>
           名称<input
-            class="input"
+            class="inp"
             required
             maxlength="200"
             autofocus
             :value="name"
-            @input="emit('update:name', ($event.target as HTMLInputElement).value)"
+            @input="emit('update:name', inputValue($event))"
           />
         </label>
-        <label>
-          图号<input
-            class="input"
-            required
-            maxlength="200"
-            :value="drawingNo"
-            @input="emit('update:drawingNo', ($event.target as HTMLInputElement).value)"
-          />
-        </label>
+        <div class="new-drawing-no">
+          <label>
+            项目号<input
+              class="inp mono"
+              maxlength="100"
+              :value="drawingNoPrefix"
+              @input="emit('update:drawingNoPrefix', inputValue($event))"
+            />
+          </label>
+          <label>
+            图号后几位<input
+              class="inp mono"
+              required
+              maxlength="100"
+              placeholder="例如 01"
+              :value="drawingNoSuffix"
+              @input="emit('update:drawingNoSuffix', inputValue($event))"
+            />
+          </label>
+        </div>
+        <div class="new-drawing-preview">
+          <span class="preview-label">完整图号</span>
+          <b class="mono">{{ drawingNo || '—' }}</b>
+        </div>
+        <p class="new-drawing-hint"><DemoIcon name="info" :size="14" />项目号已按当前图纸图号带出，只需填写图号后几位；借用件可直接粘贴完整图号。</p>
         <div class="modal-foot">
           <button class="btn" type="button" @click="emit('close')">取消</button>
           <button class="btn primary" type="submit">创建并本地编辑</button>
@@ -97,6 +122,16 @@ const emit = defineEmits<{
 .new-drawing-modal { width: min(460px, calc(100vw - 32px)); padding: 24px; display: grid; gap: 18px; }
 .new-drawing-modal p { color: var(--text-2); line-height: 1.6; margin: 0; }
 .new-drawing-modal label { display: grid; gap: 8px; }
+
+/* 项目号 + 后几位两列并排：前缀已带出，视线只需落在右边一格。 */
+.new-drawing-no { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.new-drawing-no label { min-width: 0; }
+.new-drawing-no .inp { font-size: 12.5px; }
+.new-drawing-modal .new-drawing-preview { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 11.5px; color: var(--text-3); }
+.new-drawing-preview .preview-label { flex: none; }
+.new-drawing-preview b { min-width: 0; overflow-wrap: anywhere; color: var(--accent); font-size: 12.5px; }
+.new-drawing-modal p.new-drawing-hint { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text-3); font-size: 11.5px; line-height: 1.5; }
+.new-drawing-hint :deep(svg) { flex: none; color: var(--accent); }
 .new-drawing-modal .modal-foot { display: flex; justify-content: flex-end; gap: 10px; }
 /* 旧结构里 z-index: 2900 被父页面同优先级的 .modal-backdrop（z-index: 1000，源码在后）整条覆盖，
    从未生效；为保持重构前后渲染一致，这里只保留真正生效的 cursor。 */

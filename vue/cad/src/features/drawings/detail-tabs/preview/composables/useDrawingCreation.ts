@@ -5,6 +5,7 @@ import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingFile } from '@/types/domain.types'
+import { composeNewDrawingNo } from '@/utils/drawing-number-completion'
 import { formatCurrentTime, formatFileSize } from '../drawing-preview-format'
 import type { ProjectDrawingFile } from '../drawing-preview-files'
 
@@ -26,6 +27,7 @@ interface UseDrawingCreationOptions {
 
 /**
  * 新建图纸（追加零件图）：空白 EXB 模板校验 → 建档 → 刷新 → 自动呼出本地 CAD。
+ * 图号由「项目号（按当前图纸带出）＋ 用户只填的后几位」拼成，见 composeNewDrawingNo。
  * 离开保护随本流程一起管理，页面不再自己注册 beforeunload。
  */
 export function useDrawingCreation(options: UseDrawingCreationOptions) {
@@ -39,7 +41,12 @@ export function useDrawingCreation(options: UseDrawingCreationOptions) {
   const drawingCreationStage = ref<DrawingCreationStage>('preparing')
   const drawingCreationError = ref('')
   const newDrawingName = ref('')
-  const newDrawingNo = ref('')
+  /** 图号前缀：打开弹窗时按当前图纸（项目号/总图图号）带出，用户通常不用改。 */
+  const newDrawingNoPrefix = ref('')
+  /** 图号后几位：用户真正要填的部分。 */
+  const newDrawingNoSuffix = ref('')
+  /** 拼好的完整图号：后几位没填完时为空串，不能拿项目号本身当新图号。 */
+  const newDrawingNo = computed(() => composeNewDrawingNo(newDrawingNoPrefix.value, newDrawingNoSuffix.value))
   const drawingCreationProgress = computed(() => ({
     preparing: { step: 1, title: '正在准备空白图纸', detail: '正在校验 CAXA 模板，请稍候…' },
     uploading: { step: 2, title: '正在创建图纸', detail: '正在创建草稿零件并保存空白模板…' },
@@ -49,7 +56,8 @@ export function useDrawingCreation(options: UseDrawingCreationOptions) {
 
   function openCreateDrawing() {
     newDrawingName.value = ''
-    newDrawingNo.value = ''
+    newDrawingNoPrefix.value = options.rootDrawingNo.value.trim()
+    newDrawingNoSuffix.value = ''
     drawingCreationError.value = ''
     drawingCreationStage.value = 'preparing'
     isCreatingDrawing.value = true
@@ -70,10 +78,11 @@ export function useDrawingCreation(options: UseDrawingCreationOptions) {
   async function createDrawing() {
     if (creatingDrawing.value || !options.canCreateDrawing.value) return
     const name = newDrawingName.value.trim()
-    const no = newDrawingNo.value.trim()
+    // 项目号已带出，用户只填后几位；没填后几位（或把项目号整段粘回来）时 newDrawingNo 为空串。
+    const no = newDrawingNo.value
     const parentNo = options.rootDrawingNo.value
     if (!name || !no) {
-      uiStore.toast('请填写名称和图号', 'warn')
+      uiStore.toast('请填写名称和图号后几位', 'warn')
       return
     }
     const normalize = (value: string) => value.replace(/[\s/\\]/g, '').toLowerCase()
@@ -137,6 +146,8 @@ export function useDrawingCreation(options: UseDrawingCreationOptions) {
     drawingCreationStage,
     drawingCreationError,
     newDrawingName,
+    newDrawingNoPrefix,
+    newDrawingNoSuffix,
     newDrawingNo,
     drawingCreationProgress,
     openCreateDrawing,

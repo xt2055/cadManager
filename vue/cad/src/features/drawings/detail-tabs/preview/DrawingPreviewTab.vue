@@ -215,6 +215,8 @@ const {
   creatingDrawing,
   drawingCreationError,
   newDrawingName,
+  newDrawingNoPrefix,
+  newDrawingNoSuffix,
   newDrawingNo,
   drawingCreationProgress,
   openCreateDrawing,
@@ -459,7 +461,9 @@ const {
     <CreateDrawingModal
       v-if="isCreatingDrawing"
       v-model:name="newDrawingName"
-      v-model:drawing-no="newDrawingNo"
+      v-model:drawing-no-prefix="newDrawingNoPrefix"
+      v-model:drawing-no-suffix="newDrawingNoSuffix"
+      :drawing-no="newDrawingNo"
       :creating="creatingDrawing"
       :progress="drawingCreationProgress"
       :error="drawingCreationError"
