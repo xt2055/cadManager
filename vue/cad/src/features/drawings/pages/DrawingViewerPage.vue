@@ -32,7 +32,9 @@ const fileId = computed(() => String(route.query.fileId ?? ''))
 const versionId = computed(() => String(route.query.versionId ?? ''))
 const versionKey = computed(() => String(route.query.versionKey ?? ''))
 const fromReview = computed(() => route.query.from === 'review')
-const annotationVisible = ref(fromReview.value)
+// 审核批注只属于审核流程：仅当从审核工作台进入本页时才启用，
+// 图纸预览 / 零件索引等普通浏览不再出现批注入口。
+const annotationVisible = computed(() => fromReview.value)
 const annotationWorkspace = shallowRef<AnnotationWorkspace | null>(null)
 const annotationView = shallowRef<AnnotationViewport | null>(null)
 const annotationError = ref('')
@@ -151,19 +153,23 @@ async function loadTargetFile() {
 
   if (file) {
     let pinnedVersion = versionId.value
-    try {
-      const cases = await reviewCaseService.list()
-      if (generation !== loadGeneration || disposed) return
-      const requestedCase = String(route.query.reviewCaseId ?? '')
-      const review = requestedCase ? cases.find(c => c.id === requestedCase) : cases.find(c => c.drawingNo === (currentDrawing.value?.no || drawingId.value))
-      if (review) {
-        const scope = await reviewAnnotationService.load(review.id, file.id)
+    // 只有审核工作台进来的查看才需要本轮审核的固定版本与批注；
+    // 图纸预览只负责看图，不替审核预加载批注，也不把预览钉到审核版本上。
+    if (fromReview.value) {
+      try {
+        const cases = await reviewCaseService.list()
         if (generation !== loadGeneration || disposed) return
-        if (versionKey.value || (versionId.value && versionId.value !== scope.versionId) || (!fromReview.value && !versionId.value && file.currentVersionId !== scope.versionId)) {
-          annotationError.value = '当前查看的版本与本轮审核版本不同，请从审核工作台打开对应文件。'
-        } else { annotationWorkspace.value = scope; pinnedVersion = scope.versionId }
-      } else annotationError.value = '此图纸尚未发起审核，发起审核后可在这里添加批注。'
-    } catch (e) { if (generation !== loadGeneration || disposed) return; annotationError.value = e instanceof Error ? e.message : '读取审核批注失败' }
+        const requestedCase = String(route.query.reviewCaseId ?? '')
+        const review = requestedCase ? cases.find(c => c.id === requestedCase) : cases.find(c => c.drawingNo === (currentDrawing.value?.no || drawingId.value))
+        if (review) {
+          const scope = await reviewAnnotationService.load(review.id, file.id)
+          if (generation !== loadGeneration || disposed) return
+          if (versionKey.value || (versionId.value && versionId.value !== scope.versionId)) {
+            annotationError.value = '当前查看的版本与本轮审核版本不同，请从审核工作台打开对应文件。'
+          } else { annotationWorkspace.value = scope; pinnedVersion = scope.versionId }
+        } else annotationError.value = '此图纸尚未发起审核，发起审核后可在这里添加批注。'
+      } catch (e) { if (generation !== loadGeneration || disposed) return; annotationError.value = e instanceof Error ? e.message : '读取审核批注失败' }
+    }
     const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
     const storageKeyValue = file.storageKey || ''
     if (isCad && (storageKeyValue || pinnedVersion)) {
@@ -333,7 +339,6 @@ watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId]
       </div>
 
       <div class="header-right">
-        <button class="toggle-btn" :class="{ active: annotationVisible }" type="button" :aria-pressed="annotationVisible" @click="annotationVisible = !annotationVisible; if (annotationVisible) layerPanelVisible = false">审核批注</button>
         <button class="toggle-btn" type="button" :disabled="!viewerReady" @click="extractDrawingInfo">提取图纸信息</button>
         <button class="toggle-btn" type="button" @click="router.push({ name: 'drawing-compare', params: { drawingId }, query: { fileId, versionId: versionId || undefined, versionKey: versionKey || undefined } })">图纸对比</button>
         <!-- 已废弃：Canvas/MLightCAD 切换入口保留，不再显示，当前固定使用 MLightCAD。 -->
@@ -392,7 +397,8 @@ watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId]
     <div class="viewer-body">
       <!-- 中间 CAD 矢量图画板 -->
       <main class="viewer-canvas-container">
-        <ReviewAnnotationBoard :workspace="annotationWorkspace" :viewport="annotationView" :enabled="annotationVisible" :error="annotationError" @reload="reloadAnnotations">
+        <!-- 审核批注工作区只在审核工作台的查看链路里出现，图纸预览不提供批注入口。 -->
+        <ReviewAnnotationBoard v-if="fromReview" :workspace="annotationWorkspace" :viewport="annotationView" :enabled="annotationVisible" :error="annotationError" @reload="reloadAnnotations">
         <!-- 已废弃：Canvas DXF 渲染组件保留，不再挂载。 -->
         <!--
         <CadVectorViewer
