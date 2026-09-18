@@ -291,7 +291,8 @@ async function handleDecision(action: 'pass' | 'rejected') {
         </div>
         <div class="hero-actions">
           <button v-if="reviewCase" class="btn primary" type="button" :disabled="annotationFilesLoading" @click="openAnnotations"><DemoIcon name="pencil" :size="14" />{{ annotationFilesLoading ? '正在读取…' : canSign ? '图纸批注' : '查看图纸批注' }}</button>
-          <button v-if="reviewCase" class="btn" type="button" @click="annotationHistoryOpen = !annotationHistoryOpen"><DemoIcon name="history" :size="14" />{{ annotationHistoryOpen ? '收起标注历史' : '标注历史' }}</button>
+          <!-- 标注历史是图纸级只读归档：没有审核案例的图纸也要能打开，看到「暂无审核记录」而不是找不到入口。 -->
+          <button class="btn" type="button" @click="annotationHistoryOpen = !annotationHistoryOpen"><DemoIcon name="history" :size="14" />{{ annotationHistoryOpen ? '收起标注历史' : '标注历史' }}</button>
           <button class="btn" type="button" @click="openDrawingFiles"><DemoIcon name="eye" :size="14" />查阅图纸</button>
           <button v-if="embedded" class="btn" type="button" @click="emit('toggle-overview')">
             <DemoIcon name="workflow" :size="14" />{{ showOverview ? '返回签署工作台' : '查看流程总览' }}
