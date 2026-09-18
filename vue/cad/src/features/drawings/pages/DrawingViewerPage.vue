@@ -16,6 +16,7 @@ import { readAccessToken } from '@/services/auth/access-token'
 import ReviewAnnotationBoard from '@/features/reviews/components/ReviewAnnotationBoard.vue'
 import type { AnnotationWorkspace, AnnotationViewport } from '@/features/reviews/annotation-model'
 import { reviewAnnotationService } from '@/services/review-annotation.service'
+import { historyReadOnlyWorkspace, reviewAnnotationScope, roundLabel, roundStatusLabel } from '@/features/reviews/annotation-history'
 import { reviewCaseService } from '@/services/review-case.service'
 
 defineOptions({
@@ -36,6 +37,10 @@ const fromReview = computed(() => route.query.from === 'review')
 // 审核批注只属于审核流程：仅当从审核工作台进入本页时才启用，
 // 图纸预览 / 零件索引等普通浏览不再出现批注入口。
 const annotationVisible = computed(() => fromReview.value)
+// 审核上下文必须显式携带案例：多轮审核的图纸上，缺案例时绝不回退到「最新案例」。
+const annotationScope = computed(() => reviewAnnotationScope(route.query as Record<string, unknown>))
+const annotationHistoryMode = computed(() => annotationScope.value.history)
+const annotationHistoryLabel = ref('')
 const annotationWorkspace = shallowRef<AnnotationWorkspace | null>(null)
 const annotationView = shallowRef<AnnotationViewport | null>(null)
 const annotationError = ref('')
@@ -48,8 +53,21 @@ function handleViewerReady() {
 async function reloadAnnotations() {
   const scope = annotationWorkspace.value
   if (!scope) { void loadTargetFile(); return }
-  try { annotationWorkspace.value = await reviewAnnotationService.load(scope.caseId, scope.attachmentId); annotationError.value = '' }
-  catch (e) { annotationError.value = e instanceof Error ? e.message : '读取批注失败' }
+  try {
+    const loaded = await reviewAnnotationService.load(scope.caseId, scope.attachmentId)
+    annotationWorkspace.value = historyReadOnlyWorkspace(loaded, annotationHistoryMode.value)
+    annotationError.value = ''
+  } catch (e) { annotationError.value = e instanceof Error ? e.message : '读取批注失败' }
+}
+
+// 历史回放的提示条：说清这是哪一轮、只读，以及当前轮次该从哪里进。
+async function loadHistoryLabel(caseId: string) {
+  annotationHistoryLabel.value = ''
+  try {
+    const rounds = await reviewAnnotationService.history({ caseId })
+    const round = rounds.find(item => item.caseId === caseId)
+    if (round) annotationHistoryLabel.value = `正在查看${roundLabel(round)}历史批注（只读 · ${roundStatusLabel(round.status)}）：当前轮次批注请从审核工作台打开。`
+  } catch { annotationHistoryLabel.value = '' }
 }
 
 const currentDrawing = computed(() => drawingStore.getDrawing(drawingId.value) ?? drawingStore.getPart(drawingId.value))
@@ -127,6 +145,7 @@ async function loadTargetFile() {
   annotationView.value = null
   annotationWorkspace.value = null
   annotationError.value = ''
+  annotationHistoryLabel.value = ''
   titleResult.value = null
   titleError.value = ''
   if (conversionTimer) clearTimeout(conversionTimer)
@@ -156,21 +175,31 @@ async function loadTargetFile() {
     let pinnedVersion = versionId.value
     // 只有审核工作台进来的查看才需要本轮审核的固定版本与批注；
     // 图纸预览只负责看图，不替审核预加载批注，也不把预览钉到审核版本上。
-    if (fromReview.value) {
-      try {
-        const cases = await reviewCaseService.list()
-        if (generation !== loadGeneration || disposed) return
-        const requestedCase = String(route.query.reviewCaseId ?? '')
-        const review = requestedCase ? cases.find(c => c.id === requestedCase) : cases.find(c => c.drawingNo === (currentDrawing.value?.no || drawingId.value))
-        if (review) {
-          const scope = await reviewAnnotationService.load(review.id, file.id)
-          if (generation !== loadGeneration || disposed) return
-          if (versionKey.value || (versionId.value && versionId.value !== scope.versionId)) {
-            annotationError.value = '当前查看的版本与本轮审核版本不同，请从审核工作台打开对应文件。'
-          } else { annotationWorkspace.value = scope; pinnedVersion = scope.versionId }
-        } else annotationError.value = '此图纸尚未发起审核，发起审核后可在这里添加批注。'
-      } catch (e) { if (generation !== loadGeneration || disposed) return; annotationError.value = e instanceof Error ? e.message : '读取审核批注失败' }
-    }
+      if (fromReview.value) {
+        const scope = annotationScope.value
+        if (scope.blocked) {
+          // 审核入口缺少案例：只提示，不加载任何批注，也不猜最新案例。
+          annotationError.value = '缺少审核上下文，请从审核工作台进入后再查看批注。'
+        } else {
+          try {
+            const cases = await reviewCaseService.list()
+            if (generation !== loadGeneration || disposed) return
+            const review = cases.find(c => c.id === scope.caseId)
+            if (review) {
+              const loaded = await reviewAnnotationService.load(review.id, file.id)
+              if (generation !== loadGeneration || disposed) return
+              if (versionKey.value || (versionId.value && versionId.value !== loaded.versionId)) {
+                annotationError.value = '当前查看的版本与本轮审核版本不同，请从审核工作台打开对应文件。'
+              } else {
+                // 历史入口一律只读：即使指向的正是当前活跃轮次，也不能在这里改批注。
+                annotationWorkspace.value = historyReadOnlyWorkspace(loaded, scope.history)
+                pinnedVersion = loaded.versionId
+                if (scope.history) void loadHistoryLabel(review.id)
+              }
+            } else annotationError.value = '未找到本次审核案例，请从审核工作台重新进入。'
+          } catch (e) { if (generation !== loadGeneration || disposed) return; annotationError.value = e instanceof Error ? e.message : '读取审核批注失败' }
+        }
+      }
     const isCad = file.name.toLowerCase().endsWith('.exb') || file.name.toLowerCase().endsWith('.dxf') || file.name.toLowerCase().endsWith('.dwg')
     const storageKeyValue = file.storageKey || ''
     if (isCad && (storageKeyValue || pinnedVersion)) {
@@ -315,7 +344,7 @@ onUnmounted(() => {
   revokeOriginalUrl()
 })
 
-watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId], () => {
+watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId, () => route.query.reviewHistory], () => {
   void loadTargetFile()
 })
 </script>
@@ -399,7 +428,8 @@ watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId]
       <!-- 中间 CAD 矢量图画板 -->
       <main class="viewer-canvas-container">
         <!-- 批注工作区只在审核链路启停；外壳必须始终存在，否则非审核入口打开时画布容器根本不会渲染。 -->
-        <ReviewAnnotationBoard :workspace="annotationWorkspace" :viewport="annotationView" :enabled="annotationVisible" :error="annotationError" @reload="reloadAnnotations">
+        <ReviewAnnotationBoard :workspace="annotationWorkspace" :viewport="annotationView" :enabled="annotationVisible" :read-only="annotationHistoryMode" :error="annotationError" @reload="reloadAnnotations">
+          <p v-if="annotationHistoryLabel" class="annotation-history-banner" role="status">{{ annotationHistoryLabel }}</p>
         <!-- 已废弃：Canvas DXF 渲染组件保留，不再挂载。 -->
         <!--
         <CadVectorViewer
@@ -763,5 +793,18 @@ watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId]
   color: var(--text-3);
   gap: 12px;
   font-size: 14px;
+}
+.annotation-history-banner {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  right: 12px;
+  z-index: 6;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #202936;
+  color: #fff;
+  font-size: 12px;
 }
 </style>

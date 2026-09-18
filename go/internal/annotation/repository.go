@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -11,6 +12,9 @@ import (
 )
 
 type Repository struct{ pool *pgxpool.Pool }
+
+// pgTimeLayout PostgreSQL to_char 模板（纯数字会被 to_char 当字面量，不能用 Go 参考时间格式）。
+const pgTimeLayout = "YYYY-MM-DD HH24:MI"
 
 func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: pool} }
 
@@ -188,4 +192,190 @@ func (r *Repository) DeleteTemplate(ctx context.Context, id, userID string, admi
 		return ErrForbidden
 	}
 	return nil
+}
+
+// History 返回一张图纸（或单个案例）的逐轮批注归档。
+//
+// 轮次是批注的隔离边界：新一轮审核不会继承上一轮的批注文档，因此历史必须显式按
+// review_case 把每一轮、每一位审核员的批注查出来，供「标注历史」回看与只读回放。
+// 文件列表与批注记录分开查询：一条 SQL 里同时 LEFT JOIN 两个一对多表会产生
+// 文件 × 记录的笛卡尔积，把批注挂到错误的文件上。
+func (r *Repository) History(ctx context.Context, drawingNo, caseID string) ([]HistoryRound, error) {
+	list := []HistoryRound{}
+	if caseID == "" && strings.TrimSpace(drawingNo) == "" {
+		return list, ErrNotFound
+	}
+	if caseID != "" && !ValidID(caseID) {
+		return list, ErrNotFound
+	}
+	drawingNo = strings.TrimSpace(drawingNo)
+	if len([]rune(drawingNo)) > 150 {
+		return list, ErrNotFound
+	}
+
+	// 统一解析成 drawing_id 再查询：图号是业务键，不是数据库 ID。
+	var drawingID, resolvedNo string
+	if caseID != "" {
+		err := r.pool.QueryRow(ctx, `SELECT c.drawing_id::text, d.drawing_no FROM review_cases c JOIN drawings d ON d.id = c.drawing_id WHERE c.id = $1::uuid`, caseID).
+			Scan(&drawingID, &resolvedNo)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return list, ErrNotFound
+		}
+		if err != nil {
+			return list, err
+		}
+		// 图号与案例必须对得上，否则拿 A 图的历史入口能打开 B 图的批注。
+		if drawingNo != "" && drawingNo != resolvedNo {
+			return list, ErrNotFound
+		}
+		drawingNo = resolvedNo
+	} else {
+		err := r.pool.QueryRow(ctx, `SELECT id::text FROM drawings WHERE drawing_no = $1`, drawingNo).Scan(&drawingID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return list, nil
+		}
+		if err != nil {
+			return list, err
+		}
+	}
+
+	rounds, err := r.historyRounds(ctx, drawingID, drawingNo, caseID)
+	if err != nil {
+		return list, err
+	}
+	if len(rounds) == 0 {
+		return list, nil
+	}
+	caseIDs := make([]string, 0, len(rounds))
+	for index := range rounds {
+		caseIDs = append(caseIDs, rounds[index].CaseID)
+	}
+	if err := r.fillHistoryFiles(ctx, caseIDs, rounds); err != nil {
+		return list, err
+	}
+	if err := r.fillHistoryRecords(ctx, caseIDs, rounds); err != nil {
+		return list, err
+	}
+	return rounds, nil
+}
+
+// historyRounds 先在本图纸的全部案例上算轮次号，再按 caseId 过滤：
+// 若先 WHERE 再算窗口函数，任何一轮都会被算成「第 1 轮」。
+func (r *Repository) historyRounds(ctx context.Context, drawingID, drawingNo, caseID string) ([]HistoryRound, error) {
+	rows, err := r.pool.Query(ctx, `
+		WITH ranked AS (
+			SELECT c.id, c.status, c.started_at, c.completed_at, c.change_submission_id, c.flow_id,
+			       c.initiator_id, c.flow_name_snapshot,
+			       row_number() OVER (ORDER BY c.started_at, c.id)::int AS round_no
+			FROM review_cases c
+			WHERE c.drawing_id = $1::uuid
+		)
+		SELECT r.id::text, r.round_no, r.status,
+		       COALESCE(NULLIF(r.flow_name_snapshot, ''), f.name, ''),
+		       COALESCE(iu.display_name, iu.account, ''),
+		       COALESCE(to_char(r.started_at, $2), ''), COALESCE(to_char(r.completed_at, $2), ''),
+		       COALESCE(r.change_submission_id::text, ''), COALESCE(cr.request_no, ''), COALESCE(s.round, 0)::int
+		FROM ranked r
+		LEFT JOIN review_flows f ON f.id = r.flow_id
+		LEFT JOIN users iu ON iu.id = r.initiator_id
+		LEFT JOIN change_request_submissions s ON s.id = r.change_submission_id
+		LEFT JOIN change_requests cr ON cr.id = s.request_id
+		WHERE ($3 = '' OR r.id = $3::uuid)
+		ORDER BY r.started_at DESC, r.id DESC`, drawingID, pgTimeLayout, caseID)
+	if err != nil {
+		return nil, fmt.Errorf("查询审核轮次失败: %w", err)
+	}
+	defer rows.Close()
+
+	list := make([]HistoryRound, 0)
+	for rows.Next() {
+		item := HistoryRound{DrawingNo: drawingNo, Files: []HistoryFile{}, Records: []HistoryRecord{}}
+		if err := rows.Scan(&item.CaseID, &item.Round, &item.Status, &item.Flow, &item.Initiator, &item.StartedAt,
+			&item.CompletedAt, &item.ChangeSubmissionID, &item.ChangeRequestNo, &item.SubmissionRound); err != nil {
+			return nil, fmt.Errorf("读取审核轮次失败: %w", err)
+		}
+		list = append(list, item)
+	}
+	return list, rows.Err()
+}
+
+// fillHistoryFiles 补齐每轮冻结的文件版本快照；与「有没有批注」无关，全新一轮也有文件。
+func (r *Repository) fillHistoryFiles(ctx context.Context, caseIDs []string, rounds []HistoryRound) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT f.review_case_id::text, f.attachment_id::text, f.version_id::text, a.logical_name, v.version
+		FROM review_annotation_files f
+		JOIN attachments a ON a.id = f.attachment_id
+		JOIN attachment_versions v ON v.id = f.version_id
+		WHERE f.review_case_id = ANY($1::uuid[])
+		ORDER BY a.logical_name`, caseIDs)
+	if err != nil {
+		return fmt.Errorf("查询审核轮次文件失败: %w", err)
+	}
+	defer rows.Close()
+
+	byCase := make(map[string]*HistoryRound, len(rounds))
+	for index := range rounds {
+		byCase[rounds[index].CaseID] = &rounds[index]
+	}
+	for rows.Next() {
+		var caseID string
+		var item HistoryFile
+		if err := rows.Scan(&caseID, &item.AttachmentID, &item.VersionID, &item.Name, &item.Version); err != nil {
+			return fmt.Errorf("读取审核轮次文件失败: %w", err)
+		}
+		if target, ok := byCase[caseID]; ok {
+			target.Files = append(target.Files, item)
+		}
+	}
+	return rows.Err()
+}
+
+// fillHistoryRecords 补齐每轮的批注记录；记录直接带上文件与版本，
+// 一轮多文件时才能说清「这条意见属于哪张图」。只取文字意见，不返回笔迹点。
+func (r *Repository) fillHistoryRecords(ctx context.Context, caseIDs []string, rounds []HistoryRound) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT d.review_case_id::text, d.attachment_id::text, f.version_id::text, a.logical_name, v.version,
+		       d.id::text, d.node_id::text, COALESCE(n.name, ''), COALESCE(n.signer_role, ''), COALESCE(n.status, ''),
+		       COALESCE(n.opinion, ''), d.author_id::text, COALESCE(u.display_name, u.account, '未知用户'),
+		       d.revision, COALESCE(to_char(d.updated_at, 'YYYY-MM-DD HH24:MI:SS'), ''),
+		       COALESCE(jsonb_array_length(d.content->'marks'), 0)::int,
+		       COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', m->>'kind', 'text', m->>'text'))
+		                 FROM jsonb_array_elements(d.content->'marks') m
+		                 WHERE COALESCE(m->>'text', '') <> ''), '[]'::jsonb)
+		FROM review_annotation_documents d
+		JOIN review_annotation_files f ON f.review_case_id = d.review_case_id AND f.attachment_id = d.attachment_id
+		JOIN attachments a ON a.id = d.attachment_id
+		LEFT JOIN attachment_versions v ON v.id = f.version_id
+		LEFT JOIN review_case_nodes n ON n.id = d.node_id
+		LEFT JOIN users u ON u.id = d.author_id
+		WHERE d.review_case_id = ANY($1::uuid[])
+		ORDER BY n.node_order, a.logical_name, u.display_name`, caseIDs)
+	if err != nil {
+		return fmt.Errorf("查询审核批注记录失败: %w", err)
+	}
+	defer rows.Close()
+
+	byCase := make(map[string]*HistoryRound, len(rounds))
+	for index := range rounds {
+		byCase[rounds[index].CaseID] = &rounds[index]
+	}
+	for rows.Next() {
+		var caseID string
+		var raw []byte
+		item := HistoryRecord{Texts: []HistoryText{}}
+		if err := rows.Scan(&caseID, &item.AttachmentID, &item.VersionID, &item.FileName, &item.FileVersion,
+			&item.DocumentID, &item.NodeID, &item.NodeName, &item.SignerRole, &item.NodeStatus, &item.NodeOpinion,
+			&item.AuthorID, &item.AuthorName, &item.Revision, &item.UpdatedAt, &item.MarkCount, &raw); err != nil {
+			return fmt.Errorf("读取审核批注记录失败: %w", err)
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &item.Texts); err != nil {
+				return fmt.Errorf("解析审核批注文字失败: %w", err)
+			}
+		}
+		if target, ok := byCase[caseID]; ok {
+			target.Records = append(target.Records, item)
+		}
+	}
+	return rows.Err()
 }

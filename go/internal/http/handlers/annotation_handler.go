@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"cadguanliq/internal/annotation"
 	"cadguanliq/internal/http/middleware"
@@ -133,5 +134,32 @@ func annotationError(w http.ResponseWriter, err error) {
 	default:
 		log.Printf("annotation: %v", err)
 		response.WriteError(w, 500, "批注服务暂不可用，请稍后重试")
+	}
+}
+
+// AnnotationHistory 返回逐轮批注归档：按图纸（或单个案例）列出每一轮每位审核员的批注，
+// 供「标注历史」回看与只读回放。轮次是批注的隔离边界，历史不看当前轮次。
+func AnnotationHistory(repo *annotation.Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.UserFromContext(r.Context()); !ok {
+			response.WriteError(w, 401, "请先登录")
+			return
+		}
+		if r.Method != http.MethodGet {
+			response.WriteError(w, 405, "method not allowed")
+			return
+		}
+		drawingNo := strings.TrimSpace(r.URL.Query().Get("drawingNo"))
+		caseID := strings.TrimSpace(r.URL.Query().Get("caseId"))
+		if drawingNo == "" && caseID == "" {
+			response.WriteError(w, 400, "请提供图号或审核案例")
+			return
+		}
+		items, err := repo.History(r.Context(), drawingNo, caseID)
+		if err != nil {
+			annotationError(w, err)
+			return
+		}
+		response.WriteData(w, 200, items)
 	}
 }

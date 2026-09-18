@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import ChangeReviewEvidence from './ChangeReviewEvidence.vue'
+import ReviewAnnotationHistory from './ReviewAnnotationHistory.vue'
 import { opinionDraftKey, readOpinionDraft, writeOpinionDraft } from '../review-opinion-draft'
 import {
   activeReviewNode,
@@ -38,6 +39,7 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const route = useRoute()
 const drawingStore = useDrawingStore()
 const reviewStore = useReviewStore()
 const authStore = useAuthStore()
@@ -50,6 +52,7 @@ const annotationFiles = ref<ReviewAnnotationFile[]>([])
 const annotationFilesOpen = ref(false)
 const annotationFilesLoading = ref(false)
 const annotationFilesError = ref('')
+const annotationHistoryOpen = ref(false)
 
 async function openAnnotations() {
   const review = reviewCase.value
@@ -66,6 +69,10 @@ async function openAnnotations() {
 function browseAnnotation(file: ReviewAnnotationFile) {
   void router.push({ name: RouteName.DrawingViewer, params: { drawingId: effectiveNo.value }, query: { fileId: file.attachmentId, versionId: file.versionId, reviewCaseId: reviewCase.value?.id, from: 'review' } })
 }
+
+// 「已办审核」等入口带 annotationCase 进来时，直接展开对应轮次的标注历史。
+const annotationFocusCase = computed(() => String(route.query.annotationCase ?? ''))
+watch(annotationFocusCase, (focus) => { if (focus) annotationHistoryOpen.value = true }, { immediate: true })
 
 const drawingNo = computed(() => props.drawingNo.trim())
 const drawing = computed(() => drawingStore.getDrawing(drawingNo.value) ?? drawingStore.getPart(drawingNo.value))
@@ -180,7 +187,8 @@ onMounted(() => {
 
 function openDrawingFiles() {
   if (!effectiveNo.value) return
-  void router.push({ name: RouteName.DrawingPreview, params: { drawingId: effectiveNo.value }, query: { from: 'review', reviewNo: effectiveNo.value } })
+  const reviewCaseId = reviewCase.value?.id
+  void router.push({ name: RouteName.DrawingPreview, params: { drawingId: effectiveNo.value }, query: { from: 'review', reviewNo: effectiveNo.value, ...(reviewCaseId ? { reviewCaseId } : {}) } })
 }
 
 function nodeStatus(node: (typeof nodes.value)[number]) {
@@ -283,6 +291,7 @@ async function handleDecision(action: 'pass' | 'rejected') {
         </div>
         <div class="hero-actions">
           <button v-if="reviewCase" class="btn primary" type="button" :disabled="annotationFilesLoading" @click="openAnnotations"><DemoIcon name="pencil" :size="14" />{{ annotationFilesLoading ? '正在读取…' : canSign ? '图纸批注' : '查看图纸批注' }}</button>
+          <button v-if="reviewCase" class="btn" type="button" @click="annotationHistoryOpen = !annotationHistoryOpen"><DemoIcon name="history" :size="14" />{{ annotationHistoryOpen ? '收起标注历史' : '标注历史' }}</button>
           <button class="btn" type="button" @click="openDrawingFiles"><DemoIcon name="eye" :size="14" />查阅图纸</button>
           <button v-if="embedded" class="btn" type="button" @click="emit('toggle-overview')">
             <DemoIcon name="workflow" :size="14" />{{ showOverview ? '返回签署工作台' : '查看流程总览' }}
@@ -297,6 +306,14 @@ async function handleDecision(action: 'pass' | 'rejected') {
         <p v-else-if="!annotationFiles.length">本轮审核暂无可批注的 CAD 文件。请先检查图纸文件是否已完成转换。</p>
         <button v-for="file in annotationFiles" v-else :key="file.attachmentId" class="annotation-file" @click="browseAnnotation(file)"><span>{{ file.name }}</span><small>{{ file.version }} · {{ file.markCount ? `${file.markCount} 条批注` : '暂无批注' }}</small><DemoIcon name="arrow-right" :size="14" /></button>
       </section>
+
+      <!-- 标注历史：逐轮留档每次审核的批注；新一轮审核不继承上一轮，需要时从这里回看。 -->
+      <ReviewAnnotationHistory
+        v-if="annotationHistoryOpen"
+        :drawing-no="reviewCase?.drawingNo || effectiveNo"
+        :current-case-id="reviewCase?.id"
+        :focus-case-id="annotationFocusCase"
+      />
 
       <div class="workspace-layout">
         <section class="card current-panel">

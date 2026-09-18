@@ -1,5 +1,6 @@
 import { lifecycleApi } from './lifecycle.service'
 import type { AnnotationContent, AnnotationDocument, AnnotationTemplate, AnnotationWorkspace } from '@/features/reviews/annotation-model'
+import type { AnnotationHistoryRound } from '@/features/reviews/annotation-history'
 
 export interface ReviewAnnotationFile { attachmentId: string; versionId: string; name: string; version: string; markCount: number }
 
@@ -14,6 +15,13 @@ export const reviewAnnotationService = {
     }) })
   },
   templates() { return lifecycleApi<AnnotationTemplate[]>('/review-annotation-templates') },
+  /** 逐轮批注归档：按图纸列全部轮次，或按案例精确到某一轮。 */
+  history(params: { drawingNo?: string; caseId?: string }) {
+    const query = new URLSearchParams()
+    if (params.drawingNo) query.set('drawingNo', params.drawingNo)
+    if (params.caseId) query.set('caseId', params.caseId)
+    return lifecycleApi<AnnotationHistoryRound[]>(`/review-annotation-history?${query.toString()}`)
+  },
   createTemplate(text: string, category: string, ownerId: string) {
     return lifecycleApi<AnnotationTemplate>('/review-annotation-templates', { method: 'POST', body: JSON.stringify({ text, category, ownerId }) })
   },

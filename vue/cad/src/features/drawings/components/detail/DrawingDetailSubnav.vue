@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { withReviewContext } from '@/features/drawings/review-context'
 import { drawingDetailTabs } from '../../constants/drawing-detail-tabs'
 import { useDrawingStore } from '@/stores/drawing.store'
 
@@ -23,6 +24,13 @@ const groups = computed(() => {
   }
   return [...buckets].map(([title, items]) => ({ title, items }))
 })
+
+// 审核上下文整体继承：只带 from/reviewNo 会丢掉 reviewCaseId，
+// 查看页在多轮审核的图纸上就无法确定该显示哪一轮的批注。
+const reviewQuery = computed(() => withReviewContext(
+  route.query.from === 'review' ? { reviewNo: String(route.query.reviewNo || drawingId.value) } : {},
+  route.query,
+))
 </script>
 
 <template>
@@ -33,7 +41,7 @@ const groups = computed(() => {
         v-for="tab in group.items"
         :key="tab.key"
         class="detail-nav-item"
-        :to="{ name: tab.routeName, params: { drawingId }, query: route.query.from === 'review' ? { from: 'review', reviewNo: route.query.reviewNo || drawingId } : {} }"
+        :to="{ name: tab.routeName, params: { drawingId }, query: reviewQuery }"
       >
         <DemoIcon :name="tab.icon" :size="16" />
         <span class="detail-nav-label">{{ tab.title }}</span>

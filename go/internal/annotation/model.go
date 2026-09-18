@@ -120,3 +120,57 @@ func Validate(content Content) error {
 	}
 	return nil
 }
+
+// HistoryText 历史归档里的文字意见（不含笔迹点，控制响应体积）。
+type HistoryText struct {
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+}
+
+// HistoryRecord 一次审核轮次中，某位审核员在某份文件上留下的批注归档。
+// 文件关联（AttachmentID/VersionID/FileName）必须随记录返回：一轮里可能有多张图纸，
+// 只给“谁批了几条”无法定位到具体文件。
+type HistoryRecord struct {
+	DocumentID   string        `json:"documentId"`
+	AttachmentID string        `json:"attachmentId"`
+	VersionID    string        `json:"versionId"`
+	FileName     string        `json:"fileName"`
+	FileVersion  string        `json:"fileVersion"`
+	NodeID       string        `json:"nodeId"`
+	NodeName     string        `json:"nodeName"`
+	SignerRole   string        `json:"signerRole,omitempty"`
+	NodeStatus   string        `json:"nodeStatus"`
+	NodeOpinion  string        `json:"nodeOpinion,omitempty"`
+	AuthorID     string        `json:"authorId"`
+	AuthorName   string        `json:"authorName"`
+	Revision     int64         `json:"revision"`
+	UpdatedAt    string        `json:"updatedAt"`
+	MarkCount    int           `json:"markCount"`
+	Texts        []HistoryText `json:"texts"`
+}
+
+// HistoryFile 本轮审核冻结的文件版本快照，与“有没有批注”无关。
+type HistoryFile struct {
+	AttachmentID string `json:"attachmentId"`
+	VersionID    string `json:"versionId"`
+	Name         string `json:"name"`
+	Version      string `json:"version"`
+}
+
+// HistoryRound 一次审核轮次（一个 review_case）的批注归档。
+// Round 是按图纸生命周期计算的审核轮次；SubmissionRound 是同一变更工单内的提交轮次。
+type HistoryRound struct {
+	CaseID             string          `json:"caseId"`
+	DrawingNo          string          `json:"drawingNo"`
+	Round              int             `json:"round"`
+	Status             string          `json:"status"`
+	Flow               string          `json:"flow"`
+	Initiator          string          `json:"initiator"`
+	StartedAt          string          `json:"startedAt"`
+	CompletedAt        string          `json:"completedAt,omitempty"`
+	ChangeSubmissionID string          `json:"changeSubmissionId,omitempty"`
+	ChangeRequestNo    string          `json:"changeRequestNo,omitempty"`
+	SubmissionRound    int             `json:"submissionRound,omitempty"`
+	Files              []HistoryFile   `json:"files"`
+	Records            []HistoryRecord `json:"records"`
+}

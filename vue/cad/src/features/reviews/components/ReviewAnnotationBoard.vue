@@ -8,7 +8,7 @@ import { reviewAnnotationService as api } from '@/services/review-annotation.ser
 import { useAuthStore } from '@/stores/auth.store'
 import { annotationDraftKey, readAnnotationDraft, writeAnnotationDraft, type AnnotationDraft } from '../annotation-draft'
 
-const props = defineProps<{ workspace: AnnotationWorkspace | null; viewport: AnnotationViewport | null; enabled: boolean; error: string }>()
+const props = defineProps<{ workspace: AnnotationWorkspace | null; viewport: AnnotationViewport | null; enabled: boolean; error: string; readOnly?: boolean }>()
 const emit = defineEmits<{ reload: [] }>()
 const auth = useAuthStore()
 const tool = ref<AnnotationTool>('browse')
@@ -48,7 +48,8 @@ const historyTick = ref(0)
 let queue: AnnotationSaveQueue | null = null
 let timer: ReturnType<typeof setTimeout> | undefined
 let spaceHeld = ref(false)
-const editable = computed(() => Boolean(props.workspace?.canEdit && props.viewport))
+// 历史入口一律只读：即使后端因为「看的正是当前活跃轮次」返回可编辑，也不能在这里改批注。
+const editable = computed(() => Boolean(!props.readOnly && props.workspace?.canEdit && props.viewport))
 const ownDocument = computed(() => props.workspace?.documents.find(d => d.nodeId === props.workspace?.nodeId && d.authorId === auth.currentUser?.id))
 const otherDocuments = computed(() => props.workspace?.documents.filter(d => d !== ownDocument.value) ?? [])
 const allMarks = computed(() => [...otherDocuments.value.flatMap(d => d.content.marks), ...marks.value])
@@ -234,7 +235,7 @@ onBeforeUnmount(() => { clearTimeout(timer); window.removeEventListener('keydown
       <button class="tool icon" type="button" :aria-label="visible ? '隐藏批注' : '显示批注'" :title="visible ? '隐藏批注' : '显示批注'" @click="visible = !visible"><component :is="visible ? Eye : EyeOff" :size="16" /></button>
       <button class="tool icon" type="button" title="保存 Ctrl+S" aria-label="保存批注" :disabled="!dirty || saving" @click="flush"><Save :size="16" /></button>
       <button class="tool icon" type="button" :title="panelOpen ? '收起侧栏，扩大画图区域' : '展开话术与意见'" :aria-label="panelOpen ? '收起批注侧栏' : '展开批注侧栏'" :aria-expanded="panelOpen" @click="panelOpen = !panelOpen"><component :is="panelOpen ? PanelRightClose : PanelRightOpen" :size="16" /></button>
-      <button class="save-state" type="button" role="status" :class="{ failed: saveError }" @click="saveError ? panelOpen = true : flush()">{{ status || (workspace?.canEdit ? '自动保存' : '只读批注') }}</button>
+      <button class="save-state" type="button" role="status" :class="{ failed: saveError }" @click="saveError ? panelOpen = true : flush()">{{ status || (readOnly ? '历史只读' : workspace?.canEdit ? '自动保存' : '只读批注') }}</button>
     </div>
     <div class="annotation-body">
       <div class="annotation-viewport">
@@ -244,7 +245,7 @@ onBeforeUnmount(() => { clearTimeout(timer); window.removeEventListener('keydown
       </div>
       <aside v-if="enabled && panelOpen" class="annotation-panel" aria-label="批注意见与快捷话术">
         <div class="panel-heading"><strong>审核批注</strong><button class="text-button" type="button" :disabled="saving" @click="reload">重新读取</button></div>
-        <p class="note">{{ workspace?.canEdit ? `当前节点：${workspace.nodeName}。批注独立保存，原图保持不变。` : '可查看已有意见；仅当前节点责任人可添加批注。' }}</p>
+        <p class="note">{{ readOnly ? '历史轮次批注，仅供回看，不可编辑。当前轮次批注请从审核工作台的「图纸批注」进入。' : workspace?.canEdit ? `当前节点：${workspace.nodeName}。批注独立保存，原图保持不变。` : '可查看已有意见；仅当前节点责任人可添加批注。' }}</p>
         <p v-if="error" class="error" role="alert">{{ error }}</p>
         <div v-if="saveError" class="error" role="alert">{{ saveError }}<div class="actions"><button class="btn sm" :disabled="saving" @click="flush">重试保存</button><button class="btn sm" @click="exportDraft">导出备份</button></div></div>
         <p v-if="localWarning" class="error" role="alert">{{ localWarning }}</p>

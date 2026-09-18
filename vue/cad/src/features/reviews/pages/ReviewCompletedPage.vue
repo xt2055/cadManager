@@ -1,11 +1,25 @@
 <script setup lang="ts">
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { RouteName } from '@/router/route-names'
 import { useReviewStore } from '@/stores/review.store'
+import type { ApiCompletedAction } from '@/services/review-case.service'
 
 defineOptions({ name: 'ReviewCompletedPage' })
 
 const reviewStore = useReviewStore()
+const router = useRouter()
+
+// 已办审核只记签署动作；批注按轮次留档，这里直接定位到该轮次的标注历史。
+function openAnnotations(item: ApiCompletedAction) {
+  if (!item.reviewCaseId) return
+  void router.push({
+    name: RouteName.ReviewWorkspace,
+    params: { drawingNo: item.no },
+    query: { annotationCase: item.reviewCaseId },
+  })
+}
 
 onMounted(() => { void reviewStore.load().catch(() => undefined) })
 </script>
@@ -29,6 +43,7 @@ onMounted(() => { void reviewStore.load().catch(() => undefined) })
               <th>审核结论</th>
               <th>签署审核意见</th>
               <th>审核时间</th>
+              <th>批注</th>
             </tr>
           </thead>
           <tbody>
@@ -44,6 +59,7 @@ onMounted(() => { void reviewStore.load().catch(() => undefined) })
               </td>
               <td class="opinion-cell">{{ item.opinion }}</td>
               <td class="num updated">{{ item.time }}</td>
+              <td><button class="text-button" type="button" title="查看该轮次标注历史" @click="openAnnotations(item)">查看批注</button></td>
             </tr>
           </tbody>
         </table>
@@ -88,5 +104,15 @@ onMounted(() => { void reviewStore.load().catch(() => undefined) })
   color: var(--text-2);
   font-size: 12px;
   max-width: 320px;
+}
+.text-button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px;
+  white-space: nowrap;
 }
 </style>

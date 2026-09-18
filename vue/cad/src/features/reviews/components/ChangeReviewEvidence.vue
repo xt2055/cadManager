@@ -60,10 +60,11 @@ function browse(versionId: string | undefined, attachmentId: string) {
 
 function compare(file: LifecycleSubmission['files'][number]) {
   if (!file.baseVersionId || !file.submittedVersionId) return
+  const reviewCaseId = submission.value?.review?.id
   void router.push({
     name: RouteName.DrawingCompare,
     params: { drawingId: props.drawingNo },
-    query: { fileId: file.attachmentId, submissionId: props.submissionId, from: 'review' },
+    query: { fileId: file.attachmentId, submissionId: props.submissionId, from: 'review', ...(reviewCaseId ? { reviewCaseId } : {}) },
   })
 }
 </script>
