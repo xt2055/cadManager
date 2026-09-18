@@ -8,7 +8,6 @@ function initialState() {
     mode: 'drawing' as 'drawing' | 'part',
     attributeFilters: {} as Record<string, string>,
     expandedProjects: new Set<string>(),
-    collapsedProjects: new Set<string>(),
     scrollTop: 0, tableScrollLeft: 0,
   }
 }

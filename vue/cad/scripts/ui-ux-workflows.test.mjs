@@ -179,17 +179,46 @@ test('项目已提交但刷新失败时保留保存成功状态，重试成功�
   app.unmount()
 })
 
-test('图纸库：返回保留条件和位置，清空涵盖所有筛选，命中零件仍可收起，换账号不串条件', async () => {
+test('图纸库：返回保留条件和位置，清空涵盖所有筛选，展开只由用户决定，换账号不串条件', async () => {
   const f = fixture(); f.drawings.parts = [{ no: 'PART1', parentNo: 'D1', fileNames: ['零件.dwg'], status: 'draft' }]
   let app = mountFile('features/drawings/pages/DrawingLibraryPage.vue', f); let s = app.state; await flush()
   s.query.value = 'PART1'; s.status.value = 'draft'; s.media.value = '2D'; s.attributeFilters.value = { material: 'steel' }; await flush()
-  assert.equal(s.isProjectExpanded('D1'), true); s.toggleExpanded('D1'); assert.equal(s.isProjectExpanded('D1'), false)
+  // 检索命中零件只标命中数、不替用户展开清单（早先会把命中卡全部展开，一搜关键词整屏炸开）。
+  assert.equal(s.matchedPartCount('D1'), 1); assert.equal(s.isProjectExpanded('D1'), false)
+  s.toggleExpanded('D1'); assert.equal(s.isProjectExpanded('D1'), true)
+  s.toggleExpanded('D1'); assert.equal(s.isProjectExpanded('D1'), false)
   s.pageElement.value = { scrollTop: 240 }; s.tableElement.value = { scrollLeft: 100 }; await f.leave(); app.unmount()
   app = mountFile('features/drawings/pages/DrawingLibraryPage.vue', f); s = app.state; await flush()
   assert.equal(s.query.value, 'PART1'); assert.equal(s.viewState.scrollTop, 240); assert.equal(s.viewState.tableScrollLeft, 100)
   assert.equal(s.availableStatuses.some(([key]) => key === 'disabled'), false)
   s.clearFilters(); assert.equal(s.query.value, ''); assert.equal(s.status.value, ''); assert.equal(s.media.value, ''); assert.equal(Object.keys(s.attributeFilters.value).length, 0)
   s.query.value = '原账号'; app.unmount(); assert.equal(f.library.forUser('another-user').query, '')
+})
+
+// 展开是每张卡自己的事：点一张只开一张；检索命中零件不再把命中的卡全部展开（那才会「全部卡牌展开」）。
+test('图纸库：展开零件只影响点开的那张卡，检索命中不自动展开', async () => {
+  const f = fixture()
+  f.drawings.drawings = [f.drawing, { ...f.drawing, id: 'd2', no: 'D2', name: '第二张图纸', project: 'P2' }]
+  f.drawings.parts = [
+    { no: 'D1-P1', parentNo: 'D1', fileNames: ['D1-P1(零件).dwg'], status: 'draft' },
+    { no: 'D2-P1', parentNo: 'D2', fileNames: ['D2-P1(零件).dwg'], status: 'draft' },
+  ]
+  const app = mountFile('features/drawings/pages/DrawingLibraryPage.vue', f); const s = app.state; await flush()
+  s.query.value = 'D1-P1'; await flush()
+  assert.equal(s.matchedPartCount('D1'), 1); assert.equal(s.matchedPartCount('D2'), 0)
+  assert.equal(s.isProjectExpanded('D1'), false); assert.equal(s.isProjectExpanded('D2'), false)
+  s.query.value = 'P1'; await flush()
+  assert.equal(s.matchedPartCount('D1'), 1); assert.equal(s.matchedPartCount('D2'), 1)
+  assert.equal(s.isProjectExpanded('D1'), false, '命中零件的卡不应被自动展开')
+  assert.equal(s.isProjectExpanded('D2'), false, '命中零件的卡不应被自动展开')
+  s.toggleExpanded('D2')
+  assert.equal(s.isProjectExpanded('D2'), true); assert.equal(s.isProjectExpanded('D1'), false, '展开一张卡不影响另一张')
+  s.toggleExpanded('D1')
+  assert.equal(s.isProjectExpanded('D1'), true); assert.equal(s.isProjectExpanded('D2'), true, '允许同时展开多张（用户自己点的）')
+  s.query.value = ''; await flush()
+  assert.equal(s.matchedPartCount('D1'), 0)
+  assert.equal(s.isProjectExpanded('D1'), true, '清空检索不改变用户已展开的卡')
+  app.unmount()
 })
 
 test('图纸库与详情：慢网保持加载态，断网显示错误，重试恢复', async () => {

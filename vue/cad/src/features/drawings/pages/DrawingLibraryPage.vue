@@ -23,7 +23,7 @@ const authStore = useAuthStore()
 const router = useRouter()
 
 const viewState = useDrawingLibraryUiStore().forUser(authStore.currentUser?.id || '')
-const { query, status, media, mode, attributeFilters, expandedProjects, collapsedProjects } = toRefs(viewState)
+const { query, status, media, mode, attributeFilters, expandedProjects } = toRefs(viewState)
 const pageElement = ref<HTMLElement | null>(null)
 const tableElement = ref<HTMLElement | null>(null)
 const loading = ref(true)
@@ -78,15 +78,25 @@ function matchesPartSearch(part: ReturnType<typeof partsForDrawing>[number], q: 
     .some((value) => value.toLowerCase().includes(q))
 }
 
-const matchingPartProjects = computed(() => {
+/* 检索命中零件时只统计、不展开：命中数用来告诉用户「这张卡为什么被搜出来」。
+   早先这里直接把命中的父图放进展开集合，结果一搜图号前缀或项目号，整屏卡片的零件清单一齐炸开。 */
+const matchedPartCounts = computed(() => {
   const q = query.value.trim().toLowerCase()
-  if (!q) return new Set<string>()
-  return new Set(
-    drawingStore.parts
-      .filter((part) => partMatchesQuery(part, q))
-      .map((part) => part.parentNo),
-  )
+  const counts = new Map<string, number>()
+  if (!q) return counts
+  for (const part of drawingStore.parts) {
+    if (!partMatchesQuery(part, q)) continue
+    counts.set(part.parentNo, (counts.get(part.parentNo) ?? 0) + 1)
+  }
+  return counts
 })
+function matchedPartCount(drawingNo: string): number {
+  return matchedPartCounts.value.get(drawingNo) ?? 0
+}
+function isPartMatched(part: ReturnType<typeof partsForDrawing>[number]): boolean {
+  const q = query.value.trim().toLowerCase()
+  return Boolean(q) && partMatchesQuery(part, q)
+}
 
 const rows = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -131,16 +141,15 @@ const partRows = computed(() => {
   })
 })
 
+// 展开与否只看用户点过谁：命中零件不再自动展开（详见 matchedPartCounts 的注释）。
 function isProjectExpanded(drawingNo: string): boolean {
-  return !collapsedProjects.value.has(drawingNo) && (expandedProjects.value.has(drawingNo) || matchingPartProjects.value.has(drawingNo))
+  return expandedProjects.value.has(drawingNo)
 }
 
 function toggleExpanded(drawingNo: string) {
-  if (isProjectExpanded(drawingNo)) {
+  if (expandedProjects.value.has(drawingNo)) {
     expandedProjects.value.delete(drawingNo)
-    collapsedProjects.value.add(drawingNo)
   } else {
-    collapsedProjects.value.delete(drawingNo)
     expandedProjects.value.add(drawingNo)
   }
 }
@@ -203,7 +212,6 @@ onBeforeRouteLeave(() => {
   viewState.scrollTop = pageElement.value?.scrollTop ?? 0
   viewState.tableScrollLeft = tableElement.value?.scrollLeft ?? 0
 })
-watch(query, () => { collapsedProjects.value.clear() })
 watch([query, status, media, mode, attributeFilters], () => {
   viewState.scrollTop = 0
   if (pageElement.value) pageElement.value.scrollTop = 0
@@ -375,6 +383,7 @@ watch([query, status, media, mode, attributeFilters], () => {
               >
                 <DemoIcon name="chevron-down" :size="12" :class="{ collapsed: !isProjectExpanded(drawing.no) }" />
                 {{ partsForDrawing(drawing.no).length }} 个零件
+                <span v-if="matchedPartCount(drawing.no)" class="dc-expand-hit">命中 {{ matchedPartCount(drawing.no) }}</span>
               </button>
             </div>
             <h3 class="dc-name" :title="drawing.name">{{ drawing.name }}</h3>
@@ -414,13 +423,14 @@ watch([query, status, media, mode, attributeFilters], () => {
           <div v-if="isProjectExpanded(drawing.no)" class="dc-parts" @click.stop>
             <span class="dc-parts-title">
               <DemoIcon name="folder-tree" :size="13" />
-              项目零件结构清单（共 {{ partsForDrawing(drawing.no).length }} 个）
+              项目零件结构清单（共 {{ partsForDrawing(drawing.no).length }} 个<template v-if="matchedPartCount(drawing.no)">，命中 {{ matchedPartCount(drawing.no) }} 个</template>）
             </span>
             <div class="dc-parts-chips">
               <button
                 v-for="part in partsForDrawing(drawing.no)"
                 :key="part.no"
                 class="part-link-chip"
+                :class="{ 'is-hit': isPartMatched(part) }"
                 type="button"
                 @click.stop="openDetail(part.no)"
               >
@@ -892,6 +902,8 @@ watch([query, status, media, mode, attributeFilters], () => {
 /* ================= 总图卡片视图 ================= */
 .drawing-card-grid {
   display: grid;
+  /* 展开零件会让卡片变高；默认的 stretch 会把同一行的其它卡一起撑高，看起来像「全都展开了」。 */
+  align-items: start;
   grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 14px;
   padding: 16px;
@@ -1068,6 +1080,15 @@ watch([query, status, media, mode, attributeFilters], () => {
 
 .dc-expand .collapsed {
   transform: rotate(-90deg);
+}
+
+/* 检索命中零件：只在卡片上标出「命中 N」，不代替用户展开清单，避免一搜关键词整屏卡牌同时炸开。 */
+.dc-expand-hit {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .dc-name {
@@ -1287,6 +1308,18 @@ watch([query, status, media, mode, attributeFilters], () => {
 }
 
 .part-link-chip:hover .part-no-txt {
+  color: inherit;
+  opacity: 0.7;
+}
+
+/* 展开后命中的零件本身再强调一次，用户能直接看到这张卡为什么被搜出来。 */
+.part-link-chip.is-hit {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.part-link-chip.is-hit .part-no-txt {
   color: inherit;
   opacity: 0.7;
 }
