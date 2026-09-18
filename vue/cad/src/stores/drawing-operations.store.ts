@@ -1061,6 +1061,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
         text: `创建零件图 ${part.no}`,
         detail: { parentNo: parentNo, fileName: file.name },
       })
+      // 同上：结构里这条记录的 files 用的是本地 id，展示用的是服务端附件 id，
+      // 失效旧写模型才能让「刚建的零件文件」也能按服务端 id 删除。
+      invalidateOperationState()
     } catch (saveError) {
       const insertedIndex = structure.value.findIndex((item) => item.no === part.no)
       if (insertedIndex >= 0) structure.value.splice(insertedIndex, 1)
@@ -1125,6 +1128,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
         text: `上传图纸文件 <b>${file.name}</b> 到 <b>${target.no}</b>`,
         detail: { fileId: file.id, fileName: file.name, version: file.version, role: file.role },
       })
+      // 写命令完成后失效旧写模型：本地乐观插入记的是本地 id，而列表展示的是服务端附件 id。
+      // 不失效的话，紧接着删除刚上传的文件会报「未找到图纸文件」（按服务端 id 在本地副本里查不到）。
+      invalidateOperationState()
     } catch (saveError) {
       target.files = originalFiles
       target.hasFile = originalHasFile
@@ -1195,6 +1201,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
       })
     }
     file.partNo = result.partNo
+    // 同上：本地记录用的是本地 id，必须失效旧写模型，让下一次命令按服务端附件 id 重新取；
+    // 否则中间态里那条本地 id 的记录会留在「其他文件」里，删不掉也对不上。
+    invalidateOperationState()
     // 原子零件命令已提交，页面随后刷新 Drawing ReadModel。
   }
 
@@ -1426,6 +1435,9 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
         text: `上传其他文件 <b>${file.name}</b> 到 <b>${target.no}</b>`,
         detail: { fileId: file.id, fileName: file.name, version: file.version, role: 'other' },
       })
+      // 同 uploadDrawingFile：本地插入的是本地 id，展示用的是服务端附件 id，必须失效旧写模型，
+      // 否则「上传后马上删除这个其他文件」会报未找到（本次 EXB 中间态就是这个症状）。
+      invalidateOperationState()
     } catch (saveError) {
       target.otherFiles = originalFiles
 	      if (storageKey) await drawingFileService.delete(storageKey, attachmentId).catch(() => undefined)
