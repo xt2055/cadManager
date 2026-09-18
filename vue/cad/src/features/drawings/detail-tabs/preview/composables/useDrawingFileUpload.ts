@@ -15,6 +15,12 @@ import type { PartNumberInputRow } from '../components/PartNumberInputModal.vue'
 import { formatCurrentTime, formatFileSize } from '../drawing-preview-format'
 
 const MANAGE_DENIED_HINT = '只有图纸负责人、创建人或管理员可以为该图纸上传文件'
+
+/**
+ * EXB 等待后台转换的上限。超过就先请用户补图号（文件已上传，转换完仍会挂到该零件），
+ * 而不是让上传流程长时间无响应。CAXA 缺失时转换会一直重试，等满上限没有意义。
+ */
+const CONVERSION_WAIT_MS = 30_000
 const ASSEMBLY_FIRST_HINT = '请先上传总图文件，再进行零件图上传'
 
 interface UseDrawingFileUploadOptions {
@@ -207,20 +213,26 @@ export function useDrawingFileUpload(options: UseDrawingFileUploadOptions) {
             const ids = await drawingOperationsStore.uploadOtherFile(rootNo, staged, file)
             const attachment = { ...ids, fileId: staged.id }
             uploadedOther += 1
+            // 上传后拿不到附件标识：图幅这条路走不通，直接给手工补录入口（文件已落为「其他文件」）。
             if (!attachment.attachmentId) {
-              failures.push(`${file.name}：上传后未返回附件标识，无法读取图幅`)
+              manualRows.push({ id: key, name: file.name, candidates: [], reason: '上传后未返回附件标识，无法读取图幅' })
+              manualFiles.set(key, file)
               continue
             }
-            const conversion = await waitForConversion([attachment.attachmentId], {
-              onProgress: (done, total) => { if (total) uiStore.toast(`正在转换 ${file.name}（${done}/${total}）`, 'info') },
-            })
+            uiStore.toast(`${file.name} 正在转换，完成后自动读取图幅图号`, 'info')
+            const conversion = await waitForConversion([attachment.attachmentId], { timeoutMs: CONVERSION_WAIT_MS })
+            // 转换没成（失败/超时/仍转换中）也要能继续：留着中间态附件，让用户直接补图号。
             const failed = conversion.failed[0]
             if (failed) {
-              failures.push(`${file.name}：图纸转换失败（${failed.error}）`)
+              manualRows.push({ id: key, name: file.name, candidates: [], reason: `图纸转换失败（${failed.error}），请手工补图号` })
+              manualFiles.set(key, file)
+              manualAttachments.set(key, attachment)
               continue
             }
             if (conversion.pending.length) {
-              failures.push(`${file.name}：图纸仍在转换中，稍后可在文件列表用「重新识别图号」补齐`)
+              manualRows.push({ id: key, name: file.name, candidates: [], reason: '图纸仍在转换中，可先补图号，转换完成后自动挂到该零件' })
+              manualFiles.set(key, file)
+              manualAttachments.set(key, attachment)
               continue
             }
             try {
@@ -236,7 +248,10 @@ export function useDrawingFileUpload(options: UseDrawingFileUploadOptions) {
               manualFiles.set(key, file)
               manualAttachments.set(key, attachment)
             } catch (error: unknown) {
-              failures.push(`${file.name}：读取图幅失败（${error instanceof Error ? error.message : '未知原因'}）`)
+              // 读取图幅失败同样给手工补录入口：图幅读不出不等于用户没法继续。
+              manualRows.push({ id: key, name: file.name, candidates: [], reason: `读取图幅失败（${error instanceof Error ? error.message : '未知原因'}），请手工补图号` })
+              manualFiles.set(key, file)
+              manualAttachments.set(key, attachment)
             }
             continue
           }
