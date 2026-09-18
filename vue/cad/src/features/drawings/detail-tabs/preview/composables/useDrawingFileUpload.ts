@@ -17,11 +17,11 @@ import { formatCurrentTime, formatFileSize } from '../drawing-preview-format'
 const MANAGE_DENIED_HINT = '只有图纸负责人、创建人或管理员可以为该图纸上传文件'
 
 /**
- * EXB 的短促窗口：上传只为触发后台转换，这里最多等这么久读一次图幅。
- * 等不到就拿不到图号 → 直接弹补录窗（文件已上传，转换完仍会挂到该零件），
- * 不让用户对着一个长时间无响应的上传流程干等。
+ * EXB 等待后台转换的上限：转换出 DWG 才能读图幅拿图号，所以这里给足时间。
+ * 超过上限仍拿不到图号（转换失败/仍在转换中）则弹补录窗；文件已上传，
+ * 转换完成后仍会挂到该零件，不需要用户重传。
  */
-const CONVERSION_WAIT_MS = 8_000
+const CONVERSION_WAIT_MS = 180_000
 const ASSEMBLY_FIRST_HINT = '请先上传总图文件，再进行零件图上传'
 
 interface UseDrawingFileUploadOptions {
