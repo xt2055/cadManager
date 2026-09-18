@@ -38,6 +38,19 @@ function ensureConverters(): Promise<void> {
   return registration
 }
 
+/**
+ * 前端提取的落点判定：提取到图号就返回它，否则返回空串。
+ * 「提取不到 → 弹窗要求输入图号」这条规则以这里为准，调用方不再各自判断。
+ */
+export function extractedPartNo(result: LocalTitleBlockResult): string {
+  return result.kind === 'ok' ? result.partNo.trim() : ''
+}
+
+/** 没提取到图号就需要用户补录；EXB 浏览器解析不了，同样算没提取到。 */
+export function needsManualPartNo(result: LocalTitleBlockResult): boolean {
+  return !extractedPartNo(result)
+}
+
 function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => reject(new Error('读取图纸图幅超时')), timeoutMs)

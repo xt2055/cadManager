@@ -9,7 +9,7 @@ import { useUiStore } from '@/stores/ui.store'
 import type { DrawingFile } from '@/types/domain.types'
 import { extractAndSaveTitleBlock } from '@/services/drawing-title-block.service'
 import type { TitleSnapshot } from '@/services/title-block-workflow'
-import { readLocalTitleBlock, type LocalTitleBlockResult } from '../local-title-block'
+import { extractedPartNo, needsManualPartNo, readLocalTitleBlock, type LocalTitleBlockResult } from '../local-title-block'
 import { waitForConversion } from '../conversion-wait'
 import type { PartNumberInputRow } from '../components/PartNumberInputModal.vue'
 import { formatCurrentTime, formatFileSize } from '../drawing-preview-format'
@@ -17,10 +17,11 @@ import { formatCurrentTime, formatFileSize } from '../drawing-preview-format'
 const MANAGE_DENIED_HINT = '只有图纸负责人、创建人或管理员可以为该图纸上传文件'
 
 /**
- * EXB 等待后台转换的上限。超过就先请用户补图号（文件已上传，转换完仍会挂到该零件），
- * 而不是让上传流程长时间无响应。CAXA 缺失时转换会一直重试，等满上限没有意义。
+ * EXB 的短促窗口：上传只为触发后台转换，这里最多等这么久读一次图幅。
+ * 等不到就拿不到图号 → 直接弹补录窗（文件已上传，转换完仍会挂到该零件），
+ * 不让用户对着一个长时间无响应的上传流程干等。
  */
-const CONVERSION_WAIT_MS = 30_000
+const CONVERSION_WAIT_MS = 8_000
 const ASSEMBLY_FIRST_HINT = '请先上传总图文件，再进行零件图上传'
 
 interface UseDrawingFileUploadOptions {
@@ -158,11 +159,11 @@ export function useDrawingFileUpload(options: UseDrawingFileUploadOptions) {
     return ''
   }
 
-  /** 本地读不到图号的文件：记录原因，供弹窗展示。 */
+  /** 提取不到图号时写给用户的原因；弹窗里逐行展示，要说清是哪种情况。 */
   function manualReason(result: LocalTitleBlockResult): string {
     if (result.kind === 'error') return `图幅解析失败：${result.message}`
-    if (result.kind === 'not-found') return '图幅里没有找到图号'
-    return '需要手工填写图号'
+    if (result.kind === 'ok' && result.candidates.length > 1) return '图幅里有多个图号候选，请选择或填写'
+    return '图幅里没有找到图号'
   }
 
   async function onPartFilesChange(event: Event) {
@@ -194,69 +195,55 @@ export function useDrawingFileUpload(options: UseDrawingFileUploadOptions) {
             continue
           }
 
+          // 提取一步定生死：提取到图号就继续落库；提取不到（含 EXB 解析不了）一定会进补录队列，
+          // 不允许出现「提取不到却什么都没发生」的空档。
           const local = await readLocalTitleBlock(file)
-          if (local.kind === 'ok' && local.partNo) {
-            resolved.push({ file, partNo: local.partNo, attachment: null })
-            continue
-          }
-          if (local.kind === 'ok') {
-            manualRows.push({ id: key, name: file.name, candidates: local.candidates, reason: '图幅里有多个图号候选，请选择或填写' })
-            manualFiles.set(key, file)
+          if (!needsManualPartNo(local)) {
+            resolved.push({ file, partNo: extractedPartNo(local), attachment: null })
             continue
           }
 
-          // EXB：浏览器解析不了，先上传触发后台转换，转完读 DWG 图幅。
+          // EXB：浏览器解析不了，先上传触发后台转换，再读一次图幅（只等一小会儿）。
           if (local.kind === 'unsupported') {
-            // 中间态用「其他文件」上传（这是唯一不要求先有零件归属的上传路径）；
-            // 记下它的本地 id，后面确定图号后要么落成零件、要么按 id 撤掉这个中间态。
+            // 中间态用「其他文件」上传（唯一不要求先有零件归属的上传路径）；
+            // 记下本地 id，后面按图号落成零件、或按 id 撤掉这个中间态，都不重复上传。
             const staged: DrawingFile = { ...baseFile(file), role: 'other', drawingNo: rootNo, version: 'v1.0' }
             const ids = await drawingOperationsStore.uploadOtherFile(rootNo, staged, file)
             const attachment = { ...ids, fileId: staged.id }
             uploadedOther += 1
-            // 上传后拿不到附件标识：图幅这条路走不通，直接给手工补录入口（文件已落为「其他文件」）。
+            let partNo = ''
+            let retryHint = ''
             if (!attachment.attachmentId) {
-              manualRows.push({ id: key, name: file.name, candidates: [], reason: '上传后未返回附件标识，无法读取图幅' })
-              manualFiles.set(key, file)
-              continue
-            }
-            uiStore.toast(`${file.name} 正在转换，完成后自动读取图幅图号`, 'info')
-            const conversion = await waitForConversion([attachment.attachmentId], { timeoutMs: CONVERSION_WAIT_MS })
-            // 转换没成（失败/超时/仍转换中）也要能继续：留着中间态附件，让用户直接补图号。
-            const failed = conversion.failed[0]
-            if (failed) {
-              manualRows.push({ id: key, name: file.name, candidates: [], reason: `图纸转换失败（${failed.error}），请手工补图号` })
-              manualFiles.set(key, file)
-              manualAttachments.set(key, attachment)
-              continue
-            }
-            if (conversion.pending.length) {
-              manualRows.push({ id: key, name: file.name, candidates: [], reason: '图纸仍在转换中，可先补图号，转换完成后自动挂到该零件' })
-              manualFiles.set(key, file)
-              manualAttachments.set(key, attachment)
-              continue
-            }
-            try {
-              const snapshot = await extractAndSaveTitleBlock(attachment.attachmentId)
-              const partNo = partNoFromTitleSnapshot(snapshot.payload)
-              if (partNo) {
-                resolved.push({ file, partNo, attachment })
-                // 中间态已计入其他文件；确定归属后会被落成零件，不再重复统计。
-                uploadedOther -= 1
-                continue
+              retryHint = '上传后未返回附件标识，无法读取图幅'
+            } else {
+              uiStore.toast(`${file.name} 正在转换，稍候自动读取图幅图号`, 'info')
+              const conversion = await waitForConversion([attachment.attachmentId], { timeoutMs: CONVERSION_WAIT_MS })
+              const failed = conversion.failed[0]
+              if (failed) retryHint = `图纸转换失败（${failed.error}）`
+              else if (conversion.pending.length) retryHint = '图纸仍在转换中，转换完成后可用「重新识别图号」校正'
+              else {
+                try {
+                  partNo = partNoFromTitleSnapshot((await extractAndSaveTitleBlock(attachment.attachmentId)).payload)
+                  if (!partNo) retryHint = '已转换并读取图幅，但图幅里没有图号'
+                } catch (error: unknown) {
+                  retryHint = `读取图幅失败（${error instanceof Error ? error.message : '未知原因'}）`
+                }
               }
-              manualRows.push({ id: key, name: file.name, candidates: [], reason: '已转换并读取图幅，但图幅里没有图号' })
-              manualFiles.set(key, file)
-              manualAttachments.set(key, attachment)
-            } catch (error: unknown) {
-              // 读取图幅失败同样给手工补录入口：图幅读不出不等于用户没法继续。
-              manualRows.push({ id: key, name: file.name, candidates: [], reason: `读取图幅失败（${error instanceof Error ? error.message : '未知原因'}），请手工补图号` })
-              manualFiles.set(key, file)
-              manualAttachments.set(key, attachment)
             }
+
+            if (partNo) {
+              resolved.push({ file, partNo, attachment })
+              // 中间态已计入其他文件；确定归属后会被落成零件，不再重复统计。
+              uploadedOther -= 1
+              continue
+            }
+            manualRows.push({ id: key, name: file.name, candidates: [], reason: `${retryHint}，请手工补图号` })
+            manualFiles.set(key, file)
+            manualAttachments.set(key, attachment)
             continue
           }
 
-          manualRows.push({ id: key, name: file.name, candidates: [], reason: manualReason(local) })
+          manualRows.push({ id: key, name: file.name, candidates: local.kind === 'ok' ? local.candidates : [], reason: manualReason(local) })
           manualFiles.set(key, file)
         } catch (error: unknown) {
           // 单个文件失败不放弃整批：与批量校正一致，逐文件收集原因。
