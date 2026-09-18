@@ -5,6 +5,7 @@ import {
   canSignReviewNode,
   canStartRegularReview,
   isAssignedReviewer,
+  pickReviewCase,
   reviewNodeStatusLabel,
 } from '../src/features/reviews/review-workspace.ts'
 
@@ -47,4 +48,32 @@ test('流程驳回后，驳回节点之后的节点显示还未到你', () => {
   const rejected = { ...nodes[1], status: 'rejected' }
   assert.equal(reviewNodeStatusLabel(rejected, null, false, 'u1', true), '已驳回')
   assert.equal(reviewNodeStatusLabel(nodes[2], null, false, 'u2', true), '还未到你')
+})
+
+test('驳回后重新提交：工作台必须选进行中的新一轮，不能按分钟级时间戳挑到被驳回的上一轮', () => {
+  // 驳回 → 修改 → 重新提交通常在同一分钟内完成，两个轮次的 startedAt 完全相同。
+  const rounds = [
+    { id: 'r1', status: 'rejected', startedAt: '2026-01-02 09:00' },
+    { id: 'r2', status: 'reviewing', startedAt: '2026-01-02 09:00' },
+  ]
+  assert.equal(pickReviewCase(rounds)?.id, 'r2')
+  // 规则不依赖后端返回的数组顺序：反过来给同样选新版。
+  assert.equal(pickReviewCase([...rounds].reverse())?.id, 'r2')
+  // 待处理状态同样属于进行中轮次。
+  assert.equal(pickReviewCase([rounds[0], { id: 'r3', status: 'pending', startedAt: '2026-01-02 08:00' }])?.id, 'r3')
+})
+
+test('没有进行中轮次时才回退到最近一轮，且不就地重排调用方的数组', () => {
+  const cases = [
+    { id: 'r1', status: 'published', startedAt: '2026-01-01 09:00' },
+    { id: 'r2', status: 'rejected', startedAt: '2026-01-02 09:00' },
+  ]
+  assert.equal(pickReviewCase(cases)?.id, 'r2')
+  assert.deepEqual(cases.map((item) => item.id), ['r1', 'r2'], '选择轮次不得就地排序调用方的数组')
+  // 同一时间戳再回退到 id 兜底，保证结果稳定。
+  assert.equal(pickReviewCase([{ id: 'a', status: 'rejected', startedAt: '2026-01-02 09:00' }, { id: 'b', status: 'rejected', startedAt: '2026-01-02 09:00' }])?.id, 'b')
+  // 明确指定案例时按 id 命中，查不到就返回 null，不回退到别的轮次。
+  assert.equal(pickReviewCase(cases, 'r1')?.id, 'r1')
+  assert.equal(pickReviewCase(cases, 'missing'), null)
+  assert.equal(pickReviewCase([]), null)
 })

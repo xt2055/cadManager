@@ -480,7 +480,7 @@ func (repository *PGRepository) ListCases(ctx context.Context) ([]ReviewCase, er
 		JOIN drawings d ON d.id = c.drawing_id
 		LEFT JOIN review_flows f ON f.id = c.flow_id
 		LEFT JOIN users u ON u.id = c.initiator_id
-		ORDER BY c.started_at DESC`, pgTimeLayout)
+		ORDER BY c.started_at DESC, c.id DESC`, pgTimeLayout)
 	if err != nil {
 		return nil, fmt.Errorf("查询审核案例失败: %w", err)
 	}

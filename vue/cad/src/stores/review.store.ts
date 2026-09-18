@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { reviewService } from '@/app/container'
-import { isAssignedReviewer } from '@/features/reviews/review-workspace'
+import { isAssignedReviewer, pickReviewCase } from '@/features/reviews/review-workspace'
 import type { ApiCompletedAction, ApiReviewCase, ReviewFlowDto } from '@/modules/review'
 import { useAuthStore } from '@/stores/auth.store'
 
@@ -79,10 +79,10 @@ async function loadFlows(): Promise<void> {
   }
 }
 
+  // 轮次选择统一走 pickReviewCase：进行中的轮次优先，绝不按分钟级时间戳猜轮次，
+  // 否则驳回后重新提交会挑到上一轮，下一个审核员就会看到上一轮的批注。
   function getCase(drawingNo: string, caseId?: string): ApiReviewCase | null {
-    const candidates = cases.value.filter((item) => item.drawingNo === drawingNo)
-    if (caseId) return candidates.find((item) => item.id === caseId) ?? null
-    return candidates.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''))[0] ?? null
+    return pickReviewCase(cases.value.filter((item) => item.drawingNo === drawingNo), caseId)
   }
 
   function getFlow(id: string): ReviewFlowDto | null {

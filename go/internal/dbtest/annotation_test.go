@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	"cadguanliq/internal/annotation"
+	"cadguanliq/internal/auth"
 	"cadguanliq/internal/change"
 	"cadguanliq/internal/review"
 )
+
 
 func TestAnnotationsPinVersionAndLockAfterSigning(t *testing.T) {
 	db := New(t)
@@ -114,7 +116,7 @@ type historyFixture struct {
 	Fixture
 	Flow       string
 	Request    string
-	Submission string
+	Service    *change.PGService
 	Repository *review.PGRepository
 	Attachment string
 	Version    string
@@ -122,34 +124,40 @@ type historyFixture struct {
 	SecondVer  string
 }
 
-// setupAnnotationHistory 冻结两张图纸的变更提交轮次：第一轮批注、驳回，再建第二轮。
+// setupAnnotationHistory 建立「变更送审」的完整上下文：两张图纸的工单目标与审核流程。
+// 第一轮审核单由生产入口（变更提交）建立，不在测试里手搓，避免绕过真实链路。
 func setupAnnotationHistory(t *testing.T, db *DB) historyFixture {
 	t.Helper()
 	fixture := db.Seed(t)
 	flow := insertFlow(t, db, fixture)
 	insertBaseRevision(t, db, fixture)
 	request := insertChangeRequest(t, db, fixture, "CR-HIST")
-	submission := insertSubmission(t, db, request, 1)
-	db.Exec(t, `UPDATE change_requests SET status='pending_verify',current_submission_id=$2::uuid WHERE id=$1::uuid`, request, submission)
-
 	attachment, version := insertPartAttachment(t, db, fixture, "v1.0")
 	second, secondVersion := insertExtraPartAttachment(t, db, fixture, "P-2.dwg")
+	// 工单目标：修改时保存的工作版本，提交时被快照成审核批注引用的固定版本。
 	for _, target := range [][2]string{{attachment, version}, {second, secondVersion}} {
-		db.Exec(t, `INSERT INTO change_request_submission_targets(submission_id,attachment_id,base_attachment_version_id,submitted_attachment_version_id)
-			VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid)`, submission, target[0], target[1], target[1])
+		db.Exec(t, `INSERT INTO change_request_targets(request_id,attachment_id,base_attachment_version_id,work_attachment_version_id)
+			VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid)`, request, target[0], target[1], target[1])
 	}
 	addFlowNode(t, db, flow, "校对复核", "校对", fixture.Reviewer, true, 1)
 	addFlowNode(t, db, flow, "专业审核", "审核", fixture.Reviewer, true, 2)
 
-	if err := startCase(t, db, fixture.Drawing, submission, fixture.Author, true); err != nil {
-		t.Fatalf("启动第一轮审核失败: %v", err)
-	}
+	service := change.NewService(db.Pool)
 	repository := review.NewPGRepository(db.Pool)
-	repository.SetChangeCompletion(change.NewService(db.Pool).CompleteReview)
+	repository.SetChangeCompletion(service.CompleteReview)
+	if _, err := service.Submit(context.Background(), auth.AuthUser{ID: fixture.Author}, request, change.SubmitInput{ActualChanges: "第一轮修改"}); err != nil {
+		t.Fatalf("第一轮变更提交失败: %v", err)
+	}
 	return historyFixture{
-		Fixture: fixture, Flow: flow, Request: request, Submission: submission, Repository: repository,
+		Fixture: fixture, Flow: flow, Request: request, Repository: repository, Service: service,
 		Attachment: attachment, Version: version, Second: second, SecondVer: secondVersion,
 	}
+}
+
+// currentRound 返回工单当前提交轮次对应的审核单 ID。
+func currentRound(t *testing.T, db *DB, request string) string {
+	t.Helper()
+	return db.ScanString(t, `SELECT id::text FROM review_cases WHERE change_submission_id=(SELECT current_submission_id FROM change_requests WHERE id=$1::uuid)`, request)
 }
 
 // saveHistoryMark 以当前节点责任人身份在某份文件上写入一条文字批注。
@@ -174,7 +182,7 @@ func TestAnnotationHistoryKeepsFilesAndIsolatesRounds(t *testing.T) {
 	ctx := context.Background()
 	repo := annotation.NewRepository(db.Pool)
 
-	round1 := db.ScanString(t, `SELECT id::text FROM review_cases WHERE change_submission_id=$1::uuid`, fx.Submission)
+	round1 := currentRound(t, db, fx.Request)
 	first, err := repo.Load(ctx, round1, fx.Attachment, fx.Reviewer)
 	if err != nil || !first.CanEdit {
 		t.Fatalf("第一轮应允许当前节点责任人批注: %v / %+v", err, first)
@@ -198,17 +206,27 @@ func TestAnnotationHistoryKeepsFilesAndIsolatesRounds(t *testing.T) {
 		t.Fatalf("驳回后批注仍被改写: %v", err)
 	}
 
-	// 第二轮：修改后重新提交，冻结同样的两张图。
-	submission2 := insertSubmission(t, db, fx.Request, 2)
-	db.Exec(t, `UPDATE change_requests SET status='pending_verify',current_submission_id=$2::uuid WHERE id=$1::uuid`, fx.Request, submission2)
-	for _, target := range [][2]string{{fx.Attachment, fx.Version}, {fx.Second, fx.SecondVer}} {
-		db.Exec(t, `INSERT INTO change_request_submission_targets(submission_id,attachment_id,base_attachment_version_id,submitted_attachment_version_id)
-			VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid)`, submission2, target[0], target[1], target[1])
+	// 第二轮：修改后重新提交，走生产入口（变更提交），确认审核单真的另起一份。
+	if _, err := fx.Service.Submit(ctx, auth.AuthUser{ID: fx.Author}, fx.Request, change.SubmitInput{ActualChanges: "按审核意见修正尺寸"}); err != nil {
+		t.Fatalf("第二轮变更提交失败: %v", err)
 	}
-	if err := startCase(t, db, fx.Drawing, submission2, fx.Author, true); err != nil {
-		t.Fatalf("启动第二轮审核失败: %v", err)
+	round2 := currentRound(t, db, fx.Request)
+	if round2 == round1 {
+		t.Fatalf("重新提交必须另起审核轮次，不能复用被驳回的审核单")
 	}
-	round2 := db.ScanString(t, `SELECT id::text FROM review_cases WHERE change_submission_id=$1::uuid`, submission2)
+	// 工作台选定「当前轮次」靠的就是这个不变量：同一图纸同时最多一个进行中的审核单。
+	active := db.ScanString(t, `SELECT string_agg(id::text, ',') FROM review_cases WHERE drawing_id=$1::uuid AND status IN ('pending','reviewing')`, fx.Drawing)
+	if active != round2 {
+		t.Fatalf("进行中的审核单应只有新一轮 %s，实际 %s", round2, active)
+	}
+	// 列表按时间倒序返回，最新一轮在前，选择轮次时无需依赖分钟级时间戳。
+	cases, err := fx.Repository.ListCases(ctx)
+	if err != nil {
+		t.Fatalf("读取审核案例失败: %v", err)
+	}
+	if len(cases) != 2 || cases[0].ID != round2 || cases[1].ID != round1 {
+		t.Fatalf("审核案例应按时间倒序返回新旧两轮: %+v", cases)
+	}
 
 	// 文件快照在审核单创建时就冻结，与「有没有存过批注」无关。
 	files, err := repo.Files(ctx, round2)
@@ -298,7 +316,7 @@ func TestAnnotationHistoryRejectsMismatchedCaseAndDrawing(t *testing.T) {
 	ctx := context.Background()
 	repo := annotation.NewRepository(db.Pool)
 
-	round1 := db.ScanString(t, `SELECT id::text FROM review_cases WHERE change_submission_id=$1::uuid`, fx.Submission)
+	round1 := currentRound(t, db, fx.Request)
 	db.Exec(t, `INSERT INTO drawings(drawing_no,name,project,created_by,status) VALUES('D-2','另一张图','P',$1::uuid,'draft')`, fx.Author)
 
 	if _, err := repo.History(ctx, "D-2", round1); !errors.Is(err, annotation.ErrNotFound) {
