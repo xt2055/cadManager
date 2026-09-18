@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, useTemplateRef } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { NEW_DRAWING_NAME_PRESETS } from '../new-drawing-name-presets'
 
@@ -43,11 +43,13 @@ const inputValue = (event: Event) => (event.target as HTMLInputElement).value
 
 /** 常用零件名称：点一下填入名称框，省掉打字并避免错别字（名称会拼进文件名）。 */
 const namePresets = NEW_DRAWING_NAME_PRESETS
-const nameInput = ref<HTMLInputElement | null>(null)
+// 用 useTemplateRef 显式绑定：模板 ref 依赖「字符串 ref 回写到同名 setup 变量」这条隐式路径，
+// 开发态与打包态的编译结果不同，出问题时表现为「点选后焦点交不出去」。显式绑定与编译模式无关。
+const nameInput = useTemplateRef<HTMLInputElement>('nameInput')
 
 /**
- * 点选预设：填入基础名后把光标交给名称框末尾。
- * 变体后缀（杆坯1、缸头坯A）不单独做预设，接着打 1 / A 就能补完。
+ * 点选预设：填入基础名后把光标交到名称框末尾，并把焦点也交给它，
+ * 这样紧接着敲 1 / A 就直接落进名称框（变体后缀不单独做预设）。
  */
 async function applyNamePreset(preset: string) {
   emit('update:name', preset)
