@@ -171,3 +171,14 @@ export function isCadFile(name: string): boolean {
 export function previewableFile(round: AnnotationHistoryRound): AnnotationHistoryFile | null {
   return (round.files ?? []).find(file => isCadFile(file.name)) ?? null
 }
+
+/**
+ * 批注工作区请求参数。
+ * 历史回放必须显式声明 `history=1`：服务端据此放行已被取代的轮次并强制只读；
+ * 缺省时服务端只服务当前轮次，任何带错轮次 id 的入口都拿不到上一轮批注。
+ */
+export function annotationWorkspaceQuery(caseId: string, attachmentId: string, history: boolean): string {
+  const query = new URLSearchParams({ caseId, attachmentId })
+  if (history) query.set('history', '1')
+  return query.toString()
+}

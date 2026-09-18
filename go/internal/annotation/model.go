@@ -10,6 +10,9 @@ import (
 var ErrForbidden = errors.New("当前节点不属于你或已签署，批注仅可查看")
 var ErrConflict = errors.New("批注已在其他窗口更新，请保留未保存内容后重新读取")
 var ErrNotFound = errors.New("本次审核没有该文件的固定版本，无法添加批注")
+// ErrSuperseded 该轮审核已被新一轮取代：批注只服务当前轮次，回看历史必须显式声明。
+var ErrSuperseded = errors.New("该轮审核已被新一轮取代，请从审核工作台或标注历史进入")
+
 
 type Point struct {
 	X float64 `json:"x"`

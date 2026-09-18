@@ -37,13 +37,46 @@ func (r *Repository) UpdateTemplate(ctx context.Context, t Template, userID stri
 	if errors.Is(err,pgx.ErrNoRows) { return t,ErrForbidden };return t,err
 }
 
-func (r *Repository) Load(ctx context.Context, caseID, attachmentID, userID string) (Workspace, error) {
+// currentCase 返回该轮次所属图纸的「当前轮次」：进行中的轮次优先（同一图纸唯一，
+// 由 uq_review_cases_active_drawing 保证），没有进行中轮次时取最近结束的一轮。
+// 前端 pickReviewCase 用的是同一条规则，两边必须保持一致。
+func (r *Repository) currentCase(ctx context.Context, caseID string) (string, error) {
+	var current string
+	err := r.pool.QueryRow(ctx, `
+		SELECT c.id::text
+		FROM review_cases c
+		WHERE c.drawing_id = (SELECT drawing_id FROM review_cases WHERE id = $1::uuid)
+		ORDER BY (c.status IN ('pending','reviewing')) DESC, c.started_at DESC, c.id DESC
+		LIMIT 1`, caseID).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询当前审核轮次失败: %w", err)
+	}
+	return current, nil
+}
+
+// Load 读取某个审核轮次的批注工作区。
+//
+// history 为假时只服务「当前轮次」：请求已被新一轮审核取代的轮次会被拒绝
+// （ErrSuperseded）。这是把「下一个审核员不该看到上一轮标注」这条规则放在服务端：
+// 客户端任何入口——现在写好的或以后新加的——即使带错轮次 id，也拿不到旧批注，
+// 只会看到明确提示；回看历史必须显式声明 history，并且一律只读。
+func (r *Repository) Load(ctx context.Context, caseID, attachmentID, userID string, history bool) (Workspace, error) {
 	w := Workspace{CaseID: caseID, AttachmentID: attachmentID, Documents: []Document{}}
 	if !ValidID(caseID) || !ValidID(attachmentID) {
 		return w, ErrNotFound
 	}
+	current, err := r.currentCase(ctx, caseID)
+	if err != nil {
+		return w, err
+	}
+	if current != caseID && !history {
+		return w, ErrSuperseded
+	}
 	var status, assigned string
-	err := r.pool.QueryRow(ctx, `SELECT f.version_id::text,c.status,COALESCE(n.id::text,''),COALESCE(n.name,''),COALESCE(n.assigned_user_id::text,'')
+	err = r.pool.QueryRow(ctx, `SELECT f.version_id::text,c.status,COALESCE(n.id::text,''),COALESCE(n.name,''),COALESCE(n.assigned_user_id::text,'')
  FROM review_annotation_files f JOIN review_cases c ON c.id=f.review_case_id
  LEFT JOIN LATERAL (SELECT id,name,assigned_user_id FROM review_case_nodes WHERE review_case_id=c.id AND status='pending' ORDER BY node_order LIMIT 1) n ON true
  WHERE f.review_case_id=$1::uuid AND f.attachment_id=$2::uuid`, caseID, attachmentID).Scan(&w.VersionID, &status, &w.NodeID, &w.NodeName, &assigned)
@@ -53,7 +86,7 @@ func (r *Repository) Load(ctx context.Context, caseID, attachmentID, userID stri
 	if err != nil {
 		return w, err
 	}
-	w.CanEdit = status == "reviewing" && assigned == userID
+	w.CanEdit = !history && status == "reviewing" && assigned == userID
 	rows, err := r.pool.Query(ctx, `SELECT d.id::text,d.node_id::text,n.name,d.author_id::text,COALESCE(u.display_name,u.account),d.revision,to_char(d.updated_at,'YYYY-MM-DD HH24:MI:SS'),d.content
  FROM review_annotation_documents d JOIN review_case_nodes n ON n.id=d.node_id JOIN users u ON u.id=d.author_id
  WHERE d.review_case_id=$1::uuid AND d.attachment_id=$2::uuid ORDER BY n.node_order,d.updated_at`, caseID, attachmentID)

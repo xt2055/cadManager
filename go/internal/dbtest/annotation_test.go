@@ -18,7 +18,7 @@ func TestAnnotationsPinVersionAndLockAfterSigning(t *testing.T) {
 	ctx := context.Background()
 	repo := annotation.NewRepository(db.Pool)
 	attachmentID := db.ScanString(t, `SELECT attachment_id::text FROM attachment_versions WHERE id=$1::uuid`, f.Version)
-	w, err := repo.Load(ctx, f.CaseID, attachmentID, f.Reviewer)
+	w, err := repo.Load(ctx, f.CaseID, attachmentID, f.Reviewer, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestAnnotationsPinVersionAndLockAfterSigning(t *testing.T) {
 	if _, err = repo.Save(ctx, in, f.Reviewer); !errors.Is(err, annotation.ErrForbidden) {
 		t.Fatalf("signed annotation modified: %v", err)
 	}
-	w, err = repo.Load(ctx, f.CaseID, attachmentID, f.Author)
+	w, err = repo.Load(ctx, f.CaseID, attachmentID, f.Author, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,12 +183,12 @@ func TestAnnotationHistoryKeepsFilesAndIsolatesRounds(t *testing.T) {
 	repo := annotation.NewRepository(db.Pool)
 
 	round1 := currentRound(t, db, fx.Request)
-	first, err := repo.Load(ctx, round1, fx.Attachment, fx.Reviewer)
+	first, err := repo.Load(ctx, round1, fx.Attachment, fx.Reviewer, false)
 	if err != nil || !first.CanEdit {
 		t.Fatalf("第一轮应允许当前节点责任人批注: %v / %+v", err, first)
 	}
 	saveHistoryMark(t, repo, first, fx.Attachment, fx.Reviewer, "缺少尺寸")
-	secondScope, err := repo.Load(ctx, round1, fx.Second, fx.Reviewer)
+	secondScope, err := repo.Load(ctx, round1, fx.Second, fx.Reviewer, false)
 	if err != nil {
 		t.Fatalf("读取第二份文件批注失败: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestAnnotationHistoryKeepsFilesAndIsolatesRounds(t *testing.T) {
 		t.Fatalf("新一轮应冻结两张图，实际 %d", len(files))
 	}
 	// 隔离：新一轮是活跃可批注的轮次，但画布必须是空的。
-	next, err := repo.Load(ctx, round2, fx.Attachment, fx.Reviewer)
+	next, err := repo.Load(ctx, round2, fx.Attachment, fx.Reviewer, false)
 	if err != nil {
 		t.Fatalf("读取新一轮批注失败: %v", err)
 	}
@@ -246,6 +246,22 @@ func TestAnnotationHistoryKeepsFilesAndIsolatesRounds(t *testing.T) {
 	}
 	if !next.CanEdit {
 		t.Fatalf("新一轮仍应是可以批注的活跃轮次")
+	}
+
+	// 服务端强制：即使某个入口带错轮次 id，也不能把上一轮的标注端给下一个审核员。
+	if _, err := repo.Load(ctx, round1, fx.Attachment, fx.Reviewer, false); !errors.Is(err, annotation.ErrSuperseded) {
+		t.Fatalf("已被新一轮取代的轮次不应被当作当前轮次读取: %v", err)
+	}
+	// 显式回看历史可以读到旧批注，但一律只读，杜绝从历史入口改写归档。
+	archived, err := repo.Load(ctx, round1, fx.Attachment, fx.Reviewer, true)
+	if err != nil {
+		t.Fatalf("回看历史轮次失败: %v", err)
+	}
+	if len(archived.Documents) != 1 || archived.Documents[0].Content.Marks[0].Text != "缺少尺寸" {
+		t.Fatalf("历史轮次应保留上一轮批注: %+v", archived.Documents)
+	}
+	if archived.CanEdit {
+		t.Fatalf("历史回看必须只读")
 	}
 
 	history, err := repo.History(ctx, "D-1", "")

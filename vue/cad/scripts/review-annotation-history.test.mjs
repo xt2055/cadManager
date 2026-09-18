@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  annotationWorkspaceQuery,
   historyReadOnlyWorkspace,
   historyViewerQuery,
   isCadFile,
@@ -134,4 +135,13 @@ test('非 CAD 文件不提供画布回放，历史里仍可看意见', () => {
   assert.equal(previewableFile(round)?.attachmentId, 'a1')
   assert.equal(previewableFile({ ...round, files: [{ attachmentId: 'x', versionId: 'v', name: '说明.docx', version: 'v1' }] }), null)
   assert.equal(previewableFile({ ...round, files: [] }), null)
+})
+
+test('批注工作区请求：历史回放显式声明 history=1，当前轮次不得带该参数', () => {
+  assert.equal(annotationWorkspaceQuery('case-1', 'att-1', false), 'caseId=case-1&attachmentId=att-1')
+  assert.equal(annotationWorkspaceQuery('case-1', 'att-1', true), 'caseId=case-1&attachmentId=att-1&history=1')
+  // 历史链接必须带上明确的轮次与固定版本，服务端据此放行旧轮次。
+  const query = historyViewerQuery(round, round.files[0])
+  assert.equal(query.reviewCaseId, 'case-2')
+  assert.equal(query.reviewHistory, '1')
 })

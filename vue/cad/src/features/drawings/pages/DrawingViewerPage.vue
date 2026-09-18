@@ -54,7 +54,7 @@ async function reloadAnnotations() {
   const scope = annotationWorkspace.value
   if (!scope) { void loadTargetFile(); return }
   try {
-    const loaded = await reviewAnnotationService.load(scope.caseId, scope.attachmentId)
+    const loaded = await reviewAnnotationService.load(scope.caseId, scope.attachmentId, annotationHistoryMode.value)
     annotationWorkspace.value = historyReadOnlyWorkspace(loaded, annotationHistoryMode.value)
     annotationError.value = ''
   } catch (e) { annotationError.value = e instanceof Error ? e.message : '读取批注失败' }
@@ -186,7 +186,7 @@ async function loadTargetFile() {
             if (generation !== loadGeneration || disposed) return
             const review = cases.find(c => c.id === scope.caseId)
             if (review) {
-              const loaded = await reviewAnnotationService.load(review.id, file.id)
+              const loaded = await reviewAnnotationService.load(review.id, file.id, scope.history)
               if (generation !== loadGeneration || disposed) return
               if (versionKey.value || (versionId.value && versionId.value !== loaded.versionId)) {
                 annotationError.value = '当前查看的版本与本轮审核版本不同，请从审核工作台打开对应文件。'

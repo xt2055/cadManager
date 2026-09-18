@@ -1,13 +1,14 @@
 import { lifecycleApi } from './lifecycle.service'
 import type { AnnotationContent, AnnotationDocument, AnnotationTemplate, AnnotationWorkspace } from '@/features/reviews/annotation-model'
-import type { AnnotationHistoryRound } from '@/features/reviews/annotation-history'
+import { annotationWorkspaceQuery, type AnnotationHistoryRound } from '@/features/reviews/annotation-history'
 
 export interface ReviewAnnotationFile { attachmentId: string; versionId: string; name: string; version: string; markCount: number }
 
 export const reviewAnnotationService = {
   files(caseId: string) { return lifecycleApi<ReviewAnnotationFile[]>(`/review-annotation-files?caseId=${encodeURIComponent(caseId)}`) },
-  load(caseId: string, attachmentId: string) {
-    return lifecycleApi<AnnotationWorkspace>(`/review-annotations?caseId=${encodeURIComponent(caseId)}&attachmentId=${encodeURIComponent(attachmentId)}`)
+  /** history=true 表示显式回看历史轮次（只读）；缺省只取当前轮次。 */
+  load(caseId: string, attachmentId: string, history = false) {
+    return lifecycleApi<AnnotationWorkspace>(`/review-annotations?${annotationWorkspaceQuery(caseId, attachmentId, history)}`)
   },
   save(scope: AnnotationWorkspace, revision: number, content: AnnotationContent) {
     return lifecycleApi<AnnotationDocument>('/review-annotations', { method: 'PUT', body: JSON.stringify({

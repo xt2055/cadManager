@@ -22,7 +22,8 @@ func AnnotationWorkspace(repo *annotation.Repository) http.HandlerFunc {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			item, err := repo.Load(r.Context(), r.URL.Query().Get("caseId"), r.URL.Query().Get("attachmentId"), user.ID)
+			// history=1 表示显式回看历史轮次（只读）；缺省只服务当前轮次。
+			item, err := repo.Load(r.Context(), r.URL.Query().Get("caseId"), r.URL.Query().Get("attachmentId"), user.ID, r.URL.Query().Get("history") == "1")
 			if err != nil {
 				annotationError(w, err)
 				return
@@ -127,6 +128,8 @@ func annotationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, annotation.ErrForbidden):
 		response.WriteError(w, 403, err.Error())
+	case errors.Is(err, annotation.ErrSuperseded):
+		response.WriteError(w, 409, err.Error())
 	case errors.Is(err, annotation.ErrConflict):
 		response.WriteError(w, 409, err.Error())
 	case errors.Is(err, annotation.ErrNotFound):
