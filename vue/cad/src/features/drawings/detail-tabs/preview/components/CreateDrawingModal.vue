@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { nextTick, ref } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { NEW_DRAWING_NAME_PRESETS } from '../new-drawing-name-presets'
 
@@ -42,6 +43,21 @@ const inputValue = (event: Event) => (event.target as HTMLInputElement).value
 
 /** 常用零件名称：点一下填入名称框，省掉打字并避免错别字（名称会拼进文件名）。 */
 const namePresets = NEW_DRAWING_NAME_PRESETS
+const nameInput = ref<HTMLInputElement | null>(null)
+
+/**
+ * 点选预设：填入基础名后把光标交给名称框末尾。
+ * 变体后缀（杆坯1、缸头坯A）不单独做预设，接着打 1 / A 就能补完。
+ */
+async function applyNamePreset(preset: string) {
+  emit('update:name', preset)
+  await nextTick()
+  const input = nameInput.value
+  if (!input) return
+  input.focus()
+  const end = input.value.length || preset.length
+  input.setSelectionRange(end, end)
+}
 </script>
 
 <template>
@@ -80,6 +96,7 @@ const namePresets = NEW_DRAWING_NAME_PRESETS
           名称<input
             class="inp"
             required
+            ref="nameInput"
             maxlength="200"
             autofocus
             :value="name"
@@ -87,7 +104,7 @@ const namePresets = NEW_DRAWING_NAME_PRESETS
           />
         </label>
         <div class="new-drawing-presets">
-          <span class="presets-label">常用名称 · 点选填入</span>
+          <span class="presets-label">常用名称 · 点选填入，可接着补 1 / A</span>
           <div class="preset-chips">
             <button
               v-for="preset in namePresets"
@@ -95,7 +112,7 @@ const namePresets = NEW_DRAWING_NAME_PRESETS
               class="preset-chip"
               :class="{ active: preset === name.trim() }"
               type="button"
-              @click="emit('update:name', preset)"
+              @click="applyNamePreset(preset)"
             >{{ preset }}</button>
           </div>
         </div>
