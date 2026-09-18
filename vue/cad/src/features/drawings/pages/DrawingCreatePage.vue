@@ -11,6 +11,7 @@ import { useDrawingStore } from '@/stores/drawing.store'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useUiStore } from '@/stores/ui.store'
 import { appContainer, drawingFileService } from '@/app/container'
+import { readAccessToken } from '@/services/auth/access-token'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import { lifecycleApi } from '@/services/lifecycle.service'
 import { extractCreationTitleBlocks } from '@/services/drawing-title-block.service'
@@ -23,7 +24,7 @@ import {
   CREATE_MODE_OPTIONS,
   NEW_DRAWING_MATERIAL_ACCEPT,
   createModeTitle,
-  materialFileKind,
+  materialLabel,
   resolveCreateMode,
   type DrawingCreateMode,
 } from '@/features/drawings/create/drawing-create-modes'
@@ -72,13 +73,13 @@ const FORK_STEPS = [
   { step: 4, title: '相关资料', sub: '技术协议与设计依据（可选）' },
 ]
 const NEW_STEPS = [
-  { step: 1, title: '新图纸信息', sub: '图纸名称、图号与可选图纸材料' },
+  { step: 1, title: '新图纸信息', sub: '图纸名称、图号、可选总图与图纸材料' }
 ]
 const currentStep = ref(1)
 const steps = computed(() => (mode.value === 'new' ? NEW_STEPS : mode.value === 'fork' ? FORK_STEPS : LEGACY_STEPS))
 const createTitle = computed(() => (mode.value === 'new' ? '创建新图纸' : mode.value === 'fork' ? '从老图纸分叉' : '新建项目图纸'))
 const createSubtitle = computed(() => {
-  if (mode.value === 'new') return '只需图纸名称与图号即可建档；图纸材料可以在此上传，也可以稍后在图纸详情中补传。'
+  if (mode.value === 'new') return '只需图纸名称与图号即可建档；建议同时上传总图，其他人才能拆图与认领零件；总图与图纸材料都可以稍后在图纸详情补传。'
   if (mode.value === 'fork') return '选择一张老图纸作为源，完整继承其属性、零件层级与工艺备料文件，生成全新的项目档案。'
   return '分步向导帮助您规范建立图纸档案；支持先立项后补传，或一步到位关联全套工程文件。'
 })
@@ -123,9 +124,13 @@ function setMode(next: DrawingCreateMode) {
     }
     // 新建档案与老图纸导入的项目名称同名，切换时沿用已填写内容，减少重复输入。
     if (!formNewName.value && formProject.value.trim()) formNewName.value = formProject.value.trim()
-  } else if (newMaterialFiles.value.length) {
-    newMaterialFiles.value = []
-    uiStore.toast(`已切换到「${createModeTitle(next)}」，新图纸材料的选择已清空。`, 'warn')
+  } else {
+    const clearedAssets = newMaterialFiles.value.length + (newAssemblyFile.value ? 1 : 0)
+    if (clearedAssets) {
+      newMaterialFiles.value = []
+      newAssemblyFile.value = null
+      uiStore.toast(`已切换到「${createModeTitle(next)}」，新图纸已选的总图与图纸材料已清空。`, 'warn')
+    }
   }
   syncModeQuery()
 }
@@ -332,7 +337,7 @@ const hasUnsavedChanges = computed(() => savedDrawingNo.value ? evidenceFiles.va
   formProject.value || formProjectNo.value || formDrawingNo.value || formRemark.value || formNewName.value ||
   Object.values(formAttributeValues.value).some(Boolean) || selectedForkSourceNo.value ||
   assemblyFile.value || partFiles.value.length || modelFiles.value.length || evidenceFiles.value.length ||
-  newMaterialFiles.value.length ||
+  newMaterialFiles.value.length || newAssemblyFile.value ||
   evidenceFolderPath.value || evidenceDescription.value || drawingOperationsStore.pendingUploadSessionId,
 ))
 
@@ -394,7 +399,7 @@ const conversionFailedCount = computed(() => conversionItems.value.filter((item)
 const conversionPendingCount = computed(() => conversionItems.value.filter((item) => !['ready', 'failed'].includes(item.status)).length)
 
 function accessToken(): string {
-  return window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token') || ''
+  return readAccessToken()
 }
 
 function flattenConversionFiles(nodes: Array<{ files?: Array<{ id: string; name: string }>; otherFiles?: Array<{ id: string; name: string }>; children?: unknown[] }>): Array<{ id: string; name: string }> {
@@ -497,13 +502,15 @@ async function openSavedDrawing() {
 }
 
 /** 项目只提交一次；后续刷新、资料归档与预览失败只能重试后续步骤。 */
+/** 项目只提交一次；后续刷新、资料归档与预览失败只能重试后续步骤。 */
 async function completeSavedDrawing() {
   createError.value = ''
   try {
     await drawingStore.refresh()
     await archiveEvidenceForDrawing(savedDrawingNo.value)
-    if (evidenceFiles.value.length) {
-      createError.value = '图纸已创建，部分相关资料尚未归档。请重试资料归档，或进入详情后补传。'
+    await archiveNewMaterialsForDrawing(savedDrawingNo.value)
+    if (evidenceFiles.value.length || newMaterialFiles.value.length) {
+      createError.value = '图纸已创建，部分资料尚未归档。请重试资料归档，或进入详情后补传。'
       return
     }
     if (mode.value === 'fork' || await waitForDrawingConversions(savedDrawingNo.value)) await openSavedDrawing()
@@ -787,6 +794,9 @@ interface UploadedMaterial {
 
 const newMaterialFiles = ref<UploadedMaterial[]>([])
 const isDraggingNewMaterials = ref(false)
+/** 资料档案（lifecycle-documents）后端的单文件上限，与资料档案页的文案保持一致。 */
+const MATERIAL_MAX_BYTES = 100 * 1024 * 1024
+
 const newMaterialSummary = computed(() => {
   if (!newMaterialFiles.value.length) return '未选择图纸材料（可跳过）'
   const counts = new Map<string, number>()
@@ -811,27 +821,39 @@ function appendNewMaterialFiles(fileList: FileList | null) {
   if (!fileList?.length) return
   const added: UploadedMaterial[] = []
   let skipped = 0
+  let assemblyDuplicated = 0
+  let oversized = 0
   for (const file of Array.from(fileList)) {
     if (!file.size) {
       skipped += 1
+      continue
+    }
+    // 资料档案走 lifecycle-documents，后端按 100MB 截断；先在此拦住，避免图纸建好后才报归档失败。
+    if (file.size > MATERIAL_MAX_BYTES) {
+      oversized += 1
+      continue
+    }
+    if (newAssemblyFile.value && newAssemblyFile.value.name === file.name && newAssemblyFile.value.file?.size === file.size) {
+      assemblyDuplicated += 1
       continue
     }
     if (newMaterialFiles.value.some((item) => item.name === file.name && item.file.size === file.size)) {
       skipped += 1
       continue
     }
-    const kind = materialFileKind(file.name)
     added.push({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name: file.name,
       size: formatFileSize(file.size),
       file,
-      label: kind.label,
+      label: materialLabel(file.name),
     })
   }
   newMaterialFiles.value.push(...added)
   if (added.length) uiStore.toast(`已加入 ${added.length} 份图纸材料`, 'ok')
   if (skipped) uiStore.toast(`${skipped} 份材料已跳过（空文件或重复选择）`, 'warn')
+  if (assemblyDuplicated) uiStore.toast(`${assemblyDuplicated} 份材料已作为总图，不重复归档`, 'warn')
+  if (oversized) uiStore.toast(`${oversized} 份材料超过 100 MB，资料档案单文件上限 100 MB，未加入`, 'warn')
 }
 
 function onNewMaterialsChange(event: Event) {
@@ -855,6 +877,49 @@ function removeNewMaterial(id: string) {
 
 function clearAllNewMaterials() {
   newMaterialFiles.value = []
+}
+
+// ---------- 创建新图纸：总图（拆图与派活的依据，允许先建档后补） ----------
+
+const newAssemblyFile = ref<UploadedAssembly | null>(null)
+const isDraggingNewAssembly = ref(false)
+const newAssemblyInput = ref<HTMLInputElement | null>(null)
+
+/** 总图必须是 2D 工程图：其他人要靠它拆出零件并在图纸预览里认领。 */
+function handleNewAssemblySelected(file: File) {
+  if (!isDrawing2DFile(file)) {
+    uiStore.toast('总图需要是 2D 工程图（EXB / DWG / DXF / PDF）', 'warn')
+    return
+  }
+  newAssemblyFile.value = { name: file.name, size: formatFileSize(file.size), file }
+  // 同一份文件既当总图又放在图纸材料里，会在创建时重复归档；先选总图时把材料里的那份去掉。
+  const duplicated = newMaterialFiles.value.filter((item) => item.name === file.name && item.file.size === file.size)
+  if (duplicated.length) {
+    newMaterialFiles.value = newMaterialFiles.value.filter((item) => !duplicated.includes(item))
+    uiStore.toast(`图纸材料中的「${file.name}」已作为总图，材料列表已去重`, 'warn')
+  }
+  uiStore.toast(`总图 ${file.name} 已选择，创建后其他人即可在图纸预览中拆图与认领零件`, 'ok')
+}
+
+function onNewAssemblyChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (file) handleNewAssemblySelected(file)
+  target.value = ''
+}
+
+function onNewAssemblyDrop(event: DragEvent) {
+  isDraggingNewAssembly.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (file) handleNewAssemblySelected(file)
+}
+
+function triggerNewAssemblyPick() {
+  newAssemblyInput.value?.click()
+}
+
+function removeNewAssembly() {
+  newAssemblyFile.value = null
 }
 
 /**
@@ -896,6 +961,51 @@ async function archiveCreatedEvidence(drawingId: string): Promise<string[]> {
     }
   }
   evidenceFiles.value = evidenceFiles.value.filter(item => !archived.has(item.id))
+  return failures
+}
+
+// ---------- 图纸材料：创建成功后统一进该图纸的资料档案 ----------
+
+/** 资料档案库的分类取值固定，材料一律按「其他资料」归类，靠来源与目录区分。 */
+const MATERIAL_ARCHIVE_CATEGORY = '其他资料'
+const MATERIAL_ARCHIVE_FOLDER = '图纸材料'
+
+async function archiveNewMaterialsForDrawing(drawingNo: string): Promise<void> {
+  if (!newMaterialFiles.value.length) return
+  const count = newMaterialFiles.value.length
+  const drawingId = drawingStore.getDrawing(drawingNo)?.id || ''
+  const failures = drawingId
+    ? await archiveNewMaterials(drawingId)
+    : ['未取得新图号的服务端身份，图纸材料未归档，请在资料档案中重新上传']
+  if (failures.length) {
+    uiStore.toast(`${failures.length} 份图纸材料未归档：${failures.join('；')}`, 'warn')
+  } else {
+    uiStore.toast(`${count} 份图纸材料已归档到「${drawingNo}」的资料档案`, 'ok')
+  }
+}
+
+/** 逐份按原件归档：单份失败只留提示，不影响图纸档案与已归档的材料。 */
+async function archiveNewMaterials(drawingId: string): Promise<string[]> {
+  const failures: string[] = []
+  const archived = new Set<string>()
+  for (const [index, item] of newMaterialFiles.value.entries()) {
+    createStatus.value = `正在把图纸材料归入资料档案（${index + 1}/${newMaterialFiles.value.length}）`
+    try {
+      const form = new FormData()
+      form.set('file', item.file)
+      form.set('title', item.name)
+      form.set('category', MATERIAL_ARCHIVE_CATEGORY)
+      form.set('description', `图纸创建时上传的图纸材料（${item.label}）`)
+      form.set('folderPath', MATERIAL_ARCHIVE_FOLDER)
+      form.set('drawingId', drawingId)
+      form.set('source', '图纸材料')
+      await lifecycleApi('/lifecycle-documents', { method: 'POST', body: form })
+      archived.add(item.id)
+    } catch (error) {
+      failures.push(`${item.name}：${error instanceof Error ? error.message : '归档失败'}`)
+    }
+  }
+  newMaterialFiles.value = newMaterialFiles.value.filter((item) => !archived.has(item.id))
   return failures
 }
 
@@ -1237,8 +1347,8 @@ async function performCreate() {
 }
 
 /**
- * 创建新图纸：只要求图纸名称与图号；项目号留空时与图号相同（后端要求项目字段非空），
- * 图纸材料按扩展名分别落到图纸文件与其他文件，也可以一份都不传。
+ * 创建新图纸：只要求图纸名称与图号；项目号留空时与图号相同（后端要求项目字段非空）。
+ * 总图作为图纸文件随档案一起归档，图纸材料则在创建成功后统一进该图纸的资料档案。
  */
 async function performCreateNew() {
   const name = formNewName.value.trim()
@@ -1246,27 +1356,26 @@ async function performCreateNew() {
   const projectNo = formProjectNo.value.trim() || drawingNo
   const remark = formRemark.value.trim()
   const files: DrawingFile[] = []
-  const otherFiles: DrawingFile[] = []
   const attachments: Array<{ id: string; content: File }> = []
 
-  newMaterialFiles.value.forEach((item, index) => {
-    const kind = materialFileKind(item.name)
-    const file: DrawingFile = {
-      id: `${Date.now()}-newmaterial-${index}`,
-      name: item.name,
-      size: item.size,
-      role: kind.role,
+  // 单独上传的总图排在图纸文件首位：拆图与派活都依赖它，必须与图纸档案同时归档。
+  const assembly = newAssemblyFile.value
+  if (assembly?.file) {
+    const assemblyEntry: DrawingFile = {
+      id: `${Date.now()}-new-assembly`,
+      name: assembly.name,
+      size: assembly.size,
+      role: 'assembly',
       drawingNo,
       version: 'v1.0',
       uploadedBy: operatorName,
       uploadedAt: '刚刚',
-      fileCategory: kind.fileCategory,
-      previewable: kind.previewable,
+      fileCategory: 'drawing2d',
+      previewable: true,
     }
-    if (kind.role === 'assembly') files.push(file)
-    else otherFiles.push(file)
-    attachments.push({ id: file.id, content: item.file })
-  })
+    files.push(assemblyEntry)
+    attachments.push({ id: assemblyEntry.id, content: assembly.file })
+  }
 
   const drawing: Drawing = {
     no: drawingNo,
@@ -1284,12 +1393,12 @@ async function performCreateNew() {
     hasFile: files.length > 0,
     signers: {},
     files,
-    otherFiles,
+    otherFiles: [],
     ...(remark ? { remark } : {}),
   }
 
   try {
-    createStatus.value = attachments.length ? '正在保存图纸档案并上传图纸材料' : '正在保存图纸档案'
+    createStatus.value = attachments.length ? '正在保存图纸档案并上传总图' : '正在保存图纸档案'
     await drawingOperationsStore.addDrawing(drawing, [], attachments)
     savedDrawingNo.value = drawingNo
   } catch (error) {
@@ -1302,7 +1411,7 @@ async function performCreateNew() {
   }
 
   uiStore.toast(
-    `图纸「${drawingNo}」已创建${attachments.length ? `，${attachments.length} 份图纸材料已归档` : '（未上传图纸材料，可稍后补传）'}`,
+    `图纸「${drawingNo}」已创建${newAssemblyFile.value ? '，总图已归档' : ''}${newMaterialFiles.value.length ? `，${newMaterialFiles.value.length} 份图纸材料将归入资料档案` : newAssemblyFile.value ? '' : '（未上传文件，可稍后补传）'}`,
     'ok',
   )
   await completeSavedDrawing()
@@ -1449,6 +1558,13 @@ async function retryFailedUpload() {
         class="hidden-input"
         @change="onNewMaterialsChange"
       />
+      <input
+        ref="newAssemblyInput"
+        type="file"
+        :accept="DRAWING_2D_ACCEPT"
+        class="hidden-input"
+        @change="onNewAssemblyChange"
+      />
 
       <div class="card wizard-card">
         <div class="section-head">
@@ -1460,7 +1576,7 @@ async function retryFailedUpload() {
               <h2>新图纸信息</h2>
               <span class="badge muted-badge">{{ newMaterialFiles.length ? `${newMaterialFiles.length} 份材料` : '图纸材料可选' }}</span>
             </div>
-            <p class="head-tip">只输入图纸名称与图号即可建档；图纸材料可以上传，也可以完全不上传，之后在图纸详情中补传</p>
+            <p class="head-tip">只输入图纸名称与图号即可建档；建议顺手传一份总图供他人拆图；图纸材料会归档到资料档案，都能稍后在图纸详情补传</p>
           </div>
         </div>
 
@@ -1512,6 +1628,68 @@ async function retryFailedUpload() {
             </div>
           </details>
 
+          <!-- 总图：其他人拆图与派活的依据；可以先建档后补，也可以现在就传 -->
+          <div class="card panel-card new-assembly-card">
+            <div class="section-head">
+              <div class="head-icon-box">
+                <DemoIcon name="layers" :size="16" />
+              </div>
+              <div class="head-text">
+                <div class="title-badge-row">
+                  <h2>总图（拆图依据）</h2>
+                  <span class="badge" :class="newAssemblyFile ? 'ok-badge' : 'muted-badge'">{{ newAssemblyFile ? '已选择' : '未上传' }}</span>
+                </div>
+                <p class="head-tip">总图是拆图与派活的依据：先传上来，其他人才能在图纸预览里按总图拆出零件并认领；也可以先建档，创建后到图纸详情补传</p>
+              </div>
+            </div>
+
+            <div class="panel-card-body">
+              <div
+                class="upload-box modern-drop-card assembly-box"
+                :class="{ active: isDraggingNewAssembly, 'has-file': Boolean(newAssemblyFile) }"
+                @dragover.prevent="isDraggingNewAssembly = true"
+                @dragleave.prevent="isDraggingNewAssembly = false"
+                @drop.prevent="onNewAssemblyDrop"
+              >
+                <template v-if="!newAssemblyFile">
+                  <div class="upload-icon-wrap">
+                    <DemoIcon name="file-up" :size="26" />
+                  </div>
+                  <div class="upload-texts">
+                    <b>拖拽总图文件至此处，或点击按钮选取</b>
+                    <p>支持 EXB / DWG / DXF / PDF；创建时一并归档，供其他人拆图</p>
+                  </div>
+                  <div class="upload-actions">
+                    <button class="btn primary" type="button" @click="triggerNewAssemblyPick">
+                      <DemoIcon name="upload" :size="14" />选择总图文件
+                    </button>
+                  </div>
+                </template>
+
+                <template v-else>
+                  <div class="file-picked-card">
+                    <div class="picked-main">
+                      <div class="picked-icon">
+                        <DemoIcon name="file-check-2" :size="20" />
+                      </div>
+                      <div class="picked-meta">
+                        <div class="picked-name" :title="newAssemblyFile.name">{{ newAssemblyFile.name }}</div>
+                        <div class="picked-sub">
+                          <span class="tag plain">2D 总图</span>
+                          <span>{{ newAssemblyFile.size }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="picked-ops">
+                      <button class="btn sm" type="button" @click="triggerNewAssemblyPick">重新选择</button>
+                      <button class="btn sm danger" type="button" @click="removeNewAssembly">移除</button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
           <div class="card panel-card new-material-card">
             <div class="section-head">
               <div class="head-icon-box">
@@ -1522,7 +1700,7 @@ async function retryFailedUpload() {
                   <h2>图纸材料（可选）</h2>
                   <span class="badge muted-badge">{{ newMaterialSummary }}</span>
                 </div>
-                <p class="head-tip">支持 2D 图纸、3D 模型与常见资料，按扩展名自动归入图纸文件、3D 模型或其他文件</p>
+                <p class="head-tip">不限格式，图片、文档、压缩包乃至图纸与 3D 文件都能收（单文件 ≤ 100 MB）；创建成功后统一归档到本图的「资料档案 → 图纸材料」，不占用图纸文件</p>
               </div>
             </div>
 
@@ -1537,7 +1715,7 @@ async function retryFailedUpload() {
                 <div class="upload-icon-wrap"><DemoIcon name="file-up" :size="26" /></div>
                 <div class="upload-texts">
                   <b>拖拽图纸材料至此处，或点击按钮选取</b>
-                  <p>可以不上传；上传后创建时一并归档，无需再次选择</p>
+                  <p>不限格式：图片、文档、压缩包，甚至图纸与 3D 文件都能收；可以不上传，上传的会在创建时一并归入资料档案</p>
                 </div>
                 <div class="upload-actions">
                   <button class="btn sm" type="button" @click="triggerNewMaterialsPick">
@@ -1548,7 +1726,7 @@ async function retryFailedUpload() {
 
               <div v-if="newMaterialFiles.length" class="parts-list-card modern-list">
                 <div class="parts-list-head">
-                  <span>待归档图纸材料（{{ newMaterialFiles.length }}）</span>
+                  <span>待归档图纸材料（{{ newMaterialFiles.length }}）→ 创建后进资料档案</span>
                   <button class="text-btn danger" type="button" @click="clearAllNewMaterials">清空列表</button>
                 </div>
                 <div class="parts-list-body panel-scroll">
@@ -1568,7 +1746,7 @@ async function retryFailedUpload() {
         </div>
 
         <footer class="panel-actions">
-          <span class="step-hint">图纸材料可以不选；创建后还能在图纸详情中继续上传图纸文件与资料</span>
+          <span class="step-hint">总图与图纸材料都可以不选；总图没传其他人无法拆图，图纸材料会在创建时归入资料档案，都能稍后补传</span>
           <div class="footer-actions">
             <button class="btn" type="button" :disabled="isCreating" @click="handleCancel">取消</button>
             <button class="btn primary" type="button" :disabled="isCreating" @click="handleSubmit">
@@ -3114,11 +3292,13 @@ async function retryFailedUpload() {
   margin-top: 10px;
 }
 
-.new-material-card {
+.new-material-card,
+.new-assembly-card {
   flex: none;
 }
 
-.new-material-card .part-item-row .tag.plain {
+.new-material-card .part-item-row .tag.plain,
+.new-assembly-card .picked-sub .tag.plain {
   flex: none;
 }
 

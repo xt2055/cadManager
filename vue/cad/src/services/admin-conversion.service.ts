@@ -1,4 +1,6 @@
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
+import { notifySessionExpired } from '@/services/auth/session-expiry'
 
 export interface ConversionJobItem {
   id: string
@@ -44,15 +46,6 @@ export interface ConversionLogResponse {
   total: number
 }
 
-function authHeaders(): Record<string, string> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  const token = typeof window !== 'undefined'
-    ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-    : null
-  if (token) headers.Authorization = `Bearer ${token}`
-  return headers
-}
-
 function unwrap<T>(body: unknown): T {
   if (typeof body === 'object' && body !== null && 'code' in body && 'data' in body) {
     const r = body as { code: number; message?: string; data: T }
@@ -67,10 +60,11 @@ function unwrap<T>(body: unknown): T {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
-    headers: { ...authHeaders(), ...init?.headers },
+    headers: { ...authorizationHeaders(), ...init?.headers },
   })
   if (response.status === 403) throw new Error('需要管理员权限')
   const body = await response.json().catch(() => ({}))
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) {
     const msg = (body as { message?: string })?.message || `请求失败: HTTP ${response.status}`
     throw new Error(msg)

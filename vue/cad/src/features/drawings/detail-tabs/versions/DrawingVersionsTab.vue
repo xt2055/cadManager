@@ -12,6 +12,7 @@ import { useDrawingRelationsStore } from '@/stores/drawing-relations.store'
 import { useWorkspaceStore } from '@/stores/workspace.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { useUiStore } from '@/stores/ui.store'
+import { withReviewContext } from '@/features/drawings/review-context'
 
 defineOptions({ name: 'DrawingVersionsTab' })
 
@@ -160,7 +161,8 @@ function viewVersion(version: FileVersionInfo) {
   router.push({
     name: 'drawing-viewer',
     params: { drawingId },
-    query: { fileId: selectedFile.value.id, versionId: version.id },
+    // 审核链路进来时保留 from=review：查看页据此启用批注工作区。
+    query: withReviewContext({ fileId: selectedFile.value.id, versionId: version.id }, route.query),
   })
 }
 

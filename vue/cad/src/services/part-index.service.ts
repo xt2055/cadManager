@@ -1,4 +1,5 @@
 import { getApiBaseUrl } from './api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
 import { partIndexQueryString } from '@/features/part-index/part-index.helpers'
 
 export { partIndexQueryString } from '@/features/part-index/part-index.helpers'
@@ -132,8 +133,8 @@ export interface PartIndexBackfillResult {
 }
 
 function headers(): HeadersInit {
-  const token = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
-  return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  // 令牌统一入口：内存登录态优先，避免只认存储镜像时漏带 Authorization 直接 401。
+  return authorizationHeaders({ 'Content-Type': 'application/json' })
 }
 
 export class PartIndexRequestError extends Error {

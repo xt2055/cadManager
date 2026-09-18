@@ -1,4 +1,6 @@
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
+import { notifySessionExpired } from '@/services/auth/session-expiry'
 
 export type ChangeStatus =
   | 'pending_approval'
@@ -107,21 +109,18 @@ function apiBaseUrl(): string {
   return getApiBaseUrl()
 }
 
-function authHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined'
-    ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-    : null
-  return token ? { Accept: 'application/json', Authorization: `Bearer ${token}` } : { Accept: 'application/json' }
-}
-
 async function request<T>(method: string, path: string, payload?: unknown): Promise<T> {
-  const init: RequestInit = { method, headers: authHeaders(), credentials: 'include' }
-  if (payload !== undefined) {
-    init.headers = { ...authHeaders(), 'Content-Type': 'application/json' }
-    init.body = JSON.stringify(payload)
+  const init: RequestInit = {
+    method,
+    // 令牌一律走统一入口：内存登录态优先，避免只认存储镜像导致的无鉴权请求（401）。
+    headers: payload === undefined ? authorizationHeaders() : authorizationHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
   }
+  if (payload !== undefined) init.body = JSON.stringify(payload)
   const response = await fetch(`${apiBaseUrl()}${path}`, init)
   const body = await response.json().catch(() => null) as { data?: T; message?: string } | T | null
+  // 401 说明当前令牌已失效：广播出去统一回到登录页，不再被业务层吞成空数据。
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) {
     const message = body && typeof body === 'object' && 'message' in body ? body.message : undefined
     throw new Error(typeof message === 'string' ? message : `变更工单请求失败：HTTP ${response.status}`)

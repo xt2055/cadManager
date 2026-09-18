@@ -1,6 +1,7 @@
 import type { DrawingAttribute, DrawingAttributeField } from '@/types/domain.types'
 import type { AttributeCommandGateway, AttributeCommandInput, AttributeFieldCommandInput } from '@/modules/attribute'
 import { getApiBaseUrl } from './api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
 
 export class AttributeCommandUnsupportedError extends Error {
   public constructor(status: number) {
@@ -9,17 +10,10 @@ export class AttributeCommandUnsupportedError extends Error {
   }
 }
 
-function authHeaders(): Record<string, string> {
-  const token = typeof window === 'undefined'
-    ? ''
-    : window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token') || ''
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
-
 async function request<T>(path: string, method: 'POST' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
     method,
-    headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...authHeaders() },
+    headers: authorizationHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' }),
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     credentials: 'include',
   })

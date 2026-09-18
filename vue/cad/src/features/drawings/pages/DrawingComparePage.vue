@@ -8,6 +8,7 @@ import { getApiBaseUrl } from '@/services/api-base.service'
 import { versioningService } from '@/app/container'
 import { compareVersionOptions, compareSourcePath, submissionCompareVersion, type CompareVersion } from '@/features/drawings/detail-tabs/preview/cad-compare-sources'
 import { lifecycleApi, type LifecycleTree } from '@/services/lifecycle.service'
+import { readAccessToken } from '@/services/auth/access-token'
 
 const route = useRoute()
 const router = useRouter()
@@ -150,7 +151,7 @@ async function readSource(side: 0 | 1, signal: AbortSignal) {
   if (!file) throw new Error('请选择两张图纸')
   const version = selectedVersions.value[side]
   if (!version) throw new Error('请选择图纸版本')
-  const token = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  const token = readAccessToken()
   const response = await fetch(`${getApiBaseUrl()}${compareSourcePath(file.id, version)}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {}, credentials: 'include', signal,
   })

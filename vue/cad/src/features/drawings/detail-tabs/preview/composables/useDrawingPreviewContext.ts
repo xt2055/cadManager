@@ -70,7 +70,8 @@ export function useDrawingPreviewContext() {
     const sequence = ++changeAccessSequence
     const current = authStore.currentUser
     changeTargetIds.value = new Set()
-    if (!archivedProject.value || !current) return
+    // 未登录（恢复会话未完成）时不要发请求：无鉴权请求只会拿回 401，并把「有编辑权」误判成无编辑权。
+    if (!archivedProject.value || !current || !authStore.isAuthenticated) return
     const drawingId = drawingStore.getDrawing(rootDrawingNo.value)?.id
     if (!drawingId) return
     try {
@@ -82,7 +83,11 @@ export function useDrawingPreviewContext() {
       if (sequence === changeAccessSequence) changeTargetIds.value = new Set()
     }
   }
-  watch([() => currentItem.value, rootDrawingNo, archivedProject, () => authStore.currentUser?.id], () => { void refreshChangeEditAccess() }, { immediate: true })
+  watch(
+    [() => currentItem.value, rootDrawingNo, archivedProject, () => authStore.currentUser?.id, () => authStore.isAuthenticated],
+    () => { void refreshChangeEditAccess() },
+    { immediate: true },
+  )
 
   // 新建图纸（追加零件图）属于编制动作：负责人 = 原创建人权限。
   const canCreateDrawing = computed(() => {

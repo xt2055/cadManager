@@ -1,4 +1,4 @@
-import { DRAWING_2D_ACCEPT, DRAWING_2D_EXTENSIONS, MODEL_EXTENSIONS, fileFormat } from '../../../utils/model-formats.ts'
+import { DRAWING_2D_EXTENSIONS, MODEL_EXTENSIONS, fileFormat } from '../../../utils/model-formats.ts'
 
 /**
  * 图纸创建的三种方式。
@@ -33,34 +33,24 @@ export function createModeTitle(mode: DrawingCreateMode): string {
   return CREATE_MODE_OPTIONS.find((option) => option.value === mode)?.title ?? '创建图纸'
 }
 
-/** 图纸材料在图纸上的归属：2D 图纸进图纸文件，其余进其他文件。 */
-export interface MaterialFileKind {
-  role: 'assembly' | 'other'
-  fileCategory: 'drawing2d' | 'model3d' | 'other'
-  label: '图纸文件' | '3D 模型' | '其他文件'
-  previewable: boolean
-}
+/** 图纸材料统一进「资料档案」，这里只按扩展名给列表一个可读标签。 */
+export type MaterialLabel = '图纸文件' | '3D 模型' | '图片' | '文档' | '其他文件'
 
-const MATERIAL_EXTRA_EXTENSIONS = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip', 'rar', '7z']
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'tif', 'tiff', 'heic', 'avif']
+const DOCUMENT_EXTENSIONS = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'md', 'rtf', 'odt', 'ods', 'odp', 'wps', 'et']
+
+/** 材料列表与汇总里显示的标签：只做展示，归档去向统一是资料档案。 */
+export function materialLabel(name: string): MaterialLabel {
+  const extension = fileFormat(name)
+  if (DRAWING_2D_EXTENSIONS.includes(extension)) return '图纸文件'
+  if (MODEL_EXTENSIONS.includes(extension)) return '3D 模型'
+  if (IMAGE_EXTENSIONS.includes(extension)) return '图片'
+  if (DOCUMENT_EXTENSIONS.includes(extension)) return '文档'
+  return '其他文件'
+}
 
 /**
- * 按扩展名判定图纸材料的归属：2D 工程图（含 PDF）作为总图文件，
- * 3D 模型与普通资料归入其他文件，避免污染图纸文件列表。
+ * 新图纸的图纸材料不限制扩展名：现场照片、检验报告、压缩包等都要能直接收，
+ * 所以 accept 放开为全部文件；材料在创建成功后统一归入该图纸的资料档案。
  */
-export function materialFileKind(name: string): MaterialFileKind {
-  const extension = fileFormat(name)
-  if (DRAWING_2D_EXTENSIONS.includes(extension)) {
-    return { role: 'assembly', fileCategory: 'drawing2d', label: '图纸文件', previewable: true }
-  }
-  if (MODEL_EXTENSIONS.includes(extension)) {
-    return { role: 'other', fileCategory: 'model3d', label: '3D 模型', previewable: false }
-  }
-  return { role: 'other', fileCategory: 'other', label: '其他文件', previewable: false }
-}
-
-/** 新图纸可选的图纸材料范围：2D 图纸 + 3D 模型 + 常见办公与压缩格式。 */
-export const NEW_DRAWING_MATERIAL_ACCEPT = [
-  DRAWING_2D_ACCEPT,
-  ...MODEL_EXTENSIONS.map((extension) => `.${extension}`),
-  ...MATERIAL_EXTRA_EXTENSIONS.map((extension) => `.${extension}`),
-].join(',')
+export const NEW_DRAWING_MATERIAL_ACCEPT = '*/*'

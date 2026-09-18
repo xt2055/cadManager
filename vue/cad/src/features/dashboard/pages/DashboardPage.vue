@@ -298,14 +298,14 @@ onBeforeUnmount(() => { disposed = true; requestGeneration++; window.clearInterv
             <div v-else-if="sourceLoading && !total" class="wb-message" role="status"><DemoIcon name="loader" :size="24" class="wb-spinning" /><p>正在加载工作数据…</p></div>
             <div v-else-if="!total" class="wb-message"><div class="wb-empty-icon"><DemoIcon :name="keyword ? 'search-x' : workspace === 'reviewer' ? 'clipboard-check' : 'folder-open'" :size="28" /></div><strong>{{ keyword || drawingFilter ? '没有匹配的图纸' : workspace === 'reviewer' ? reviewFilter === 'pending' ? '当前没有分配给你的待审任务' : '还没有签署记录' : workspace === 'designer' ? '还没有我的设计图纸' : '图纸库暂无项目' }}</strong><p>{{ keyword || drawingFilter ? '调整关键词或切换筛选条件。' : workspace === 'reviewer' ? '分配到你的审核任务将在这里显示。' : workspace === 'designer' ? '从新建图纸开始，或在图纸库中查找项目。' : '团队创建的项目与图纸会汇总到这里。' }}</p><button v-if="keyword || drawingFilter" class="btn" type="button" @click="clearSearch">清空筛选</button><button v-else-if="workspace === 'planner'" class="btn primary" type="button" @click="go(RouteName.DrawingCreate)">创建图纸</button><button v-else-if="workspace === 'designer'" class="btn" type="button" @click="go(RouteName.DrawingLibrary)">打开图纸库</button></div>
             <div v-else class="wb-table-area">
-              <table v-if="workspace === 'planner'" class="wb-table">
+              <table v-if="workspace === 'planner'" class="wb-table wb-plan-table">
                 <thead><tr><th>图纸 / 项目</th><th>状态</th><th>进度</th><th>负责人</th><th>截止日期</th><th><span class="wb-sr-only">操作</span></th></tr></thead>
                 <tbody>
                   <tr v-for="row in visiblePlanRows" :key="row.drawing.id">
                     <td><button class="wb-drawing-title" type="button" @click="openDrawing(row.drawing.no)"><span class="wb-file-icon"><DemoIcon name="file" :size="19" /></span><span><strong>{{ row.drawing.name || row.drawing.no }}</strong><small>{{ row.drawing.no }}<template v-if="row.drawing.project && row.drawing.project !== row.drawing.no"> · {{ row.drawing.project }}</template></small></span></button></td>
                     <td><span class="wb-status" :class="row.drawing.status"><i />{{ STATUS[row.drawing.status].t }}</span></td>
                     <td><div class="wb-task-progress" :class="progressTone(row)"><span>{{ row.progress.stage }}</span><b>{{ row.progress.percent }}%</b></div></td>
-                    <td><span v-if="row.assignment">{{ row.assignment.assignee }}</span><span v-else class="wb-node">待指派</span></td>
+                    <td><span v-if="row.assignment" :title="row.assignment.assignee">{{ row.assignment.assignee }}</span><span v-else class="wb-node">待指派</span></td>
                     <td class="wb-time"><span v-if="row.assignment?.dueDate" :class="{ 'wb-overdue': isOverdue(row.assignment.dueDate) }">{{ row.assignment.dueDate }}</span><span v-else>—</span></td>
                     <td><button class="wb-open" type="button" :aria-label="`打开图纸 ${row.drawing.no}`" @click="openDrawing(row.drawing.no)"><DemoIcon name="chevron-right" :size="17" /></button></td>
                   </tr>

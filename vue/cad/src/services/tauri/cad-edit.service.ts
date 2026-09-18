@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { readAccessToken } from '@/services/auth/access-token'
 
 export interface NativeEditOpenPayload {
   sessionId: string
@@ -12,7 +13,7 @@ export async function openCadEditSession(payload: NativeEditOpenPayload): Promis
     await navigator.clipboard.writeText(payload.openUrl)
     throw new Error('当前不是桌面客户端，已复制打开链接，请在图枢客户端中使用')
   }
-  const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  const accessToken = readAccessToken()
   const apiBaseUrl = getApiBaseUrl()
   await invoke('open_cad_edit_session', {
     apiBaseUrl,
@@ -30,7 +31,7 @@ export async function openCadReadonly(payload: ReadonlyOpenPayload): Promise<voi
   if (!isTauri()) {
     throw new Error('本地查看需要在图枢桌面客户端中使用')
   }
-  const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  const accessToken = readAccessToken()
   const apiBaseUrl = getApiBaseUrl()
   await invoke('open_cad_readonly', {
     apiBaseUrl,
@@ -54,7 +55,7 @@ interface SmbAccessInfo {
  */
 export async function ensureSmbCredential(): Promise<void> {
   if (!isTauri()) return
-  const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  const accessToken = readAccessToken()
   if (!accessToken) return
   const apiBaseUrl = getApiBaseUrl()
   const response = await fetch(`${apiBaseUrl}/system/smb-access`, {

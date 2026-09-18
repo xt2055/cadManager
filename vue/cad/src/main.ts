@@ -6,10 +6,15 @@ import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { i18n } from '@mlightcad/cad-viewer'
 import { AcApDocManager } from '@mlightcad/cad-simple-viewer'
 import { installCadLineRenderCallback } from './services/cad-line-render-callback'
+import { getApiBaseUrl, initializeApiBaseUrl } from './services/api-base.service'
 import App from './App.vue'
 import { router } from './router'
+import { RouteName } from './router/route-names'
+import { readAccessToken } from './services/auth/access-token'
+import { onSessionExpired } from './services/auth/session-expiry'
+import { useAuthStore } from './stores/auth.store'
 import { getTimeBasedMode } from './stores/theme.store'
-import { getApiBaseUrl, initializeApiBaseUrl } from './services/api-base.service'
+import { useUiStore } from './stores/ui.store'
 import '@mlightcad/cad-viewer/style.css'
 import './styles/index.css'
 
@@ -28,7 +33,7 @@ async function openDeepLink(url: string): Promise<void> {
   const previous = handledCadTickets.get(ticket)
   if (previous && now - previous < 120_000) return
   handledCadTickets.set(ticket, now)
-  const accessToken = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  const accessToken = readAccessToken()
   const apiBaseUrl = getApiBaseUrl()
   if (!accessToken || !apiBaseUrl) return
   try {
@@ -36,6 +41,20 @@ async function openDeepLink(url: string): Promise<void> {
   } catch (error) {
     console.error('处理 CAD 打开链接失败', error)
   }
+}
+
+/**
+ * 401 的统一出口：清掉本地登录态、提示原因并带着回跳地址回到登录页。
+ * 过去 401 被业务层吞成空数据，用户只看到「预览打不开」；这里保证失败可见、可继续。
+ */
+function handleSessionExpired(): void {
+  const authStore = useAuthStore()
+  if (!authStore.isAuthenticated) return
+  const current = router.currentRoute.value
+  const redirect = current.name && current.name !== RouteName.Login ? current.fullPath : ''
+  authStore.logout()
+  useUiStore().toast('登录已失效，请重新登录', 'warn')
+  void router.replace({ name: RouteName.Login, query: redirect ? { redirect } : {} })
 }
 
 document.documentElement.dataset.skin = 'classic'
@@ -76,6 +95,8 @@ async function bootstrap(): Promise<void> {
     console.error('路由导航失败', error)
   })
   app.use(createPinia())
+  // 会话失效处理必须在 Pinia 装好之后注册：处理器内部要用 useAuthStore/useUiStore。
+  onSessionExpired(handleSessionExpired)
   app.use(i18n)
   app.use(router)
   app.mount('#app')

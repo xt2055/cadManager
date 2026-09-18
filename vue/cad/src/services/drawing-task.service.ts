@@ -1,4 +1,6 @@
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
+import { notifySessionExpired } from '@/services/auth/session-expiry'
 import type { DrawingStatus } from '@/types/domain.types'
 
 /** 任务进度由图纸生命周期推导，前端不做二次计算，只负责展示。 */
@@ -92,21 +94,17 @@ function apiBaseUrl(): string {
   return getApiBaseUrl()
 }
 
-function authHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined'
-    ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-    : null
-  return token ? { Accept: 'application/json', Authorization: `Bearer ${token}` } : { Accept: 'application/json' }
-}
-
 async function request<T>(method: string, path: string, payload?: unknown): Promise<T> {
-  const init: RequestInit = { method, headers: authHeaders(), credentials: 'include' }
-  if (payload !== undefined) {
-    init.headers = { ...authHeaders(), 'Content-Type': 'application/json' }
-    init.body = JSON.stringify(payload)
+  const init: RequestInit = {
+    method,
+    // 令牌统一入口：内存登录态优先，避免只认存储镜像导致的无鉴权请求（401）。
+    headers: payload === undefined ? authorizationHeaders() : authorizationHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
   }
+  if (payload !== undefined) init.body = JSON.stringify(payload)
   const response = await fetch(`${apiBaseUrl()}${path}`, init)
   const body = await response.json().catch(() => null) as { data?: T; message?: string } | T | null
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) {
     const message = body && typeof body === 'object' && 'message' in body ? body.message : undefined
     // 后端把「为什么不行 + 去哪里解决」写在 message 里，前端原样透出，不再替换成笼统文案。

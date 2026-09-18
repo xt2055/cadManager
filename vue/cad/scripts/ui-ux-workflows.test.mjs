@@ -15,6 +15,8 @@ import * as reviewRules from '../src/features/reviews/review-workspace.ts'
 import * as drawingAuthority from '../src/modules/drawing/drawing-authority.ts'
 import { STATUS } from '../src/constants/drawing-status.ts'
 import * as createModes from '../src/features/drawings/create/drawing-create-modes.ts'
+import * as modelFormats from '../src/utils/model-formats.ts'
+import * as accountRoleEditor from '../src/features/admin/account-role-editor.ts'
 
 // Run the real SFC setup functions with Vue reactivity and lifecycle hooks.
 // All network/writes are replaced here; these tests never create or sign real drawings.
@@ -38,7 +40,7 @@ function fixture() {
   const drawing = { id: 'd1', no: 'D1', name: '测试图纸', status: 'draft', project: 'P1', vendor: '', files: [{ id: 'f1', name: 'D1.dwg' }], otherFiles: [] }
   const f = {
     user, drawing, route: Vue.reactive({ path: '/drawings/D1/preview', params: { drawingId: 'D1' }, query: {}, name: 'drawing-preview' }),
-    pushes: [], replaced: [], created: [], toasts: [], errors: [], leave: null, focused: '', fetch: async () => ({ ok: true, json: async () => ({ data: { status: 'ready' } }) }),
+    pushes: [], replaced: [], created: [], lifecycle: [], flows: [], flowSaved: [], toasts: [], errors: [], leave: null, focused: '', fetch: async () => ({ ok: true, json: async () => ({ data: { status: 'ready' } }) }),
     ui: useUiStore(), library: useDrawingLibraryUiStore(),
     drawings: Vue.reactive({ drawings: [drawing], parts: [], loading: false, error: null,
       load: async () => {}, refresh: async () => {}, refreshDesigner: async () => {}, invalidate() {},
@@ -46,7 +48,10 @@ function fixture() {
     }),
     attributes: Vue.reactive({ sortedAttributes: [], loading: false, error: null, load: async () => {}, validate: () => [], fieldName: () => '' }),
     operations: Vue.reactive({ pendingUploadSessionId: '', uploadProgress: {}, cancelPendingUploadSession: async () => {}, addDrawing: async (drawing, parts, attachments) => { f.created.push({ drawing, parts, attachments }) } }),
-    review: Vue.reactive({ current: null, getCase() { return this.current }, load: async () => {}, myPendingReviews: () => [] }),
+    review: Vue.reactive({ current: null, getCase() { return this.current }, load: async () => {}, myPendingReviews: () => [],
+      loadFlows: async () => {}, getFlow: id => f.flows.find(flow => flow.id === id) ?? null,
+      createFlow: async input => { f.flowSaved.push(input) }, updateFlow: async (id, input) => { f.flowSaved.push({ id, ...input }) } }),
+    admin: Vue.reactive({ users: [], createUser: async () => {}, updateUser: async () => {} }),
   }
   f.ui.toast = (message, type) => f.toasts.push({ message, type })
   f.router = {
@@ -74,12 +79,16 @@ function mountFile(relative, f, props = {}) {
     '@/services/tauri/window.service': { windowService: { guardClose: async () => () => {} } },
     '@/app/container': { appContainer: { uploadGateway: {} }, drawingFileService: {}, drawingCommandService: {} },
     '@/services/api-base.service': { getApiBaseUrl: () => 'http://test.invalid' },
-    '@/services/lifecycle.service': { lifecycleApi: async () => ({}) },
+    // 令牌统一入口：创建页只用它拼请求头，测试里按「未登录」处理即可。
+    '@/services/auth/access-token': { readAccessToken: () => '', authorizationHeaders: () => ({ Accept: 'application/json' }) },
+    // 资料档案写入必须可观测：图纸材料与相关资料都走这里，测试要断言归档去向。
+    '@/services/lifecycle.service': { lifecycleApi: async (path, init) => { f.lifecycle.push({ path, ...init }); return {} } },
     '@/services/drawing-title-block.service': { extractCreationTitleBlocks: async () => [] },
     '@/services/change-request.service': { changeRequestService: { listByDrawing: async () => [] } },
     // 审核批注列表：ReviewWorkspacePanel 只用到 files()，测试里不需要真实实现。
     '@/services/review-annotation.service': { reviewAnnotationService: { files: async () => [] } },
-    '@/utils/model-formats': { drawingMediaLabel: () => '2D' },
+    // 建模格式判定用真实实现：创建页要靠 isDrawing2DFile 判断总图能不能收。
+    '@/utils/model-formats': modelFormats,
     '@/features/drawings/create/drawing-create-modes': createModes,
     '@/utils/drawing-number-parser': {},
     '@/utils/date-time': { formatReadableDateTime: () => '' },
@@ -89,6 +98,12 @@ function mountFile(relative, f, props = {}) {
     // 控制权判定用真实实现，避免测试里再写一份「谁算负责人」的假规则。
     '@/modules/drawing/drawing-authority': drawingAuthority,
     '../review-opinion-draft': drafts,
+    // review-service.ts 用构造器参数属性，Node 的 strip-only TS 加载不了；这里按同一语义给出 signerRoleForNode，
+    // 本用例关注的是节点顺序与保存时的 order，角色推导另有真实实现负责。
+    '@/features/admin/account-role-editor': accountRoleEditor,
+    '@/modules/review': { signerRoleForNode: (name, signerRole) => (signerRole || '').trim() || name || '' },
+    '@/stores/admin.store': { useAdminStore: () => f.admin },
+    '@/services/auth/candidate-user.service': { fetchReviewerCandidates: async () => [] },
   }
   const context = { exports: {}, console: { ...console, error: (...args) => f.errors.push(args) }, Error, AbortSignal, FormData,
     window: browserWindow, document: {
@@ -311,8 +326,9 @@ test('创建新图纸：只输入图纸名称与图号，材料不上传也能�
   app.unmount()
 })
 
-test('创建新图纸：图号重复拦截，图纸材料按扩展名归入图纸文件、3D 模型与其他文件', async () => {
+test('创建新图纸：图号重复拦截，图纸材料统一归入资料档案', async () => {
   const f = fixture(); f.route.query.mode = 'new'
+  f.drawings.getDrawing = no => no === 'JG-2026-02-00' ? { id: 'd-2', no, files: [], otherFiles: [] } : null
   const app = mountFile(createPage, f); const s = app.state; await flush()
 
   s.formNewName.value = '重复图号图纸'; s.formDrawingNo.value = 'D1'
@@ -328,18 +344,96 @@ test('创建新图纸：图号重复拦截，图纸材料按扩展名归入图�
     material('m1', 'JG-2026-02-00.dwg', '图纸文件', 1),
     material('m2', '回转装配体.step', '3D 模型', 2),
     material('m3', '技术要求.pdf', '图纸文件', 3),
-    material('m4', '评审纪要.docx', '其他文件', 4),
+    material('m4', '评审纪要.docx', '文档', 4),
   ]
+  // 超过资料档案 100 MB 上限的材料在加入时就拦下，避免图纸建好后才发现归档失败
+  s.appendNewMaterialFiles([{ name: '整套总装.step', size: 101 * 1024 * 1024 }])
+  assert.equal(s.newMaterialFiles.value.some(item => item.name === '整套总装.step'), false)
+  assert.match(f.toasts.at(-1).message, /超过 100 MB/)
   await s.performCreateNew()
   assert.equal(f.created.length, 1)
   const [call] = f.created
-  assert.equal(call.drawing.files.map(file => file.name).join('|'), 'JG-2026-02-00.dwg|技术要求.pdf')
-  assert.equal(call.drawing.files.every(file => file.role === 'assembly' && file.fileCategory === 'drawing2d'), true)
-  assert.equal(call.drawing.otherFiles.map(file => file.name).join('|'), '回转装配体.step|评审纪要.docx')
-  assert.equal(call.drawing.otherFiles.map(file => file.fileCategory).join('|'), 'model3d|other')
   assert.equal(call.drawing.project, 'PRJ-2026-002', '填写的项目号优先于图号')
+  assert.equal(call.drawing.files.length, 0, '图纸材料不再进图纸文件')
+  assert.equal(call.drawing.otherFiles.length, 0, '图纸材料不再进其他文件')
+  assert.equal(call.drawing.hasFile, false, '没有总图时图纸不含文件')
+  assert.equal(call.attachments.length, 0, '图纸材料不进图纸上传会话')
+  assert.equal(f.lifecycle.length, 4, '四份材料全部走资料档案')
+  assert.equal(f.lifecycle.map(item => item.body.get('title')).join('|'), 'JG-2026-02-00.dwg|回转装配体.step|技术要求.pdf|评审纪要.docx')
+  assert.equal(f.lifecycle.every(item => item.body.get('source') === '图纸材料' && item.body.get('drawingId') === 'd-2'), true)
+  assert.equal(s.newMaterialFiles.value.length, 0)
+  app.unmount()
+})
+
+test('创建新图纸：可单独上传总图，图纸材料统一归入资料档案', async () => {
+  const f = fixture(); f.route.query.mode = 'new'
+  f.drawings.getDrawing = no => no === 'JG-2026-03-00' ? { id: 'd-new', no, files: [], otherFiles: [] } : null
+  const app = mountFile(createPage, f); const s = app.state; await flush()
+
+  assert.equal(createModes.NEW_DRAWING_MATERIAL_ACCEPT, '*/*', '图纸材料不再限制扩展名')
+  assert.equal(createModes.materialLabel('现场照片.png'), '图片')
+  assert.equal(createModes.materialLabel('检验报告.docx'), '文档')
+  assert.equal(createModes.materialLabel('评审纪要.zip'), '其他文件')
+
+  const html = await renderState(createPage, s)
+  assert.match(html, /总图（拆图依据）/)
+  assert.match(html, /选择总图文件/)
+
+  // 非 2D 文件不能占用总图位置
+  s.handleNewAssemblySelected({ name: '现场照片.png', size: 1024 })
+  assert.equal(s.newAssemblyFile.value, null)
+  assert.match(f.toasts.at(-1).message, /2D 工程图/)
+
+  s.formNewName.value = '带总图的新图纸'; s.formDrawingNo.value = 'JG-2026-03-00'
+  s.handleNewAssemblySelected({ name: 'JG-2026-03-00.dwg', size: 2048 })
+  assert.equal(s.newAssemblyFile.value.name, 'JG-2026-03-00.dwg')
+  assert.equal(s.newAssemblyFile.value.size, '2.0 KB')
+
+  // 同一份文件既当总图又放进图纸材料时不重复收录
+  s.appendNewMaterialFiles([{ name: 'JG-2026-03-00.dwg', size: 2048 }])
+  assert.equal(s.newMaterialFiles.value.length, 0, '先选总图时材料里不再重复收录')
+  assert.match(f.toasts.at(-1).message, /不重复归档/)
+  s.newMaterialFiles.value = [{ id: 'm0', name: 'JG-2026-03-00.dwg', size: '2.0 KB', file: { name: 'JG-2026-03-00.dwg', size: 2048 }, label: '图纸文件' }]
+  s.handleNewAssemblySelected({ name: 'JG-2026-03-00.dwg', size: 2048 })
+  assert.equal(s.newMaterialFiles.value.length, 0, '先加材料后选总图时材料去重')
+
+  s.newMaterialFiles.value = [{ id: 'm1', name: '现场照片.png', size: '1.0 KB', file: new File([new Uint8Array(1024)], '现场照片.png'), label: '图片' }]
+  await s.performCreateNew()
+
+  assert.equal(f.created.length, 1)
+  const [call] = f.created
+  assert.equal(call.drawing.files.map(file => file.name).join('|'), 'JG-2026-03-00.dwg', '只有总图进图纸文件')
+  assert.equal(call.drawing.files[0].role, 'assembly')
+  assert.equal(call.drawing.files[0].fileCategory, 'drawing2d')
+  assert.equal(call.drawing.otherFiles.length, 0, '图纸材料不再进其他文件')
   assert.equal(call.drawing.hasFile, true)
-  assert.equal(call.attachments.length, 4, '四份材料的文件内容都要随会话提交')
+  assert.equal(call.attachments.length, 1, '只有总图随图纸会话提交')
+
+  // 图纸材料在图纸落库后逐份进资料档案
+  assert.equal(f.lifecycle.length, 1, '两份材料只有一份是材料，另一份是总图')
+  const [doc] = f.lifecycle
+  assert.equal(doc.path, '/lifecycle-documents')
+  assert.equal(doc.method, 'POST')
+  assert.equal(doc.body.get('title'), '现场照片.png')
+  assert.equal(doc.body.get('category'), '其他资料')
+  assert.equal(doc.body.get('folderPath'), '图纸材料')
+  assert.equal(doc.body.get('source'), '图纸材料')
+  assert.equal(doc.body.get('drawingId'), 'd-new', '资料档案按新图号的服务端身份归档')
+  assert.equal(doc.body.get('file').name, '现场照片.png')
+  assert.equal(s.newMaterialFiles.value.length, 0, '归档成功后材料列表清空')
+  assert.match(f.toasts.at(-1).message, /已归档到「JG-2026-03-00」的资料档案/)
+  app.unmount()
+})
+
+test('创建方式可切换：切到上传老图纸会清空新图纸已选的总图与材料', async () => {
+  const f = fixture(); f.route.query.mode = 'new'
+  const app = mountFile(createPage, f); const s = app.state; await flush()
+  s.newAssemblyFile.value = { name: 'A.dwg', size: '1.0 KB', file: { name: 'A.dwg', size: 1024 } }
+  s.newMaterialFiles.value = [{ id: 'm1', name: '照片.png', size: '1.0 KB', file: { name: '照片.png', size: 1024 }, label: '图片' }]
+  s.setMode('legacy')
+  assert.equal(s.newAssemblyFile.value, null)
+  assert.equal(s.newMaterialFiles.value.length, 0)
+  assert.match(f.toasts.at(-1).message, /已清空/)
   app.unmount()
 })
 
@@ -381,5 +475,74 @@ test('创建方式可切换：切到创建新图纸会清空 2D 已选文件并�
   assert.equal(s.assemblyFile.value, null)
   assert.equal(s.formNewName.value, '待建项目', '沿用已填写的名称作为图纸名称')
   assert.equal(f.replaced.at(-1).query.mode, 'new', '地址栏同步创建方式')
+  app.unmount()
+})
+
+test('审核流程模板：节点顺序可用上移/下移调整，保存按当前顺序写入 order', async () => {
+  const f = fixture()
+  f.flows.push({
+    id: 'flow-1',
+    name: '企业标准图纸审核流程',
+    nodes: ['设计自检', '校对复核', '专业审核', '工艺会签'].map((name, index) => ({ name, signerRole: '', candidateRole: 'reviewer', assignedUserId: '', assignedName: '待定', required: true, order: index + 1 })),
+  })
+  const app = mountFile('components/feedback/DemoModal.vue', f); const s = app.state; await flush()
+
+  f.ui.openModal('edit-flow', '编辑审核流程', { flowId: 'flow-1' })
+  await flush()
+  assert.equal(s.flowNodes.value.map(node => node.name).join(','), '设计自检,校对复核,专业审核,工艺会签', '打开模板按库里顺序展示')
+
+  // 模板里必须真的出现顺序标识与调序按钮，而不是只有数组顺序
+  const html = await renderState('components/feedback/DemoModal.vue', s)
+  assert.match(html, /签署顺序：第 1 步/, '每行带顺序序号')
+  assert.match(html, /上移：提前签署/)
+  assert.match(html, /下移：延后签署/)
+
+  // 两端已禁用，边界移动必须原地不动
+  s.moveFlowNode(0, -1)
+  s.moveFlowNode(3, 1)
+  assert.equal(s.flowNodes.value.map(node => node.name).join(','), '设计自检,校对复核,专业审核,工艺会签')
+
+  s.moveFlowNode(0, 1)
+  assert.equal(s.flowNodes.value.map(node => node.name).join(','), '校对复核,设计自检,专业审核,工艺会签', '下移把节点放到下一位')
+  s.moveFlowNode(3, -1)
+  assert.equal(s.flowNodes.value.map(node => node.name).join(','), '校对复核,设计自检,工艺会签,专业审核', '上移把节点提前一位')
+
+  await s.submit()
+  assert.equal(f.flowSaved.length, 1)
+  assert.equal(f.flowSaved[0].id, 'flow-1', '编辑已有模板走更新')
+  assert.equal(
+    f.flowSaved[0].nodes.map(node => `${node.order}:${node.name}`).join(' | '),
+    '1:校对复核 | 2:设计自检 | 3:工艺会签 | 4:专业审核',
+    'order 按调整后的顺序重排',
+  )
+  app.unmount()
+})
+
+test('审核流程管理：store 换掉数组后列表要跟着刷新，加载中不误报空状态', async () => {
+  const f = fixture()
+  const page = 'features/admin/pages/ReviewFlowManagementPage.vue'
+  f.review.flows = []
+  f.review.loading = false
+  f.review.loadFlows = async () => {
+    // Pinia setup store 的真实行为：整数组替换，而不是原地 push。
+    f.review.loading = false
+    f.review.flows = [{
+      id: 'flow-1', name: '企业标准图纸审核流程', enabled: true, description: '标准流程', createdBy: '管理员',
+      nodes: [{ id: 'n1', name: '校对复核', candidateRole: 'reviewer', order: 1 }],
+    }]
+  }
+  const app = mountFile(page, f); const s = app.state; await flush()
+
+  let html = await renderState(page, s)
+  assert.doesNotMatch(html, /暂无审核流程/, 'loadFlows 整数组替换后不能还停在空状态')
+  assert.match(html, /企业标准图纸审核流程/)
+  assert.match(html, /1 个节点/)
+
+  // 加载中只显示进度提示，不误报「暂无」
+  f.review.flows = []
+  f.review.loading = true
+  html = await renderState(page, s)
+  assert.match(html, /正在读取审核流程/)
+  assert.doesNotMatch(html, /暂无审核流程/)
   app.unmount()
 })

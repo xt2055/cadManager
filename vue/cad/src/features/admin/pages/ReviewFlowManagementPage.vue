@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { useUiStore } from '@/stores/ui.store'
 import type { ReviewFlowDto } from '@/modules/review'
@@ -9,8 +9,10 @@ defineOptions({ name: 'ReviewFlowManagementPage' })
 
 const uiStore = useUiStore()
 const reviewStore = useReviewStore()
-const flows = reviewStore.flows
-const loading = () => reviewStore.loading
+// 必须用 computed 跟随 store：loadFlows / createFlow 都是整数组替换，
+// 直接 `const flows = reviewStore.flows` 会把首次的空数组钉死，页面永远停在「暂无审核流程」。
+const flows = computed(() => reviewStore.flows)
+const loading = computed(() => reviewStore.loading)
 
 async function loadFlows() {
   try {
@@ -49,7 +51,8 @@ watch(() => uiStore.modal, (current, previous) => {
       <div class="flow-head"><DemoIcon name="workflow" :size="16" /><b>{{ flow.name }}</b><span class="tag" :class="flow.enabled ? 'ok' : 'mute'">{{ flow.enabled ? '启用中' : '已停用' }}</span><span class="tag info">{{ flow.nodes.length }} 个节点</span><div class="flow-actions"><button class="btn sm" type="button" @click="editFlow(flow)"><DemoIcon name="pencil" :size="14" />编辑节点</button><button class="btn sm" type="button" @click="toggleFlow(flow)">{{ flow.enabled ? '停用' : '启用' }}</button></div></div>
        <div class="flow-nodes"><span v-for="node in flow.nodes" :key="node.id || node.order" class="tag plain">{{ node.name }} · {{ node.candidateRole }}</span></div><div class="flow-desc">{{ flow.description || '未填写流程说明' }} · 创建人：{{ flow.createdBy || '待定' }}</div>
      </div>
-      <div v-if="!loading() && !flows.length" class="card empty"><DemoIcon name="workflow" :size="34" /><div class="t">暂无审核流程</div></div>
+      <div v-if="loading && !flows.length" class="card empty" role="status"><DemoIcon name="loader" :size="30" /><div class="t">正在读取审核流程…</div></div>
+      <div v-else-if="!flows.length" class="card empty"><DemoIcon name="workflow" :size="34" /><div class="t">暂无审核流程</div></div>
   </div>
 </template>
 

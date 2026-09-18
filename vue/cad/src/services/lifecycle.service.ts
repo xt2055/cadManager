@@ -1,9 +1,10 @@
 import { getApiBaseUrl } from '@/services/api-base.service'
 import { isTauri } from '@tauri-apps/api/core'
 import { saveDownloadFile } from '@/services/tauri/cad-edit.service'
+import { readAccessToken } from '@/services/auth/access-token'
 
 export async function lifecycleFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const token = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  const token = readAccessToken()
   const headers = new Headers(init.headers)
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')

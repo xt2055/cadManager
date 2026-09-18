@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 
 import { useAuthStore } from '@/stores/auth.store'
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { readAccessToken } from '@/services/auth/access-token'
 
 export interface SystemStatusData {
   service: {
@@ -71,9 +72,7 @@ export const useSystemStatusStore = defineStore('systemStatus', () => {
     const baseUrl = getApiBaseUrl()
     let fetched = false
     try {
-      const token = authStore.token || (typeof window !== 'undefined'
-        ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-        : null)
+      const token = authStore.token || readAccessToken()
       const headers: Record<string, string> = { Accept: 'application/json' }
       if (token) headers.Authorization = `Bearer ${token}`
 
@@ -111,9 +110,7 @@ export const useSystemStatusStore = defineStore('systemStatus', () => {
 
   async function heartbeat(): Promise<void> {
     const baseUrl = getApiBaseUrl()
-    const token = authStore.token || (typeof window !== 'undefined'
-      ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-      : null)
+    const token = authStore.token || readAccessToken()
     if (!token) return
     try {
       await fetch(`${baseUrl}/auth/heartbeat`, {

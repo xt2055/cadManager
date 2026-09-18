@@ -1,4 +1,5 @@
 import type { AuthUser } from '@/features/auth/types/auth.types'
+import { readAccessToken } from '@/services/auth/access-token'
 import { adminService } from '@/app/container'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -8,7 +9,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function fetchReviewerCandidates(role = 'reviewer'): Promise<Array<{ id: string; name: string; account: string }>> {
   const baseUrl = getApiBaseUrl()
   try {
-    const token = typeof window !== 'undefined' ? window.localStorage.getItem('cad_access_token') : null
+    const token = readAccessToken()
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (token) headers.Authorization = `Bearer ${token}`
     const response = await fetch(`${baseUrl}/users/reviewers?role=${encodeURIComponent(role)}`, {

@@ -1,4 +1,6 @@
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
+import { notifySessionExpired } from '@/services/auth/session-expiry'
 
 export interface AdminDrawingSummary {
   id: string
@@ -79,20 +81,14 @@ export interface AdminDrawingPage {
   pageSize: number
 }
 
-function authHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined'
-    ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-    : null
-  return token ? { Accept: 'application/json', Authorization: `Bearer ${token}` } : { Accept: 'application/json' }
-}
-
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
-    headers: { ...authHeaders(), ...(init.headers || {}) },
+    headers: { ...authorizationHeaders(), ...(init.headers || {}) },
     credentials: 'include',
   })
   const body = await response.json().catch(() => null) as { data?: T; message?: string } | T | null
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) {
     const message = body && typeof body === 'object' && body !== null && 'message' in body ? body.message : undefined
     throw new Error(typeof message === 'string' ? message : `后台图纸请求失败：HTTP ${response.status}`)
@@ -139,7 +135,7 @@ export function closeAdminEditSession(id: string): Promise<Record<string, unknow
 
 export function downloadAdminVersion(id: string): Promise<Blob> {
   return fetch(`${getApiBaseUrl()}/file-versions/${encodeURIComponent(id)}/content`, {
-    headers: authHeaders(),
+    headers: authorizationHeaders(),
     credentials: 'include',
   }).then(async (response) => {
     if (!response.ok) throw new Error(`版本下载失败：HTTP ${response.status}`)

@@ -88,6 +88,18 @@ async function loadFlowForm(flowId?: string) {
   }))
 }
 
+/**
+ * 调整节点顺序：数组下标就是签署顺序，保存时按 index+1 写入 order。
+ * 上移/下移一步，越界直接忽略（按钮在两端已禁用）。
+ */
+function moveFlowNode(index: number, direction: -1 | 1) {
+  const target = index + direction
+  if (target < 0 || target >= flowNodes.value.length) return
+  const [moved] = flowNodes.value.splice(index, 1)
+  if (!moved) return
+  flowNodes.value.splice(target, 0, moved)
+}
+
 const modal = computed(() => uiStore.modal)
 
 watch(modal, (current) => {
@@ -259,6 +271,7 @@ function toggleRole(role: UserRole) {
           <div class="field field-last">
             <label>审核节点（每个节点默认分配给「审核人员」角色，可根据需要调整身份或指定人员）</label>
             <div v-for="(node, index) in flowNodes" :key="index" class="flow-edit-row">
+              <span class="flow-node-order" :title="`签署顺序：第 ${index + 1} 步`">{{ index + 1 }}</span>
               <input v-model="node.name" class="inp flow-node-name" placeholder="节点名称" />
               <select v-model="node.role" class="inp flow-node-role" title="候选身份角色">
                 <option value="reviewer">审核人员 (默认)</option>
@@ -270,11 +283,13 @@ function toggleRole(role: UserRole) {
                 <option v-for="user in (candidateUsersByRole[node.role] || [])" :key="user.id" :value="user.id">{{ user.name }}</option>
               </select>
               <label class="flow-req-check"><input v-model="node.required" type="checkbox" />必需</label>
-              <button class="icon-btn" type="button" @click="flowNodes.splice(index, 1)"><DemoIcon name="trash-2" :size="14" /></button>
+              <button class="icon-btn" type="button" title="上移：提前签署" :disabled="index === 0" @click="moveFlowNode(index, -1)"><DemoIcon name="arrow-up" :size="14" /></button>
+              <button class="icon-btn" type="button" title="下移：延后签署" :disabled="index === flowNodes.length - 1" @click="moveFlowNode(index, 1)"><DemoIcon name="arrow-down" :size="14" /></button>
+              <button class="icon-btn" type="button" title="删除该节点" @click="flowNodes.splice(index, 1)"><DemoIcon name="trash-2" :size="14" /></button>
             </div>
             <button class="btn sm" type="button" @click="flowNodes.push({ name: `新审核节点 ${flowNodes.length + 1}`, signerRole: '', role: 'reviewer', assignedUserId: '', assignedName: '待定', required: true })"><DemoIcon name="plus" :size="14" />添加节点</button>
           </div>
-          <div class="note"><DemoIcon name="info" :size="14" /><div>流程节点身份可自定义，系统默认采用 reviewer 审核身份候选，也可指定特定设计或管理岗位。</div></div>
+          <div class="note"><DemoIcon name="info" :size="14" /><div>节点从上到下就是签署顺序，可用行内箭头调整；保存时按当前顺序写入。每个节点默认采用 reviewer 审核身份候选，也可指定特定设计或管理岗位。</div></div>
         </template>
       </div>
 

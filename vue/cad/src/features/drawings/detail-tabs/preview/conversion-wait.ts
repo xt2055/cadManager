@@ -1,4 +1,5 @@
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
 
 /**
  * 等待后端把 EXB 转成 DWG。
@@ -27,15 +28,9 @@ export interface ConversionWaitOptions {
 /** 状态取值见 `conversion_handler.go`：ready 为终态成功，failed 为终态失败。 */
 const TERMINAL_FAILURE = 'failed'
 
-function accessToken(): string {
-  if (typeof window === 'undefined') return ''
-  return window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token') || ''
-}
-
 async function readStatus(id: string, signal?: AbortSignal): Promise<{ status: string; error: string }> {
-  const token = accessToken()
   const response = await fetch(`${getApiBaseUrl()}/cad/conversions/${encodeURIComponent(id)}`, {
-    headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: authorizationHeaders(),
     credentials: 'include',
     signal: signal ?? AbortSignal.timeout(10000),
   })

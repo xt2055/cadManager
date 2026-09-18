@@ -59,6 +59,23 @@ for (const pattern of [/saveStructure\s*\(/, /saveAttributes\s*\(/, /saveBom\s*\
   if (pattern.test(apiClient)) violations.push(`API client still exposes legacy bulk method ${pattern}`)
 }
 
+// 访问令牌只能从 services/auth/access-token.ts 读取：其他位置直接读历史镜像键
+// 会在「内存已登录、存储镜像被清掉」时发出无鉴权请求，后端 401 再被业务层吞成空数据
+// （表现为预览页空白、变更工单读不到）。会话记录键同样只允许该模块解析。
+const tokenModule = 'services/auth/access-token.ts'
+const tokenLiterals = [/cad_access_token/, /cad:auth-session/]
+for (const file of filesUnder(sourceRoot)) {
+  if (!/\.(ts|vue)$/.test(file)) continue
+  const relativePath = relative(sourceRoot, file).split('\\').join('/')
+  if (relativePath === tokenModule) continue
+  const content = readFileSync(file, 'utf8')
+  for (const pattern of tokenLiterals) {
+    if (pattern.test(content)) {
+      violations.push(`${relativePath} 直接读写访问令牌存储键，请改用 services/auth/access-token`)
+    }
+  }
+}
+
 if (violations.length) {
   console.error('前端架构回归失败')
   for (const violation of violations) console.error(`- ${violation}`)

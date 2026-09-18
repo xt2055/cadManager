@@ -12,6 +12,7 @@ import type { TitleSpace } from '@/features/drawings/detail-tabs/preview/cad-tit
 import { useDrawingStore } from '@/stores/drawing.store'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import type { FileView } from '@/modules/drawing'
+import { readAccessToken } from '@/services/auth/access-token'
 import ReviewAnnotationBoard from '@/features/reviews/components/ReviewAnnotationBoard.vue'
 import type { AnnotationWorkspace, AnnotationViewport } from '@/features/reviews/annotation-model'
 import { reviewAnnotationService } from '@/services/review-annotation.service'
@@ -111,7 +112,7 @@ const renderEngineKey = ref(0)
 const zoomText = computed(() => `${Math.round(zoomLevel.value * 100)}%`)
 
 function getAccessToken() {
-  return localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  return readAccessToken()
 }
 
 function revokeOriginalUrl() {
@@ -397,8 +398,8 @@ watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId]
     <div class="viewer-body">
       <!-- 中间 CAD 矢量图画板 -->
       <main class="viewer-canvas-container">
-        <!-- 审核批注工作区只在审核工作台的查看链路里出现，图纸预览不提供批注入口。 -->
-        <ReviewAnnotationBoard v-if="fromReview" :workspace="annotationWorkspace" :viewport="annotationView" :enabled="annotationVisible" :error="annotationError" @reload="reloadAnnotations">
+        <!-- 批注工作区只在审核链路启停；外壳必须始终存在，否则非审核入口打开时画布容器根本不会渲染。 -->
+        <ReviewAnnotationBoard :workspace="annotationWorkspace" :viewport="annotationView" :enabled="annotationVisible" :error="annotationError" @reload="reloadAnnotations">
         <!-- 已废弃：Canvas DXF 渲染组件保留，不再挂载。 -->
         <!--
         <CadVectorViewer
@@ -439,7 +440,9 @@ watch([drawingId, fileId, versionId, versionKey, () => route.query.reviewCaseId]
         </div>
         <div class="panel-content">
           <div v-if="dynamicLayers.length === 0" class="no-layers">
-            正在读取 CAD 图层拓扑...
+            <template v-if="cadOriginalError">{{ cadOriginalError }}</template>
+            <template v-else-if="viewerReady">当前图纸没有图层</template>
+            <template v-else>正在读取 CAD 图层拓扑...</template>
           </div>
           <label
             v-for="layer in dynamicLayers"

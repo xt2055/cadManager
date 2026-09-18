@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { withReviewContext } from '@/features/drawings/review-context'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import BatchDownloadModal from './components/BatchDownloadModal.vue'
 import BorrowPartModal from './components/BorrowPartModal.vue'
@@ -127,7 +128,8 @@ function openBrowse(file: DrawingFile) {
   router.push({
     name: 'drawing-viewer',
     params: { drawingId: currentItem.value.no },
-    query: { fileId: file.id },
+    // 审核链路进入时必须把 from=review 带下去，否则查看页不显示标注工具条。
+    query: withReviewContext({ fileId: file.id }, route.query),
   })
 }
 

@@ -4,8 +4,14 @@ import { defineStore } from 'pinia'
 import type { UserRole } from '@/types/domain.types'
 import { createAuthProvider } from '@/services/auth/auth-provider.factory'
 import type { AuthUser, LoginRequest, StoredAuthSession } from '@/features/auth/types/auth.types'
-
-const SESSION_STORAGE_KEY = 'cad:auth-session:v1'
+import {
+  ACCESS_TOKEN_MIRROR_KEY,
+  SESSION_STORAGE_KEY,
+  readStoredSession,
+  setAccessToken,
+  syncAccessTokenMirror,
+  type TokenStorageKind,
+} from '@/services/auth/access-token'
 
 /**
  * 角色权限表。
@@ -20,21 +26,11 @@ const rolePermissions: Record<UserRole, string[]> = {
   reviewer: ['dashboard.read', 'drawing.read', 'review.read', 'review.process', 'task.read'],
 }
 
-function readStoredSession(): StoredAuthSession | null {
-  const localRaw = window.localStorage.getItem(SESSION_STORAGE_KEY)
-  const sessionRaw = window.sessionStorage.getItem(SESSION_STORAGE_KEY)
-  const raw = localRaw || sessionRaw
-  if (!raw) return null
-
-  try {
-    const value: unknown = JSON.parse(raw)
-    if (!value || typeof value !== 'object') return null
-    const session = value as Partial<StoredAuthSession>
-    if (typeof session.token !== 'string' || typeof session.userId !== 'string') return null
-    return { token: session.token, userId: session.userId }
-  } catch {
-    return null
-  }
+/** 会话记录解析统一在 services/auth/access-token，这里只补上「存在哪个存储」这一信息。 */
+function readStoredSessionEntry(): { session: StoredAuthSession; storage: TokenStorageKind } | null {
+  const stored = readStoredSession()
+  if (!stored) return null
+  return { session: { token: stored.token, userId: stored.userId }, storage: stored.storage }
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -45,15 +41,17 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => Boolean(currentUser.value && token.value))
 
   function clearLegacySession() {
-    window.localStorage.removeItem('cad_access_token')
+    window.localStorage.removeItem(ACCESS_TOKEN_MIRROR_KEY)
     window.localStorage.removeItem('cad_current_user')
-    window.sessionStorage.removeItem('cad_access_token')
+    window.sessionStorage.removeItem(ACCESS_TOKEN_MIRROR_KEY)
     window.sessionStorage.removeItem('cad_current_user')
   }
 
   function clearSession() {
     currentUser.value = null
     token.value = ''
+    // 内存令牌只增不减会让退出后的后台轮询继续带旧令牌打接口，一律同源清空。
+    setAccessToken('')
     window.localStorage.removeItem(SESSION_STORAGE_KEY)
     window.sessionStorage.removeItem(SESSION_STORAGE_KEY)
     clearLegacySession()
@@ -62,21 +60,25 @@ export const useAuthStore = defineStore('auth', () => {
   async function restoreSession(): Promise<void> {
     if (initialized.value) return
     initialized.value = true
-    const session = readStoredSession()
-    if (!session) {
+    const entry = readStoredSessionEntry()
+    if (!entry) {
       clearLegacySession()
       return
     }
 
     try {
       const provider = await getProvider()
-      const user = await provider.restore(session)
+      const user = await provider.restore(entry.session)
       if (!user) {
         clearSession()
         return
       }
       currentUser.value = user
-      token.value = session.token
+      token.value = entry.session.token
+      // 恢复出登录态后立刻同步内存令牌与镜像键：只认存储镜像的调用点过去会在
+      // 「内存有令牌、镜像被清掉」的窗口里发出无鉴权请求并拿到 401。
+      setAccessToken(entry.session.token)
+      syncAccessTokenMirror(entry.session.token, entry.storage)
     } catch (error) {
       console.error('恢复登录会话失败', error)
       clearSession()
@@ -87,18 +89,19 @@ export const useAuthStore = defineStore('auth', () => {
     const result = await (await getProvider()).login(request)
     currentUser.value = result.user
     token.value = result.token
+    setAccessToken(result.token)
 
     const sessionPayload = JSON.stringify({ token: result.token, userId: result.user.id } satisfies StoredAuthSession)
     if (request.rememberMe) {
       window.localStorage.setItem(SESSION_STORAGE_KEY, sessionPayload)
-      window.localStorage.setItem('cad_access_token', result.token)
+      syncAccessTokenMirror(result.token, 'local')
       window.sessionStorage.removeItem(SESSION_STORAGE_KEY)
-      window.sessionStorage.removeItem('cad_access_token')
+      window.sessionStorage.removeItem(ACCESS_TOKEN_MIRROR_KEY)
     } else {
       window.sessionStorage.setItem(SESSION_STORAGE_KEY, sessionPayload)
-      window.sessionStorage.setItem('cad_access_token', result.token)
+      syncAccessTokenMirror(result.token, 'session')
       window.localStorage.removeItem(SESSION_STORAGE_KEY)
-      window.localStorage.removeItem('cad_access_token')
+      window.localStorage.removeItem(ACCESS_TOKEN_MIRROR_KEY)
     }
     initialized.value = true
     return result.user

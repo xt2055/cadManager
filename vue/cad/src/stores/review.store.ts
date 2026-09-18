@@ -61,9 +61,23 @@ export const useReviewStore = defineStore('review', () => {
     }
   }
 
-  async function loadFlows(): Promise<void> {
-    flows.value = await reviewService.listFlows()
+/**
+ * 读取审核流程模板：整数组替换是既有约定，页面必须通过 computed 跟随。
+ * 这里补齐 loading（页面据此区分「加载中」与「确实没有」），并对异常响应兜底成空列表，
+ * 避免后端返回空体时把 flows 写成 undefined 让列表页崩掉。
+ */
+async function loadFlows(): Promise<void> {
+  loading.value = true
+  error.value = null
+  try {
+    flows.value = (await reviewService.listFlows()) ?? []
+  } catch (loadError: unknown) {
+    error.value = loadError instanceof Error ? loadError.message : String(loadError)
+    throw loadError
+  } finally {
+    loading.value = false
   }
+}
 
   function getCase(drawingNo: string, caseId?: string): ApiReviewCase | null {
     const candidates = cases.value.filter((item) => item.drawingNo === drawingNo)

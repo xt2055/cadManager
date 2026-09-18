@@ -1,4 +1,6 @@
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
+import { notifySessionExpired } from '@/services/auth/session-expiry'
 
 export interface ApiDrawingLifecycle {
   id: string
@@ -11,20 +13,14 @@ function apiBaseUrl() {
   return getApiBaseUrl()
 }
 
-function authHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined'
-    ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-    : null
-  return token ? { Accept: 'application/json', Authorization: `Bearer ${token}` } : { Accept: 'application/json' }
-}
-
 async function request<T>(path: string): Promise<T> {
   const response = await fetch(`${apiBaseUrl()}${path}`, {
     method: 'POST',
-    headers: authHeaders(),
+    headers: authorizationHeaders(),
     credentials: 'include',
   })
   const body = await response.json().catch(() => null) as { data?: T; message?: string } | T | null
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) {
     const message = body && typeof body === 'object' && 'message' in body ? body.message : undefined
     throw new Error(typeof message === 'string' ? message : `图纸状态更新失败：HTTP ${response.status}`)

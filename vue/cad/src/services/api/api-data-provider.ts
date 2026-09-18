@@ -4,15 +4,17 @@ import type { BorrowPartInput, CreatePartInput, DrawingBomSnapshot, DrawingBorro
 import type { UserAccount } from '@/types/domain.types'
 import type { UserManagementInput } from '@/types/application.types'
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { readAccessToken } from '@/services/auth/access-token'
+import { notifySessionExpired } from '@/services/auth/session-expiry'
 import { drawingBomRequestBody } from '@/modules/drawing/bom-request'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+/** 令牌统一走 services/auth/access-token：内存登录态优先，避免只认存储导致的 401。 */
 function getAccessToken(): string {
-  if (typeof window === 'undefined') return ''
-  return window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token') || ''
+  return readAccessToken()
 }
 
 function unwrapResponseData(value: unknown): unknown {
@@ -504,6 +506,8 @@ export class ApiDataProvider {
 
     options.onResponse?.(response)
 
+    // 401 说明令牌已失效：广播出去统一回到登录页，而不是让调用方只看到一句「请求失败」。
+    if (response.status === 401) notifySessionExpired()
     if (!response.ok) {
       let message = `数据接口请求失败：HTTP ${response.status}`
       try {

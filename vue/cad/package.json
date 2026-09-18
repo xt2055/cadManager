@@ -8,6 +8,8 @@
     "tauri": "tauri",
     "build": "run-p type-check \"build-only {@}\" --",
     "test": "node scripts/architecture-check.mjs",
+    "test:auth": "node --experimental-strip-types --test scripts/access-token.test.mjs",
+    "test:drawings": "node --experimental-strip-types --test scripts/drawing-review-context.test.mjs",
     "test:accounts": "node --experimental-strip-types --test scripts/account-role-editor.test.mjs",
     "test:reviews": "node --experimental-strip-types --test scripts/review-workspace.test.mjs scripts/review-change-submission.test.mjs",
     "test:annotations": "node --experimental-strip-types --test scripts/review-annotations.test.mjs",

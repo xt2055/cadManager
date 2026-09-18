@@ -12,6 +12,7 @@ import { useUiStore } from '@/stores/ui.store'
 import { windowService } from '@/services/tauri/window.service'
 import { getApiBaseUrl } from '@/services/api-base.service'
 import { installCadFontDiagnostics, normalizeCadToleranceEntities, preloadCadSymbolFonts, resolveCadFontsBaseUrl } from '@/services/cad-fonts.service'
+import { readAccessToken } from '@/services/auth/access-token'
 import { registerCadConverters } from '@/services/cad-converters.service'
 import { exportEditorDxf } from '@/services/cad-editor-export'
 import type { FileView } from '@/modules/drawing'
@@ -70,7 +71,7 @@ async function prepareCadEditor() {
 }
 
 function getAccessToken() {
-  return localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  return readAccessToken()
 }
 
 function clearOriginalFile() {

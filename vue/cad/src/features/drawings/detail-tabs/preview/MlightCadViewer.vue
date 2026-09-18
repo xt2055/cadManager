@@ -7,6 +7,7 @@ import { registerCadConverters } from '@/services/cad-converters.service'
 import { compareEntities, snapshotDrawing, type DrawingDifference, type CompareBounds } from './cad-compare'
 import { collectTitleSpaces } from './cad-title-block'
 import { panViewBox, zoomViewBox } from './cad-viewport-gestures'
+import { readAccessToken } from '@/services/auth/access-token'
 import type { AnnotationViewport, Point } from '@/features/reviews/annotation-model'
 
 interface Props {
@@ -149,7 +150,7 @@ async function finishInitialRender(currentManager: any, isCurrent: () => boolean
 }
 
 function getAccessToken() {
-  return localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+  return readAccessToken()
 }
 
 async function destroyViewer() {

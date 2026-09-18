@@ -8,7 +8,6 @@ import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useAttributeStore } from '@/stores/attribute.store'
 import { useDrawingLibraryUiStore } from '@/stores/drawing-library-ui.store'
-import { useUiStore } from '@/stores/ui.store'
 import { formatReadableDateTime } from '@/utils/date-time'
 import { drawingMediaLabel } from '@/utils/model-formats'
 import type { DrawingCreateMode } from '@/features/drawings/create/drawing-create-modes'
@@ -32,12 +31,10 @@ let disposed = false
 const hasFilters = computed(() => Boolean(query.value.trim() || status.value || media.value || (mode.value === 'drawing' && activeFilterCount.value)))
 const availableStatuses = Object.entries(STATUS).filter(([key]) => key !== 'disabled')
 const isAdmin = computed(() => authStore.hasRole('admin'))
-const uiStore = useUiStore()
 
-// 建档权只对计划员与管理员开放；其他账号看到的是「原因 + 解决入口」，而不是一个点了没反应的按钮。
+// 建档权只对计划员与管理员开放：没有建档权的账号直接看不到创建入口，不做权限提示。
 const canCreateDrawing = computed(() => authStore.canCreateDrawing)
 const canAssignTasks = computed(() => authStore.canAssignTasks)
-const createDeniedHint = computed(() => '创建图纸需要计划员或管理员权限；设计人员请等待计划员在任务管理台指派图纸，指派后会出现在工作台的「我的任务」中。')
 
 const activeFilterCount = computed(() => Object.values(attributeFilters.value).filter(Boolean).length)
 
@@ -242,15 +239,6 @@ watch([query, status, media, mode, attributeFilters], () => {
           <DemoIcon name="clipboard-list" :size="14" />任务管理台
         </button>
         <button
-          v-else
-          class="btn"
-          type="button"
-          :title="createDeniedHint"
-          @click="uiStore.toast(createDeniedHint, 'warn')"
-        >
-          <DemoIcon name="info" :size="14" />创建图纸需计划员权限
-        </button>
-        <button
           v-if="canCreateDrawing"
           class="btn primary"
           type="button"
@@ -451,10 +439,8 @@ watch([query, status, media, mode, attributeFilters], () => {
             <button class="btn primary" type="button" @click="openCreate('legacy')">上传老图纸</button>
             <button class="btn" type="button" @click="openCreate('new')">创建新图纸</button>
           </template>
-          <template v-else>
-            <span class="empty-state-hint">{{ createDeniedHint }}</span>
-            <button class="btn" type="button" @click="router.push({ name: 'dashboard' })">回到工作台查看我的任务</button>
-          </template>
+          <!-- 无建档权时不提示权限，直接不显示创建入口，只留回工作台看任务的出口。 -->
+          <button v-else class="btn" type="button" @click="router.push({ name: 'dashboard' })">回到工作台查看我的任务</button>
         </div>
       </div>
       <div v-else ref="tableElement" class="table-scroll">
@@ -510,10 +496,8 @@ watch([query, status, media, mode, attributeFilters], () => {
                     <button class="btn primary" type="button" @click="openCreate('legacy')">上传老图纸</button>
                     <button class="btn" type="button" @click="openCreate('new')">创建新图纸</button>
                   </template>
-                  <template v-else>
-                    <span class="empty-state-hint">{{ createDeniedHint }}</span>
-                    <button class="btn" type="button" @click="router.push({ name: 'dashboard' })">回到工作台查看我的任务</button>
-                  </template>
+                  <!-- 无建档权时不提示权限，直接不显示创建入口，只留回工作台看任务的出口。 -->
+                  <button v-else class="btn" type="button" @click="router.push({ name: 'dashboard' })">回到工作台查看我的任务</button>
                 </div>
               </td>
             </tr>
@@ -1340,13 +1324,6 @@ watch([query, status, media, mode, attributeFilters], () => {
 
 .empty-state-view span {
   font-size: 11.5px;
-}
-
-/* 无建档权时的说明文字：读起来是解释而不是报错，但必须比普通提示更容易被看到。 */
-.empty-state-hint {
-  max-width: 460px;
-  line-height: 1.6;
-  color: var(--text-2);
 }
 
 @media (max-width: 768px) {

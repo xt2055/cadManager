@@ -70,7 +70,7 @@ html[data-theme='dark'] .page.cad-workbench { --wb-card: var(--panel-top, var(--
 .cad-workbench .wb-search:focus-within { border-color: var(--accent); }
 .cad-workbench .wb-search input { width: 0; min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-1); font-size: 11px; }
 .cad-workbench .wb-search button { display: inline-flex; padding: 0; border: 0; background: transparent; color: var(--text-2); }
-.cad-workbench .wb-table-area { flex: 1; min-height: 0; }
+.cad-workbench .wb-table-area { flex: 1; min-height: 0; overflow-x: auto; }
 .cad-workbench .wb-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 12px; }
 .cad-workbench .wb-table th { height: 34px; padding: 8px 10px; background: var(--bg); color: var(--text-2); font-size: 11px; font-weight: 400; white-space: nowrap; }
 .cad-workbench .wb-table td { height: 58px; padding: 8px 10px; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -82,7 +82,20 @@ html[data-theme='dark'] .page.cad-workbench { --wb-card: var(--panel-top, var(--
 .cad-workbench .wb-review-table th:nth-child(2) { width: 98px; }
 .cad-workbench .wb-review-table th:nth-child(4) { width: 108px; }
 .cad-workbench .wb-review-table th:last-child { width: 90px; }
+/*
+ * 计划工作台（图纸任务）：列宽单独一组。
+ * 之前它沿用图纸库那套 nth-child 宽度，「负责人」只剩 46px（名字被压成「测…」）、
+ * 「进度」只剩 72px 却要塞阶段与百分比，于是溢出到相邻列；这里按这五列的内容重新分配，
+ * 多出来的空间留给「图纸 / 项目」，其余列不再被压扁。
+ */
+.cad-workbench .wb-plan-table th:nth-child(2) { width: 84px; }
+.cad-workbench .wb-plan-table th:nth-child(3) { width: 148px; }
+.cad-workbench .wb-plan-table th:nth-child(4) { width: 140px; }
+.cad-workbench .wb-plan-table th:nth-child(5) { width: 118px; }
+.cad-workbench .wb-plan-table th:last-child { width: 44px; }
+.cad-workbench .wb-plan-table td:nth-child(4) { overflow: hidden; text-overflow: ellipsis; }
 .cad-workbench .wb-table tr:last-child td { border-bottom: 0; }
+.cad-workbench .wb-plan-table { min-width: 660px; }
 .cad-workbench .wb-table tr:hover td { background: var(--hover); }
 .cad-workbench .wb-table th:first-child, .cad-workbench .wb-table td:first-child { padding-left: 14px; }
 .cad-workbench .wb-drawing-title { display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text-1); text-align: left; }
@@ -158,8 +171,9 @@ html[data-theme='dark'] .page.cad-workbench { --wb-card: var(--panel-top, var(--
 @keyframes wb-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .cad-workbench .wb-spinning { animation: none; } .cad-workbench .wb-status-tab { transition: none; } }
 /* 计划工作台：进度与逾期只做视觉区分，数值与文案一律来自任务推导，页面不再自己算。 */
-.cad-workbench .wb-task-progress { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text-2); }
-.cad-workbench .wb-task-progress b { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.cad-workbench .wb-task-progress { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; color: var(--text-2); }
+.cad-workbench .wb-task-progress span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cad-workbench .wb-task-progress b { flex: none; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
 .cad-workbench .wb-task-progress.positive { color: var(--ok, #408b70); }
 .cad-workbench .wb-task-progress.attention { color: var(--warn, #c98a2e); }
 .cad-workbench .wb-task-progress.muted { color: var(--text-3); }

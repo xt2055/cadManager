@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router'
 import DemoIcon from '@/components/common/DemoIcon.vue'
 import { STATUS } from '@/constants/drawing-status'
 import { changeRequestService } from '@/services/change-request.service'
+import { useAuthStore } from '@/stores/auth.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useWorkspaceStore } from '@/stores/workspace.store'
 import { formatReadableDateTime } from '@/utils/date-time'
@@ -19,6 +20,7 @@ const router = useRouter()
 const route = useRoute()
 const drawingStore = useDrawingStore()
 const workspaceStore = useWorkspaceStore()
+const authStore = useAuthStore()
 
 const drawing = computed(() => {
   const id = String(route.params.drawingId ?? '')
@@ -38,13 +40,18 @@ watch(() => titleFiles.value.map(file => `${file.id}:${file.version}`).join('|')
 }, { immediate: true })
 const designerName = computed(() => savedDesigner(titleFiles.value.map(file => file.id)))
 const changing = ref(false)
-watch(() => drawing.value && 'parentNo' in drawing.value ? '' : drawing.value?.id, (id) => {
-  changing.value = false
-  if (!id || drawing.value?.status !== 'archived') return
-  void changeRequestService.listByDrawing(id).then((requests) => {
-    changing.value = requests.some((item) => ['pending_approval', 'executing', 'pending_verify'].includes(item.status))
-  }).catch(() => { changing.value = false })
-}, { immediate: true })
+watch(
+  [() => (drawing.value && 'parentNo' in drawing.value ? '' : drawing.value?.id), () => authStore.isAuthenticated],
+  ([id]) => {
+    changing.value = false
+    // 未登录（会话还没恢复）时不要发请求：无鉴权请求只会拿回 401，把「变更中」误判成无变更。
+    if (!id || drawing.value?.status !== 'archived' || !authStore.isAuthenticated) return
+    void changeRequestService.listByDrawing(id).then((requests) => {
+      changing.value = requests.some((item) => ['pending_approval', 'executing', 'pending_verify'].includes(item.status))
+    }).catch(() => { changing.value = false })
+  },
+  { immediate: true },
+)
 
 const creatorLabel = computed(() => {
   const item = drawing.value as { createdBy?: string } | null

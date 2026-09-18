@@ -1,4 +1,6 @@
 import type { ActivityLog, ActivityResult, ActivityTargetType, ActivityType } from '@/types/domain.types'
+import { authorizationHeaders } from '@/services/auth/access-token'
+import { notifySessionExpired } from '@/services/auth/session-expiry'
 import { getApiBaseUrl } from '@/services/api-base.service'
 
 interface OperationLogInput {
@@ -61,22 +63,14 @@ function unwrap<T>(body: unknown): T {
   return body as T
 }
 
-function authHeaders(): Record<string, string> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  const token = typeof window !== 'undefined'
-    ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-    : null
-  if (token) headers.Authorization = `Bearer ${token}`
-  return headers
-}
-
 export async function createDrawingOperationLog(input: OperationLogInput): Promise<ActivityLog> {
   const response = await fetch(`${getApiBaseUrl()}/drawing-operation-logs`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    headers: authorizationHeaders({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify(input),
   })
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) throw new Error(`图纸操作日志保存失败：HTTP ${response.status}`)
   return unwrap<ActivityLog>(await response.json())
 }
@@ -92,9 +86,10 @@ export async function listDrawingOperationLogs(options: DrawingOperationLogQuery
   if (options.keyword) query.set('keyword', options.keyword)
   const response = await fetch(`${getApiBaseUrl()}/drawing-operation-logs?${query}`, {
     method: 'GET',
-    headers: authHeaders(),
+    headers: authorizationHeaders(),
     credentials: 'include',
   })
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) throw new Error(`图纸操作日志读取失败：HTTP ${response.status}`)
   return unwrap<OperationLogPage>(await response.json())
 }
@@ -109,9 +104,10 @@ export async function listOperationLogOptions(
   const path = adminOnly ? '/admin/audit-logs/options' : '/drawing-operation-logs/options'
   const response = await fetch(`${getApiBaseUrl()}${path}?${query}`, {
     method: 'GET',
-    headers: authHeaders(),
+    headers: authorizationHeaders(),
     credentials: 'include',
   })
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) throw new Error(`操作日志候选读取失败：HTTP ${response.status}`)
   return unwrap<OperationLogOptionPage>(await response.json())
 }
@@ -131,9 +127,10 @@ export async function listAdminOperationLogs(options: AdminOperationLogQuery = {
   if (options.to) query.set('to', options.to)
   const response = await fetch(`${getApiBaseUrl()}/admin/audit-logs?${query}`, {
     method: 'GET',
-    headers: authHeaders(),
+    headers: authorizationHeaders(),
     credentials: 'include',
   })
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) throw new Error(`管理员操作日志读取失败：HTTP ${response.status}`)
   return unwrap<OperationLogPage>(await response.json())
 }

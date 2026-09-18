@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import DxfParser from 'dxf-parser'
 import DemoIcon from '@/components/common/DemoIcon.vue'
+import { readAccessToken } from '@/services/auth/access-token'
 
 interface Props {
   dxfUrl?: string | null
@@ -1304,7 +1305,7 @@ async function loadDxf(url: string) {
   loadingStage.value = '正在请求 CAD 图纸数据...'
 
   try {
-    const token = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
+    const token = readAccessToken()
     const res = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })

@@ -1,4 +1,6 @@
 import { getApiBaseUrl } from '@/services/api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
+import { notifySessionExpired } from '@/services/auth/session-expiry'
 
 export interface SystemLogLine {
   time: string
@@ -38,20 +40,12 @@ function unwrap<T>(body: unknown): T {
   return body as T
 }
 
-function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  const headers: Record<string, string> = { Accept: 'application/json', ...extra }
-  const token = typeof window !== 'undefined'
-    ? window.localStorage.getItem('cad_access_token') || window.sessionStorage.getItem('cad_access_token')
-    : null
-  if (token) headers.Authorization = `Bearer ${token}`
-  return headers
-}
-
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const response = await fetch(`${getApiBaseUrl()}${path}`, init)
   if (response.status === 403) throw new Error('需要管理员权限')
   const body: unknown = await response.json().catch(() => ({}))
   const data = unwrap<T>(body)
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) {
     throw new Error(isRecord(body) && typeof body.message === 'string' ? body.message : `请求失败：HTTP ${response.status}`)
   }
@@ -61,11 +55,11 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 export async function fetchSystemLogs(lines = 400, keyword = ''): Promise<SystemLogLine[]> {
   const query = new URLSearchParams({ lines: String(lines) })
   if (keyword) query.set('keyword', keyword)
-  return request<SystemLogLine[]>(`/system/logs?${query.toString()}`, { headers: authHeaders() })
+  return request<SystemLogLine[]>(`/system/logs?${query.toString()}`, { headers: authorizationHeaders() })
 }
 
 export async function fetchSystemLogFiles(): Promise<SystemLogFile[]> {
-  return request<SystemLogFile[]>('/system/logs/files', { headers: authHeaders() })
+  return request<SystemLogFile[]>('/system/logs/files', { headers: authorizationHeaders() })
 }
 
 export function systemLogDownloadUrl(file: string): string {
@@ -73,7 +67,7 @@ export function systemLogDownloadUrl(file: string): string {
 }
 
 export async function fetchUpdateList(): Promise<UpdateRecord[]> {
-  return request<UpdateRecord[]>('/system/updates', { headers: authHeaders() })
+  return request<UpdateRecord[]>('/system/updates', { headers: authorizationHeaders() })
 }
 
 export async function uploadUpdatePackage(input: {
@@ -89,11 +83,11 @@ export async function uploadUpdatePackage(input: {
   form.append('notes', input.notes)
   form.append('mandatory', input.mandatory ? 'true' : 'false')
   if (input.platform) form.append('platform', input.platform)
-  return request<UpdateRecord>('/system/updates', { method: 'POST', headers: authHeaders(), body: form })
+  return request<UpdateRecord>('/system/updates', { method: 'POST', headers: authorizationHeaders(), body: form })
 }
 
 export async function deleteUpdatePackage(id: string): Promise<void> {
-  await request<{ ok: boolean }>(`/system/updates/${id}`, { method: 'DELETE', headers: authHeaders() })
+  await request<{ ok: boolean }>(`/system/updates/${id}`, { method: 'DELETE', headers: authorizationHeaders() })
 }
 
 export function updatePackageDownloadUrl(record: UpdateRecord): string {

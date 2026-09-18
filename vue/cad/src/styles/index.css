@@ -1441,24 +1441,29 @@ html[data-skin='tech'] .modal { box-shadow: 0 0 40px var(--glow), var(--shadow);
 .exit-confirm { padding: 10px 0 4px; text-align: center; }
 .exit-confirm > svg { color: var(--warn); }
 .exit-confirm p { margin-top: 13px; color: var(--text-2); font-size: 13px; line-height: 1.7; }
-.flow-edit-row { display: grid; grid-template-columns: minmax(170px, 1fr) 150px minmax(230px, 1.35fr) auto 30px; align-items: center; gap: 9px; margin-bottom: 8px; }
+.flow-edit-row { display: grid; grid-template-columns: 24px minmax(150px, 1fr) 120px minmax(150px, 1.2fr) auto repeat(3, 30px); align-items: center; gap: 9px; margin-bottom: 8px; }
 .flow-edit-row .inp { min-width: 0; }
 .flow-edit-row .flow-node-name,
 .flow-edit-row .flow-node-role,
 .flow-edit-row .flow-node-assignee { width: 100%; }
 .flow-edit-row .flow-req-check { display: flex; align-items: center; gap: 5px; margin: 0; white-space: nowrap; }
 .flow-edit-row .icon-btn { width: 30px; height: 30px; flex: none; }
+/* 顺序徽标：节点从上到下即签署顺序，序号随上移/下移实时变化。 */
+.flow-edit-row .flow-node-order { display: grid; place-items: center; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.flow-edit-row .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.flow-edit-row .icon-btn:disabled:hover { background: transparent; color: var(--text-2); }
 
 @media (max-width: 760px) {
   #toastWrap { top: 60px; right: 12px; left: 12px; }
   .toast { max-width: none; }
   .modal-form-grid, .signature-grid { grid-template-columns: 1fr; }
-  .flow-edit-row { grid-template-columns: minmax(0, 1fr) 30px; }
+  .flow-edit-row { grid-template-columns: minmax(0, 1fr) repeat(3, 30px); }
+  .flow-edit-row .flow-node-order { grid-column: 1; grid-row: 1; justify-self: start; width: 30px; }
   .flow-edit-row .flow-node-name,
   .flow-edit-row .flow-node-role,
   .flow-edit-row .flow-node-assignee { grid-column: 1 / -1; }
   .flow-edit-row .flow-req-check { grid-column: 1; }
-  .flow-edit-row .icon-btn { grid-column: 2; grid-row: 4; }
+  .flow-edit-row .icon-btn { grid-column: auto; grid-row: 4; }
 }
 
 @media (max-width: 1180px) {

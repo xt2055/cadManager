@@ -1,5 +1,6 @@
 import { reactive } from 'vue'
 import { getApiBaseUrl } from './api-base.service'
+import { authorizationHeaders } from '@/services/auth/access-token'
 import { collectTitleSpaces, extractTitleFields } from '@/features/drawings/detail-tabs/preview/cad-title-block'
 import { extractTitleBlockRecord, extractTitleBlockBatch, normalizeTitlePayload, type TitlePayload, type TitleSnapshot } from './title-block-workflow'
 export const savedTitleBlocks = reactive<Record<string, TitleSnapshot>>({})
@@ -14,12 +15,8 @@ class TitleBlockRequestError extends Error {
     this.status = status
   }
 }
-function headers() {
-  const token = localStorage.getItem('cad_access_token') || sessionStorage.getItem('cad_access_token') || ''
-  return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-}
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${getApiBaseUrl()}${path}`, { ...init, headers: headers(), credentials: 'include', signal: AbortSignal.timeout(30000) })
+  const response = await fetch(`${getApiBaseUrl()}${path}`, { ...init, headers: authorizationHeaders({ 'Content-Type': 'application/json' }), credentials: 'include', signal: AbortSignal.timeout(30000) })
   const body = await response.json().catch(() => ({}))
   if (!response.ok) throw new TitleBlockRequestError(body.message || `图纸信息请求失败：HTTP ${response.status}`, response.status)
   return body.data ?? body
@@ -36,7 +33,7 @@ async function parseTitleBlock(id: string, versionId: string): Promise<TitlePayl
     import('@/features/drawings/detail-tabs/preview/cad-worker-assets'),
   ])
   await registerCadConverters(getCadWorkerUrls().dwgParser)
-  const response = await fetch(`${getApiBaseUrl()}/cad/source?attachmentId=${encodeURIComponent(id)}&expectedVersionId=${encodeURIComponent(versionId)}`, { headers: headers(), credentials: 'include', signal: AbortSignal.timeout(120000) })
+  const response = await fetch(`${getApiBaseUrl()}/cad/source?attachmentId=${encodeURIComponent(id)}&expectedVersionId=${encodeURIComponent(versionId)}`, { headers: authorizationHeaders(), credentials: 'include', signal: AbortSignal.timeout(120000) })
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
     throw new TitleBlockRequestError(body.message || `读取 CAD 文件失败：HTTP ${response.status}`, response.status)
