@@ -1,12 +1,24 @@
 import { ref, type ComputedRef } from 'vue'
 
-import { drawingFileService } from '@/app/container'
+import { extractAndSaveTitleBlock } from '@/services/drawing-title-block.service'
+import type { TitleSnapshot } from '@/services/title-block-workflow'
 import { useDrawingOperationsStore } from '@/stores/drawing-operations.store'
 import { useDrawingStore } from '@/stores/drawing.store'
 import { useUiStore } from '@/stores/ui.store'
 import type { DrawingFile } from '@/types/domain.types'
 import type { ProjectDrawingFile } from '../drawing-preview-files'
 import { filterReidentifiableFiles } from '../drawing-reidentify'
+
+/** 从已保存的标题栏快照里取图号；图幅没写图号时返回空串，由调用方按失败项处理。 */
+function partNoFromSnapshot(snapshot: TitleSnapshot): string {
+  for (const space of snapshot.payload?.spaces ?? []) {
+    const field = space.fields.find((item) => item.key === 'number')
+    if (field?.value) return field.value.trim()
+    const candidate = field?.candidates[0]
+    if (candidate) return candidate.trim()
+  }
+  return ''
+}
 
 /** 弹窗里的一行待校正记录。 */
 export interface ReidentifyItem {
@@ -56,9 +68,14 @@ export function useDrawingReidentify(options: UseDrawingReidentifyOptions) {
       const failures: string[] = []
       for (const file of cadFiles) {
         try {
-          const content = await drawingFileService.read(file.storageKey as string)
-          const identity = await drawingFileService.identify(content, file.name)
-          const identifiedNo = identity.partNo.trim()
+          // 图号真值在图幅里，不在文件名里：文件名可能忘改，后端按文件名解析等于白读。
+          // EXB 未转换完成时这里会抛 409「图纸正在转换，完成后将自动提取标题栏」，按失败项收集。
+          const snapshot = await extractAndSaveTitleBlock(file.id)
+          const identifiedNo = partNoFromSnapshot(snapshot)
+          if (!identifiedNo) {
+            failures.push(`${file.name}：图幅里没有找到图号`)
+            continue
+          }
 
           // 过滤：如果识别出的图号与总图号完全相同，说明是附属文件或总图明细，跳过
           if (currentRootNo && identifiedNo === currentRootNo) {
@@ -74,7 +91,7 @@ export function useDrawingReidentify(options: UseDrawingReidentifyOptions) {
       }
 
       if (!results.length) {
-        uiStore.toast(failures.length ? `没有发现图号变化，${failures.length} 个文件识别失败` : '所有零件图号均已与文件名一致', failures.length ? 'warn' : 'ok')
+        uiStore.toast(failures.length ? `没有发现图号变化，${failures.length} 个文件未能读取图幅` : '所有零件图号均已与图幅一致', failures.length ? 'warn' : 'ok')
         return
       }
 
@@ -122,6 +139,12 @@ export function useDrawingReidentify(options: UseDrawingReidentifyOptions) {
     if (item) item.checked = checked
   }
 
+  /** 弹窗把图号改成手工修正值时回写：图幅识别的结果允许人工纠正。 */
+  function updateReidentifyNo(fileId: string, newPartNo: string) {
+    const item = reidentifyList.value.find((entry) => entry.file.id === fileId)
+    if (item) item.newPartNo = newPartNo
+  }
+
   /** 弹窗表头的全选 / 全不选。 */
   function toggleAllReidentifyItems(checked: boolean) {
     reidentifyList.value.forEach((entry) => {
@@ -144,6 +167,7 @@ export function useDrawingReidentify(options: UseDrawingReidentifyOptions) {
     confirmBatchReidentify,
     closeReidentifyModal,
     toggleReidentifyItem,
+    updateReidentifyNo,
     toggleAllReidentifyItems,
   }
 }

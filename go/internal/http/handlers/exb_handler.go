@@ -26,6 +26,10 @@ type exbParseRequest struct {
 	StorageKey string `json:"storageKey"`
 }
 
+// 识别只依据文件名（标题栏脚本已停用），文件名里没有图号就无法继续；
+// 这时必须把「怎么改文件名」直接给到用户，而不是回空值让前端猜。
+const partNoMissingMessage = "文件名中未识别到图号：请把文件名命名为「图号(名称)」，例如 2000W.02.03d-01-01c(活塞环).exb"
+
 type reidentifyPartRequest struct {
 	StorageKey   string `json:"storageKey"`
 	AttachmentID string `json:"attachmentId"`
@@ -69,8 +73,9 @@ func ScanDrawingDesigner(repository attachment.Repository, objectStorage storage
 	}
 }
 
-// IdentifyDrawingFile 仅按文件名提取图号。Python EXB 标题栏脚本已禁用，
-// 不再写入临时文件、转换图纸或读取文件内容。
+// IdentifyDrawingFile 是**兜底**的图号识别：前端已改为读图幅（DWG/DXF 读本地文件，EXB 先转 DWG 再读），
+// 只有图幅里读不到图号时才会走到这里。本接口仅按文件名提取图号，不读文件内容。
+// 文件名里没有图号时返回 422 而不是 200 + 空图号：空图号会让前端抛「未返回有效内部图号」这种查不出原因的错误。
 func IdentifyDrawingFile(convService *converter.Service) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := middleware.UserFromContext(request.Context()); !ok {
@@ -98,6 +103,11 @@ func IdentifyDrawingFile(convService *converter.Service) http.HandlerFunc {
 		}
 
 		partNo, partNoSource := resolvePartNo(header.Filename, nil, false)
+		if partNo == "" {
+			log.Printf("[图号识别] 文件名中未识别到图号: filename=%q", header.Filename)
+			response.WriteError(writer, http.StatusUnprocessableEntity, partNoMissingMessage)
+			return
+		}
 		log.Printf("[图号识别] 已跳过 Python 标题栏脚本: filename=%q partNo=%q source=%s", header.Filename, partNo, partNoSource)
 		response.WriteData(writer, http.StatusOK, map[string]any{
 			"partNo":       partNo,

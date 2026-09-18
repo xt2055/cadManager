@@ -1391,7 +1391,13 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
     }
   }
 
-  async function uploadOtherFile(ownerNo: string, file: DrawingFile, content?: Blob): Promise<void> {
+  /**
+   * 上传一个尚未归属零件的文件（落成「其他文件」）。
+   *
+   * 返回服务端标识：EXB 零件图必须走「先上传 → 后台转 DWG → 读图幅 → 再落零件」，
+   * 中间态需要 attachmentId 才能等转换、读标题栏。
+   */
+  async function uploadOtherFile(ownerNo: string, file: DrawingFile, content?: Blob): Promise<{ attachmentId: string; storageKey: string }> {
     await initialize()
     const target = findDrawingOrPart(ownerNo)
     if (!target) throw new Error(`未找到其他文件所属对象：${ownerNo}`)
@@ -1425,6 +1431,7 @@ export const useDrawingOperationsStore = defineStore('drawing-operations', () =>
 	      if (storageKey) await drawingFileService.delete(storageKey, attachmentId).catch(() => undefined)
       throw saveError
     }
+    return { attachmentId: attachmentId ?? '', storageKey: storageKey ?? '' }
   }
 
   async function deleteOtherFile(ownerNo: string, fileId: string): Promise<void> {

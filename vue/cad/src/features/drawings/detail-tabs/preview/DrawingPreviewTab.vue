@@ -10,6 +10,7 @@ import CreateDrawingModal from './components/CreateDrawingModal.vue'
 import DrawingFileTable from './components/DrawingFileTable.vue'
 import DrawingEditSessionPanel from './components/DrawingEditSessionPanel.vue'
 import DrawingPreviewHeader from './components/DrawingPreviewHeader.vue'
+import PartNumberInputModal from './components/PartNumberInputModal.vue'
 import ReidentifyDrawingModal from './components/ReidentifyDrawingModal.vue'
 import ReplaceDrawingModal from './components/ReplaceDrawingModal.vue'
 import { useDrawingStore } from '@/stores/drawing.store'
@@ -62,6 +63,11 @@ const {
   triggerUploadPart,
   onAssemblyFileChange,
   onPartFilesChange,
+  partNumberRows,
+  partNumberOpen,
+  partNumberBusy,
+  confirmPartNumbers,
+  cancelPartNumbers,
 } = useDrawingFileUpload({
   currentItem,
   rootDrawingNo,
@@ -271,6 +277,7 @@ const {
   confirmBatchReidentify,
   closeReidentifyModal,
   toggleReidentifyItem,
+  updateReidentifyNo,
   toggleAllReidentifyItems,
 } = useDrawingReidentify({
   allFiles,
@@ -397,7 +404,18 @@ const {
       @close="closeReidentifyModal"
       @confirm="confirmBatchReidentify"
       @toggle="toggleReidentifyItem"
+      @update-no="updateReidentifyNo"
       @toggle-all="toggleAllReidentifyItems"
+    />
+
+    <!-- 图幅里读不到图号时的兜底：用户只填后几位，项目号自动补上（借用件可改项目号） -->
+    <PartNumberInputModal
+      v-if="partNumberOpen"
+      :rows="partNumberRows"
+      :root-drawing-no="rootDrawingNo"
+      :busy="partNumberBusy"
+      @close="cancelPartNumbers"
+      @confirm="confirmPartNumbers"
     />
 
     <!-- 本机未找到 CAXA：提供可操作的解决途径，而不是一闪而过的提示 -->

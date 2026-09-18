@@ -24,6 +24,8 @@ const emit = defineEmits<{
   confirm: []
   /** 勾选 / 取消勾选一行。 */
   toggle: [id: string, checked: boolean]
+  /** 手工修正识别出的图号（图幅识别的结果允许人工纠正）。 */
+  updateNo: [id: string, newPartNo: string]
   /** 表头全选 / 全不选。 */
   toggleAll: [checked: boolean]
 }>()
@@ -46,7 +48,7 @@ const checkedCount = computed(() => props.rows.filter((row) => row.checked).leng
       <div class="modal-body reidentify-modal-body">
         <div class="reidentify-hint">
           <DemoIcon name="info" :size="14" />
-          <span>系统已按图纸文件名识别图号，并已自动过滤明细表和非零件图文件。请核对并勾选需校正的项：</span>
+          <span>系统已按图纸图幅（标题栏）识别图号，并已自动过滤明细表和非零件图文件。识别结果可直接修改，请核对并勾选需校正的项：</span>
         </div>
 
         <div class="reidentify-table-wrap">
@@ -62,7 +64,7 @@ const checkedCount = computed(() => props.rows.filter((row) => row.checked).leng
                 </th>
                 <th>文件名</th>
                 <th>当前关联图号</th>
-                <th>识别图号 (文件名)</th>
+                <th>识别图号 (图幅，可修改)</th>
               </tr>
             </thead>
             <tbody>
@@ -79,7 +81,16 @@ const checkedCount = computed(() => props.rows.filter((row) => row.checked).leng
                   <span>{{ row.name }}</span>
                 </td>
                 <td class="num mono text-muted">{{ row.oldPartNo }}</td>
-                <td class="num mono bold text-accent">{{ row.newPartNo }}</td>
+                <td class="num mono">
+                  <input
+                    class="inp mono"
+                    type="text"
+                    :value="row.newPartNo"
+                    :disabled="executing"
+                    aria-label="识别图号"
+                    @change="emit('updateNo', row.id, ($event.target as HTMLInputElement).value)"
+                  />
+                </td>
               </tr>
             </tbody>
           </table>

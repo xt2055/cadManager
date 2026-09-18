@@ -1,6 +1,37 @@
 package handlers
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"cadguanliq/internal/auth"
+	"cadguanliq/internal/http/middleware"
+)
+
+// multipartUploadRequest 构造一个已登录的 multipart 上传请求（文件内容不重要，识别只看文件名）。
+func multipartUploadRequest(t *testing.T, filename string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("EXB")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/exb/identify", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request.WithContext(context.WithValue(request.Context(), middleware.AuthUserContextKey, auth.AuthUser{ID: "test-user"}))
+}
 
 func TestResolvePartNo(t *testing.T) {
 	tests := []struct {
@@ -70,5 +101,31 @@ func TestIsLikelyDrawingNoRejectsDimensions(t *testing.T) {
 		if !isLikelyDrawingNo(value) {
 			t.Fatalf("isLikelyDrawingNo(%q) = false", value)
 		}
+	}
+}
+
+// 前端已改为读图幅；本接口是兜底。文件名里没有图号时必须回 422 并说明怎么改，
+// 而不是回 200 + 空图号（那会让前端抛「未返回有效内部图号」，用户看不出该怎么办）。
+func TestIdentifyDrawingFileRejectsFilenameWithoutPartNo(t *testing.T) {
+	request := multipartUploadRequest(t, "工程图文档2.exb")
+	recorder := httptest.NewRecorder()
+	IdentifyDrawingFile(nil)(recorder, request)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body=%s; want 422", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "文件名") {
+		t.Fatalf("body = %s; want actionable filename hint", recorder.Body.String())
+	}
+}
+
+func TestIdentifyDrawingFileAcceptsFilenamePartNo(t *testing.T) {
+	request := multipartUploadRequest(t, "JG9055e-5032-01(缸体).exb")
+	recorder := httptest.NewRecorder()
+	IdentifyDrawingFile(nil)(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s; want 200", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "JG9055e-5032-01") {
+		t.Fatalf("body = %s; want resolved part number", recorder.Body.String())
 	}
 }
