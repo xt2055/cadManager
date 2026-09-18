@@ -6,6 +6,11 @@ import { isModelFile } from '@/utils/model-formats'
 export type ProjectDrawingFile = DrawingFile & {
   ownerNo: string
   ownerName: string
+  /**
+   * 借用图：附件属于别的项目（本项目的零件视图是借用关系）。
+   * 借用方只读展示，改文件要回来源图号发起。
+   */
+  borrowed?: boolean
 }
 
 /** 文件视图 → 领域文件：补齐原始名称与存储键，并复制历史，避免下游改到视图对象。 */
@@ -58,6 +63,7 @@ export function collectProjectFiles(input: CollectProjectFilesInput): ProjectDra
         ...toDrawingFile(file),
         ownerNo: owner.no,
         ownerName: owner.name,
+        ...('parentNo' in owner && owner.borrowed ? { borrowed: true } : {}),
         ...(file.partNo ? { partNo: file.partNo } : {}),
         drawingNo: file.drawingNo || ('parentNo' in owner ? rootDrawingNo : owner.no),
       })

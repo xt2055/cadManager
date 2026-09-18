@@ -286,9 +286,15 @@ export class DrawingReadModelMapper {
         revision: item.revision,
       }
       const isMain = (item.role === 'assembly' && 'kind' in owner) || (item.role === 'part' && 'parentNo' in owner)
-      if (isMain) owner.files = [...(owner.files ?? []).filter((candidate) => candidate.id !== file.id), file]
-      else owner.otherFiles = [...(owner.otherFiles ?? []).filter((candidate) => candidate.id !== file.id), file]
-      owner.hasFile = (owner.files ?? []).length > 0
+      // 借用关系是「一份附件、多张图纸共享」：同一零件被借到别的项目后会有多个视图
+      // （来源项目的自有视图 + 借用方视图）。附件只有一份，每个视图都要挂上，
+      // 借用方的结构树与「已关联图纸文件清单」才看得到这张借用图。
+      const views = item.partNo ? partCandidates : [owner]
+      for (const view of new Set(views)) {
+        if (isMain) view.files = [...(view.files ?? []).filter((candidate) => candidate.id !== file.id), file]
+        else view.otherFiles = [...(view.otherFiles ?? []).filter((candidate) => candidate.id !== file.id), file]
+        view.hasFile = (view.files ?? []).length > 0
+      }
     }
     return { drawings, structure }
   }

@@ -66,3 +66,58 @@ test('工艺附件读模型保留服务端持久化的编制人员', () => {
   assert.equal(result.drawings[0].craftFiles[0].scanned, true)
   assert.equal(result.drawings[0].craftFiles[0].by, '上传用户')
 })
+
+// 借用关系是「一份附件、多张图纸共享」：借用方必须能看到这张借用图（截图里的「已关联图纸文件清单」）。
+const modelFormatsModule = moduleUrl(await readFile(new URL('../src/utils/model-formats.ts', import.meta.url), 'utf8'))
+const previewSource = await readFile(new URL('../src/features/drawings/detail-tabs/preview/drawing-preview-files.ts', import.meta.url), 'utf8')
+const { collectProjectFiles } = await import(moduleUrl(previewSource.replace("'@/utils/model-formats'", JSON.stringify(modelFormatsModule))))
+
+const borrowedFile = {
+  id: 'pipe-file', drawingNo: '2000W.02.03c', partNo: borrowed.no, role: 'part',
+  name: '2000W.02.03c-01-3(油管).exb', storageKey: 'blob-key', size: 2048,
+  version: 'v1.0', previewable: true, uploadedBy: '测试',
+}
+const sourceView = { id: 'src-pipe', no: borrowed.no, name: borrowed.name, parentNo: '2000W.02.03c', drawingId: 'c' }
+function mapBorrowedView() {
+  return new DrawingReadModelMapper().map({
+    drawings: [target, { id: 'c', no: '2000W.02.03c' }],
+    structure: [borrowed, sourceView],
+    attachments: [borrowedFile],
+    bom: [],
+  })
+}
+
+test('借用件在借用方也拿得到借用图，来源方视图不丢', () => {
+  const result = mapBorrowedView()
+  assert.equal(result.parts[0].files.length, 1)
+  assert.equal(result.parts[1].files.length, 1)
+  assert.equal(result.structureByDrawing[target.no][0].files[0].name, borrowedFile.name)
+  assert.equal(result.structureByDrawing['2000W.02.03c'][0].files[0].name, borrowedFile.name)
+})
+
+test('已关联图纸文件清单列出借用图，并标记为借用（借用方只读）', () => {
+  const result = mapBorrowedView()
+  const files = collectProjectFiles({
+    currentItem: { id: 'd', no: target.no, name: '斜撑油缸', files: [], otherFiles: [] },
+    isAssembly: true,
+    rootDrawingNo: target.no,
+    parts: result.parts,
+    structureOf: () => [{ ...result.parts[0], children: [] }],
+  })
+  assert.equal(files.length, 1)
+  assert.equal(files[0].partNo, borrowed.no)
+  assert.equal(files[0].borrowed, true)
+})
+
+test('来源项目自己的清单不把同一张图标成借用', () => {
+  const result = mapBorrowedView()
+  const files = collectProjectFiles({
+    currentItem: { id: 'c', no: '2000W.02.03c', name: '油管', files: [], otherFiles: [] },
+    isAssembly: true,
+    rootDrawingNo: '2000W.02.03c',
+    parts: result.parts,
+    structureOf: () => [{ ...result.parts[1], children: [] }],
+  })
+  assert.equal(files.length, 1)
+  assert.equal(files[0].borrowed, undefined)
+})

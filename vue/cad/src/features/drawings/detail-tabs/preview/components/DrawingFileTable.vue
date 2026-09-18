@@ -92,7 +92,10 @@ const emit = defineEmits<{
               <div class="file-title-wrap">
                 <div class="file-title-text">
                   <b>{{ file.name }}</b>
-                  <span class="file-owner">{{ file.role === 'assembly' ? `项目总图 · ${file.ownerNo}` : `所属零件 · ${file.ownerNo}${file.ownerName && file.ownerName !== file.ownerNo ? `（${file.ownerName}）` : ''}` }}</span>
+                  <span class="file-subline">
+                    <span class="file-owner">{{ file.role === 'assembly' ? `项目总图 · ${file.ownerNo}` : `所属零件 · ${file.ownerNo}${file.ownerName && file.ownerName !== file.ownerNo ? `（${file.ownerName}）` : ''}` }}</span>
+                    <span v-if="file.borrowed" class="tag plain file-borrow-tag" title="借用图：附件属于来源项目，改动请在来源图号发起">借用</span>
+                  </span>
                 </div>
                 <span v-if="isEditingByMe(file)" class="badge-collab active">
                   <span class="pulse-dot"></span>我正在编辑
@@ -138,7 +141,7 @@ const emit = defineEmits<{
               >
                 <span class="pulse-dot"></span>编辑中
               </button>
-              <template v-else-if="canEdit(file) && !isLockedByOther(file)">
+              <template v-else-if="canEdit(file) && !file.borrowed && !isLockedByOther(file)">
                 <button
                   class="btn sm"
                   type="button"
@@ -166,7 +169,7 @@ const emit = defineEmits<{
               </button>
 
               <button
-                v-if="canEdit(file)"
+                v-if="canEdit(file) && !file.borrowed"
                 class="btn sm"
                 type="button"
                 title="替换当前图纸文件并生成新版本"
@@ -179,7 +182,7 @@ const emit = defineEmits<{
                 <span v-if="hasUnreadHistory(file)" class="hist-count">{{ file.history?.length }}</span>
               </button>
               <button
-                v-if="canDelete"
+                v-if="canDelete && !file.borrowed"
                 class="btn sm danger"
                 type="button"
                 title="删除文件"
@@ -327,10 +330,28 @@ const emit = defineEmits<{
   white-space: nowrap;
 }
 
-.file-owner {
+.file-subline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: 2px;
+  min-width: 0;
+}
+
+.file-owner {
+  min-width: 0;
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 借用图只读展示：来源项目的附件在借用方不做编辑入口，这里只标出来。 */
+.file-borrow-tag {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 9px;
 }
 
 .badge-collab {

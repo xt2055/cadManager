@@ -56,7 +56,8 @@ export function useDrawingReidentify(options: UseDrawingReidentifyOptions) {
       return
     }
     const currentRootNo = options.rootDrawingNo.value
-    const cadFiles = filterReidentifiableFiles(options.allFiles.value)
+    // 借用图不参与：它的图号由来源项目负责，借用方校正等于去改别人项目的零件。
+    const cadFiles = filterReidentifiableFiles(options.allFiles.value.filter((file) => !file.borrowed))
     if (!cadFiles.length) {
       uiStore.toast('当前图纸没有可重新识别的零件 CAD 文件（已自动过滤明细表与表格）', 'warn')
       return
